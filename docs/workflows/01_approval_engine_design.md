@@ -61,7 +61,7 @@ A request cannot return from PENDING to an editable draft after a reviewer has e
 
 PROPOSED baseline is sequential levels with one effective decision per required step. Schools can configure single-stage or multistage chains. Parallel reviewers, quorum, delegation and substitutes remain T06; do not infer “any one reviewer wins” if a policy calls for several levels.
 
-At review time validate the principal, context, assigned step, current review permission/scope, target eligibility and required assurance. The requestor cannot approve their own sensitive request under the proposed default, even by switching roles. The final self-review/delegation policy needs explicit acceptance; Super Admin does not automatically bypass it.
+At review time validate the principal, context, assigned step, current review permission/scope, target eligibility and required assurance. The requestor cannot approve their own sensitive request under the proposed default, even by switching roles or using another individual account linked to the same proven Person. A shared-family principal is never a staff reviewer. A related adult reviewing a family-originated request needs an explicit conflict-of-interest policy; do not infer which adult submitted it. The final self-review/delegation policy needs explicit acceptance (T06); Super Admin does not automatically bypass it.
 
 A reviewer grant revoked before a decision denies the decision. If it is revoked between APPROVED and execution, PROPOSED conservative behavior is to block execution, preserve reviews, and require a newly authorized review path; do not silently treat old authority as current. The exact reevaluation policy remains T06. Concurrent grant revocation and execution need serialization/fencing consistent with T04: whichever commits first defines the authorized ordering.
 
@@ -78,7 +78,7 @@ No external email, push or object-upload call participates in that database tran
 
 Transient database/worker failures can retry with the same command identity. Stale target version, lost authority or changed policy applicability are conflicts requiring human action/new review, not blind retries. FAILED diagnostics are sanitized; failure evidence is recorded after rollback in a separate transaction. Never mark EXECUTED before the domain transaction commits.
 
-## 6. Seven operation examples
+## 6. Eight operation examples
 
 These are behavioral contracts, not domain table designs or final school approval chains.
 
@@ -91,6 +91,7 @@ These are behavioral contracts, not domain table designs or final school approva
 | Salary modification | Authorized HR request supplies effective date, old/new terms and reason; configured reviewer and employee scope checked | HR preserves salary history, validates overlapping effective periods and finalized payroll locks; historical payslips are not silently rewritten |
 | Sensitive student-data correction | Authorized requester supplies allowlisted fields, reason and private evidence; reviewer can see only necessary protected fields | Student domain verifies identity/status rules and linked-record consequences, writes required history and a minimized audit difference |
 | Leave request | Parent requests for linked child or employee requests for self; dates/type/evidence validated, school-configured chain resolved | Leave domain rechecks links, dates, overlaps and applicable entitlement rules; records the decision/outcome; any attendance consequences are distinct idempotent commands |
+| High-risk admin/security change | Authorized individual administrator requests a role/scope, account-binding or security-policy change with current version, reason and proposed values; review checks grant ceilings, independence and affected scope | Identity/Access revalidates account type and current authority, applies only the registered change, preserves grant/binding history, invalidates affected authorization state and audits old/new evidence; shared-family staff escalation is always rejected |
 
 Exact attendance edit windows, financial thresholds, salary retroactivity, leave entitlements and field classifications remain domain decisions (T06/T07/T13). A sample chain such as Teacher -> Coordinator -> Principal is illustrative, not a mandatory default.
 
@@ -98,7 +99,7 @@ Exact attendance edit windows, financial thresholds, salary retroactivity, leave
 
 Review permission does not automatically grant unrelated target data. Provide a purpose-limited review view with enough verified fields to decide; if the reviewer lacks the required sensitivity clearance, reassign/block. Requests, reviewer comments and attachments have their own access rules; broad request listing must not leak medical/salary/fee data.
 
-Shared family context may submit permitted child requests but never uses associated staff grants to review them. Optional supporting evidence must be validated and authorized through file metadata and owning request, not a public URL. Object availability failures block submission when the operation requires that evidence.
+The separate shared-family principal may submit permitted child requests but has no staff grants to review them. Its related adult's individual principal is a different actor and must independently meet review and conflict-of-interest rules. Optional supporting evidence must be validated and authorized through file metadata and owning request, not a public URL. Object availability failures block submission when the operation requires that evidence.
 
 ## 8. Cancellation, expiry and replay
 

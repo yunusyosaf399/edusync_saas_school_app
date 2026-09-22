@@ -21,7 +21,7 @@ Testing framework, runner and disposable environment tooling remain T15. No depe
 
 Use two **separate school projects** S1 and S2 for future cross-school isolation tests, not two tenant IDs in one database. S1 has Campus A and B, two academic years and rooms with repeated names across campuses.
 
-Later domain fixtures: Grade 8 sections A/B, Mathematics/Science, teacher T assigned to Campus A / Grade 8-A / Mathematics, a second teacher, family F linked to children C1/C2 but not C3, and a student account for C1. Include a teacher who is also a parent, a shared FAMILY session and an independently verified staff context if T01 is accepted.
+Later domain fixtures: Grade 8 sections A/B, Mathematics/Science, teacher T assigned to Campus A / Grade 8-A / Mathematics, a second teacher, family F linked to children C1/C2 but not C3, and a student account for C1. Ahmed's individual principal has Teacher and Parent grants; his family's separate shared principal has only Parent/Guardian grants and a distinct Auth binding. Include separate sessions, recovery paths and encrypted caches for both principals. No family credential can step up into Ahmed's staff principal.
 
 Create explicit bounded grant fixtures for Super Admin, Principal, Campus Admin A, Accountant A, Nurse A and Exam Controller A. None is authorized merely by its display name. Include inactive accounts, expired assignments, revoked grants, old JWTs, unavailable resolvers, retired campuses and locked domain states. Use synthetic files and fake identifiers only.
 
@@ -40,6 +40,7 @@ Each scenario asserts both the response and absence/presence of domain mutation,
 | AUTH-07 Student | C1 reads own permitted result and submits own work | C2's records and own published-mark edits fail; fee access fails when not granted |
 | AUTH-08 Nurse | Explicitly authorized medical access for A-campus pupils succeeds with required evidence | B-campus records without scope, finance/payroll and unrestricted student export fail |
 | AUTH-09 Exam Controller | Eligible review and scoped PUBLISH after required checks succeed | Missing review, pending correction, B-campus publication and unrestricted finance access fail |
+| AUTH-10 Individual Teacher who is also Parent | Ahmed's individual principal uses assigned Teacher permissions and separately authorized Parent permissions for his linked children | Parent OWN does not become teacher UPDATE on unassigned children; his wife's session on the distinct shared-family principal cannot access his teaching, salary, reviews, staff inbox or files, even if email/contact/Person relationships overlap |
 
 ## 4. Foundation constraint and migration cases
 
@@ -59,7 +60,7 @@ Each scenario asserts both the response and absence/presence of domain mutation,
 - **SEC-01:** call every read/write surface as unauthenticated, unprovisioned, suspended and retired principal; deny private data even with a still-valid token.
 - **SEC-02:** combine ALL/VIEW from one grant and ASSIGNED/UPDATE from another; UPDATE outside assignment must fail. Mismatched F12/F11 role references must be impossible.
 - **SEC-03:** forge role, campus, Person, context or grant fields in client metadata/payload; reject. Test current and expired assignment dates and unknown scope resolvers.
-- **SEC-04:** test Teacher+Parent account across contexts. FAMILY session cannot see staff inbox, salary, staff files or approve as teacher. A staff dashboard toggle and replayed context token fail. If T01 is unresolved, no shared-credential staff grants are activated.
+- **SEC-04:** test the individual Teacher+Parent principal and the separate shared-family principal. Family credentials cannot mint the individual token, switch into staff identity, obtain staff grants through recovery/relinking, or inherit them when a role definition changes. Direct staff assignment to SHARED_FAMILY fails. A shared family session cannot see staff inbox, salary/files or approve as teacher. T01 credential mechanics remain pending; the separation invariant does not.
 - **SEC-05:** revoke a grant while a command is authorizing. Use the chosen T04 locking/version boundary to show a defined order: the command commits before revocation or is denied; no post-revocation command authorizes on stale cached grants.
 - **SEC-06:** test grant administration ceilings, self-grant attempts, protected role category edits and scope widening.
 - **SEC-07:** repeat allow/deny tests through views, functions, search, reports, exports, AI retrieval and background workers, not only direct row access.
@@ -78,7 +79,10 @@ Each scenario asserts both the response and absence/presence of domain mutation,
 | FLOW-06 | Fail required audit insert or outbox insert during business transaction | Entire protected mutation/application rolls back; no success audit/event; separate failed-attempt evidence |
 | FLOW-07 | Crash before commit, then after commit before acknowledgement | Before: no effect. After: retry returns existing authorized result; one domain effect, revision, application receipt and event set |
 | FLOW-08 | Retry same idempotency key with different payload, or replay another principal's key | Conflict/denial; no duplicate effect or result leakage |
-| FLOW-09 | Execute each of seven example operations | Domain-specific checks run; financial reversal preserves original, marks correction preserves published version, leave checks linked/self scope |
+| FLOW-09 | Execute each of eight example operations | Domain-specific checks run; financial reversal preserves original, marks correction preserves published version, leave checks linked/self scope, and high-risk administration checks account type and grant ceilings |
+| FLOW-10 | Submit without request permission/assignment, or execute a REJECTED/CANCELLED/EXPIRED request | Deny; state/history remains intact and no domain effect/outbox success is produced |
+| FLOW-11 | APPROVED request fails current domain validation, such as a changed target invariant | Record sanitized failure/conflict after rollback; no domain mutation, successful application or business event; new review is required when intent/state changes |
+| FLOW-12 | Approved high-risk role/scope/account-binding change exceeds the reviewer's grant ceiling or assigns staff authority to a shared-family principal | Typed Identity/Access executor rejects it despite approval; preserve attempt/decision evidence and existing principal/grant state |
 | AUD-01 | Protected operation by Super Admin/system worker | Correct initiator/executor/context, reason and approval linkage recorded |
 | AUD-02 | Normal/admin client attempts audit edit/delete or fabricated audit insert | Denied; actor retirement leaves evidence accessible to authorized audit readers |
 | AUD-03 | Submit secrets/private payload or forged device/person details | Secrets excluded; only allowed differences recorded; client claims labelled; shared-family actor not misattributed to teacher |
@@ -88,6 +92,7 @@ Each scenario asserts both the response and absence/presence of domain mutation,
 
 - **EVT-01:** deliver one event twice to several consumers; one logical inbox item/recipient/purpose and one domain effect, separate consumer progress.
 - **EVT-02:** expire a worker lease; stale worker acknowledgement fails; retry/dead-letter/replay retains the original event identity.
+- **EVT-03:** fail notification creation/delivery after the business transaction and outbox commit; the committed business fact, audit and application receipt remain successful, while delivery retries independently.
 - **NOT-01:** inspect another recipient/context's inbox, change recipient/content or read a staff notification from FAMILY context; deny.
 - **NOT-02:** revoke a family-child link or permission between scheduling and delivery; suppress protected content and deny target access. Verify preferences cannot grant access or disable policy-required categories.
 - **NOT-03:** simulate provider success followed by network timeout; retry using provider idempotency when available and document possible duplicate delivery. Do not claim exactly-once email/push.
@@ -96,6 +101,7 @@ Each scenario asserts both the response and absence/presence of domain mutation,
 - **FILE-03:** permission revoked after signed URL issuance; test the chosen expiry/revocation limitation rather than asserting immediate recall.
 - **SYNC-01:** replay stale expected_version, duplicate offline operation and future/old client clock; conflict or dedupe, not critical last-write-wins.
 - **SYNC-02:** stale authorization, school/account switch, tombstone retention and missed/out-of-order cursor records; no cross-scope replay or silent resurrection. Protocol details remain T09.
+- **SYNC-03:** revoke a grant while the device is offline, then replay duplicate operations and conflicting expected versions; deny lost authority, deduplicate authorized retries and surface critical version conflicts without last-write-wins.
 - **DEV-01:** contract-test forged source identity, duplicate vendor/source event, wrong campus/person, low-confidence/malformed capture, replay and oversized payload. Reject before canonical attendance mutation. No hardware integration or biometric storage is created.
 - **DEV-02:** manual and QR inputs follow the same canonical attendance command; future adapters must not create a second attendance truth.
 - **RET-01:** later archive/recovery rehearsal verifies protected evidence completeness, access restrictions and link resolution; no normal purge of finance/audit/academic history.
@@ -106,4 +112,4 @@ Every protected command needs paired allow/deny assertions, a version/race scena
 
 The current deliverable is a reviewed test strategy, not a claim that backend tests pass. Only documentation integrity can be checked now. Follow [dependency order](../database/03_foundation_dependency_order.md); track open choices in [ADR-001](../decisions/ADR-001-foundation-database-principles.md).
 
-**Next task: "Foundation ERD and SQL Migration Draft".** Do not run migrations or connect to Supabase as part of this documentation task.
+**Next task: "FOUNDATION ERD + PHYSICAL TABLE/COLUMN CATALOG".** Do not create SQL, run migrations or connect to Supabase as part of this documentation task.

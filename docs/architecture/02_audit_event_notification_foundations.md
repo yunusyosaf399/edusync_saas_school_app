@@ -27,7 +27,7 @@ PROPOSED F19 fields and invariants:
 | Reason and workflow | Human reason where required, approval request/review references, domain-result/revision reference |
 | Time | Server recorded_at and action occurred_at; external captured_at is separately labelled with trust provenance |
 | Correlation | Request/trace identifier, command/idempotency reference, causation/event identifiers |
-| Session/device/source | Verified session reference where available, bounded device/client metadata, UI/server/automation/integration/future-device source, network metadata if justified |
+| Session/device/source | Verified session reference where available, bounded device/client metadata, UI/API/server/automation/integration/future-device source, network metadata if justified |
 
 A shared-family action identifies its account and FAMILY context. It must not falsely name the teacher Person associated with that account as the acting adult. User-entered device names and capture times remain claims.
 
@@ -63,7 +63,7 @@ F22 represents each recipient's inbox item. F27 stores allowed recipient prefere
 
 Compute recipients through current authorized relationships; never blindly trust client-supplied recipients. Deduplicate by business event/recipient/category. Resolve preferences only after authorization; a preference cannot grant access. Mandatory categories, opt-outs and quiet hours are T08.
 
-Store minimal safe notification content. Recheck access at dispatch and when opening the referenced record. After a family link or staff scope is revoked, suppress any future sensitive delivery and prevent target access. A previously delivered email/push cannot reliably be recalled, so it should avoid protected details. Context-bound recipients must not receive staff messages in a shared-family inbox/session; FAMILY and individual staff delivery must follow the same T01 isolation as data reads.
+Store minimal safe notification content. Recheck access at dispatch and when opening the referenced record. After a family link or staff scope is revoked, suppress any future sensitive delivery and prevent target access. A previously delivered email/push cannot reliably be recalled, so it should avoid protected details. Recipients are distinct principals: staff messages addressed to Ahmed's individual principal must not appear in the shared-family inbox or go to a shared endpoint merely because a Person/contact/family link matches. T01 covers account/session isolation; T08 covers verified delivery endpoints. Preferences never merge inboxes or staff authority across principals.
 
 Read/dismiss commands affect only the recipient's permitted notification. Operators may inspect sanitized delivery diagnostics with separate privileges; they do not acquire unrestricted inbox or target access.
 

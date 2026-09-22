@@ -30,7 +30,7 @@ Additional command concepts already appear in requirements, including REQUEST_CH
 | SECTION | Specified section with consistent class/year/campus ancestry | Reject mismatched parent identifiers |
 | SUBJECT | Specified subject offering and academic context | A reusable subject name is not all sections teaching it |
 | ASSIGNED | Domain resolver checks actual current/historical responsibility for the requested action | Viewing an assignment is not making oneself assigned |
-| OWN | Resolve a permitted subject relationship | Self person/student/employee, or approved family-child links in FAMILY context; never simply creator_id |
+| OWN | Resolve a permitted subject relationship | Self person/student/employee, approved individual Parent-to-child access, or the shared-family principal's approved family-child links in FAMILY context; never simply creator_id or another principal's relationships |
 
 FOUNDATION enables school-wide, campus and principal/context predicates. CLASS, SECTION, SUBJECT and teaching/family/enrollment resolvers are **postponed** until their domain entities exist. Unknown or unresolved scope returns deny, not ALL.
 
@@ -42,7 +42,11 @@ PROPOSED path: principal -> active role assignment -> role-permission grant -> s
 
 A scope binding references both the role assignment and the role-permission grant. Their role identities must agree. There is **no** free-standing account-wide scope list whose scopes can be combined with unrelated permissions.
 
-For example, Teacher VIEW with ALL scope and Teacher UPDATE with ASSIGNED scope do not produce UPDATE/ALL. A Parent OWN grant cannot widen an Accountant CAMPUS grant, and FAMILY-context permissions never activate staff context. Multiple grants union only fully evaluated allowed results, not their individual permission/scope ingredients.
+The proposed physical mapping is separate Role, Permission, RolePermissionGrant, PrincipalRoleAssignment and AssignmentPermissionScopeBinding concepts. The binding carries references to the exact assignment and grant plus typed scope targets; relational consistency must enforce that both references concern the same role. It must not store a permission from one role beside scope authority from another. No SQL or final table names are selected here.
+
+The full rule is role + permission/action + scope + active context + contextual/domain assignment + workflow state. Unknown scope resolution = DENY. Before grant evaluation, verify the principal's account type: a shared-family principal accepts Parent/Guardian grants only, while an individual principal may hold multiple personal roles. Person/family relationships cannot copy assignments across principals.
+
+For example, Teacher VIEW with ALL scope and Teacher UPDATE with ASSIGNED scope do not produce UPDATE/ALL. A Parent OWN grant cannot widen an Accountant CAMPUS grant. The shared-family principal never activates staff context or combines grants with a related adult's individual principal. Multiple grants union only fully evaluated allowed results within the authenticated principal, not their individual permission/scope ingredients.
 
 PROPOSED evaluation, as prose pseudocode:
 
@@ -64,7 +68,7 @@ Recheck on writes, reviews, exports, background application and offline replay. 
 | 3. Campus Admin assigned CAMPUS Main | Maintain allowed Main-campus operational records | Cannot select Junior records or move a target to Junior to circumvent scope; both old and new scopes are checked for scope-changing commands |
 | 4. Teacher with broader academic VIEW but UPDATE/ASSIGNED | See authorized timetable/student information; mark attendance only for the assigned official session/group and enter marks only for assigned subject/section | Cannot take another campus's attendance merely because it is visible; cannot obtain general student fee records; expired assignments fail |
 | 5. Accountant with finance permissions in CAMPUS Main | Verify eligible payment evidence, view finance reports and request a reversal | Cannot mark attendance or read medical records; cannot erase payments or self-apply a protected fee change outside approval |
-| 6. Parent/shared family in FAMILY context with OWN-linked children | View permitted records for linked children A and B and submit payment evidence/leave requests | Cannot view child C, claim teacher/staff privileges from the same password, or infer unrelated pupils through search/export/file links |
+| 6. Parent/shared family in FAMILY context with OWN-linked children | View permitted records for linked children A and B and submit payment evidence/leave requests | Cannot view child C, inherit the related adult's individual staff grants, or infer unrelated pupils through search/export/file links |
 | 7. Student with OWN scope | View own permitted attendance/results and submit own learning work | Cannot view a peer's result by changing an ID, edit own published marks, or read fees if school policy withholds them |
 | 8. Nurse with explicit medical actions and approved scope | Read/update permitted health encounters for authorized students, with audit | Generic student VIEW does not give medical access; nurse status alone does not grant payroll/finance or cross-campus access |
 | 9. Exam Controller with scoped review and PUBLISH authority | Review completeness/corrections, approve and publish validated results in allowed scope | Cannot bypass pending corrections, modify a published result in place or publish outside assigned scope |
@@ -93,7 +97,6 @@ Mutable user metadata must not drive authorization, and JWT membership claims ma
 
 ## 7. Open choices and validation
 
-T01 covers shared-family/staff context proof; T04 covers RLS/helper placement, revocation and session assurance; T05 covers scope ancestry and historical assignment access; T06 covers reviewer eligibility/delegation. All remain PROPOSED/TBD in [ADR-001](../decisions/ADR-001-foundation-database-principles.md).
+T01 covers separate individual/shared-family credentials, account switching and recovery without privilege transfer; T04 covers RLS/helper placement, revocation and session assurance; T05 covers scope ancestry and historical assignment access; T06 covers reviewer eligibility/delegation. All remain PROPOSED/TBD in [ADR-001](../decisions/ADR-001-foundation-database-principles.md).
 
 See [foundation tests](../testing/01_foundation_test_strategy.md) for paired allow/deny scenarios, scope-combination attacks, current/expired grants and cross-project isolation.
-

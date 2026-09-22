@@ -29,7 +29,9 @@ flowchart LR
 
 A person may have many roles through account/context assignments; Person itself never authorizes a request. The managed Auth account supplies authentication, F06 supplies a stable accountable actor, F12/F11 supply a candidate permission, and F13 supplies scope for that same permission and assignment. Context, domain assignment and workflow state further restrict access. No binding means no permission, not school-wide permission.
 
-**Shared family boundary:** F06 records whether credentials can be used in shared-family mode; F12 records the grant's allowed context. FAMILY context allows only Parent/Guardian operations on approved linked children. A teacher Person association does not import Teacher grants into that context. Staff access on a multi-role account remains blocked until the independent context proof in T01 is accepted; neither a dashboard switch nor client-supplied role claim suffices. Family-child relationships are added later, without requiring separate father/mother accounts.
+**Shared family boundary:** F06 distinguishes individual ACCOUNT principals from separate shared-family ACCOUNT principals. Each account has a distinct live Auth binding. F12 records the allowed context and must reject staff/admin role assignment to a shared-family principal. Ahmed's individual principal may have Teacher and Parent roles; a separate family principal gives his wife/guardian only Parent/Guardian access to approved linked children. A Person association, shared contact detail or account switch cannot transfer grants between them. Exact authentication UX and recovery remain T01; family-child relationships are designed later without requiring separate father/mother accounts.
+
+Scope definitions are application-owned supported kinds and resolvers, not free-form school data: F10 specifies allowed kinds for each permission, and F13 binds a kind/typed target to the precise F12/F11 pair. The later catalog may use checked codes or a lookup representation (T02); no extra generic scope registry is assumed. Delegated administration is a separately permissioned command with a grant ceiling, not an implicit consequence of possessing the permission being granted.
 
 ## 3. School and academic anchors
 
@@ -77,11 +79,11 @@ A person may have many roles through account/context assignments; Person itself 
 
 ### F06 - Principal / account profile
 
-- **Purpose / identity / attributes:** permanent actor UUID; ACCOUNT or SYSTEM kind, live Auth user UUID when applicable, optional Person association, allowed account modes, activation state, version, system-purpose code.
+- **Purpose / identity / attributes:** permanent actor UUID; ACCOUNT or SYSTEM kind, account_type INDIVIDUAL or SHARED_FAMILY for accounts, distinct live Auth user UUID, Person association for an individual, activation state, version, system-purpose code.
 - **Relationships / scope:** live FK to auth.users primary key for ACCOUNT; optional F05 link; grants, requests and audit reference F06. Parent-child linkage arrives later. School-project authority only; no default campus.
 - **Lifecycle / history / archive:** pending -> active -> suspended -> retired. Clear a removed live Auth reference without deleting the actor; log F07. Retired anchors remain for history; no normal hard delete.
-- **Security / constraints / indexes:** server-controlled binding and account mode; unique live Auth subject, unique system-purpose identity; SYSTEM has no interactive Auth binding. Index Auth subject/status and Person association. Person association never proves who used shared credentials.
-- **Placement / status:** Foundation now, PROPOSED; shared-to-staff assurance T01 and Auth lifecycle T03/T04 block activation.
+- **Security / constraints / indexes:** server-controlled account type and binding; unique live Auth subject, unique system-purpose identity; SYSTEM has no interactive Auth binding. Shared-family accounts cannot bind staff grants or automatically convert into individual accounts. Family membership is not a proven actor Person. Index Auth subject/status, account type and individual Person association.
+- **Placement / status:** Foundation now, PROPOSED; isolated account UX/recovery T01 and Auth lifecycle T03/T04 require resolution before activation.
 
 ### F07 - Principal binding history
 
@@ -128,7 +130,7 @@ A person may have many roles through account/context assignments; Person itself 
 - **Purpose / identity / attributes:** UUID, principal, role, required access context, effective dates, assigning actor/reason, state.
 - **Relationships / scope:** FKs F06/F09; F13 narrows each permission. Associated staff Person is verified through identity context, not inherited from family membership.
 - **Lifecycle / history / archive:** scheduled -> active -> ended/revoked; immutable grant terms except recorded closure, with change audit. No ordinary delete.
-- **Security / constraints / indexes:** delegated grant administration; duplicate overlapping principal/role/context assignment prevention as proposed. Index principal/context/validity and role; no role-assignment-only authorization.
+- **Security / constraints / indexes:** delegated grant administration; duplicate overlapping principal/role/context assignment prevention as proposed. Reject staff roles on SHARED_FAMILY principals, including through later role-definition changes. Index principal/context/validity and role; no role-assignment-only authorization.
 - **Placement / status:** Foundation now, PROPOSED.
 
 ### F13 - Assignment-permission scope binding
@@ -220,7 +222,7 @@ A person may have many roles through account/context assignments; Person itself 
 - **Purpose / identity / attributes:** UUID, recipient principal and required access context, event/category, minimal template parameters, safe target descriptor, created/read/dismissed times and lifecycle.
 - **Relationships / scope:** FKs F06 recipient and optional F20/F02. Recheck target access separately; F28 holds external channel delivery.
 - **Lifecycle / history / archive:** generated -> unread/read -> dismissed/archived. User may change own read/dismiss state, not author/recipient/content. Retention T10; dismissal is not audit deletion.
-- **Security / constraints / indexes:** recipient-and-context visibility, controlled notifier writes; unique event/recipient/context/category for dedupe. Index recipient/context/read-state/time. No fee/health detail in generic push/email preview; staff notifications are unavailable to a FAMILY session on the same account.
+- **Security / constraints / indexes:** recipient-and-context visibility, controlled notifier writes; unique event/recipient/context/category for dedupe. Index recipient/context/read-state/time. No fee/health detail in generic push/email preview; staff notifications addressed to an individual principal are unavailable to a related shared-family principal.
 - **Placement / status:** Foundation now, PROPOSED.
 
 ### F27 - Notification preference
@@ -263,7 +265,50 @@ A person may have many roles through account/context assignments; Person itself 
 - **Security / constraints / indexes:** trusted command service; authorized replay only. Unique principal/command/key within the school project; same key with different input conflicts. Index key and unresolved state.
 - **Placement / status:** Foundation now, PROPOSED; coordinates F26 and domain effects without claiming exactly-once external delivery.
 
-## 7. Alternatives and explicit postponements
+## 7. Authority, audit and offline implications for every entity
+
+This matrix completes each F01-F28 profile above; it is part of the same PROPOSED entity definition. "Authoritative" describes the fact this entity owns, not authority to bypass permissions. Online-only writes are the proposed Foundation default. Any later offline draft/replay must still pass current server authorization, version and domain checks; cached grants never authorize a server command.
+
+| Entity | Authoritative or derived | Audit implications | Offline implications |
+|---|---|---|---|
+| F01 School profile | Authoritative school identity/configuration | Audit meaningful identity/branding/configuration changes | Cache only permitted display/settings fields; no offline administration |
+| F02 Campus | Authoritative campus identity/lifecycle | Audit creation, changes and retirement | Scoped reference cache; revoked/retired campus cannot authorize replay |
+| F03 Room | Authoritative physical-room anchor | Audit capacity/status/campus changes | Scoped reference reads; offline scheduling is outside Foundation |
+| F04 Academic year | Authoritative period identity/dates/state | Audit closure/date/default-context changes without replacing old history | Authorized historical reference cache; year switching does not rewrite prior facts |
+| F05 Person | Authoritative minimal identity anchor | Audit meaningful corrections and controlled merges with minimized differences | Only explicitly permitted identity fields in encrypted cache; no offline merge/relink |
+| F06 Principal/account profile | Authoritative application actor/type/state; Auth owns credentials | Audit binding, activation, suspension and account-type attempts | No offline account switching/elevation; purge/separate caches by principal and school |
+| F07 Binding history | Authoritative account-binding change evidence | Protected append path and audit correlation; no recursive audit of each append | Never client-written or a cached credential authority |
+| F08 Login alias | Authoritative accepted alias mapping if selected | Audit issue/rename/retirement; never record credentials | Online protected resolution only; no alias directory downloaded |
+| F09 Role | Authoritative role grouping/configuration | Audit edits and retirement; verify affected family-principal grants cannot become staff grants | Optional display labels only; no offline role administration |
+| F10 Permission | Authoritative deployed action registry; code owns semantics | Audit catalog/version deployment | Cached descriptions are informational, not authorization |
+| F11 Role-permission grant | Authoritative grant validity/history | Audit issuance, ceiling change and revocation | Recheck current state on every replay; never edit offline |
+| F12 Principal role assignment | Authoritative principal/context assignment history | Audit grant/revoke/delegation; reject shared-family staff assignment | Cached role selection cannot reestablish expired/revoked authority |
+| F13 Assignment-permission scope | Authoritative bounded scope grant | Audit target/validity/ceiling changes | Server resolves current typed scope; unknown or stale scope denies |
+| F14 Approval definition version | Authoritative published policy version | Audit publication/supersession and its review | Offline drafts may cite a version but submission validates current applicability |
+| F15 Step template | Authoritative steps within a policy version | Audit through the versioned policy change | Read-only context if needed; no offline policy editing |
+| F16 Approval request | Authoritative frozen intent; current state supported by F26 history | Audit submission, withdrawal, conflict and execution | Local drafts possible later; never offline approval/execution |
+| F17 Request step | Materialized reviewer routing/state; authoritative assignment evidence retained with transitions | Audit reassignment, skipped/closed step and eligibility changes | Review requires current server eligibility, not cached reviewer list |
+| F18 Approval review | Authoritative immutable decision evidence | Record reviewer/authority and sanitized reason; no mutable decision overwrite | Online only; queued UI intent has no approval authority |
+| F19 Audit event | Authoritative evidence of the recorded outcome, not the domain ledger | Restricted append/read, controlled archive and nonrecursive failure logging | Server writes; offline client events are untrusted claims until validated |
+| F20 Domain event/outbox | Derived committed business fact envelope; durable publication evidence | Link command/audit/causation; audit privileged replay | Server-generated only; raw device/offline capture is not this committed fact |
+| F21 Event delivery | Derived operational delivery progress | Sanitized retry diagnostics and authorized replay evidence | Server worker only; no client synchronization |
+| F22 Notification/inbox | Derived recipient content; authoritative recipient read/dismiss state | Audit sensitive creation/admin access where policy requires; avoid logging whole messages | Minimal permitted inbox cache; idempotent read-state sync may be considered later |
+| F23 Private file metadata | Authoritative ownership/purpose/validation metadata; bytes live in Storage | Audit sensitive upload/access/replace/purge and reference changes | Encrypted authorized downloads only; pending local upload is not available evidence |
+| F24 Setting revision | Authoritative versioned configuration | Audit activation/effective change and actor/reason | Allowlisted nonsecret cached settings are versioned; no offline policy change |
+| F25 Command receipt | Authoritative dedupe/result identity; domain owns business outcome | Correlate committed/failed command evidence; restrict replay-result reads | Stable operation ID + payload hash for later replay; never trusts client result |
+| F26 Approval transition/application | Authoritative lifecycle/application evidence | Preserve state/review/result provenance; no recursive audit loop | Server-only execution history; replay returns authorized existing result |
+| F27 Notification preference | Authoritative allowed recipient preference | Audit policy overrides and material preference changes | Later version-checked preference intent only; cannot grant access or bypass required notice |
+| F28 Channel delivery | Derived operational delivery status | Record sanitized provider outcome and controlled retry | Server-only; delivery failure cannot undo business truth |
+
+## 8. Schema/version metadata and representation choices
+
+CONFIRMED: each deployed school needs schema/migration version tracking. PROPOSED: use the selected migration tool's deployment-controlled applied-history evidence as the local source for applied versions, reconciled with source-controlled migration identities/checksums and deployment records. Exact ledger/access mechanism is T02/T12; do not invent a second application-writable schema-version table in Foundation.
+
+A compatibility/status view, if later needed, is derived from verified deployment evidence. Its identity is the school project plus migration/release identifier, not an operational tenant_id. Candidate attributes are applied version, release, checksum, application time and deployment outcome; no cross-school FK or student data belongs in it. Only deployment tooling updates authoritative evidence; school clients receive at most a safe read-only compatibility result. Keep upgrade history, audit operator changes, index version/time only if the selected representation requires it, and do not accept offline edits or client-reported migration success. Retention/rebuild policy is T12/T15.
+
+No new entity is committed for this managed metadata. F22 already represents a per-recipient inbox; a separate reusable message/template entity is unnecessary until a concrete sharing need is designed. F23 purpose/type is an application-owned vocabulary with per-purpose validation, not a new generic document table. Auth live binding is part of F06 with F07 history; a separate binding relation can be evaluated in the physical catalog if cardinality justifies it.
+
+## 9. Alternatives and explicit postponements
 
 | Area | Preferred proposal | Alternative / reason not selected now |
 |---|---|---|

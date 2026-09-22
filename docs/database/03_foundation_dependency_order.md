@@ -23,13 +23,13 @@ The sequence below is exact for this proposal, but conditional choices such as l
 
 | Stage / proposed future batch | Depends on | Contents and reason for position | Downstream / separate migration? | Recovery consideration |
 |---|---|---|---|---|
-| 1 / 0001_platform_baseline | Accepted runtime/schema decisions | Schema ownership, restricted grants, chosen types and side-effect-free UUID/time/validation helpers; extensions only if justified | Everything; yes | Empty-project rebuild; never blindly remove a shared platform extension |
+| 1 / 0001_platform_baseline | Accepted runtime/schema decisions | Schema ownership, restricted grants, chosen types and side-effect-free UUID/time/validation helpers; extensions only if justified; choose deployment-controlled migration/version evidence, not an application-writable version counter | Everything; yes | Empty-project rebuild; never blindly remove a shared platform extension |
 | 2 / 0002_people_and_principals | 1 and managed Auth primary key contract | F05 Person, F06 principal/account profile, F07 binding history, conditional F08 alias; restricted bootstrap actor | Audit and all actor FKs; yes | Roll back new empty structures only; once referenced, retire/relink credentials without cascading history loss |
 | 3 / 0003_audit_core | 2 | F19 event and restricted append/read interfaces; no campus/approval FKs until their stages | All later sensitive writes; yes | Preserve evidence on upgrade; failed audit setup prevents activation |
 | 4 / 0004_school_academic_anchors | 2-3 | F01 school, F02 campuses, F03 rooms, F04 academic years; add audit campus FK | Scope, policies, metadata; yes | Restrict parent deletion; restore/correct settings rather than deleting historical years |
 | 5 / 0005_versioned_configuration | 4 and actors/audit | F24 setting revisions; add school's optional default-year reference after year exists | Workflow/notification configuration; yes | Reinstate a prior setting through a new version, retaining old versions |
 | 6 / 0006_permission_and_scope_model | 2, 4, 3 | F09 roles, F10 permission registry, F11 grants, F12 assignments, F13 typed scope bindings; enforce matching roles | Authorization helpers and all operations; yes | Revoke/end incorrect grants with history; do not rewrite effective past authority |
-| 7 / 0007_authorization_kernel | 6, 5, current principal state | Verified context resolution, current-grant checks, delegation ceilings and supported scope resolvers; initial protected administration interfaces | Workflow/file/notification policies; yes | Keep fail-closed behavior if replacement fails; test function/view privilege boundaries and recursion |
+| 7 / 0007_authorization_kernel | 6, 5, current principal state | Individual/shared-family principal-type checks, verified context resolution, current-grant checks, delegation ceilings and supported scope resolvers; initial protected administration interfaces | Workflow/file/notification policies; yes | Keep fail-closed behavior if replacement fails; test function/view privilege boundaries and recursion |
 | 8 / 0008_private_file_metadata | 4, 7, 3 | F23 upload metadata; private access contract. Logo FK can now be added. Actual bucket policies follow chosen configuration | Request evidence and document links; yes | Do not automatically delete object bytes on metadata rollback; reconcile pending/orphan objects |
 | 9 / 0009_command_receipts | 2, 7, 3 | F25 idempotency identity/hash/result infrastructure, before workflow application | F18/F26 and later domain commands; yes | Preserve durable operation keys/results; no retry-cache expiry that permits duplicate irreversible effects |
 | 10 / 0010_workflow_core | 4-9 | F14 definition versions, F15 templates, F16 requests, F17 steps, F18 reviews, F26 transitions; add request/evidence links and audit/receipt optional request FKs | Protected domain commands, event types; yes | Active policies/requests retain versions; do not drop history or reinterpret approved payloads |
@@ -42,6 +42,30 @@ The sequence below is exact for this proposal, but conditional choices such as l
 | 17 / controlled activation | Passed verification and bootstrap evidence | Enable intended accounts/workers only with all grants, context proof and providers ready | Operational use; deployment step, not a migration | Suspend entry points first on failure; preserve history and queued facts; replay after repair |
 
 The ordering numbers are conceptual prefixes. Final Supabase-compatible naming, including timestamp/version conventions if selected, is T02. No .sql file has been generated.
+
+### RLS and test prerequisites for every stage
+
+These are later implementation gates. Test IDs refer to the [test strategy](../testing/01_foundation_test_strategy.md); they are not claims that those tests have been implemented or run.
+
+| Stage | RLS/security dependency | Test dependency / required evidence before progression |
+|---|---|---|
+| 1 | Explicit schema/helper privileges; no implicit public execution | DB-01/DB-08 empty rebuild, migration-order and failure-resume checks |
+| 2 | Default-deny principal/person/binding/alias access; no user grants yet | DB-03/04 integrity; SEC-01/04/09 separate Auth bindings, family account type and provisioning failure |
+| 3 | Restricted audit writer and audit reader; no normal update/delete | AUD-01/02/03/04 evidence, redaction and failure path |
+| 4 | Deny-first school/campus/year/room surfaces until scoped helpers exist | DB-03/04/05/06 parent/uniqueness/dates/history; AUTH-03 campus boundary |
+| 5 | Per-setting classification and restricted writes | DB-02/06 customization/version preservation; SEC-06 no configuration escalation |
+| 6 | Grant/scope records not client-writable; role identity and principal-type integrity | SEC-02/03/06 complete-grant checks, unknown scopes, shared-family role-edit escalation |
+| 7 | Safe helper ownership/search path, no recursive policy calls, current-state checks | SEC-01 through SEC-09; AUTH-06/10 distinct family vs individual teacher-parent |
+| 8 | Chosen metadata/object ownership and private storage policy contract | FILE-01/02/03; no object exposure while ownership policy is incomplete |
+| 9 | Receipt writes trusted; result replay independently authorized | FLOW-07/08 and SYNC-03 same key, changed payload and concurrent replay |
+| 10 | Request/review/step visibility through current grants; execution private | FLOW-01 through FLOW-12, including unauthorized submit, cancellation/rejection and security change |
+| 11 | Internal outbox/consumer access, no raw client event insertion | FLOW-06/07, EVT-01/02/03 transaction failure, duplicate and post-commit delivery failure |
+| 12 | Recipient principal/context isolation and validated endpoint ownership | NOT-01/02/03 and AUTH-06/10; preferences cannot merge inboxes or authorize staff |
+| 13 | Only typed commands can combine history, receipt, audit and outbox writes | FLOW-01 through FLOW-12 and AUD-01/04 end-to-end consistency |
+| 14 | Complete positive/negative RLS policies for every exposed surface | All AUTH and SEC cases with real non-owner credentials, not only service-role tests |
+| 15 | Scoped bootstrap operator; reviewed defaults, no activated speculative grants | DB-02/08; SEC-06 defaults cannot regrant revoked access or elevate family accounts |
+| 16 | Test all planned runtime roles/contexts in isolated projects | Full relevant suite, upgrade/rebuild/restore evidence; later-domain scenarios remain pending their modules |
+| 17 | Gate activation on successful security tests and accepted credential/recovery design | Verification record, readiness review and per-school version evidence; failure keeps access closed |
 
 ## 4. Resolving cycles and unsafe shortcuts
 
@@ -82,4 +106,4 @@ Approved seed/provisioning, test execution and controlled activation are separat
 
 Accept or revise the proposal; resolve implementation-blocking T01-T07 and relevant T08/T10-T12 decisions. Produce a reviewed relationship diagram, concrete FK/constraint/RLS matrix, tested command contracts and reversible deployment plan before applying anything.
 
-**Recommended next task: "Foundation ERD and SQL Migration Draft".** That task is a draft/review activity, not authorization to apply migrations. It has not been started here. Full academic/student/employee domain design follows foundation validation.
+**Recommended next task: "FOUNDATION ERD + PHYSICAL TABLE/COLUMN CATALOG".** Produce the conceptual-to-physical mapping and relationship review before any SQL draft. That task has not been started here. This documentation is ready for ERD work with the listed TBDs carried into review; it is not a finalized schema or permission to create/apply migrations. Full academic/student/employee domain design follows foundation validation.
