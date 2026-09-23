@@ -52,6 +52,14 @@ Each row records context, decision, rationale, consequences, alternative and sta
 | P09 Staged deny-first deployment | Create restricted structures in dependency order; policies evolve with dependencies; activate only after reviewed bootstrap/testing | Prevent incomplete foundations from exposing records | Separate migration, seed, test and activation steps; forward repair after real data | RLS added after rollout; destructive rollback of history | PROPOSED; T02/T04/T12/T15 |
 | P10 Foundation boundary | Define F01-F28 concepts only; postpone student/business schemas and device/provider/AI implementations | Avoid prematurely locking domain assumptions | Typed domain links and resolvers remain unavailable until designed | Generate every module or generic device registry now | PROPOSED; T05/T13/T14 |
 
+## 3.1 Physical review decision record — 2026-09-23
+
+The requested [physical review](FOUNDATION_PHYSICAL_DESIGN_REVIEW.md) now selects R01-R16 for the files-only SQL draft; its decision register and [updated TBD gate](FOUNDATION_TBD_GATE.md) supersede the earlier open technical alternatives below where explicitly resolved. This is not blanket acceptance of every future domain proposal or permission to execute SQL.
+
+Selected amendments: retain 33 Foundation tables and defer F28; keep restricted ASCII aliases; preserve natural expiry through serialized effective-interval non-overlap instead of revoke-only uniqueness; add Auth token cutoff and historical UUID non-reassignment; distinguish APPROVED/EXECUTED with INVALIDATED for deterministic revalidation failure; use immutable terminal-only command receipts with explicit command_kind; select least-privilege execution roles/locks, 1 MiB file limit, deterministic bootstrap, exact late-FK graph and rebuild/upgrade tests.
+
+The following register remains historical decision context. Current SQL-draft status and safely deferred subdecisions are in FOUNDATION_TBD_GATE; no domain/retention/provider choice is silently closed.
+
 ## 4. Unresolved technical decisions: complete register
 
 This register consolidates TBD references across all ten documents. Resolving a choice may require a dedicated ADR; none is silently accepted here.
@@ -134,10 +142,6 @@ The [test strategy](../testing/01_foundation_test_strategy.md) defines positive/
 
 ## 8. Recommended next task
 
-**"FOUNDATION PHYSICAL DESIGN REVIEW"**
+**FOUNDATION SQL MIGRATION DRAFT — FILES ONLY, NO SUPABASE EXECUTION.**
 
-**Ready for physical design review: YES.** The [ERD](../database/04_foundation_erd.md), [physical catalog](../database/05_foundation_physical_catalog.md), [constraint matrix](../database/06_foundation_constraint_matrix.md), [RLS matrix](../security/03_foundation_rls_matrix.md), and [TBD gate](FOUNDATION_TBD_GATE.md) now supply a reviewable proposal. Remaining PROPOSED/TBD items are review gates, not silently accepted implementation choices.
-
-The sequence is Foundation ERD + Physical Table/Column Catalog -> Foundation Physical Design Review -> Foundation SQL Migration Draft. Use the next task to accept, amend or explicitly defer the physical proposals and resolve A/B gates before approving SQL drafting. Do not create SQL, migrations or production tables as part of this pass; deployment requires later authorization and validation.
-
-The review and SQL draft have **not** been started. Student/academic/employee and other business-domain packages follow the accepted Foundation design.
+The [physical review](FOUNDATION_PHYSICAL_DESIGN_REVIEW.md) and [TBD gate](FOUNDATION_TBD_GATE.md) report zero remaining SQL-design blockers for the 33-table subset. This means files-only drafting readiness, not deployed or tested implementation. SQL generation has not started. Student/academic/employee and other business-domain packages remain later work.

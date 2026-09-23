@@ -1,6 +1,8 @@
 # 04 - Foundation ERD
 
-**Status: PROPOSED physical relationships for review, 2026-09-23. Documentation only.**
+**Status: REVIEWED FOR SQL DRAFT, 2026-09-23. Documentation only.**
+
+The [physical review](../decisions/FOUNDATION_PHYSICAL_DESIGN_REVIEW.md) selects 33 Foundation tables and defers F28. The [exact dependency graph](08_foundation_exact_dependency_graph.md) inventories every FK and the three late constraints.
 
 Read the [physical catalog](05_foundation_physical_catalog.md) for every column and F01-F28 mapping, [constraint matrix](06_foundation_constraint_matrix.md) for enforcement, [RLS matrix](../security/03_foundation_rls_matrix.md) for exposure, and [TBD gate](../decisions/FOUNDATION_TBD_GATE.md) for unresolved decisions. These diagrams refine the [conceptual map](02_foundation_entity_map.md); they do not approve or implement it.
 
@@ -67,7 +69,7 @@ erDiagram
   principals ||--o{ loginAliases : "principal_id"
 ~~~
 
-principals.kind is INDIVIDUAL, FAMILY or SYSTEM. Proposed one non-retired individual principal per Person, with multiple historical retired principals, is T03, not an approved product policy. A FAMILY has its own live Auth UUID and no inherited Person grants. Auth deletion nulls only the live credential link; historical principal and binding-event snapshots remain. loginAliases is conditional T03.
+principals.kind is INDIVIDUAL, FAMILY or SYSTEM. The review accepts one non-retired individual principal per Person with multiple historical retired principals. A FAMILY has its own live Auth UUID and no inherited Person grants. Auth deletion nulls only the live credential link; historical principal and binding-event snapshots remain. loginAliases is retained with ASCII normalization, permanent bytewise uniqueness and a non-enumerating gateway.
 
 ## C. RBAC / Permission / Scope
 
@@ -109,6 +111,8 @@ erDiagram
 ~~~
 
 The three composite references into assignmentPermissionScopes enforce the same assignment role, grant role/action and permission scope contract. ALL has no campus target; CAMPUS requires a real campus FK; OWN/ASSIGNED call versioned allowlisted resolvers. Unknown/disabled resolver denies. roles.family_only and permissions.family_safe are immutable deployment classifications joined through composite FKs; FAMILY assignments require the Parent/Guardian ceiling.
+
+Authorization intervals now use immutable scheduled starts/ends and genuine revocation times with serialized non-overlap. Natural expiry requires no revocation flag. Receipt rows are terminal-only; typed command_kind prevents phase confusion. These changes do not alter the drawn parent FK relationships.
 
 ## D. Approval / Workflow
 
@@ -171,7 +175,7 @@ erDiagram
   commandReceipts ||--o| approvalApplications : "receipt_request_operation"
 ~~~
 
-Policies and submitted intent freeze at activation/submission. Step candidates are normalized. The initial proposal retains sequential one-decision stages; quorum/parallel/delegation remain T06. Each application has a unique request and receipt. Typed domain target/result child links must be added before domain contract activation; JSON payloads are data validated by an allowlisted handler, never patches to arbitrary tables. Request-policy and step-template composites preserve version consistency.
+Policies and submitted intent freeze at activation/submission. Step candidates are normalized. The reviewed V1 retains sequential one-decision stages and defers quorum/parallel/delegation. FAILED/EXPIRED are absent from request V1; INVALIDATED denotes deterministic revalidation failure, while transient execution rollback leaves APPROVED. Each application has a unique request and receipt. Typed domain target/result child links must be added before domain contract activation; JSON payloads are data validated by an allowlisted handler, never patches to arbitrary tables. Request-policy and step-template composites preserve version consistency.
 
 ## E. Audit / Command / Event Outbox
 
@@ -220,9 +224,6 @@ erDiagram
   notificationPreferences {
     uuid id PK
   }
-  notificationChannelDeliveries {
-    uuid id PK
-  }
   principals {
     uuid id PK
   }
@@ -232,10 +233,9 @@ erDiagram
   principals ||--o{ notifications : "recipient_and_kind"
   outboxEvents ||--o{ notifications : "event_id"
   principals ||--o{ notificationPreferences : "principal_id"
-  notifications ||--o{ notificationChannelDeliveries : "notification_and_recipient"
 ~~~
 
-Recipient is a principal, not an email address or Person relationship. Composite recipient matching prevents a channel job pointing at another principal's inbox row. Endpoint ownership is not yet a real FK: T08 must approve a typed endpoint design or explicit deferral; channel jobs remain disabled. Preferences cannot grant access or override required category policy.
+Recipient is a principal, not an email address or Person relationship. F28 is deferred entirely from the first SQL, so no channel entity or endpoint edge appears here. Later channel design must provide verified typed endpoint/recipient ownership. Preferences cannot grant access or override required category policy.
 
 ## G. Files / Configuration
 
@@ -278,7 +278,7 @@ flowchart TD
   contracts["PROPOSED: typed operation contracts and command receipts"]
   workflow["PROPOSED: policies, requests, steps, reviews and application evidence"]
   evidence["PROPOSED: immutable audit and outbox facts"]
-  delivery["PROPOSED: consumer leases, inbox, preferences and channel state"]
+  delivery["REVIEWED: consumer leases, inbox and IN_APP preferences"]
   files["PROPOSED: private file metadata and setting revisions"]
   domains["POSTPONED: academic, family, staff, attendance, finance and marks entities"]
   adapters["FUTURE: biometric, camera and RFID adapters"]
@@ -299,8 +299,8 @@ flowchart TD
   adapters -. "source event, identity validation, canonical attendance command" .-> domains
 ~~~
 
-Arrows express dependency/flow, not a ready-to-run migration order. Common actor FKs mean the bootstrap SYSTEM principal precedes actor-bearing records. Audit/receipt/request references and default-year/logo pointers contain deliberate cycles: create restricted relation shells first, then add late FKs before activating any command. The [dependency plan](03_foundation_dependency_order.md) must be refined into an exact graph during the approved SQL draft; a proposed batch label is not proof the physical FK order is acyclic.
+Arrows express dependency/flow, not a ready-to-run migration order. Common actor FKs mean the bootstrap SYSTEM principal precedes actor-bearing records. The real cycles are Person/creator and school/year/logo: add the three named late FKs and validate them before bootstrap/activation. The [exact graph](08_foundation_exact_dependency_graph.md) cuts the three real cycles. Requests precede receipts, then transitions/applications and audit; there is no receipt/request or audit/workflow FK cycle in the selected structure.
 
 No control-plane data replica, provider-specific device schema or business-domain truth table is part of this diagram. Future attendance adapters still feed the one canonical attendance domain.
 
-Next task: **FOUNDATION PHYSICAL DESIGN REVIEW**; after explicit approval and gate closure, **FOUNDATION SQL MIGRATION DRAFT**.
+Next task, not started: **FOUNDATION SQL MIGRATION DRAFT — FILES ONLY, NO SUPABASE EXECUTION.**

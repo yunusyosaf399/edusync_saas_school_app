@@ -5,6 +5,8 @@
 
 ## 1. Reusable core, domain-owned execution
 
+**Physical-review amendment (2026-09-23):** [Review R05-R06](../decisions/FOUNDATION_PHYSICAL_DESIGN_REVIEW.md) selects sequential one-decision stages, no self/same-Person approval or delegation/quorum, immutable terminal-only receipts and explicit INVALIDATED request state. It supersedes the earlier open T06/T07 alternatives. Domain conflict resolvers remain fail-closed until implemented.
+
 The reusable core owns policy versions, requests, ordered steps, reviewer decisions, state transitions and application evidence. Each registered operation has an owning domain validator and execution contract. Approval never authorizes arbitrary table names, arbitrary field updates or executable JSON supplied by a client.
 
 An operation contract defines:
@@ -45,13 +47,13 @@ All state names in this section are PROPOSED, not frozen product enums.
 |---|---|---|
 | DRAFT | Creator may edit intent; no approval authority exists | SUBMITTED or CANCELLED |
 | SUBMITTED | Intent and policy snapshot validated/frozen | PENDING; failed preparation is recorded and does not grant approval |
-| PENDING | Required sequential review is underway | APPROVED, REJECTED, CANCELLED; EXPIRED if expiry policy is selected |
-| APPROVED | Required reviews are complete; execution has not necessarily happened | EXECUTED or FAILED; controlled CANCELLED/EXPIRED only before execution wins the transaction race |
+| PENDING | Required sequential review is underway | APPROVED, REJECTED, CANCELLED or security INVALIDATED |
+| APPROVED | Required reviews are complete; execution has not necessarily happened | EXECUTED, deterministic INVALIDATED, or authorized CANCELLED before execution wins; transient infrastructure rollback leaves APPROVED |
 | REJECTED | A required reviewer rejected the frozen request | Terminal; a revised proposal is a new linked request |
 | CANCELLED | Authorized withdrawal/cancellation before execution | Terminal, retaining reasons and evidence |
 | EXECUTED | Domain result, audit and application record committed | Terminal; any correction/reversal is a new operation |
-| FAILED | An approved execution could not complete | Retry only for a transient error with unchanged intent/version and revalidated authority; otherwise a new linked request |
-| EXPIRED | Optional review/execution deadline elapsed | Terminal; exact policy and affected operations TBD T06 |
+| INVALIDATED | Current target/required authority no longer permits the frozen request | Terminal with reason and rejected command receipt; a new request/review is required |
+| EXPIRED (deferred; not a V1 stored state) | Optional deadline policy is not selected for V1 | No timer-driven expiry state or command in the first SQL draft |
 
 A persistent EXECUTING status is not required in the first proposal. Claiming/locking a request and its target occurs within the database transaction; worker lease metadata must not masquerade as an executed business result. A SUBMITTED request awaiting asynchronous preparation is recoverable and cannot be reviewed until PENDING.
 
@@ -76,7 +78,7 @@ A reviewer grant revoked before a decision denies the decision. If it is revoked
 
 No external email, push or object-upload call participates in that database transaction. If a required audit write fails, roll back the protected mutation. A crash before commit leaves no effect; a crash after commit returns the saved result on retry. An external channel failure leaves the successful correction committed and retries delivery separately.
 
-Transient database/worker failures can retry with the same command identity. Stale target version, lost authority or changed policy applicability are conflicts requiring human action/new review, not blind retries. FAILED diagnostics are sanitized; failure evidence is recorded after rollback in a separate transaction. Never mark EXECUTED before the domain transaction commits.
+Transient database/worker failures can retry with the same command identity. Stale target version, lost authority or changed policy applicability are conflicts requiring human action/new review, not blind retries. Transient-error diagnostics are sanitized and operationally recorded after rollback; deterministic revalidation failure commits INVALIDATED and a REJECTED receipt without domain effect. Never mark EXECUTED before the domain transaction commits.
 
 ## 6. Eight operation examples
 

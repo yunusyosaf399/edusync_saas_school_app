@@ -5,9 +5,11 @@
 
 ## 1. Design first, implementation later
 
+**Physical-review update (2026-09-23):** The [exact 33-table dependency graph](08_foundation_exact_dependency_graph.md) now governs SQL drafting. Sections 2-5 below retain the earlier conceptual planning history; their batch numbers are not an executable creation order. In particular, requests precede receipts, audit follows its physical parents, and F28 is excluded. Three named late FKs are fully validated before bootstrap/activation. See the [review](../decisions/FOUNDATION_PHYSICAL_DESIGN_REVIEW.md).
+
 Complete conceptual review before physical design: isolation/identity -> grant and scope semantics -> school anchors -> workflow/audit/event contracts -> relationships/constraints -> RLS/command boundaries -> tests and recovery. Confirm proposals and resolve blocking items in [ADR-001](../decisions/ADR-001-foundation-database-principles.md).
 
-The sequence below is exact for this proposal, but conditional choices such as login alias storage and exposed schema must be settled before producing migration drafts. It is not a claim that every proposed entity must become one table or migration.
+The sequence below was the conceptual proposal; the linked physical graph supersedes it. Login aliases are retained and schema exposure is selected by the review. It is not a claim that every proposed entity must become one table or migration.
 
 ## 2. Rules applying to every future stage
 
@@ -104,6 +106,6 @@ Approved seed/provisioning, test execution and controlled activation are separat
 
 ## 6. Exit criteria and next task
 
-Accept or revise the proposal; resolve implementation-blocking T01-T07 and relevant T08/T10-T12 decisions. Produce a reviewed relationship diagram, concrete FK/constraint/RLS matrix, tested command contracts and reversible deployment plan before applying anything.
+Physical choices are selected by the [review](../decisions/FOUNDATION_PHYSICAL_DESIGN_REVIEW.md) and [updated gate](../decisions/FOUNDATION_TBD_GATE.md). Use the exact graph, [execution security](../security/04_foundation_execution_security.md), [bootstrap](07_foundation_bootstrap_plan.md) and [database test execution plan](../testing/02_foundation_database_execution_plan.md).
 
-**Recommended next task: "FOUNDATION PHYSICAL DESIGN REVIEW".** Review the [ERD](04_foundation_erd.md), [physical catalog](05_foundation_physical_catalog.md), [constraint matrix](06_foundation_constraint_matrix.md), [RLS matrix](../security/03_foundation_rls_matrix.md), and [TBD gate](../decisions/FOUNDATION_TBD_GATE.md). The sequence is Foundation ERD + Physical Table/Column Catalog -> Foundation Physical Design Review -> Foundation SQL Migration Draft, only after approval and A/B gate resolution. No SQL draft or deployment is started here. Full academic/student/employee domain design follows foundation validation.
+**Next task: FOUNDATION SQL MIGRATION DRAFT — FILES ONLY, NO SUPABASE EXECUTION.** It has not been started. No application/deployment is authorized by documentation readiness; implementation and activation checks remain.

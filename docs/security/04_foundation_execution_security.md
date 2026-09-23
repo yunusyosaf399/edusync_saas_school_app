@@ -1,0 +1,96 @@
+# 04 - Foundation Execution Security
+
+**Decision status: SELECTED FOR SQL DRAFT, 2026-09-23. No functions, policies or SQL are implemented.**
+Authority: [physical review](../decisions/FOUNDATION_PHYSICAL_DESIGN_REVIEW.md) R01-R06, [RLS matrix](03_foundation_rls_matrix.md), [constraints](../database/06_foundation_constraint_matrix.md), [bootstrap](../database/07_foundation_bootstrap_plan.md).
+
+## 1. Trust and exposure
+
+One school project is the isolation boundary. Expose only app as the application's Data API schema; app_private is not exposed and public contains no School OS operational tables or entry points. Supabase-managed schemas remain managed. Platform-required schemas are not to be removed blindly; the application allowlist is app only.
+
+Direct authenticated SELECT is limited to app.campuses, app.rooms, app.academic_years, app.notifications and app.notification_preferences, under the predicates and column restrictions below. No direct INSERT/UPDATE/DELETE/TRUNCATE, sequence access, schema CREATE, trigger creation or role membership for anon/authenticated. Private tables require narrow checked read RPCs. No anonymous table access or anonymous SQL alias resolver. Login routing is a separately rate-limited authentication gateway.
+
+Authenticated SELECT grants are column-specific, not table-wide: campuses exposes id, school_id, code, name, address, state, row_version; rooms exposes id, campus_id, code, name, kind_code, capacity, state, row_version; academic_years exposes id, school_id, code, label, starts_on, ends_on, state, row_version; notifications exposes id, category_code, context_key, summary, read_at, archived_at, created_at, row_version; notification_preferences exposes id, category_code, channel_code, enabled, row_version. Omitted actor/event identifiers are not automatically disclosed by a row permission. A client must request the allowed columns explicitly.
+
+School branding, Person/principal profile, workflow review, files, configuration, audit and receipt reads use checked projections with explicit output types and allowlisted fields; never return table-shaped unrestricted JSON. No owner-rights view is introduced in V1. If a later app view is needed, use security-invoker behavior and explicit column grants, then test it as a non-owner.
+
+The database trusts identity claims only from the managed gateway's verified JWT transport. Flutter-supplied principal, kind, role, campus or permission lists are untrusted requested inputs. The stored target supplies campus/ancestry; a requested new campus must separately be authorized. Normal clients cannot open SQL sessions or set request claims. Direct database login/test runners are separate trusted infrastructure, not an equivalent authentication route.
+
+## 2. Database role and ownership plan
+
+All named owner/executor roles below are application-defined NOLOGIN, NOSUPERUSER, NOCREATEDB, NOCREATEROLE and NOBYPASSRLS unless explicitly a login described below. No runtime role is a member of the schema owner or another executor. No grants to PUBLIC are relied on.
+
+| Role | Owns | Explicit table privileges and RLS policy scope | Who may enter it |
+|---|---|---|---|
+| schoolos_schema_owner | app/app_private application tables and sequences, constraints | Schema maintenance only; all 33 tables ENABLE and FORCE RLS; no normal runtime policy | Trusted deployment process only, never client/worker membership |
+| schoolos_bootstrap_executor | Private deployment-only bootstrap/first-owner functions | Minimal INSERT/SELECT for manifest principals/catalogs/templates plus evidence helper; no routine school overwrite or delete | Trusted deployment login only, no runtime membership/EXECUTE |
+| schoolos_authz_reader | Private current-principal and authorization evaluator functions | SELECT only on principals, principal_auth_bindings, roles, permissions, role_permission_grants, principal_role_assignments, permission_scope_contracts, assignment_permission_scopes, campuses and school_profiles; unconditional role-specific SELECT policies on these inputs, no mutation | SECURITY DEFINER evaluator call only |
+| schoolos_read_executor | Checked read RPCs | SELECT only on the specific projection source tables; role-specific SELECT policies; calls authz evaluator before disclosure | Approved authenticated read RPC only |
+| schoolos_identity_executor | Provision/bind/suspend/alias and managed-unbind trigger functions | Required SELECT/INSERT and controlled column UPDATE on people/principals/bindings/aliases, INSERT-only binding events; no DELETE | Approved identity commands and narrowly scoped managed Auth FK trigger |
+| schoolos_access_executor | Grant/revoke/catalog-policy administration commands | Required SELECT/INSERT and controlled lifecycle UPDATE on RBAC/contract/policy tables, no DELETE | Approved security commands; deployment catalog mutation is a separate deployment-only entry point |
+| schoolos_workflow_executor | Request/step/review/application commands | SELECT on workflow inputs, INSERT workflow/evidence rows, controlled lifecycle UPDATE only; no review/application/transition UPDATE or DELETE | Approved workflow RPCs |
+| schoolos_platform_executor | School/room/year/settings/file metadata/inbox preference commands and purpose-bound workers | Required SELECT/INSERT and whitelisted UPDATE for corresponding tables; no general history DELETE | Approved platform RPCs or private worker-only functions |
+| schoolos_evidence_writer | Private receipt/audit/outbox append functions | INSERT/SELECT on command_receipts, audit_events, outbox_events; no UPDATE/DELETE/TRUNCATE | Other executor functions only; no anon/authenticated EXECUTE |
+
+The SQL draft must enumerate relation/column grants per owning command; the categories above are ceilings, never a grant-all template. Executors obtain read access to necessary referenced parents and narrow authorization helpers, not membership in other executors. Cross-cutting evidence writes call evidence-writer functions; input actor/context is accepted there only from trusted executor roles after their authentication path. No public evidence writer exists. Immutability/transition triggers remain active for every runtime executor.
+
+Executor-specific RLS policies allow their intentionally elevated, bounded internal operations, with column privileges and command validation doing the additional work. These policies do not apply to anon/authenticated; this is not a false claim that a public user's RLS is automatically inherited inside a definer. FORCE RLS applies even to the application table owner, but cannot constrain a superuser/BYPASSRLS infrastructure administrator. No runtime application role gets those attributes. [PostgreSQL row security](https://www.postgresql.org/docs/15/ddl-rowsecurity.html).
+
+Worker database logins are separate per purpose: schoolos_event_login, schoolos_identity_login and schoolos_file_login. Each is LOGIN, NOINHERIT, NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOBYPASSRLS; secrets live only in server infrastructure. They have CONNECT/schema USAGE and EXECUTE on explicitly listed private worker functions, no table DML, no executor role membership and no permission to SET ROLE into an owner. Direct PostgreSQL session_user identifies the worker login; transaction pooling must preserve that login identity. Each function maps its allowed session_user to a deployment-pinned SYSTEM principal/purpose. It never accepts an arbitrary acting principal or turns a user-supplied JWT GUC into user authority. Workers using event/request IDs derive initiating actors from stored trusted records.
+
+Service-role credentials are reserved for required managed Auth/Storage administration by isolated server adapters. They receive no School OS table or function grants, no executor membership and no normal user command path. Revoke inherited/default application privileges explicitly, including default EXECUTE. A service key cannot be used to impersonate a user for convenience. Infrastructure administration remains technically privileged and operationally audited.
+
+## 3. Function classes and execute grants
+
+| Class | Placement / ownership | Callable by | Contract |
+|---|---|---|---|
+| Pure authorization evaluator | app_private; SECURITY DEFINER owned by schoolos_authz_reader | Authenticated only for the exact boolean predicates needed by RLS; executors for internal variants | Read-only, no locks/writes/external calls; no grant arrays or private row disclosure; actor derived from verified JWT for public predicates |
+| Checked read RPC | app; SECURITY DEFINER owned by schoolos_read_executor | Explicit authenticated signatures | Resolve current principal, check action/scope, return fixed safe projection; no caller-selected relation, arbitrary columns or SQL |
+| Protected mutation RPC | app; SECURITY DEFINER owned by the appropriate executor | Explicit authenticated signatures | Validate gateway role/subject; take locks; re-resolve authority; validate expected versions, workflow and typed payload; mutate and append evidence atomically |
+| Worker-only command | app_private; SECURITY DEFINER owned by purpose executor | Explicit private worker login only | Verify allowed session_user, derive SYSTEM actor/purpose and trusted causation; no generic user-impersonation parameter |
+| Immutable/history trigger and evidence helper | app_private; narrowly owned definer when needed | Trigger invocation / authorized executors only | Preserve trusted version/actor/time; validate state/freeze, append evidence; no public EXECUTE |
+
+Revoke EXECUTE from PUBLIC, anon, authenticated and service_role by default for existing and future application functions; then grant exact signatures. Client-callable app definer RPCs are a deliberate privileged surface with mandatory checks, not an exposed generic function registry. app_private helpers can receive schema USAGE plus exact EXECUTE where an RLS expression needs them without granting table SELECT or exposing the schema through the API. Internal arbitrary-principal evaluators and all evidence writers are never granted to authenticated.
+
+Every definer uses fixed search_path = pg_catalog, pg_temp, with pg_temp last, and fully schema-qualified tables, functions and operators where ambiguity exists. Application schemas are not writable by runtime roles. No dynamic SQL from caller text, no user-selected function name, no secret-returning exception detail, no unsafe overloaded signatures. Ownership is never postgres, service_role or a login. Revoke and grant in the same migration transaction before any entry point can be called. [PostgreSQL definer guidance](https://www.postgresql.org/docs/15/sql-createfunction.html), [Supabase function privilege guidance](https://supabase.com/docs/guides/database/functions).
+
+Read evaluators are STABLE/read-only within one statement; they do not acquire mutation locks. Mutation entry points are VOLATILE and use separate statements after lock acquisition so READ COMMITTED sees a fresh committed authorization snapshot. They must reject unsupported higher-isolation invocation rather than accidentally reuse a snapshot taken before waiting on revocation; repeatable-read/serializable support requires a separately tested retry design.
+
+## 4. Current principal and Auth lifecycle
+
+1. For a human entry point, require the gateway-authenticated database role and a verified non-null auth.uid(); reject an unprovisioned subject and managed anonymous-auth users. Identity provisioning must not activate an anonymous Auth account.
+2. Match that UUID to the unique live principal_auth_bindings.auth_user_id. Resolve the stored principal and kind; state must be ACTIVE and kind INDIVIDUAL or FAMILY.
+3. Require a signed JWT iat at or after tokens_valid_from. Missing/malformed time denies. The cutoff is a whole UTC second rounded up at provisioning/recovery/relink; if login happened earlier, authenticate again after the cutoff. Never trust a client-supplied binding_version.
+4. Require the managed Auth UUID still exists; the live FK supplies existence and deletion clears resolution. Validate one principal per live Auth subject and one binding slot per non-system principal.
+5. Load current grants and complete scope chains. Neither mutable user metadata nor JWT role arrays are permission sources. An INDIVIDUAL may independently have Teacher+Parent grants; FAMILY can only use the reviewed family-safe actions and own typed relationships.
+
+Binding commands acquire the exclusive authorization lock and increment binding_version/cutoff, record old/new UUID snapshots, and append evidence. Auth UUIDs may never move to another principal: search binding history as well as live uniqueness under that lock. Retired actors remain. Recovery with the same Auth subject advances the cutoff, invalidating earlier access tokens for app entry points; upstream refresh/session revocation and proof of credential ownership must finish before reopening a suspended principal. No account recovery or cross-principal merge is enabled merely by having an alias.
+
+For managed Auth deletion, the FK SET NULL invokes the narrowly scoped binding transition trigger. It takes the exclusive authorization lock, advances version/cutoff and writes UNBOUND evidence as the deployment-pinned identity SYSTEM executor, with source AUTH_RECONCILIATION. If required evidence cannot be recorded, deletion fails and is retried after repair; no silent audit gap. The trigger is installed after all references/bootstrap actors exist and before identity activation. Managed deletion can already hold Auth-row locks before this trigger; unlike normal app commands, that external lock order cannot be assumed to follow our hierarchy. Controlled deletion suspends the principal first, then calls Auth outside the app transaction. A deletion/relink deadlock aborts and retries the whole operation; it must never be handled by skipping evidence or authorization. No application columns are added to auth.users. Provider login failures still require external operational evidence; the FK trigger cannot observe them.
+
+## 5. RLS recursion and direct reads
+
+The boolean public evaluator derives the actor itself and reads only private authorization inputs as schoolos_authz_reader. Those input tables have simple role-specific SELECT policies for that role that do not call the evaluator. Thus app table RLS -> evaluator -> private inputs terminates without private-policy recursion. The authz_reader cannot read arbitrary workflow payloads or audit evidence.
+
+For direct app table policies: campus/year/school context is derived from stored columns; notification/preference rows must match the exact resolved principal. FAMILY can never switch kind or acquire staff authority by supplying a campus/person/child ID. Fields omitted from SELECT grants stay omitted even if the row passes RLS. Read-only statements use their statement snapshot: a query that began before revocation may complete. Subsequent statements re-evaluate live state; no claim of recalling already delivered data.
+
+Sensitive exports and protected checked reads take the shared authorization lock before fresh authorization and materialization. The pure RLS predicate itself stays read-only and lock-free. A previously issued signed URL/email is outside the database transaction; later Storage/delivery implementation must bound that exposure.
+
+## 6. Revocation, overlap and write serialization
+
+Use one documented transaction-scoped advisory lock key pair for the school database: namespace 71001, resource 1. PostgreSQL project isolation makes it school-local. Normal sensitive mutations/materialized exports acquire it SHARED; any principal/binding/grant/scope/permission/operation/policy authority change acquires it EXCLUSIVE. Identity worker and managed-unbind trigger follow the same order. No shared-to-exclusive upgrade is allowed: dispatch determines the lock mode before taking any lock, including an approved security change's final application.
+
+Order: school authorization lock -> command idempotency advisory key (separate namespace 71002) -> principal rows sorted by UUID -> operation/policy -> request -> steps sorted by number -> typed target rows in the domain-declared order -> delivery/file/configuration rows. All involved commands use this order; future domains must publish their additional row order. Lock timeout/deadlock/serialization errors roll back and retry the entire command, never a partial effect.
+
+After the lock, perform a new READ COMMITTED statement to load current principal, binding and grants. If revocation commits first, the command observes it and denies. If the command obtains SHARED first, its effect commits before the waiting revocation; this is the defined authorization ordering, not an assertion that revocation can cancel an already committing transaction. Recheck effective time immediately before mutation using server wall-clock time, not a transaction timestamp captured before a long wait. Authority is defined at that final check; clocks cannot be frozen for queued commands.
+
+Grant/assignment/scope interval writes take EXCLUSIVE before any overlap query. Effective interval is [start, minimum of scheduled end and revocation instant); absent end is infinity, revocation before scheduled start produces an empty interval. Compare candidate intervals against retained rows with the same logical key; NULL campus compares as the school/resolver scope value, not as unknown equality. Reject any nonempty overlap. No normal command can backdate a newly granted authority into past history; future starts are allowed. Revocation is stamped now, never faked at a natural expiry. Immutable starts/ends/ownership prevent rewriting historical authorization; a change ends current authority genuinely and adds a new interval.
+
+No exclusion extension is required: restricted command-only DML plus the shared serialization protocol and defensive validation triggers is the selected enforcement mechanism. Do not claim the overlap condition is a CHECK or UNIQUE invariant. A raw privileged DML bypass by infrastructure is outside that guarantee and must be controlled/tested. Boundary-adjacent intervals are legal. Cancelling a future scheduled grant leaves an empty revoked interval and permits replacement at the same intended start.
+
+The per-school lock deliberately favors simple provable ordering over maximum administrative concurrency. Normal commands share it; rare security changes serialize. Finer partitioning is deferred until measured need and an equivalent proof/test plan.
+
+## 7. Activation evidence
+
+Before any future deployment activation, inspect real grants/membership/default privileges, run as anon/authenticated and each worker login, prove pure-helper non-recursion, test temp-schema shadow attacks, forced-RLS behavior, forged claims, alias enumeration, stale JWT cutoff, family escalation, direct DML/TRUNCATE denial, and both revoke/write race orders. Test definer ownership as actual application roles rather than only postgres/service_role.
+
+These are implementation/activation checks. The technical design is selected for the files-only SQL draft; no platform connection, role, function or policy was created in this review.
