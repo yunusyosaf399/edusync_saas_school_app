@@ -112,4 +112,4 @@ Every protected command needs paired allow/deny assertions, a version/race scena
 
 The current deliverable is a reviewed test strategy, not a claim that backend tests pass. Only documentation integrity can be checked now. Follow [dependency order](../database/03_foundation_dependency_order.md); track open choices in [ADR-001](../decisions/ADR-001-foundation-database-principles.md).
 
-**Next task: "FOUNDATION ERD + PHYSICAL TABLE/COLUMN CATALOG".** Do not create SQL, run migrations or connect to Supabase as part of this documentation task.
+**Next task: "FOUNDATION PHYSICAL DESIGN REVIEW".** Review the [physical catalog](../database/05_foundation_physical_catalog.md), [constraint matrix](../database/06_foundation_constraint_matrix.md), [RLS matrix](../security/03_foundation_rls_matrix.md), and [TBD gate](../decisions/FOUNDATION_TBD_GATE.md). The sequence is Foundation ERD + Physical Table/Column Catalog -> Foundation Physical Design Review -> Foundation SQL Migration Draft, only after approval and A/B gate resolution. Do not create SQL, run migrations or connect to Supabase as part of this documentation task.

@@ -134,10 +134,10 @@ The [test strategy](../testing/01_foundation_test_strategy.md) defines positive/
 
 ## 8. Recommended next task
 
-**"FOUNDATION ERD + PHYSICAL TABLE/COLUMN CATALOG"**
+**"FOUNDATION PHYSICAL DESIGN REVIEW"**
 
-**Ready for ERD design: YES.** The documentation now supplies the required entity contracts, explicit authority/history/audit/offline treatment, bound permission/scopes, distinct family/individual accounts, typed workflows, dependencies and test scenarios. Remaining PROPOSED/TBD items are inputs to ERD/catalog review, not silently accepted implementation choices.
+**Ready for physical design review: YES.** The [ERD](../database/04_foundation_erd.md), [physical catalog](../database/05_foundation_physical_catalog.md), [constraint matrix](../database/06_foundation_constraint_matrix.md), [RLS matrix](../security/03_foundation_rls_matrix.md), and [TBD gate](FOUNDATION_TBD_GATE.md) now supply a reviewable proposal. Remaining PROPOSED/TBD items are review gates, not silently accepted implementation choices.
 
-Use the next task to map concepts to physical table/column candidates, relationship cardinalities, constraints and policy ownership. Do not create SQL, migrations or production tables as part of this pass. Migration drafting and deployment require later work after the ERD/catalog decisions are reviewed.
+The sequence is Foundation ERD + Physical Table/Column Catalog -> Foundation Physical Design Review -> Foundation SQL Migration Draft. Use the next task to accept, amend or explicitly defer the physical proposals and resolve A/B gates before approving SQL drafting. Do not create SQL, migrations or production tables as part of this pass; deployment requires later authorization and validation.
 
-This next task has **not** been started. Student/academic/employee and other business-domain packages follow the accepted Foundation design.
+The review and SQL draft have **not** been started. Student/academic/employee and other business-domain packages follow the accepted Foundation design.
