@@ -11,8 +11,9 @@ REVOKE ALL ON ALL SEQUENCES IN SCHEMA app, app_private
 
 ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_schema_owner IN SCHEMA app, app_private
   REVOKE ALL ON TABLES FROM PUBLIC, anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_schema_owner IN SCHEMA app, app_private
-  REVOKE ALL ON FUNCTIONS FROM PUBLIC, anon, authenticated, service_role;
+-- Global PUBLIC function EXECUTE defaults for all application function owners
+-- were removed before function creation in migration 1. The former per-schema
+-- function REVOKE could not cancel that global PostgreSQL default.
 ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_schema_owner IN SCHEMA app, app_private
   REVOKE ALL ON SEQUENCES FROM PUBLIC, anon, authenticated, service_role;
 

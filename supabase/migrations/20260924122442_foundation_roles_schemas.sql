@@ -29,6 +29,27 @@ GRANT schoolos_workflow_executor TO postgres;
 GRANT schoolos_platform_executor TO postgres;
 GRANT schoolos_evidence_writer TO postgres;
 GRANT schoolos_bootstrap_executor TO postgres;
+-- Global function defaults belong to the creating role. A per-schema REVOKE
+-- cannot remove PostgreSQL's global PUBLIC EXECUTE default. Install these
+-- before any application function is created; keep exact immediate revokes.
+ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_schema_owner
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_bootstrap_executor
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_authz_reader
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_read_executor
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_identity_executor
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_access_executor
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_workflow_executor
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_platform_executor
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_evidence_writer
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 -- Pre-execution managed-platform gate: the trusted deployment grantor must
 -- own (or hold grant options on) auth and auth.users. Stop before execution if
 -- it cannot grant these exact privileges; never drop the Auth FK as a fallback.

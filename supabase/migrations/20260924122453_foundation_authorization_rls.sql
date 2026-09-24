@@ -123,13 +123,15 @@ REVOKE ALL ON FUNCTION app_private.current_principal_id() FROM PUBLIC, anon, aut
 CREATE FUNCTION app_private.has_complete_grant(
   wanted_code text, wanted_scope text, target_campus uuid DEFAULT NULL
 ) RETURNS boolean
-LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
 DECLARE actor uuid; at_time timestamptz;
 BEGIN
   actor := app_private.current_principal_id();
   IF actor IS NULL THEN RETURN false; END IF;
-  at_time := pg_catalog.clock_timestamp();
+  -- One authorization instant for the calling statement. Under the supported
+  -- READ COMMITTED request path, a later statement re-evaluates live authority.
+  at_time := pg_catalog.statement_timestamp();
   RETURN EXISTS (
     SELECT 1
       FROM app_private.assignment_permission_scopes s
@@ -171,32 +173,32 @@ REVOKE ALL ON FUNCTION app_private.has_complete_grant(text,text,uuid) FROM PUBLI
 
 -- Fixed predicates only; no caller-selected actor, role, table or SQL.
 CREATE FUNCTION app_private.can_campus_read(target_campus uuid) RETURNS boolean
-LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT app_private.has_complete_grant('campus.view','CAMPUS',target_campus)
 $body$;
 REVOKE ALL ON FUNCTION app_private.can_campus_read(uuid) FROM PUBLIC, anon, authenticated, service_role;
 CREATE FUNCTION app_private.can_room_read(target_campus uuid) RETURNS boolean
-LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT app_private.has_complete_grant('room.view','CAMPUS',target_campus)
 $body$;
 REVOKE ALL ON FUNCTION app_private.can_room_read(uuid) FROM PUBLIC, anon, authenticated, service_role;
 CREATE FUNCTION app_private.can_year_read() RETURNS boolean
-LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT app_private.has_complete_grant('academic_year.view','ALL',NULL)
 $body$;
 REVOKE ALL ON FUNCTION app_private.can_year_read() FROM PUBLIC, anon, authenticated, service_role;
 CREATE FUNCTION app_private.can_notification_read(recipient uuid) RETURNS boolean
-LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT recipient = app_private.current_principal_id()
      AND app_private.has_complete_grant('notification.own','OWN',NULL)
 $body$;
 REVOKE ALL ON FUNCTION app_private.can_notification_read(uuid) FROM PUBLIC, anon, authenticated, service_role;
 CREATE FUNCTION app_private.can_preference_read(recipient uuid) RETURNS boolean
-LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT recipient = app_private.current_principal_id()
      AND app_private.has_complete_grant('notification.preference.own','OWN',NULL)
@@ -230,7 +232,7 @@ GRANT EXECUTE ON FUNCTION app_private.current_principal_id(),
 SET ROLE schoolos_read_executor;
 CREATE FUNCTION app.read_own_principal()
 RETURNS TABLE (principal_id uuid, principal_kind text, display_label text)
-LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT p.id, p.kind, p.label
     FROM app_private.principals p
