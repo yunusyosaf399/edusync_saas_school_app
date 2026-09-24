@@ -16,7 +16,7 @@ This project is a configurable School Management SaaS / School Operating System,
 - One customer school uses one Supabase project for strong tenant isolation.
 - A SaaS control plane stores customer/project/subscription/version metadata, not school operational data.
 - Android, Windows and Web are first-class current targets of one Flutter project/codebase, with shared logic and adaptive presentation; see [ADR-002](../decisions/ADR-002-flutter-multiplatform-client-architecture.md). This documentation update does not schedule UI implementation.
-- Backend is Supabase/PostgreSQL with Auth, Storage, RLS and server-side functions/services.
+- Backend is Supabase/PostgreSQL with Auth, RLS and server-side functions/services; uploaded bytes use provider-neutral object-storage adapters.
 - Initial language is English; architecture remains localization-ready.
 - Delivery uses two-week sprints with architecture/release gates.
 - Baseline schedule assumes one lead engineer with part-time QA/design/school-domain support.
@@ -146,7 +146,7 @@ Quality is built into each module rather than postponed to the final phase. The 
 - Attendance reconciliation including corrections/offline behavior.
 - Result lifecycle: entry -> correction -> review -> publish -> lock.
 - Finance reconciliation including discounts, advance/partial payments, reversals and receipts.
-- Storage privacy and 1 MB document rules.
+- Provider-neutral storage privacy, controlled-purpose entitlements and server-verified 1 MiB document rules.
 - Offline idempotency and conflict resolution.
 - Backup/restore rehearsal.
 - AI permission tests.
@@ -302,3 +302,9 @@ The handbook is intentionally improvable. Future versions can add effort points,
 - `School_OS_SaaS_Project_Management_Handbook_v0.1.docx` - formatted handbook.
 - `School_OS_SaaS_Project_Management_Handbook_v0.1.pdf` - presentation/share version.
 - `School_OS_SaaS_Master_Specification_v0.1.*` - product requirements/architecture baseline.
+
+## Storage and commercial packaging amendment - 2026-09-24
+
+[ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md) makes uploaded bytes provider-neutral; no external provider is chosen. [ADR-004](../decisions/ADR-004-storage-plan-entitlements.md) establishes capability-based storage packages and controlled purposes. The control plane owns plans/subscriptions, typed capability definitions/values and school effective revisions; school services enforce trusted refreshed snapshots plus user/domain rules.
+
+Commercial plans may package modules, storage, future quotas, AI capabilities and premium features, but no prices or quota values are invented. Student-photo-only, selected categories and full supported-purpose storage are architecture capabilities; exact packages (including employee photos/branding) remain TBD. Billing automation is later work. Downgrades preserve files and block disallowed new uploads. Reference XLSX/PDF/DOCX snapshots remain historical and unchanged.

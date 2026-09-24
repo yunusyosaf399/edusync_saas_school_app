@@ -88,7 +88,7 @@ Event processing failures do not relabel an executed correction as failed. Appro
 
 Uploads use private object storage with validated metadata and typed ownership. A file is not available merely because its metadata exists; storage upload and database finalization need reconciliation. Evidence must survive the request's protected retention requirements. Generated PDFs normally use persistent facts/identifiers and on-demand rendering.
 
-Signed URLs are temporary bearer access: previously issued links may outlive a permission change until expiry. Prefer authenticated access for sensitive material or a suitably short-lived authorized download path; exact policy is T11. [Supabase private downloads](https://supabase.com/docs/guides/storage/serving/downloads).
+Signed URLs are temporary bearer access: previously issued links may outlive a permission change until expiry. Prefer authenticated access for sensitive material or a suitably short-lived authorized download path; exact policy is T11. [Provider-neutral private access](04_provider_neutral_object_storage.md) governs all adapters; Supabase Storage is one possible adapter.
 
 Manual and QR now, and biometric/fingerprint, RFID/NFC, camera/face-recognition and other sources in future, follow:
 

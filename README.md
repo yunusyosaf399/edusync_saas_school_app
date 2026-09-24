@@ -42,3 +42,9 @@ The v0.2 requirements preserve extension points for future biometric, camera and
 ## Documentation organization
 
 The environment pack was moved into this repository structure on 2026-09-22. All supplied artifacts were retained, including older reference versions and templates. Historical reference snapshots may show the original folder layout and superseded client-platform decisions. Original Markdown and binary PDF/DOCX/XLSX snapshots remain unchanged; use the current requirements and ADR-002 for platform authority.
+
+## Uploaded-file storage
+
+[ADR-003](docs/decisions/ADR-003-provider-neutral-object-storage.md) confirms [provider-neutral object storage](docs/architecture/04_provider_neutral_object_storage.md): PostgreSQL owns file metadata/business relationships; adapters store bytes. Supabase Storage remains an option, with no external provider selected. Private access requires current domain authorization; credentials remain server-side. This amendment preserves Foundation SQL-draft readiness and does not start implementation.
+
+Storage capabilities are also [entitlement-driven](docs/architecture/05_storage_entitlements_and_document_purposes.md), under [ADR-004](docs/decisions/ADR-004-storage-plan-entitlements.md). School backend checks current capabilities and domain authorization; downgrades preserve historical files. No plan names/prices/quotas or implementation are introduced.

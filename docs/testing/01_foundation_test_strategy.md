@@ -129,3 +129,36 @@ The current deliverable is a reviewed test strategy, not a claim that backend te
 | Browser sessions/routes | Validate URL navigation and browser session behavior against shared authentication/routing contracts without weaker backend security |
 
 UI widgets, packages, breakpoint values and per-platform offline technologies remain TBD. No Flutter test code, dependency or build configuration is changed here.
+
+## Future storage adapter and entitlement contract tests
+
+Documentation-only acceptance cases for [ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md) and [ADR-004](../decisions/ADR-004-storage-plan-entitlements.md); no tests implemented/run now. Run the same contract against each selected isolated adapter, using fake/synthetic files, not production accounts.
+
+| Case | Required result |
+|---|---|
+| Unauthorized download; wrong campus/domain; leaked object key | Deny despite metadata visibility or key knowledge; medical/payroll/approval clearance still required |
+| Temporary download expiry | New requests after expiry deny; new issuance reauthorizes; no promise of recalling prior downloads/in-flight transfers |
+| Location/key substitution | Client arbitrary container/location or another file key denies; wrong school mapping denies |
+| Size/type/hash | Accept valid 1 and 1,048,576 bytes; reject/quarantine zero/oversize, declared/measured mismatch, unverified or mismatched SHA-256, disallowed MIME/signature |
+| Pending/orphan/failed upload | Object exists but PENDING denies; metadata with missing bytes denies; failed validation remains quarantined/unavailable |
+| Upload intent replay and overwrite | Repeated finalization cannot create a second identity; upload URL cannot mutate bytes after verification; crashes reconcile without exposure |
+| Replacement and relocation | New row preserves lineage/old evidence and mapping; immutable key/location/purpose edits reject |
+| Secrets and URLs | Provider credentials never returned; signed URLs/tokens absent from database, audit, logs and receipts |
+| Classification | Default PRIVATE; authorized public branding only after validation; private evidence cannot be publicly exposed |
+| Photo-only school | Authorized student photo succeeds once its handler exists; payment evidence, employee contract, birth/medical/certificate uploads deny |
+| Selected-document school | Only explicit certificate/payment/photo mappings allow; absent employee-photo/branding grants deny; no implicit other documents |
+| Full-document school | Supported/enabled photo/payment succeeds with normal authorization; medical needs medical clearance; unknown/future purpose denies |
+| Client forgery | PREMIUM plan claim, forged capability Boolean or editable JWT metadata cannot elevate; parent employee-document upload and unrelated Teacher payment evidence deny |
+| Purpose laundering | PDF labeled photo rejects; generic/approval evidence cannot bypass underlying medical/payment capability; typed relationship mismatch denies |
+| Super Admin | Unentitled upload denies; only audited control-plane entitlement change can enable it |
+| Upgrade | New purpose allows only after verified revision effective time; existing objects do not move |
+| Downgrade | Existing medical file remains readable by authorized actor; new medical upload/replacement denies; no deletion |
+| Suspension/expiry/cancellation | No new uploads/finalization; existing bytes/metadata preserved; read/export policy tested separately when defined |
+| Snapshot validity | Wrong issuer/signature/audience/type, rollback revision, future-effective or expired/stale state cannot enable uploads; durable high-water mark survives restart |
+| Outage/refresh | Valid snapshot works only within finite configured freshness; stale state denies new use without revoking normal historical reads |
+| Concurrent revision/finalization | Downgrade ordered first rejects finalization; accepted finalization first remains historical; all instances use current revision fencing; outstanding uploaded bytes stay unavailable if now disallowed |
+| Direct-call bypass | Authenticated caller cannot invoke private upload/finalization/availability worker entry points; forged intent/principal/revision denies; no service-role fallback |
+| Audit/module/registry | Failed activation audit keeps new use closed; disabled module or unknown purpose denies; old definitions preserve historical reads |
+| Generated artifacts/quotas | Generated PDFs stay on demand; no implicit archiving or invented GB cap; future usage distinguishes stored/archived/quarantined/purged and pre-row orphan bytes |
+
+Provider choice, TTL/refresh/clock-skew settings, content allowlists, trusted intent persistence and snapshot transport/fencing must be selected and tested before upload activation. Metadata/SQL readiness is not adapter or commercial enforcement deployment readiness.

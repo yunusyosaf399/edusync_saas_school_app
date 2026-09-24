@@ -90,3 +90,17 @@ Audit must itself be access-controlled. Super Admin is not exempt from auditing.
 ## AI security
 
 AI queries must go through permission-aware services/views and must not receive broad raw database access. Treat prompt content as untrusted input. Log/monitor access appropriately without storing secrets in prompts.
+
+## Provider-neutral files and entitlement gate - ADR-003 / ADR-004
+
+PostgreSQL RLS protects file metadata/business access; raw object access is separately enforced by the protected server file service. Derive principal server-side; require current permission/scope, typed owning-domain relationship, purpose/classification/state. Uploader ownership alone is insufficient. Approval, medical and payroll evidence keep their stronger domain restrictions. AVAILABLE is necessary but not sufficient for private download.
+
+Resolve immutable storage_location_key/object_key from trusted metadata and deployment allowlist. Never accept client provider credentials, endpoints or arbitrary buckets/containers. Isolated server provider credentials/signing secrets remain outside application settings and Flutter. Issue bounded temporary private access after current authorization; signed URLs are bearer capabilities until expiry, never persistent database/log/audit evidence. A new issuance reauthorizes. Explicit public branding is a separately authorized classification, not a private-file bypass.
+
+New upload/replacement/finalization additionally requires current verified school entitlement, enabled module and deployment-controlled purpose policy. Client plan/capability claims and user-editable JWT metadata are ignored. Super Admin has no subscription bypass. Unknown purpose, PDF masquerading as photo, parent employee-document access and unentitled payment uploads deny. Generic approval/attachment categories must also satisfy underlying domain capability; semantic image contents cannot be perfectly inferred by a MIME check.
+
+Keep allocation/finalization/availability mutation entry points private to the existing purpose-bound file worker. No authenticated direct RPC can bypass the server entitlement gate, no broad service-role write and no client-supplied acting principal. Trusted server intent records bind verified actor, school, domain, purpose, location/key and revision; protected commands validate this origin and normal authorization. Existing role ownership, RLS, lock ordering and evidence transactions remain otherwise unchanged.
+
+Verify signed snapshot issuer/audience/revision/effective time/expiry; invalid or stale state blocks new use. Recheck at finalization with multi-instance revision fencing and audit evidence. Outstanding upload capabilities may accept private bytes after downgrade, but those cannot become AVAILABLE without current entitlement. Preserve existing valid files/authorized reads on downgrade. Suspension blocks new use without deletion; read/export policy is a separate activation decision. See [snapshot contract](../architecture/05_storage_entitlements_and_document_purposes.md).
+
+Storage/network effects are not atomic with database transactions. Seal verified bytes against overwrite, verify measured 1..1,048,576 bytes/type/SHA-256, and reconcile failures/quarantine/replay. Provider IAM supplements application authorization. Actual adapter/snapshot enforcement is an activation gate, not implemented by this documentation.

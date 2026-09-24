@@ -59,7 +59,7 @@ saas_OS_school_app/
 
 - `lib/` contains the Flutter client; client code must not contain secrets or be the only enforcement point for business security.
 - `test/` contains Flutter tests.
-- `supabase/migrations/` is the reproducible source of schema truth, including database functions, RLS and storage policies.
+- `supabase/migrations/` is the reproducible source of schema truth, including database functions and RLS. Provider-specific object-storage access configuration belongs in versioned deployment material, not necessarily SQL migrations.
 - `supabase/functions/` contains server-only operations and integrations when appropriate.
 - `supabase/seed/`, `supabase/tests/` and `supabase/config/` hold seed data, backend tests and configuration respectively. These five Supabase directories currently contain placeholders only.
 - `docs/decisions/` records architectural decisions and contains the ADR template.

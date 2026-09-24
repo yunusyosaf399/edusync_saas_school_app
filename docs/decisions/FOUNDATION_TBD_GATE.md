@@ -24,12 +24,12 @@ The [physical design review](FOUNDATION_PHYSICAL_DESIGN_REVIEW.md) explicitly se
 | T08 | RESOLVED FOR SQL DRAFT | R07/R08: immutable outbox, fenced per-consumer state and transactional in-app projector; 60-second lease and bounded retries. F28 excluded from first draft; IN_APP preferences only. | Email/push endpoints/providers, quiet hours and domain category mandates DEFERRED SAFELY. No unvalidated endpoint_ref or sender in initial SQL. |
 | T09 | RESOLVED FOR SQL DRAFT | R14: UUID/row-version/expected-version and terminal idempotency evidence retained; no TTL, current authority on replay, conflict capability. | Full synchronization, eligibility/cursors/tombstones/cache encryption implementation deferred; cached permissions cannot authorize a server write. |
 | T10 | RESOLVED FOR SQL DRAFT | R09: immutable minimized bounded audit, retain protected history, no ordinary delete/soft-delete/TRUNCATE or automatic TTL; infrastructure trust limitation explicit. | Legal periods, archive/hold/privacy operations and stronger tamper evidence deferred to approved operational policy; nothing purges by default. |
-| T11 | RESOLVED FOR SQL DRAFT | R10: measured 1..1,048,576 bytes, SHA-256, validated type, immutable private key, quarantine/lineage, metadata only, PDFs normally on demand. | Complete private Storage policies, signed-download lifetime, processing/reconciliation service implementation precede upload activation; not part of this SQL metadata decision. |
+| T11 | RESOLVED FOR SQL DRAFT | R10 + ADR-003/004: provider-neutral immutable location/key, PRIVATE default, controlled purpose_code, measured 1..1,048,576 bytes/SHA-256, lineage and entitlement-gated new use. | Provider/SDK, snapshot refresh/fencing, intent persistence, expiry and validation/access implementation are activation gates; no new table or SQL-design blocker. |
 | T12 | RESOLVED FOR SQL DRAFT | R11/bootstrap plan: versioned technical manifest, stable SYSTEM identities, deployment-owned semantics, seed-once templates, explicit setup and no customization overwrite/regrant. | Actual school provisioning/control-plane automation and secrets remain outside seeds; no business fixtures. |
 | T13 | DEFERRED SAFELY | Business schemas and monetary/numbering/attendance/finance/payroll/leave rules remain with their owning domain packages. | No such tables or active handlers introduced; does not block Foundation. |
 | T14 | DEFERRED SAFELY | Future biometric/RFID/camera/device/vendor work stays adapter-based and unscheduled. | No device registry/template/media/vendor schema; canonical attendance remains future domain-owned truth. |
 | T15 | RESOLVED FOR SQL DRAFT | R15/test execution plan selects disposable rebuild, bootstrap, constraints, actual non-owner RLS, commands, race/retry and N-to-N+1 upgrade/customization validation. | No package dependency installed; concrete tooling implementation and passed results are required before application/activation. |
-| T16 | DEFERRED SAFELY | AI provider, full automation rules/scheduler, pricing/subscription, reporting/search projections and later platform packages remain absent. | Keep permission-aware interfaces; no assumed implementation from an event envelope. |
+| T16 | DEFERRED SAFELY | AI provider, full automation rules/scheduler, pricing/billing implementation (storage entitlement architecture accepted in ADR-004), reporting/search projections and later platform packages remain absent. | Keep permission-aware interfaces; no assumed implementation from an event envelope. |
 
 ## 3. SQL DRAFT BLOCKERS REMAINING
 
@@ -46,7 +46,7 @@ This statement does not claim that migrations exist, policies have passed tests,
 - Implement and test exact role/column/EXECUTE grants, FORCE RLS, safe definers, managed JWT cutoff and current-state resolution as real non-owner callers.
 - Implement/rehearse managed Auth provisioning/unbind/recovery and their external-service failures; no partial account activation.
 - Validate actual project version/capabilities and every required FK before application/activation; do not leave NOT VALID constraints or temporary broad policies.
-- Complete and test private Storage policies/content validation before uploads; no public or metadata-only access assumption.
+- Complete and test private adapter access controls/content validation before uploads; no public or metadata-only access assumption.
 - Pass both revocation order races, interval-overlap races, receipt canonicalization/replay/crash cases, workflow rollback/invalidation and fenced consumer tests.
 - Preserve customized school roles/settings and historical evidence through clean rebuild, upgrade and restore.
 - Keep unimplemented targetful domain contracts, future resolvers and external notification providers disabled.
@@ -62,3 +62,13 @@ The physical catalog, ERDs, constraint/RLS matrices, exact graph and review now 
 Next task, **not started**: **FOUNDATION SQL MIGRATION DRAFT — FILES ONLY, NO SUPABASE EXECUTION.**
 
 This review does not create SQL statements/files, connect to Supabase, modify Flutter, install dependencies, seed data or begin business-domain schemas.
+
+## Accepted storage amendments - 2026-09-24
+
+[ADR-003](ADR-003-provider-neutral-object-storage.md) selects provider-neutral file bytes and deployment location mapping: rename bucket_code to storage_location_key, retain unique location/key, default classification PRIVATE, preserve measured SHA-256/1 MiB and lineage. [ADR-004](ADR-004-storage-plan-entitlements.md) adds immutable NOT NULL purpose_code with lexical CHECK and deployment registry; server-enforced entitlement snapshot plus normal domain authorization gates new uploads. No provider/purpose/entitlement table, plan_id or unrelated physical change.
+
+T11 remains **RESOLVED FOR SQL DRAFT**. There are **zero storage SQL-design blockers**. Provider selection, secure upload-intent/byte sealing, signed snapshot distribution/freshness/revision fencing, expiry settings and adapter tests are implementation/activation gates. Other SQL gates stay resolved/deferred as reviewed. The 33-table count, all FKs and three late cuts remain unchanged.
+
+Downgrade preserves files and normal authorized reads; removed-purpose uploads/replacements deny. Suspension preserves data and denies new use; read/export/retention policy remains TBD. Commercial names/prices, exact package membership and total quotas remain TBD, not schema blockers. Generated PDFs stay on demand.
+
+Ready for **FOUNDATION SQL MIGRATION DRAFT - FILES ONLY, NO SUPABASE EXECUTION**. No SQL has been started.

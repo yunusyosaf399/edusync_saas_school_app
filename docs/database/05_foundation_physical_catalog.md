@@ -11,7 +11,7 @@ Read with the [ERDs](04_foundation_erd.md), [constraint matrix](06_foundation_co
 
 CONFIRMED requirements: one school per Supabase project; multiple campuses; separate Person, Principal and Auth identity; bounded role/action/scope/assignment/workflow authorization; Parent/Guardian-only shared family principal; preserved history and approval/audit controls. Physical decisions are selected in the review without changing product invariants. There are **34 reviewed candidates covering F01-F28: 33 initial Foundation SQL tables and one deferred F28 table**. No student, enrollment, employee, attendance, finance, marks, device, biometric, provider endpoint, automation-rule or control-plane operational-copy tables are introduced.
 
-Proposed namespaces are app (five explicitly allowlisted read tables) and app_private (all other application tables). T02 selects PostgreSQL 15+ compatibility and these namespaces; app_private must not be an exposed API schema. All writes are protected commands; app is not a blanket schema grant. Narrow checked read projections expose selected private data where needed; their ownership and column privileges are selected in [execution security](../security/04_foundation_execution_security.md). Supabase-managed auth.users and Storage internals are external dependencies, not catalog entries.
+Proposed namespaces are app (five explicitly allowlisted read tables) and app_private (all other application tables). T02 selects PostgreSQL 15+ compatibility and these namespaces; app_private must not be an exposed API schema. All writes are protected commands; app is not a blanket schema grant. Narrow checked read projections expose selected private data where needed; their ownership and column privileges are selected in [execution security](../security/04_foundation_execution_security.md). Supabase-managed auth.users remains an external dependency. Object-storage provider internals are outside the relational catalog and are not assumed to be Supabase-managed; see [ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md).
 
 Every table has an explicit UUID id PK below. UUID v4 generation is server-side; selected generator is pg_catalog.gen_random_uuid(), with no required extension. Type spellings are PostgreSQL types. A dash default means no default: caller must supply a value through the protected command. Server transaction time means a trusted server timestamp, not client time. Nullable optional values default to NULL. created_at is recording time, distinct from business/event time. created_by is the stable executing principal; where an initiating actor differs it has an explicit field. No credentials or personal identity data are packed into created_by.
 
@@ -951,19 +951,20 @@ F08 is retained with the reviewed ASCII alias policy. F28 is excluded entirely f
 ### file_objects — F23
 
 **Proposed name:** app_private.file_objects. **Status:** REVIEWED FOR SQL DRAFT; implementation pending.
-**Purpose:** Private uploaded-file metadata; Storage object is externally managed. **Authority:** Authoritative. **PK:** id.
+**Purpose:** Provider-neutral uploaded-file metadata, private by default; bytes are externally managed through a server adapter. **Authority:** Authoritative. **PK:** id.
 
 | Column | PostgreSQL type | Nullable | Default | Mutability | FK / reference |
 |---|---|---|---|---|---|
 | id | uuid | NO | server UUID v4 | I | — |
 | owner_principal_id | uuid | NO | — | I | principals.id |
 | campus_id | uuid | YES | NULL | I | campuses.id |
-| bucket_code | text | NO | — | I | — |
+| storage_location_key | text | NO | — | I | — |
+| purpose_code | text | NO | No default | I | deployment-owned registry; no FK |
 | object_key | text | NO | — | I | — |
 | content_type | text | NO | — | I | — |
 | byte_size | bigint | NO | — | I | — |
 | content_hash | bytea | NO | — | I | — |
-| classification | text | NO | — | I | — |
+| classification | text | NO | PRIVATE | I | No FK |
 | state | text | NO | PENDING | C | — |
 | validated_at | timestamptz | YES | NULL | E | — |
 | replaces_file_id | uuid | YES | NULL | I | file_objects.id |
@@ -972,10 +973,13 @@ F08 is retained with the reviewed ASCII alias policy. F28 is excluded entirely f
 | row_version | bigint | NO | 1 | V | — |
 | updated_at | timestamptz | NO | server transaction time | C | — |
 
-- **UNIQUE:** bucket_code,object_key
-- **CHECK:** byte_size between 1 and 1048576 inclusive; hash exactly 32 bytes; nonblank bucket_code/object_key/content_type/classification; state PENDING/VALIDATED/AVAILABLE/QUARANTINED/ARCHIVED/PURGED; AVAILABLE implies validated_at present; replaces_file_id differs from id; row_version > 0.
+- **UNIQUE:** storage_location_key,object_key
+- **CHECK:** byte_size between 1 and 1048576 inclusive; hash exactly 32 bytes; nonblank storage_location_key/object_key/content_type/classification; purpose_code matches ^[A-Z][A-Z0-9_]{0,63}$; state PENDING/VALIDATED/AVAILABLE/QUARANTINED/ARCHIVED/PURGED; AVAILABLE implies validated_at present; replaces_file_id differs from id; row_version > 0.
 - **Additional indexes / purpose:** owner_principal_id,state — own upload reconciliation; campus_id,state — scoped document administration; replaces_file_id — version lineage lookup
-- **Protected validation, history and audit:** Server allocates structured immutable object key; no signed URLs/secrets stored. Proposal allows pending row only after measured upload/checksum; pre-upload authorization uses short-lived server session, not metadata claim of validation. Review R10 fixes the product's approximate 1 MB limit at 1 MiB = 1,048,576 bytes, enforced on measured uploaded bytes after compression. Private buckets only; no file body in Postgres. Validate content, authorized typed owner link, retention and replacement chain; no direct edits to Storage metadata. Audit upload/quarantine/download/purge authorization. Metadata retained after approved physical object purge; PDFs generated on demand, exceptional stored document explicit only.
+- **Protected validation, history and audit:** [ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md) selects deployment-allowlisted immutable storage_location_key and object_key; UNIQUE is per logical location in this school. No provider table, provider fields, URL/token or secret columns. Location mapping is outside business data; unknown/client-substituted locations deny. Classification defaults PRIVATE; explicit authorized public branding must use a compatible publication path, never a private evidence URL.
+- **Upload lifecycle:** Server allocates file UUID/key/location and purpose-bound upload intent before upload; no row claims measured metadata yet. After inspecting actual sealed bytes, insert PENDING with measured content_type, byte_size and SHA-256; retain NOT NULL and immutable measured fields. Remaining validation sets validated_at and advances VALIDATED then AVAILABLE. Failed or missing objects stay unavailable; pre-row failures reconcile through the server intent/provider process. Replay and overwrite after verification must be prevented by staging/finalization or equivalent adapter guarantees before activation.
+- **Integrity/history:** Enforce 1..1,048,576 measured bytes inclusive; a client digest or compression is not verification. No global hash deduplication. Validate content, typed domain authorization, retention and replacement ancestry. V1 relocation creates a verified new row/location with replaces_file_id; preserve old mappings/evidence, never silently retarget references. Audit upload/quarantine/download/purge using IDs/outcomes, not signed URLs. Metadata survives authorized physical purge; PDFs normally remain on demand.
+- **Storage boundary:** Provider IAM supplements protected file-service checks; metadata visibility or object existence does not authorize download. AVAILABLE plus current actor/permission/scope/domain/classification checks precedes bounded temporary access. Logical location codes use the existing 64-character ASCII code bound; keys retain the 512-character bound. No provider credential in PostgreSQL settings or Flutter.
 - **Archive/delete:** No normal hard deletion. Preserve referenced identity/history; controlled lifecycle or retained terminal rows as applicable. Global RESTRICT/retention rules apply; no cascade.
 - **RLS / exposure:** file.view / file.upload / file.manage; owner is insufficient without live context and typed domain authorization; return safe metadata projection. No direct client table access; checked projection/command where authorized. See per-table matrix.
 - **Offline:** Sensitive content only if T09/T11 permits encrypted cache.
@@ -1019,3 +1023,9 @@ No school_operational tenant_id or organization_id is needed. school_id appears 
 ## 5. Next review
 
 Next task, not started: **FOUNDATION SQL MIGRATION DRAFT — FILES ONLY, NO SUPABASE EXECUTION.** The review selects the 33-table subset; implementation/activation checks remain. No SQL is created here.
+
+## F23 entitlement amendment - ADR-004
+
+[ADR-004](../decisions/ADR-004-storage-plan-entitlements.md) adds immutable purpose_code TEXT NOT NULL, no default, lexical CHECK and deployment-owned semantic registry validation. It identifies purpose independently of plan. No plan_id, purpose/provider/entitlement table or extra index. Existing FKs/indexes remain.
+
+Upload/finalization requires a current trusted server entitlement snapshot, enabled module and normal domain/permission checks. These mutations are private file-worker entry points behind the server gate, not direct authenticated bypass RPCs. Trusted snapshot/intent evidence supplies origin and audit revision, never client commercial claims. Unknown/unimplemented purposes deny. Existing reads survive downgrade under domain authorization; replacement uploads need current capability. See [taxonomy and snapshot contract](../architecture/05_storage_entitlements_and_document_purposes.md).

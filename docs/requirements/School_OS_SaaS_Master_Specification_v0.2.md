@@ -109,7 +109,7 @@ Supabase Organization (owned by SaaS operator)
 |-- Project: School A
 |     |-- Auth
 |     |-- PostgreSQL
-|     |-- Storage
+|     |-- File metadata and provider-neutral object-storage boundary
 |     |-- Edge Functions
 |     `-- Realtime / policies / migrations
 |
@@ -156,7 +156,7 @@ Potential control-plane responsibilities:
 - School code used before login
 - School project reference and routing metadata
 - School activation/suspension status
-- Subscription/plan metadata if commercial plans are introduced
+- CONFIRMED subscription plans, lifecycle and typed entitlement definitions/values; effective school entitlement revision and plan-version history (section 49.1)
 - Enabled commercial features/modules if licensing requires them
 - Application version
 - Database schema version
@@ -1187,7 +1187,7 @@ Discounts can be long-term/recurring or one-time. Sensitive or large adjustments
 
 **CONFIRMED**
 
-The system stores the underlying financial obligation and invoice metadata/history, but **does not store every rendered invoice PDF** in Supabase Storage.
+The system stores the underlying financial obligation and invoice metadata/history, but **does not store every rendered invoice PDF** in object storage.
 
 When an authorized user requests an invoice:
 
@@ -1634,33 +1634,33 @@ Generated document files should normally be created from database data and downl
 
 ---
 
-# 49. Uploaded Documents and Supabase Storage
+# 49. Uploaded Documents and Private Object Storage
 
-**CONFIRMED**
+**CONFIRMED**, amended 2026-09-24 by [ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md).
 
-Important uploaded source documents are stored, for example:
+Uploaded binary files use a provider-neutral server-controlled object-storage boundary. Supabase/PostgreSQL remains the database/Auth architecture. PostgreSQL owns file identity, metadata, business relationships, uploader, purpose/classification, immutable logical location/key, measured size/type/SHA-256, lifecycle, lineage and authorization. Providers store bytes. Supabase Storage, Cloudflare R2, AWS S3/S3-compatible storage, Azure Blob or another reviewed provider are possible adapters; no external provider is selected.
 
-- Student photo
-- Birth certificate
-- National/student identity documents
-- Teacher contract
-- Employee documents
-- Other important evidence
+Business uploads default PRIVATE: student photos unless explicitly permitted otherwise, birth/identity documents, admission/payment evidence, employee contracts, payroll/medical/approval evidence and confidential records. School logo/public branding/announcement assets may be explicitly classified public through authorized publication. Object keys/UUIDs are not security.
 
-Uploads should be reduced/compressed to a maximum of approximately **1 MB per file** under the current requirement.
+Current initial upload class is **1..1,048,576 bytes inclusive (1 MiB)**. Client compression/resizing does not replace server measurement, allowed content/signature validation and SHA-256 verification. Future larger typed classes require review; no silent limit increase or global sensitive-document deduplication.
 
-Images should be resized/compressed before storage. PDF handling should also enforce the size limit; implementation may reject or compress oversized PDFs depending on the chosen client/server processing strategy.
+Backend authorizes business purpose/context, allocates identity/location/key and an upload intent, then the adapter issues bounded direct upload access. Server verifies actual bytes and replay/overwrite protection before PENDING -> VALIDATED -> AVAILABLE. The pre-upload intent is not a claim of verified metadata; PENDING row insertion follows measurement. Failed/unvalidated/orphan bytes are unavailable. See [storage architecture](../architecture/04_provider_neutral_object_storage.md).
 
-Storage should use structured paths, for example:
+Private download requires current principal, permission, scope/domain relationship, classification and available state before a short-lived mechanism is issued. Signed URLs are bearer capabilities until expiry; lifetimes remain security-configurable/TBD. Do not persist/log private signed URLs or expose credentials. Metadata visibility, object existence or key knowledge alone grants no raw access. Provider mapping is deployment configuration; secrets remain in server secret management, never school settings or Flutter.
 
-```text
-students/{student_id}/photo/...
-students/{student_id}/documents/...
-employees/{employee_id}/contracts/...
-school/branding/...
-```
+Generated invoices, receipts, results, certificates and salary slips remain normally on demand, not automatically stored.
 
-Storage access must be protected by appropriate policies.
+## 49.1 Storage Plans and File Entitlements
+
+**CONFIRMED** by [ADR-004](../decisions/ADR-004-storage-plan-entitlements.md): SaaS plans may enable student-profile-photo-only storage, selected approved document categories, or all currently supported/enabled document purposes. Full storage does not mean arbitrary upload. Commercial names/prices and total storage quotas remain configurable/TBD; selected-tier employee photos and separate branding packaging are PROPOSED/TBD.
+
+Upload requires effective school entitlement + module enabled + authenticated principal + action permission + scope + domain relationship + purpose policy + validation. Server enforcement is mandatory; UI/client plan claims are not authorization, and Super Admin has no entitlement bypass.
+
+The control plane owns commercial plans, typed capability definitions/values, subscription state and effective school revisions. A signed/versioned server snapshot with bounded freshness, invalidation and refresh enables local school-backend decisions; stale/invalid snapshots deny new upload use. No commercial pricing tables are copied into each school database.
+
+Upgrade enables newly granted purposes after revision activation without moving files. Downgrade preserves existing valid files, authorized reads and audit history; removed-purpose uploads/replacements are blocked. Suspension/expiry/cancellation preserve data and block new uploads; read-only/export policy and commercial retention periods remain TBD. No automatic deletion on downgrade or expiration.
+
+Controlled immutable purpose_code describes each file, not the plan active at upload. Uploaded certificates/payment receipts are distinct from generated PDFs. Future usage accounting may aggregate measured bytes by purpose/domain/state with orphan reconciliation; no quota values or billing meter are implemented. See the [purpose taxonomy and snapshot design](../architecture/05_storage_entitlements_and_document_purposes.md).
 
 ---
 
@@ -2006,7 +2006,7 @@ School A
 - AI: Enabled
 ```
 
-This supports schools that do not use certain modules and creates a future path for subscription tiers without requiring separate codebases.
+This supports schools that do not use certain modules. Subscription-based storage capabilities are confirmed in section 49.1; module availability alone does not grant upload entitlement or user authorization.
 
 ---
 
@@ -2651,7 +2651,7 @@ The following do **not** block this requirements baseline but must be finalized 
 8. Exact email sending architecture and secret handling.
 9. Exact AI provider/service layer and safe retrieval architecture.
 10. Exact school-project provisioning automation and whether Supabase Management API automation is used at launch.
-11. Exact subscription/pricing plans and module limits, if commercial tiers are introduced.
+11. Exact subscription names/prices, package membership, module limits and total storage quotas remain TBD; capability-based storage tiers are confirmed in section 49.1.
 12. Exact retention durations for logs, uploaded documents, and AI conversations.
 13. Exact backup/export tooling exposed to school administrators versus SaaS operators.
 14. Exact format and verification strategy for QR student cards.
@@ -2701,7 +2701,7 @@ The design phase should produce, at minimum:
 - Role/permission/scope model
 - Approval-engine model
 - Audit model
-- Storage buckets and policies
+- Provider-neutral logical locations, deployment mapping and adapter access controls
 - Database functions/triggers where justified
 - Realtime usage rules
 - Edge Functions where server-only operations are required
@@ -2744,6 +2744,12 @@ This keeps product decisions, code, and database behavior aligned as the platfor
 ---
 
 # 80. Changelog
+
+## 2026-09-24 - Storage architecture and entitlement amendments
+
+- ADR-003: provider-neutral bytes, PostgreSQL metadata authority, immutable logical location/key, private temporary access and verified 1 MiB/SHA-256.
+- ADR-004: controlled file purposes, server-enforced storage capabilities, signed/versioned school entitlement snapshots and non-destructive downgrade behavior.
+- No external provider, commercial prices or total quotas selected; no SQL or Flutter implementation.
 
 ## 2026-09-24 - Confirmed client-platform amendment to v0.2
 

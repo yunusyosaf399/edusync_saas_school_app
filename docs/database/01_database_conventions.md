@@ -86,11 +86,11 @@ Offline operations are proposals until server authentication, current permission
 
 Do not use client clocks or updated_at alone as a lossless synchronization cursor. Cursor ordering, tombstone horizon, maximum offline duration and scope-change behavior are TBD (T09). No sync journal or device registry is designed here.
 
-## 9. Supabase Auth, Storage and RLS
+## 9. Supabase Auth, Provider-Neutral Object Storage and RLS
 
 Use a stable application principal independent from a person and from the current Auth UUID. Reference only the managed auth.users primary key for the live binding. Deprovisioning disables application access first and preserves historical actors; account relinking is a protected, audited operation. [Identity design](../security/01_identity_auth_model.md) covers shared family access. Supabase recommends referencing the managed user's primary key. [User management](https://supabase.com/docs/guides/auth/managing-user-data).
 
-File metadata stores a private bucket/object key, content type, validated byte count, uploader, purpose and lifecycle; a signed URL is not a permanent identifier. Typed domain links are added with their domains, not unchecked target IDs. Current upload target is at most 1 MB after validation/compression. Generated PDFs are normally on demand; only underlying facts and permanent document identifiers persist. Private bucket access uses policies or time-limited signed access. [Storage buckets](https://supabase.com/docs/guides/storage/buckets/fundamentals).
+File metadata stores a private logical storage location/object key, content type, validated byte count, uploader, immutable controlled purpose_code and lifecycle; a signed URL is not a permanent identifier. Typed domain links are added with their domains, not unchecked target IDs. Current initial upload class is server-verified 1..1,048,576 bytes inclusive (1 MiB). Generated PDFs are normally on demand; only underlying facts and permanent document identifiers persist. Protected provider-neutral file service authorizes bounded temporary private access. See [storage architecture](../architecture/04_provider_neutral_object_storage.md).
 
 PROPOSED RLS posture: default-deny for exposed sensitive data, explicit grants, verified principal and current assignment checks, separate read and write rules, and protected command interfaces for sensitive mutations. Do not treat a nullable campus as unrestricted school visibility. No anonymous access to school operations. SQL role names are not application roles.
 

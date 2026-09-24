@@ -45,3 +45,7 @@ The original Markdown specification under `reference/` retains the earlier secti
 - [reference/School_OS_SaaS_Project_Management_Master_v0.2.xlsx](../../reference/School_OS_SaaS_Project_Management_Master_v0.2.xlsx)
 
 The v0.2 specification PDF and project-management workbook are the supplied current reference artifacts. The v0.1 DOCX/PDF files and environment guide PDF are preserved historical snapshots. The duplicate specification Markdown in `reference/` is retained as an original snapshot; edit the authoritative copy in `docs/requirements/` for future requirement changes.
+
+## Storage amendments supersede reference assumptions
+
+Active [ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md) / [storage architecture](../architecture/04_provider_neutral_object_storage.md) and [ADR-004](../decisions/ADR-004-storage-plan-entitlements.md) / [purpose architecture](../architecture/05_storage_entitlements_and_document_purposes.md) supersede mandatory Supabase Storage and unconditional upload assumptions. Reference Markdown and binary PDF/DOCX/XLSX copies remain unchanged historical snapshots; they are not current provider/plan authority.

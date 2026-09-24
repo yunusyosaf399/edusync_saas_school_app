@@ -145,3 +145,7 @@ The [test strategy](../testing/01_foundation_test_strategy.md) defines positive/
 **FOUNDATION SQL MIGRATION DRAFT — FILES ONLY, NO SUPABASE EXECUTION.**
 
 The [physical review](FOUNDATION_PHYSICAL_DESIGN_REVIEW.md) and [TBD gate](FOUNDATION_TBD_GATE.md) report zero remaining SQL-design blockers for the 33-table subset. This means files-only drafting readiness, not deployed or tested implementation. SQL generation has not started. Student/academic/employee and other business-domain packages remain later work.
+
+## Storage amendments - accepted 2026-09-24
+
+[ADR-003](ADR-003-provider-neutral-object-storage.md) supersedes provider-bound storage terminology; [ADR-004](ADR-004-storage-plan-entitlements.md) accepts controlled purposes and entitlement-gated storage. Earlier T11 bucket/path discussion and deferred subscription architecture are refined by these decisions; pricing/billing implementation remains deferred. F23 gains provider-neutral storage_location_key (renamed), PRIVATE default and purpose_code. No unrelated Foundation decision changes; T11 remains resolved for SQL draft.

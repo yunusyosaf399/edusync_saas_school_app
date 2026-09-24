@@ -138,7 +138,7 @@ This is a compact map of the product-discovery questions that produced the curre
 ### Q81-Q88 - storage, notifications, offline, backup
 
 - Compress/validate uploads to <=1 MB target.
-- Structured Storage paths/buckets.
+- Provider-neutral logical locations and immutable object keys.
 - Immediate/scheduled/event notifications.
 - Email initially can use app-password style configuration but should be provider-abstracted.
 - Offline conflict detection is preferred over silent overwrite.

@@ -160,7 +160,7 @@ Sensitive: blood group, allergies, emergency contacts, notes, vaccination, medic
 
 ## Documents/storage
 
-Uploaded source documents such as student photos, birth certificates and employee contracts are stored in structured private Supabase Storage. Current target: compress/validate to max 1 MB.
+Uploaded source documents use provider-neutral object-storage adapters. PostgreSQL owns file metadata, domain relationships and authorization; the selected provider stores bytes. Supabase Storage is one possible adapter, alongside reviewed R2/S3/Azure Blob options; no external provider is selected. Business uploads default to private, with current domain authorization required before temporary download access. Enforce server-verified 1..1,048,576 bytes (1 MiB inclusive) and SHA-256; client compression does not replace verification. Logical locations map through deployment configuration, with secrets only in server secret management and no persisted signed/private URLs.
 
 Generated certificates/ID cards/result cards/invoices/receipts/payslips are generated only when requested and normally are not automatically persisted as files.
 
@@ -341,7 +341,7 @@ This is a compact map of the product-discovery questions that produced the curre
 ### Q81-Q88 - storage, notifications, offline, backup
 
 - Compress/validate uploads to <=1 MB target.
-- Structured Storage paths/buckets.
+- Provider-neutral logical locations and immutable object keys.
 - Immediate/scheduled/event notifications.
 - Email initially can use app-password style configuration but should be provider-abstracted.
 - Offline conflict detection is preferred over silent overwrite.
@@ -668,7 +668,7 @@ Do not prematurely store biometric templates or face embeddings in the core scho
 
 ## 10. Storage
 
-Use private buckets/path conventions by domain/entity. Store metadata/reference in Postgres; object bytes live in Storage. Enforce file type/size rules. Do not use public buckets for sensitive student/medical/contract documents.
+Use provider-neutral server adapters and deployment-allowlisted logical locations. PostgreSQL owns file metadata, purpose and business relationships; external object storage holds bytes. Default PRIVATE; server verifies 1 MiB inclusive, content type and SHA-256. Explicit public branding is separate from sensitive documents. Current school entitlements and domain authorization govern new uploads; provider configuration/secrets stay outside school settings.
 
 ## 11. Generated PDFs
 
@@ -969,7 +969,7 @@ Before creating domain tables, decide and document:
 - RLS helper function strategy
 - audit architecture
 - approval/workflow architecture
-- Storage bucket/path conventions
+- Provider-neutral logical-location/object-key conventions
 - Supabase Auth mapping strategy
 - local/offline IDs and sync/version metadata
 
@@ -1156,3 +1156,8 @@ The original master PDF/DOCX is v0.1 and remains a valid historical baseline. Th
 
 ---
 
+## Storage and commercial packaging amendment - 2026-09-24
+
+[ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md) makes uploaded bytes provider-neutral; no external provider is chosen. [ADR-004](../decisions/ADR-004-storage-plan-entitlements.md) establishes capability-based storage packages and controlled purposes. The control plane owns plans/subscriptions, typed capability definitions/values and school effective revisions; school services enforce trusted refreshed snapshots plus user/domain rules.
+
+Commercial plans may package modules, storage, future quotas, AI capabilities and premium features, but no prices or quota values are invented. Student-photo-only, selected categories and full supported-purpose storage are architecture capabilities; exact packages (including employee photos/branding) remain TBD. Billing automation is later work. Downgrades preserve files and block disallowed new uploads. Reference XLSX/PDF/DOCX snapshots remain historical and unchanged.

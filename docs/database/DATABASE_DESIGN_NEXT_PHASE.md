@@ -16,7 +16,7 @@ Before creating domain tables, decide and document:
 - RLS helper function strategy
 - audit architecture
 - approval/workflow architecture
-- Storage bucket/path conventions
+- Provider-neutral logical-location/object-key conventions
 - Supabase Auth mapping strategy
 - local/offline IDs and sync/version metadata
 

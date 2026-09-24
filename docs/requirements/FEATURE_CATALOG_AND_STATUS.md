@@ -50,7 +50,7 @@ Legend: **CORE** = intended core product; **OPTIONAL** = can be enabled/disabled
 | Transport | Live GPS | FUTURE | Provider adapter |
 | Hostel | Buildings/rooms/beds/allocation | OPTIONAL | Can be disabled |
 | Medical | Student health/nurse incidents | OPTIONAL/SENSITIVE | Stronger permissions |
-| Documents | Source document uploads | CORE | Private structured Storage, <=1 MB target |
+| Documents | Provider-neutral private object-storage architecture | CORE / CONFIRMED | PostgreSQL metadata/domain authority; server-verified 1 MiB inclusive; provider selection TBD/deployment choice; Supabase Storage is one possible adapter |
 | Documents | Dynamic certificates/cards/PDFs | CORE | Generate on demand |
 | Notifications | In-app | CORE | Read/unread/history |
 | Notifications | Push | CORE | Provider implementation TBD |
@@ -72,3 +72,17 @@ Legend: **CORE** = intended core product; **OPTIONAL** = can be enabled/disabled
 | Platform | IoT/smart classroom/CCTV | FUTURE | Provider-neutral integration only |
 | Localization | English | CORE | Initial language |
 | Localization | Urdu/Arabic/RTL/others | FUTURE | Keep UI localizable |
+
+## Storage commercial capabilities
+
+| Feature | Status | Rule |
+|---|---|---|
+| Subscription-based storage entitlements | CONFIRMED | School backend enforces effective capabilities, never commercial plan names |
+| File-purpose allowlisting / per-purpose capability model | CONFIRMED | Deployment-owned registry; full means supported/enabled purposes |
+| Student-photo-only package | CONFIRMED capability | Student profile photo only unless another capability explicitly granted |
+| Selected-document package | CONFIRMED capability | Approved certificate/payment categories; exact packaging and employee-photo inclusion PROPOSED/TBD |
+| Total plan storage quota | TBD | No GB values or billing meter selected; initial per-file 1 MiB remains |
+| Automatic deletion on downgrade | REJECTED | Preserve files and normal authorized reads; block disallowed new uploads/replacements |
+| Suspension/expiry handling | CONFIRMED preservation | No automatic deletion; no new uploads; read/export/retention details TBD |
+
+See [purpose architecture](../architecture/05_storage_entitlements_and_document_purposes.md) and [ADR-004](../decisions/ADR-004-storage-plan-entitlements.md).

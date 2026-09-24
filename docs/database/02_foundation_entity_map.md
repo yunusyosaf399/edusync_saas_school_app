@@ -243,10 +243,10 @@ Scope definitions are application-owned supported kinds and resolvers, not free-
 
 ### F23 - Private file metadata
 
-- **Purpose / identity / attributes:** UUID, bucket/object key, uploader, purpose/classification, validated type/bytes/hash, lifecycle/version and created time.
+- **Purpose / identity / attributes:** UUID, logical storage location/object key, controlled purpose_code, uploader, purpose/classification, validated type/bytes/hash, lifecycle/version and created time.
 - **Relationships / scope:** FK F06 and optional F02; owning-domain typed links and F16 evidence links govern access. A null campus means scope must be resolved, not public access.
 - **Lifecycle / history / archive:** pending upload -> validated/available -> quarantined/archived -> controlled purge if permitted. Replace immutable content with a new version/key; preserve evidence references. Storage cleanup is a reconciled operation.
-- **Security / constraints / indexes:** private policies follow owning record; unique bucket/object key, positive bytes and current <=1 MB target after validation, allowlisted type. Index owning link, uploader/state, pending age.
+- **Security / constraints / indexes:** private policies follow owning record; unique logical storage location/object key, positive bytes and current 1 MiB inclusive target after server verification, allowlisted type. Index owning link, uploader/state, pending age.
 - **Placement / status:** Foundation metadata now, PROPOSED; generated PDF persistence and domain document schemas postponed.
 
 ### F24 - Application setting revision

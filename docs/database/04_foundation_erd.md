@@ -264,7 +264,7 @@ erDiagram
   settingRevisions o|--o{ settingRevisions : "supersedes_id"
 ~~~
 
-Private file bytes are managed through Storage; fileObjects holds validated metadata and lineage, not public URLs. Pending uploads need reconciliation. Stable configuration belongs to schoolProfiles; settingRevisions records typed, non-secret effective revisions with school/campus scope. Generated PDFs remain on demand.
+File bytes use provider-neutral adapters; fileObjects holds authoritative metadata and lineage, default PRIVATE, with immutable storage_location_key/object_key and no permanent private/signed URLs. [ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md) adds no provider relation or FK; school_profiles.logo_file_id remains valid. Pending uploads need reconciliation. Stable configuration belongs to schoolProfiles; settingRevisions records typed, non-secret effective revisions with school/campus scope. Generated PDFs remain on demand.
 
 ## Combined dependency and activation view
 
@@ -304,3 +304,5 @@ Arrows express dependency/flow, not a ready-to-run migration order. Common actor
 No control-plane data replica, provider-specific device schema or business-domain truth table is part of this diagram. Future attendance adapters still feed the one canonical attendance domain.
 
 Next task, not started: **FOUNDATION SQL MIGRATION DRAFT — FILES ONLY, NO SUPABASE EXECUTION.**
+
+F23 also includes immutable purpose_code (TEXT, NOT NULL, deployment registry) under [ADR-004](../decisions/ADR-004-storage-plan-entitlements.md). No purpose/provider/entitlement relation is added; diagram relationships and the 33-table topology remain unchanged.

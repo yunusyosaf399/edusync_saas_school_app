@@ -171,3 +171,9 @@ Pure scalar CHECK/default helpers precede table creation. Authorization function
 Then apply the versioned bootstrap manifest, provision the first verified individual administrator through the restricted deployment path, and run the [execution test plan](../testing/02_foundation_database_execution_plan.md). All FK validations must succeed; activation must query constraint metadata and fail if any required constraint remains NOT VALID, missing or disabled. No constraint is left disabled to make the deployment succeed.
 
 No schema-version app table, operational tenant discriminator, speculative domain or device table is added to break a cycle. The exact plan contains **33 Foundation tables**, **three late application FKs**, and the separately managed Auth UUID dependency.
+
+## Storage amendment - unchanged topology
+
+[ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md) renames F23 bucket_code to storage_location_key and defaults classification to PRIVATE. Deployment mapping adds no table/FK. The 33-table order, three late FKs, file_objects replacement self-FK and school_profiles.logo_file_id -> file_objects.id remain unchanged. Provider bytes/configuration are external activation dependencies; auth.users remains Supabase-managed.
+
+ADR-004 adds only file_objects.purpose_code and its lexical/registry contract; no new relation/FK or dependency cycle. Entitlement snapshot and purpose registry are server/deployment activation inputs. The 33-table order and logo/replacement FKs remain valid.

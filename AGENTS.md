@@ -121,8 +121,13 @@ Biometric and camera features are **deferred**. Do not implement biometric stora
 - Use migrations for schema changes; never rely on undocumented manual dashboard edits.
 - RLS should be default-deny for sensitive tables.
 - Service-role keys, database passwords, SMTP/app passwords, AI secrets, and management tokens must never be embedded in Flutter.
-- Storage must use private access policies for sensitive uploads.
-- Student photos, birth certificates, contracts, and similar uploads use structured storage paths and the current product target of max 1 MB after compression/validation.
+- Uploaded bytes use server-controlled provider-neutral object-storage adapters; Supabase Storage is one possible adapter, not mandatory. Follow [ADR-003](docs/decisions/ADR-003-provider-neutral-object-storage.md).
+- File identity, metadata, business relationships and authorization remain in the school PostgreSQL database. Provider isolation must preserve each school boundary.
+- Business uploads default to PRIVATE. Never make private objects public; explicit public branding requires authorized classification.
+- Private download access is temporary and issued only after current domain authorization; never persist or log signed URLs.
+- Storage credentials and signing secrets never appear in Flutter or database application settings. Use server deployment secret management and allowlisted logical locations.
+- No provider-specific database schema without an approved ADR. Object keys/location are immutable; SHA-256 describes verified stored bytes.
+- Current initial upload class is 1..1,048,576 bytes inclusive (1 MiB), verified server-side after compression/resizing. Generated PDFs remain normally on demand.
 - Create repeatable school-project bootstrap/deployment steps.
 - Track database schema version per deployed school project.
 
@@ -222,3 +227,9 @@ The next engineering phase is **database and backend architecture design**, begi
 7. then domain tables in dependency order
 
 Do not jump directly to a giant `students` table or create all modules at once.
+
+## Storage plans and file purposes
+
+Follow [ADR-004](docs/decisions/ADR-004-storage-plan-entitlements.md). Storage upload requires server-authoritative school capability plus module, principal, permission, scope, domain relationship, controlled purpose and validation. Flutter may show capability-driven UX but must not authorize by commercial plan name or client entitlement claims. Super Admin does not bypass subscription entitlements; SaaS operator changes belong in the control plane.
+
+Purpose codes are deployment-owned, not arbitrary school labels. Full storage means all supported/enabled purposes, never arbitrary files. Downgrade blocks new disallowed uploads/replacements but preserves existing files and normally authorized reads. Suspension/expiry never automatically deletes files. Pricing, exact packages and total quotas remain TBD; generated PDFs remain normally on demand.

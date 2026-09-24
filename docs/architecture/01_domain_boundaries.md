@@ -5,7 +5,7 @@
 
 ## 1. Isolation and five engines
 
-CONFIRMED: a school project's PostgreSQL/Auth/Storage own that school's operational data. A campus is a scope, not a SaaS tenant. The separate control plane routes to a school and tracks subscription/deployment metadata; it must not copy student, attendance, marks, finance, payroll or medical details.
+CONFIRMED: a school project's PostgreSQL/Auth own operational records and identities; provider-neutral object storage holds school-isolated bytes governed by its database metadata. A campus is a scope, not a SaaS tenant. The separate control plane routes to a school and tracks subscription/deployment metadata; it must not copy student, attendance, marks, finance, payroll or medical details.
 
 The Data Engine spans domain-owned facts and history. The Permission Engine authorizes every access path. Workflow owns approval orchestration; domains own validation and application. Automation reacts to events; AI requests permission-filtered data/actions. Neither can bypass domain commands. Audit, notifications, documents, offline sync and deployment are shared concerns with distinct responsibilities.
 
@@ -97,3 +97,6 @@ No student, enrollment, fee, payment, salary, marks, attendance, timetable, libr
 
 Next: review the [foundation entity map](../database/02_foundation_entity_map.md), [identity](../security/01_identity_auth_model.md), [RBAC](../security/02_rbac_permission_scope_model.md) and [ADR-001](../decisions/ADR-001-foundation-database-principles.md).
 
+## Storage and control-plane amendment
+
+The control plane owns plan/subscription lifecycle, typed entitlement definitions/values and effective school revisions. The school backend enforces a signed/versioned snapshot with bounded freshness, not a per-upload network lookup or client claim. Commercial pricing/catalogs are not copied into school operational modules. [ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md) and [ADR-004](../decisions/ADR-004-storage-plan-entitlements.md) retain school isolation, add no Foundation relation and do not design a billing engine. Only supported purpose/domain handlers may activate.

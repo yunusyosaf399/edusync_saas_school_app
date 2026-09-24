@@ -10,7 +10,7 @@ This is a long-term product. Shortcuts that make one screen easier but damage hi
 
 The product uses a SaaS model where **each customer school gets its own Supabase project**. Multiple school projects may live under one Supabase organization controlled by the SaaS operator. A separate SaaS control plane can route school code -> school project and track customer/deployment/version metadata.
 
-Operational school data must remain inside the school's project. The school project itself is the customer isolation boundary.
+Operational school database records remain inside the school's project, which is the database/Auth customer isolation boundary. Uploaded bytes may live in external provider-neutral object storage, with school-isolated mapping and authorization governed by the school's metadata (ADR-003).
 
 ## Inside one school project
 
@@ -150,7 +150,7 @@ Sensitive: blood group, allergies, emergency contacts, notes, vaccination, medic
 
 ## Documents/storage
 
-Uploaded source documents such as student photos, birth certificates and employee contracts are stored in structured private Supabase Storage. Current target: compress/validate to max 1 MB.
+Uploaded source documents use provider-neutral object-storage adapters. PostgreSQL owns file metadata, domain relationships and authorization; the selected provider stores bytes. Supabase Storage is one possible adapter, alongside reviewed R2/S3/Azure Blob options; no external provider is selected. Business uploads default to private, with current domain authorization required before temporary download access. Enforce server-verified 1..1,048,576 bytes (1 MiB inclusive) and SHA-256; client compression does not replace verification. Logical locations map through deployment configuration, with secrets only in server secret management and no persisted signed/private URLs.
 
 Generated certificates/ID cards/result cards/invoices/receipts/payslips are generated only when requested and normally are not automatically persisted as files.
 
@@ -199,3 +199,9 @@ Platform-specific camera/QR, file/export, printing, window, browser URL/session 
 Offline contracts share versions, conflict detection, idempotent replay and authorization revalidation. Storage/key technologies remain TBD by platform; sensitive local data must be encrypted, and an environment unable to satisfy that requirement must not persist a sensitive cache. No silent critical last-write-wins. Future hardware may use selected platforms or local gateways; clients consume canonical attendance without implementing every device protocol.
 
 See [client architecture](docs/architecture/03_flutter_multiplatform_architecture.md) and [ADR-002](docs/decisions/ADR-002-flutter-multiplatform-client-architecture.md). This decision authorizes documentation only; database/physical design remains the engineering phase.
+
+## Storage entitlements
+
+[ADR-004](docs/decisions/ADR-004-storage-plan-entitlements.md) confirms multiple capability-based storage packages: student-photo-only, selected document purposes, and all supported/enabled purposes. Employee-photo inclusion in the selected package and branding packaging remain PROPOSED/TBD. Commercial names/prices/total quotas are not selected.
+
+The control plane owns plan/subscription definitions, typed capabilities and effective revision history. School backend uses a trusted signed/versioned snapshot with refresh/invalidation and bounded freshness; invalid/stale snapshots deny new uploads. No new school entitlement table. Immutable file_objects.purpose_code uses a deployment-owned registry; no plan_id per file. Every upload also requires module and normal domain/permission/scope checks. Downgrade preserves existing authorized reads and blocks new disallowed uploads/replacements; suspension preserves data with read/export policy TBD. See [purpose architecture](docs/architecture/05_storage_entitlements_and_document_purposes.md).

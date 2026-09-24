@@ -46,8 +46,20 @@ The bootstrap operator path is deployment-only, with no anon/authenticated EXECU
 
 Setup validates school configuration, campus/year anchors and historical default-year pointer. Person/principal provisioning may precede the school profile, so self-referencing bootstrap does not depend on the school/year/logo cycle. Private upload and Auth services may be partially provisioned; keep accounts/handlers closed until their owning integration has been tested.
 
-Activation requires validated FKs, expected owner/role/default privileges, approved implemented operation contracts, actual non-owner test results, and project version evidence. Database structures existing does not mean every command/provider is enabled. External Auth recovery, actual Storage policies, future domain resolvers and email/push require their own implementation acceptance.
+Activation requires validated FKs, expected owner/role/default privileges, approved implemented operation contracts, actual non-owner test results, and project version evidence. Database structures existing does not mean every command/provider is enabled. External Auth recovery, selected object-storage adapter access controls, future domain resolvers and email/push require their own implementation acceptance.
 
 ## 5. No secret or customization overwrite
 
 The bootstrap is reproducible technical configuration, not production data restoration. Secrets remain server-held; object bytes and generated PDFs are not seeded. Rollback after real history uses compatible forward repair. A failure leaves operational activation closed and preserves diagnostic/identity history; it never deletes a school to retry setup.
+
+## Storage deployment configuration - ADR-003
+
+Bootstrap/deployment material may declare non-secret allowlisted logical storage locations; PRIVATE_UPLOADS/PUBLIC_BRANDING are proposed vocabulary only. No provider/location table or school settings row is seeded. Deployment configuration resolves logical keys to provider, physical container, endpoint/region and server secret-manager references. No API keys, account secrets, signing keys, service credentials or bearer tokens belong in application rows, seeds or Flutter; school business users do not configure infrastructure secrets through settings.
+
+Existing mappings remain stable for retained files; provider relocation uses new location/replacement lineage per [ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md). Unknown/missing mapping keeps upload/download activation closed. Provider choice/configuration, secure intent finalization, private access and contract tests are activation gates, not SQL-design blockers.
+
+## Storage capability bootstrap - ADR-004
+
+Install versioned purpose definitions as deployment material; retain historical definitions and disable unimplemented handlers. No operational purpose/entitlement table is seeded. No default Full plan, wildcard entitlement, quota amount or user bypass. Control-plane distribution supplies a school-bound signed/versioned snapshot to durable server storage with monotonic high-water mark and bounded freshness; missing/invalid state closes new use.
+
+Upload/finalization stays private to the existing file worker, requiring trusted intent/domain evidence and current entitlement revision. Audit revision activation before enabling new use. Key rotation, refresh, multi-instance coordination and stale-state tests precede activation. No pricing catalog or subscription secret in school settings.

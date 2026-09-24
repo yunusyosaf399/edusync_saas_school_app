@@ -117,7 +117,7 @@ Do not prematurely store biometric templates or face embeddings in the core scho
 
 ## 10. Storage
 
-Use private buckets/path conventions by domain/entity. Store metadata/reference in Postgres; object bytes live in Storage. Enforce file type/size rules. Do not use public buckets for sensitive student/medical/contract documents.
+Use provider-neutral server adapters and deployment-allowlisted logical locations. PostgreSQL owns file metadata, purpose and business relationships; external object storage holds bytes. Default PRIVATE; server verifies 1 MiB inclusive, content type and SHA-256. Explicit public branding is separate from sensitive documents. Current school entitlements and domain authorization govern new uploads; provider configuration/secrets stay outside school settings.
 
 ## 11. Generated PDFs
 
@@ -135,3 +135,7 @@ Every offline-capable table should be evaluated for:
 - sync scope minimization
 
 Finance and finalized results require especially careful offline mutation rules; not every module must support full offline writes in the first implementation.
+
+## Storage capability boundary
+
+The control plane is authoritative for plan/subscription definitions, typed entitlements and effective school revisions. School backend uses the [reviewed snapshot/purpose model](../architecture/05_storage_entitlements_and_document_purposes.md), with no school pricing catalog or new entitlement table. New upload requires capability plus normal authorization; client claims and Super Admin cannot bypass. Downgrade preserves historical files/authorized reads. No automatic deletion or invented total quota.

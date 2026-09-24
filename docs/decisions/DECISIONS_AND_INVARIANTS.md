@@ -67,8 +67,9 @@ These are approved product/architecture decisions that Codex must treat as invar
 
 ## Documents/storage
 
-- Important source uploads use private structured storage.
-- Current upload target is <=1 MB after compression/validation.
+- Source uploads use provider-neutral object-storage adapters, default PRIVATE; PostgreSQL owns metadata and business authorization ([ADR-003](ADR-003-provider-neutral-object-storage.md)). Supabase Storage is optional, not required.
+- Current initial upload class is server-verified 1..1,048,576 bytes inclusive (1 MiB) with SHA-256 and immutable logical location/key.
+- Private access is temporary after current domain authorization; no persisted signed URLs or credentials in application rows/clients. Explicit public branding requires authorized classification.
 - Generated PDFs are usually on-demand and not automatically stored.
 
 ## Client/offline
@@ -84,3 +85,7 @@ These are approved product/architecture decisions that Codex must treat as invar
 ## Deferred features
 
 Deferred does not mean forgotten. Architecture should remain extensible for GPS, biometrics, cameras, RFID/NFC, WhatsApp, direct payment gateways, inventory, IoT, CCTV, government/accounting integrations, languages/RTL, voice and advanced predictive AI.
+
+## Storage entitlement invariants
+
+[ADR-004](ADR-004-storage-plan-entitlements.md): school capabilities and user/domain permissions must both pass for uploads. Purpose codes are deployment-controlled; full storage means supported/enabled purposes. Commercial plan names never authorize core actions. Downgrade preserves existing valid files and authorized reads, blocks new disallowed uploads/replacements; suspension never auto-deletes. Generated PDFs remain on demand. Snapshot freshness and secure service enforcement gate activation; exact commercial packaging/prices/total quotas remain TBD.
