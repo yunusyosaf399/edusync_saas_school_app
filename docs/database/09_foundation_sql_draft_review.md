@@ -1,6 +1,6 @@
 # 09 — Foundation SQL draft review record
 
-**Historical authoring record and current provisional correction, 2026-09-24.** The initial sections below describe the files-only draft before execution. A later disposable local Supabase attempt reached migration 2 and exposed an Auth FK privilege defect. The corrected Strategy B SQL has **not** been executed; see the correction section below and [the local execution review](10_foundation_local_execution_review.md). No remote Supabase project was contacted.
+**Historical authoring and correction record, 2026-09-24.** The initial sections below describe the files-only draft before execution. A later disposable local Supabase attempt reached migration 2 and exposed an Auth FK privilege defect. Those historical sections retain their at-the-time status. A subsequent local run applied all eight corrected migrations; the current phase transition is recorded at the end of this document and in [the local execution review](10_foundation_local_execution_review.md). No remote Supabase project was contacted.
 
 ## Scope and dependency order
 
@@ -77,3 +77,11 @@ The first disposable local execution, reported in [the execution review](10_foun
 This is a **static correction only**. It has not been executed or proven. The next disposable local reset/rebuild must test whether `postgres` can alter the application-owned table and reference managed Auth under this role arrangement. It must also inspect resulting ownership and the FK, then test Auth deletion's `SET NULL`, binding-version/cutoff advance, and binding/audit evidence. The separate `schoolos_authz_reader` → `auth.uid()`/`auth.jwt()` preflight remains untouched and untested. Source counts remain eight migrations, 33 tables, 90 logical FKs, and three application late FKs.
 
 **Next task: FOUNDATION AUTH FK CORRECTION — INDEPENDENT STATIC REVIEW.** Do not rerun local migrations before that review.
+
+## Post-application authorization privilege correction — 2026-09-24
+
+The corrected Strategy B external FK was **successfully installed** when migrations 1–8 applied in lexical order on disposable local Supabase. Live inspection confirmed `principal_auth_bindings_auth_user_id_fkey` still targets `auth.users(id)` with `ON DELETE SET NULL ON UPDATE RESTRICT` and that the child table remains owned by `schoolos_schema_owner`. These eight applied migration files are now immutable. Earlier provisional statements above are retained as historical records, not current execution status.
+
+That FK installation is distinct from the later **Auth helper execution** failure. An authenticated RLS read reached `app_private.current_principal_id()` and failed with `permission denied for schema auth` at `auth.uid()`. Live privilege inspection found `schoolos_authz_reader` had EXECUTE on `auth.uid()` and `auth.jwt()` but lacked USAGE on schema `auth`. A ninth migration, `20260924183537_foundation_auth_helper_schema_usage.sql`, proposes only `GRANT USAGE ON SCHEMA auth TO schoolos_authz_reader` while temporarily assuming `supabase_auth_admin`. It adds no Auth table privilege, role membership, ownership change, or physical schema object. The repository does not establish whether the migration session user can `SET ROLE supabase_auth_admin`; PostgreSQL requires a SET-capable membership path or superuser authority. This and managed-platform compatibility require independent review. **Migration 9 has not been executed**, and no post-correction runtime result is claimed.
+
+The expected physical inventory remains 33 application tables, 385 columns, 90 logical FKs including three application late FKs, 49 indexes, 49 policies, 63 triggers, 39 SECURITY DEFINER functions, ENABLE/FORCE RLS on all 33 tables, and no F28. Those counts were measured after migration 8; they are not a post-migration-9 measurement. The `app` Data API allowlist remains separate from unexposed `app_private`.

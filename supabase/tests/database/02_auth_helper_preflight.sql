@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path = extensions, pg_catalog, public;
-SELECT plan(2);
+SELECT plan(3);
 SELECT is((SELECT count(*) FROM auth.users WHERE email='foundation-test-001@example.invalid'), 1::bigint, 'synthetic local Auth user exists');
 
 SET ROLE schoolos_schema_owner;
@@ -15,6 +15,12 @@ INSERT INTO app.campuses (id,school_id,code,name,state,created_by)
 VALUES ('33333333-3333-4333-8333-333333333333','22222222-2222-4222-8222-222222222222','A','Synthetic campus A','ACTIVE','11111111-1111-4111-8111-111111111111');
 RESET ROLE;
 
+-- Establish the negative fixture explicitly. A positive binding and complete
+-- campus grant, including a different-campus denial, require separate fixtures.
+SELECT is((SELECT count(*) FROM app_private.principal_auth_bindings
+           WHERE auth_user_id=(SELECT id FROM auth.users WHERE email='foundation-test-001@example.invalid')),
+          0::bigint, 'synthetic Auth user has no principal binding');
+
 SELECT set_config('request.jwt.claims', jsonb_build_object(
   'sub', (SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),
   'role', 'authenticated',
@@ -22,9 +28,10 @@ SELECT set_config('request.jwt.claims', jsonb_build_object(
   'is_anonymous', false
 )::text, true);
 SET ROLE authenticated;
--- With no grant chain, the row must be denied. Evaluating its policy must
--- nevertheless traverse the custom-owner auth.uid()/auth.jwt() call path.
-SELECT is((SELECT count(id) FROM app.campuses WHERE id='33333333-3333-4333-8333-333333333333'), 0::bigint, 'authenticated RLS read evaluates Auth helpers and denies missing grant');
+-- With no binding, the row must be denied. A completed assertion proves that
+-- RLS traversed the custom-owner auth.uid()/auth.jwt() path without SQL error;
+-- it does not prove binding resolution or a positive RBAC grant.
+SELECT is((SELECT count(id) FROM app.campuses WHERE id='33333333-3333-4333-8333-333333333333'), 0::bigint, 'authenticated RLS evaluates Auth helpers and denies an unbound user');
 RESET ROLE;
 
 SELECT * FROM finish();
