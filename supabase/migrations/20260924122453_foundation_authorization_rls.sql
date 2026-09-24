@@ -175,33 +175,33 @@ LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT app_private.has_complete_grant('campus.view','CAMPUS',target_campus)
 $body$;
+REVOKE ALL ON FUNCTION app_private.can_campus_read(uuid) FROM PUBLIC, anon, authenticated, service_role;
 CREATE FUNCTION app_private.can_room_read(target_campus uuid) RETURNS boolean
 LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT app_private.has_complete_grant('room.view','CAMPUS',target_campus)
 $body$;
+REVOKE ALL ON FUNCTION app_private.can_room_read(uuid) FROM PUBLIC, anon, authenticated, service_role;
 CREATE FUNCTION app_private.can_year_read() RETURNS boolean
 LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT app_private.has_complete_grant('academic_year.view','ALL',NULL)
 $body$;
+REVOKE ALL ON FUNCTION app_private.can_year_read() FROM PUBLIC, anon, authenticated, service_role;
 CREATE FUNCTION app_private.can_notification_read(recipient uuid) RETURNS boolean
 LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT recipient = app_private.current_principal_id()
      AND app_private.has_complete_grant('notification.own','OWN',NULL)
 $body$;
+REVOKE ALL ON FUNCTION app_private.can_notification_read(uuid) FROM PUBLIC, anon, authenticated, service_role;
 CREATE FUNCTION app_private.can_preference_read(recipient uuid) RETURNS boolean
 LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $body$
   SELECT recipient = app_private.current_principal_id()
      AND app_private.has_complete_grant('notification.preference.own','OWN',NULL)
 $body$;
-REVOKE ALL ON FUNCTION app_private.can_campus_read(uuid),
-  app_private.can_room_read(uuid), app_private.can_year_read(),
-  app_private.can_notification_read(uuid),
-  app_private.can_preference_read(uuid)
-FROM PUBLIC, anon, service_role;
+REVOKE ALL ON FUNCTION app_private.can_preference_read(uuid) FROM PUBLIC, anon, authenticated, service_role;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
 
@@ -221,6 +221,12 @@ RESET ROLE;
 -- Checked projection has no arbitrary principal/column selector. It is
 -- enabled only after the matching principal.self scope contract is bootstrapped.
 GRANT USAGE, CREATE ON SCHEMA app TO schoolos_read_executor;
+-- The SQL-language body is checked under its owner at creation time. Give
+-- only its exact source/helper privileges before SET ROLE creates it.
+GRANT USAGE ON SCHEMA app_private TO schoolos_read_executor;
+GRANT SELECT ON app_private.principals TO schoolos_read_executor;
+GRANT EXECUTE ON FUNCTION app_private.current_principal_id(),
+  app_private.has_complete_grant(text,text,uuid) TO schoolos_read_executor;
 SET ROLE schoolos_read_executor;
 CREATE FUNCTION app.read_own_principal()
 RETURNS TABLE (principal_id uuid, principal_kind text, display_label text)
@@ -231,6 +237,6 @@ AS $body$
    WHERE p.id = app_private.current_principal_id()
      AND app_private.has_complete_grant('principal.self','OWN',NULL)
 $body$;
+REVOKE ALL ON FUNCTION app.read_own_principal() FROM PUBLIC, anon, authenticated, service_role;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
-REVOKE ALL ON FUNCTION app.read_own_principal() FROM PUBLIC, anon, authenticated, service_role;

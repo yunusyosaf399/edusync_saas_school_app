@@ -252,6 +252,8 @@ CREATE TABLE app_private.file_objects (
   CONSTRAINT file_objects_ck_09 CHECK (state <> 'AVAILABLE' OR validated_at IS NOT NULL),
   CONSTRAINT file_objects_ck_10 CHECK (replaces_file_id IS NULL OR replaces_file_id <> id),
   CONSTRAINT file_objects_ck_11 CHECK (row_version > 0),
+  CONSTRAINT file_objects_ck_12 CHECK (state <> 'PENDING' OR validated_at IS NULL),
+  CONSTRAINT file_objects_ck_13 CHECK (state <> 'VALIDATED' OR validated_at IS NOT NULL),
   CONSTRAINT file_objects_uploaded_by_principal_id_fkey FOREIGN KEY (uploaded_by_principal_id) REFERENCES app_private.principals (id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT file_objects_campus_id_fkey FOREIGN KEY (campus_id) REFERENCES app.campuses (id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT file_objects_replaces_file_id_fkey FOREIGN KEY (replaces_file_id) REFERENCES app_private.file_objects (id) ON DELETE RESTRICT ON UPDATE RESTRICT,

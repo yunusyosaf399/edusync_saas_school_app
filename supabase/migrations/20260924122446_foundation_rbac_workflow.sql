@@ -214,6 +214,8 @@ CREATE TABLE app_private.approval_policy_versions (
   CONSTRAINT approval_policy_versions_ck_04 CHECK (activated_at IS NULL OR effective_from IS NOT NULL),
   CONSTRAINT approval_policy_versions_ck_05 CHECK (effective_until IS NULL OR effective_from IS NULL OR effective_until > effective_from),
   CONSTRAINT approval_policy_versions_ck_06 CHECK (row_version > 0),
+  CONSTRAINT approval_policy_versions_ck_07 CHECK (state = 'DRAFT' OR activated_at IS NOT NULL),
+  CONSTRAINT approval_policy_versions_ck_08 CHECK (state <> 'DRAFT' OR activated_at IS NULL),
   CONSTRAINT approval_policy_versions_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES app_private.operation_contracts (id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT approval_policy_versions_campus_id_fkey FOREIGN KEY (campus_id) REFERENCES app.campuses (id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT approval_policy_versions_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals (id) ON DELETE RESTRICT ON UPDATE RESTRICT
@@ -275,6 +277,7 @@ CREATE TABLE app_private.approval_requests (
   CONSTRAINT approval_requests_ck_06 CHECK (state IN ('DRAFT', 'SUBMITTED', 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'EXECUTED', 'INVALIDATED')),
   CONSTRAINT approval_requests_ck_07 CHECK (state IN ('DRAFT','CANCELLED') OR submitted_at IS NOT NULL),
   CONSTRAINT approval_requests_ck_08 CHECK (row_version > 0),
+  CONSTRAINT approval_requests_ck_09 CHECK (state <> 'DRAFT' OR submitted_at IS NULL),
   CONSTRAINT approval_requests_policy_id_operation_id_fkey FOREIGN KEY (policy_id,operation_id) REFERENCES app_private.approval_policy_versions (id,operation_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT approval_requests_operation_id_payload_schema_version_fkey FOREIGN KEY (operation_id,payload_schema_version) REFERENCES app_private.operation_contracts (id,payload_schema_version) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT approval_requests_requester_id_fkey FOREIGN KEY (requester_id) REFERENCES app_private.principals (id) ON DELETE RESTRICT ON UPDATE RESTRICT,
@@ -323,6 +326,12 @@ CREATE TABLE app_private.approval_request_steps (
   CONSTRAINT approval_request_steps_ck_03 CHECK (state IN ('WAITING', 'OPEN', 'APPROVED', 'REJECTED', 'CANCELLED')),
   CONSTRAINT approval_request_steps_ck_04 CHECK (closed_at IS NULL OR opened_at IS NULL OR closed_at >= opened_at),
   CONSTRAINT approval_request_steps_ck_05 CHECK (row_version > 0),
+  CONSTRAINT approval_request_steps_ck_06 CHECK (
+    (state = 'WAITING' AND opened_at IS NULL AND closed_at IS NULL) OR
+    (state = 'OPEN' AND opened_at IS NOT NULL AND closed_at IS NULL) OR
+    (state IN ('APPROVED','REJECTED') AND opened_at IS NOT NULL AND closed_at IS NOT NULL) OR
+    (state = 'CANCELLED' AND closed_at IS NOT NULL)
+  ),
   CONSTRAINT approval_request_steps_request_id_policy_id_fkey FOREIGN KEY (request_id,policy_id) REFERENCES app_private.approval_requests (id,policy_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT approval_request_steps_template_id_policy_id_fkey FOREIGN KEY (template_id,policy_id) REFERENCES app_private.approval_step_templates (id,policy_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT approval_request_steps_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals (id) ON DELETE RESTRICT ON UPDATE RESTRICT

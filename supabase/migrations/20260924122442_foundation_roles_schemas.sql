@@ -29,6 +29,12 @@ GRANT schoolos_workflow_executor TO postgres;
 GRANT schoolos_platform_executor TO postgres;
 GRANT schoolos_evidence_writer TO postgres;
 GRANT schoolos_bootstrap_executor TO postgres;
+-- Pre-execution managed-platform gate: the trusted deployment grantor must
+-- own (or hold grant options on) auth and auth.users. Stop before execution if
+-- it cannot grant these exact privileges; never drop the Auth FK as a fallback.
+-- The schema owner needs them only to declare its auth.users(id) foreign key.
+GRANT USAGE ON SCHEMA auth TO schoolos_schema_owner;
+GRANT REFERENCES (id) ON TABLE auth.users TO schoolos_schema_owner;
 CREATE SCHEMA app AUTHORIZATION schoolos_schema_owner;
 CREATE SCHEMA app_private AUTHORIZATION schoolos_schema_owner;
 REVOKE ALL ON SCHEMA app, app_private FROM PUBLIC, anon, authenticated, service_role;
