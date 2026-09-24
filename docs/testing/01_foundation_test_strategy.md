@@ -113,3 +113,19 @@ Every protected command needs paired allow/deny assertions, a version/race scena
 The current deliverable is a reviewed test strategy, not a claim that backend tests pass. Only documentation integrity can be checked now. Follow [dependency order](../database/03_foundation_dependency_order.md); track open choices in [ADR-001](../decisions/ADR-001-foundation-database-principles.md).
 
 **Next task: FOUNDATION SQL MIGRATION DRAFT — FILES ONLY, NO SUPABASE EXECUTION.** The [database execution plan](02_foundation_database_execution_plan.md) adds exact interval/revocation, terminal-receipt, INVALIDATED request, real-role/RLS and rebuild/upgrade tests selected by the physical review. No SQL or database test execution is performed in this documentation task.
+
+## 9. Future multiplatform client acceptance
+
+[ADR-002](../decisions/ADR-002-flutter-multiplatform-client-architecture.md) confirms Android, Windows and Web from one Flutter codebase. These are planned tests, not executable tests added or run by the documentation update.
+
+| Area | Future acceptance expectation |
+|---|---|
+| Shared business behavior | Run identical domain/application scenarios on each target; validation, workflow and reporting outcomes agree |
+| Authorization parity | Same actor, permission, campus/assignment, target and workflow state yields identical allow/deny results on all targets; test revoked access, direct API bypass, AI, exports and private storage |
+| Responsive presentation | Exercise Compact/Medium/Expanded/Large widths, resizing, preserved feature state and touch/pointer/keyboard interaction; exact breakpoint values await UI design |
+| Adapter contracts | Shared file/export, device and storage contracts handle success, unsupported capability, denied permission and failures consistently |
+| Build isolation | Web compilation does not depend on native filesystem/device APIs; Windows integrations do not break Web; Android-only APIs remain isolated from Web/Windows builds |
+| Offline security | Verify encrypted sensitive persistence, account/school cache isolation, versions, idempotent replay and live reauthorization on each supported implementation; no silent critical last-write-wins or unencrypted fallback |
+| Browser sessions/routes | Validate URL navigation and browser session behavior against shared authentication/routing contracts without weaker backend security |
+
+UI widgets, packages, breakpoint values and per-platform offline technologies remain TBD. No Flutter test code, dependency or build configuration is changed here.

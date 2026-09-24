@@ -195,6 +195,8 @@ This allows the same Flutter application to serve many independent school projec
 
 # 5. Core Architecture - Five Engines
 
+**CONFIRMED client architecture (2026-09-24):** One Flutter project/codebase serves Android, Windows and Web with shared domain/application/data/security logic, adaptive presentation and narrow platform capability adapters. This preserves the five engines and the school-per-Supabase-project boundary; see section 59.
+
 **CONFIRMED**
 
 ```text
@@ -888,6 +890,8 @@ Teachers can scan student-card QR codes or mark attendance manually. Basic anti-
 ---
 
 ## 22.1 Attendance Capture Source Architecture
+
+Future device integrations may operate on selected client platforms or through edge/local gateways. A Windows gateway may feed validated source events to the backend while Web consumes authorized canonical attendance results. No requirement makes every client implement every hardware protocol; biometric, RFID/NFC and camera integrations remain FUTURE.
 
 **CONFIRMED ARCHITECTURE GUARDRAIL / FUTURE-READY**
 
@@ -1891,6 +1895,8 @@ AI can only access data the requesting user is already permitted to access. It m
 
 # 58. Offline Capability
 
+**CONFIRMED client contract (2026-09-24):** Android, Windows and Web share record/version contracts, conflict detection, idempotent replay and authorization revalidation. Storage/key technology and detailed offline capability remain TBD per platform. Sensitive local data must meet encryption requirements; if an environment cannot meet them, do not persist that sensitive cache or silently substitute unencrypted storage. Critical conflicts never use silent last-write-wins.
+
 **CONFIRMED at architecture level**
 
 Flutter clients must support selected offline workflows. Attendance is a primary use case.
@@ -1928,12 +1934,23 @@ Local cached sensitive data should be encrypted.
 
 **CONFIRMED**
 
-Initial application targets:
+Confirmed update, 2026-09-24 ([ADR-002](../decisions/ADR-002-flutter-multiplatform-client-architecture.md)):
 
-- Mobile application using Flutter, with Android as the current development target
-- Windows desktop application distributed as `.exe`
+- **CONFIRMED:** EduSync uses one Flutter project/codebase targeting **Android, Windows and Web as first-class clients**.
+- **CONFIRMED:** Business logic, domain logic, authorization and backend contracts are shared across platforms. This includes authentication flows, Supabase repositories, validation, workflows/approvals, routing concepts, localization, feature state, platform-independent reporting, audit-facing APIs and reusable components.
+- **CONFIRMED:** UI presentation must support responsive/adaptive layouts based primarily on available window width and interaction capability, rather than operating-system switches.
 
-A Flutter web application is not the current selected PC target.
+Compact, Medium, Expanded and Large are conceptual layout classes. **TBD/PROPOSED:** exact pixel breakpoints, navigation widgets, visual density and state-management/routing packages. Navigation may use bottom navigation/drawers at compact widths, a rail at medium widths and a persistent labeled sidebar/rail at expanded/large widths. These are guidelines, not mandatory widgets. Routes, permissions and logical feature availability remain shared.
+
+Dense Students, Attendance, Fees, Results, Employees, Payroll, Library, Reports and Admissions views may use tables, panels, persistent filters and multi-column forms at wider widths, and cards, stacked fields, detail pages, bottom sheets and single-column forms at compact widths. These presentations use the same business logic.
+
+Platform-specific camera/QR/permissions/push on Android, filesystem/printing/window behavior on Windows, and browser file/download/storage/URL/session behavior on Web belong behind narrow capability adapters. Browser code must not assume unrestricted native filesystem/device access. Exact adapter technologies remain TBD.
+
+All targets obey identical authentication, role + permission + scope + contextual assignment + workflow state, RLS, approvals, audit, history, AI/storage and campus/assignment restrictions. UI hiding is never authorization; offline use does not weaken these rules.
+
+Flutter Web is an authenticated operational application for Principal/Admin dashboards, Teacher/Parent/Student portals, Finance/Admin operations, reporting and workflows. It does not introduce a public SEO/content-heavy marketing website requirement.
+
+See [client architecture](../architecture/03_flutter_multiplatform_architecture.md) for shared layers, adapter boundaries and remaining decisions. This supersedes the earlier platform priority and Web exclusion. No client implementation, dependency or deployment is authorized by this documentation decision.
 
 ---
 
@@ -2017,6 +2034,8 @@ This is preferable to editing source code separately for every customer.
 ---
 
 # 64. Deployment Repository and Reproducibility
+
+**CONFIRMED client boundary (2026-09-24):** Android, Windows and Web use one Flutter project/codebase and shared backend contracts. Client packaging/distribution and Web hosting procedures remain TBD; no deployment is introduced by this decision. Database/physical design remains the current engineering phase.
 
 **CONFIRMED objective**
 
@@ -2508,7 +2527,11 @@ Agreed role families include senior administration, finance, HR, teaching, suppo
 
 ## AH. Platforms
 
+Historical initial questionnaire entry (superseded on 2026-09-24 by section 59 and ADR-002):
+
 - Flutter mobile + Windows `.exe`.
+
+Current confirmed decision: Android, Windows and Web are first-class clients from one Flutter project/codebase.
 
 ## AI. Offline
 
@@ -2721,6 +2744,13 @@ This keeps product decisions, code, and database behavior aligned as the platfor
 ---
 
 # 80. Changelog
+
+## 2026-09-24 - Confirmed client-platform amendment to v0.2
+
+- Accepted ADR-002: one Flutter project/codebase; Android, Windows and Web first-class.
+- Confirmed shared business/domain/authorization/backend logic and responsive/adaptive UI; exact breakpoints and implementation packages remain TBD.
+- Clarified platform adapters, browser limitations, shared offline/security contracts and future hardware gateways.
+- Superseded earlier client priority/Web exclusion; retained the initial questionnaire entry explicitly as history. No database redesign or Flutter implementation.
 
 ## v0.2
 

@@ -9,6 +9,12 @@ Links below resolve from this document. The latest versioned requirements in `do
 - [CODEX_BOOTSTRAP_PROMPT.md](../../CODEX_BOOTSTRAP_PROMPT.md)
 - [README.md](../../README.md)
 
+## Platform decision and historical snapshots
+
+Confirmed 2026-09-24: [ADR-002](../decisions/ADR-002-flutter-multiplatform-client-architecture.md) and [client architecture](../architecture/03_flutter_multiplatform_architecture.md) establish Android + Windows + Web as first-class targets from one Flutter codebase.
+
+The original Markdown specification under `reference/` retains the earlier section 59 Web exclusion and section 73 mobile/Windows questionnaire entry as historical text. Its platform statements are superseded by the active specification and ADR-002. Binary PDF/DOCX/XLSX reference artifacts remain unchanged historical snapshots and may contain the old platform decision; they have not been regenerated or certified current. Do not use them to override current Markdown authority.
+
 ## Documentation
 
 - [docs/architecture/FUTURE_ARCHITECTURE_ROADMAP.md](../../docs/architecture/FUTURE_ARCHITECTURE_ROADMAP.md)

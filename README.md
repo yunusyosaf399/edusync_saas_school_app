@@ -9,6 +9,12 @@ School OS is a school operating system for Play Group/Nursery through Grade 12. 
 3. Review the [master specification](docs/requirements/School_OS_SaaS_Master_Specification_v0.2.md) for authoritative requirements and decision history.
 4. Use [CODEX_BOOTSTRAP_PROMPT.md](CODEX_BOOTSTRAP_PROMPT.md) when starting a fresh session.
 
+## Client architecture
+
+**Android, Windows and Web are first-class targets of one Flutter project/codebase.** Shared business/domain/backend logic supports responsive/adaptive presentation by available width and interaction capability, with narrow adapters for platform capabilities. All clients obey identical backend security. These are confirmed targets, not a claim that all clients are already implemented or tested.
+
+See [client architecture](docs/architecture/03_flutter_multiplatform_architecture.md) and [accepted ADR-002](docs/decisions/ADR-002-flutter-multiplatform-client-architecture.md). Breakpoints, UI packages and per-platform offline technology remain TBD. Database/physical design remains the current phase; no UI implementation or Web deployment is started by this decision.
+
 ## Repository layout
 
 The Flutter project (`pubspec.yaml`, `lib/`, `test/`, `android/`, `web/`, `windows/`) is at the repository root.
@@ -35,4 +41,4 @@ The v0.2 requirements preserve extension points for future biometric, camera and
 
 ## Documentation organization
 
-The environment pack was moved into this repository structure on 2026-09-22. All supplied artifacts were retained, including older reference versions and templates. Historical reference snapshots may show the original folder layout; follow the current repository structure linked above.
+The environment pack was moved into this repository structure on 2026-09-22. All supplied artifacts were retained, including older reference versions and templates. Historical reference snapshots may show the original folder layout and superseded client-platform decisions. Original Markdown and binary PDF/DOCX/XLSX snapshots remain unchanged; use the current requirements and ADR-002 for platform authority.

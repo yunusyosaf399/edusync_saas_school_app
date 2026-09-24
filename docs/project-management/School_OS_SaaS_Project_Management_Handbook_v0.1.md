@@ -15,7 +15,7 @@ This project is a configurable School Management SaaS / School Operating System,
 
 - One customer school uses one Supabase project for strong tenant isolation.
 - A SaaS control plane stores customer/project/subscription/version metadata, not school operational data.
-- The first desktop client is Flutter Windows (`.exe`).
+- Android, Windows and Web are first-class current targets of one Flutter project/codebase, with shared logic and adaptive presentation; see [ADR-002](../decisions/ADR-002-flutter-multiplatform-client-architecture.md). This documentation update does not schedule UI implementation.
 - Backend is Supabase/PostgreSQL with Auth, Storage, RLS and server-side functions/services.
 - Initial language is English; architecture remains localization-ready.
 - Delivery uses two-week sprints with architecture/release gates.
@@ -259,7 +259,7 @@ After GA, operate with incident severity levels, release channels, migration/ver
 
 ## 28. Improvement backlog after v0.1
 
-The handbook is intentionally improvable. Future versions can add effort points, cost/budget tracking, automated CI/CD provisioning, SLA/support metrics, telemetry/observability targets, licensing/subscription automation, multilingual delivery, mobile clients, external payment gateways, WhatsApp, GPS, biometrics and inventory after the core release is stable.
+The handbook is intentionally improvable. Future versions can add effort points, cost/budget tracking, automated CI/CD provisioning, SLA/support metrics, telemetry/observability targets, licensing/subscription automation, multilingual delivery, external payment gateways, WhatsApp, GPS, biometrics and inventory after the core release is stable.
 
 ## Appendix A - Management checklist
 

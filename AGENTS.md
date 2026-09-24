@@ -130,7 +130,15 @@ Biometric and camera features are **deferred**. Do not implement biometric stora
 
 ## Client rules
 
-Primary client target currently confirmed: **Flutter Windows `.exe`**. Keep domain/backend boundaries clean enough that additional Flutter/mobile/web clients can be introduced later without changing business truth.
+**CONFIRMED:** One Flutter project/codebase targets **Android, Windows and Web as first-class clients**. Share domain/application/business logic, repositories, authentication, authorization and backend contracts; use responsive/adaptive presentation and narrow platform adapters where capability differences require them. See [client architecture](docs/architecture/03_flutter_multiplatform_architecture.md) and [ADR-002](docs/decisions/ADR-002-flutter-multiplatform-client-architecture.md).
+
+- Do not duplicate feature implementations by platform without technical necessity; prefer shared domain/application layers.
+- Keep platform branching behind narrow adapters where practical.
+- Adapt UI primarily to available space and interaction model, not only `Platform.isAndroid` / `Platform.isWindows`. Do not stretch a mobile layout onto desktop.
+- Compact, Medium, Expanded and Large are conceptual layout classes; exact breakpoints and UI packages remain TBD.
+- Browser capabilities do not equal native Windows capabilities. Isolate native APIs from Web builds.
+- Every target obeys the same backend authorization, RLS, approval, audit, history, AI and storage rules. UI hiding is never authorization.
+- This target decision does not authorize UI implementation, dependencies or deployment; database/physical design remains the current phase.
 
 Offline support is a product requirement. Local sensitive data must be encrypted. Critical conflicts must be detected rather than silently resolved by last-write-wins.
 

@@ -4,6 +4,8 @@
 
 Use least privilege, default-deny for sensitive data, and server-enforced authorization. Never trust the Flutter UI to enforce critical permissions by itself.
 
+Android, Windows and Web are first-class clients of one Flutter codebase ([ADR-002](../decisions/ADR-002-flutter-multiplatform-client-architecture.md)). All obey identical authentication, role + permission + scope + contextual assignment + workflow state, RLS, approval, audit, historical-data, AI and storage authorization rules. Campus and assignment restrictions apply equally. Desktop, browser, mobile and offline paths receive no weaker authorization; UI hiding is never authorization. Offline replay revalidates current authority, and sensitive local caching requires encryption; unavailable secure storage must not fall back to unencrypted persistence.
+
 Never expose to Flutter:
 
 - Supabase service-role key

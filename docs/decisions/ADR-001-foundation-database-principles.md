@@ -114,7 +114,7 @@ The baseline has the following differences/ambiguities; none authorizes a silent
 
 | Observation | Resolution used in this package |
 |---|---|
-| Specification section 59 mentions mobile/Android development alongside Windows; AGENTS.md explicitly identifies Flutter Windows .exe as the current primary client | Follow AGENTS.md for priority; retain future/additional client boundaries. No Flutter changes or platform removal |
+| Historical client-priority discrepancy reviewed in this package | Superseded on 2026-09-24 by [ADR-002](ADR-002-flutter-multiplatform-client-architecture.md): one Flutter project/codebase, Android + Windows + Web first-class. Foundation physical design unchanged |
 | Specification section 69's proposed ordering lists workflow/audit late; AGENTS.md and DATABASE_DESIGN_NEXT_PHASE.md establish their foundations before business domains | Follow the governing foundation-first order; later domain integration is distinct from creating the shared core |
 | Earlier P04 allowed potential staff step-up on a shared credential; the latest requested baseline requires separate principals | Revise P04/identity/RBAC and dependent documents consistently; retain individual Teacher+Parent roles and shared Parent/Guardian-only login; authentication UX/recovery stay T01 |
 | Master specification has historical layout/version wording, including an old v0.1 ending despite its v0.2 heading, and a forward-looking version example | Treat v0.2 Markdown plus current repository guidance as authoritative; no bulk rewrite of historical text |

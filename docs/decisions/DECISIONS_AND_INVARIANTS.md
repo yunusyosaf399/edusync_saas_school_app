@@ -73,7 +73,10 @@ These are approved product/architecture decisions that Codex must treat as invar
 
 ## Client/offline
 
-- Current primary PC target is Flutter Windows `.exe`.
+- CONFIRMED: one Flutter project/codebase supports Android, Windows and Web as first-class current application targets ([ADR-002](ADR-002-flutter-multiplatform-client-architecture.md)).
+- Share domain/application/data/security logic; adapt presentation to available width and interaction capability with narrow platform adapters. Exact breakpoints remain TBD.
+- All targets obey the same backend authorization, RLS, approvals, audit and history rules; browser capabilities are not assumed to equal native APIs.
+- Offline contracts share versions, conflict detection, idempotency and live authorization revalidation; per-platform storage/key technology remains TBD. Do not persist sensitive caches where encryption requirements cannot be met.
 - Offline support is required.
 - Local sensitive data is encrypted.
 - Critical sync conflicts are detected/resolved, not silently overwritten.

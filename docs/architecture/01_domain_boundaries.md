@@ -9,6 +9,8 @@ CONFIRMED: a school project's PostgreSQL/Auth/Storage own that school's operatio
 
 The Data Engine spans domain-owned facts and history. The Permission Engine authorizes every access path. Workflow owns approval orchestration; domains own validation and application. Automation reacts to events; AI requests permission-filtered data/actions. Neither can bypass domain commands. Audit, notifications, documents, offline sync and deployment are shared concerns with distinct responsibilities.
 
+The [confirmed client architecture](03_flutter_multiplatform_architecture.md) uses one Flutter codebase for Android, Windows and Web. Domain/application/data/security contracts are shared; width-adaptive presentation and capability adapters do not create separate platform business domains or alter the Foundation physical model.
+
 ## 2. Responsibility and dependency map
 
 Dependencies below are business/design prerequisites, not permission to share unrestricted table access. Every operational domain also depends on Identity & Access and the audit contract.

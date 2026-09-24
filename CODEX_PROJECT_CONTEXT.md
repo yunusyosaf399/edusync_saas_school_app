@@ -168,7 +168,7 @@ AI may never bypass standard authorization. A teacher cannot obtain finance data
 
 ## Offline
 
-Offline capability is required, especially attendance. Local sensitive data should be encrypted. Sync needs idempotency and conflict detection. Critical conflicts such as contradictory attendance updates should surface for resolution rather than silently applying last-write-wins.
+Offline capability is required, especially attendance. Local sensitive data must be encrypted. Sync needs idempotency and conflict detection. Critical conflicts such as contradictory attendance updates should surface for resolution rather than silently applying last-write-wins.
 
 ## Audit
 
@@ -187,3 +187,15 @@ Do not implement these prematurely. Preserve clean extension points.
 ## Next step
 
 Proceed to database/backend design in dependency order. Define foundation conventions, identity/RBAC/scope, school/campus/academic foundation, workflow/audit primitives, then domain tables. Every module design should explicitly document relationships, history, constraints, indexes, RLS, workflow hooks, audit events, storage, offline implications and migration order.
+
+## CLIENT PLATFORM ARCHITECTURE
+
+CONFIRMED: **one Flutter project/codebase**, with **Android, Windows and Web as first-class current targets**. Shared domain/application logic, authentication flows, permissions, Supabase repositories, validation, approvals, routes, localization, feature state, platform-independent reporting and audit APIs serve all three.
+
+Presentation adapts primarily to available width and interaction capability. Compact, Medium, Expanded and Large are conceptual classes, not platform labels; exact pixel breakpoints, widgets and packages remain TBD. Shared features may use dense tables/panels at larger widths and cards/detail pages at compact widths.
+
+Platform-specific camera/QR, file/export, printing, window, browser URL/session and storage implementations belong behind narrow adapters. Web is an authenticated operational app, subject to browser restrictions, not a public marketing website requirement. All targets obey identical backend authorization, RLS, approvals, audit, history, AI/storage and campus/assignment restrictions.
+
+Offline contracts share versions, conflict detection, idempotent replay and authorization revalidation. Storage/key technologies remain TBD by platform; sensitive local data must be encrypted, and an environment unable to satisfy that requirement must not persist a sensitive cache. No silent critical last-write-wins. Future hardware may use selected platforms or local gateways; clients consume canonical attendance without implementing every device protocol.
+
+See [client architecture](docs/architecture/03_flutter_multiplatform_architecture.md) and [ADR-002](docs/decisions/ADR-002-flutter-multiplatform-client-architecture.md). This decision authorizes documentation only; database/physical design remains the engineering phase.

@@ -4,6 +4,10 @@ Legend: **CORE** = intended core product; **OPTIONAL** = can be enabled/disabled
 
 | Domain | Feature | Status | Important rule |
 |---|---|---|---|
+| Client | Android | CORE / CONFIRMED | First-class current target of one Flutter codebase; implementation follows phased delivery |
+| Client | Windows | CORE / CONFIRMED | First-class current target of the same codebase |
+| Client | Web | CORE / CONFIRMED | First-class authenticated application target; browser capability restrictions apply |
+| Client | Responsive/adaptive presentation | CORE / CONFIRMED | Shared logic, width/interaction-based layouts; exact breakpoints TBD |
 | SaaS | Control plane / school routing | CORE | Store customer/deployment metadata, not school operational records |
 | SaaS | One Supabase project per customer school | CORE | Primary tenant isolation boundary |
 | School | School profile/configuration | CORE | Configurable name/code/logo/address/currency/timezone/numbering |
@@ -58,7 +62,7 @@ Legend: **CORE** = intended core product; **OPTIONAL** = can be enabled/disabled
 | Audit | Sensitive action audit | CROSS-CUTTING | Super Admin also audited |
 | Workflow | Generic approval engine | CROSS-CUTTING | Typed workflows, configurable chains |
 | Automation | Immediate/scheduled/event rules | CROSS-CUTTING | Avoid hard-coded notification spaghetti |
-| Offline | Encrypted local cache and sync | CROSS-CUTTING | Conflict detection required |
+| Offline | Encrypted local cache and sync | CROSS-CUTTING | Shared conflict/idempotency/reauthorization contracts; storage technology TBD per target; no unencrypted sensitive fallback |
 | Backup | DB/config/deployment recovery | CROSS-CUTTING | Restore rehearsal before GA |
 | AI | Teacher assistant | CORE/ADVANCED | Permission-aware |
 | AI | Student tutor/homework assistant | CORE/ADVANCED | Permission-aware |

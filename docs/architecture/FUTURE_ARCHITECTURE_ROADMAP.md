@@ -74,3 +74,7 @@ Future possibilities include voice interfaces, advanced tutoring, teaching-plan 
 ## 10. Certificate verification
 
 Stable certificate/document identifiers can support future verification mechanisms. Blockchain is only one possible implementation and should not be assumed now.
+
+## Client targets and hardware capability boundaries
+
+Android, Windows and Web are current first-class targets of one Flutter codebase, not deferred roadmap features; see [client architecture](03_flutter_multiplatform_architecture.md). Future hardware remains deferred and may require a selected platform or edge/local gateway. A Windows gateway may communicate with a terminal while Web consumes authorized canonical attendance results. Do not require every client to implement every hardware protocol or duplicate attendance truth.
