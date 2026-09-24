@@ -115,3 +115,9 @@ Add only purpose_code to file_objects, immutable, NOT NULL, no default, lexical 
 A dedicated purpose catalog table was considered but is unnecessary for code-owned versioned policies; domain-relation-only purpose was rejected because cross-domain authorization/metering needs a stable file purpose. No new index is justified until an actual reporting workload exists.
 
 T11 remains RESOLVED FOR SQL DRAFT. Commercial names/prices/package membership (including employee photos/branding), total quotas, snapshot security/timing implementation, module/read-only suspension policy and all upload handlers are implementation/activation gates. SQL drafting can define the metadata constraint while uploads stay disabled. No SQL or client/provider implementation occurs in this amendment.
+
+## Upload provenance is separate from purpose ownership
+
+F23 uploaded_by_principal_id is the immutable NOT NULL initiating/submitting Principal, derived from verified server operation context. The taxonomy's Domain owner is the responsible business domain, not that uploader. created_by is the metadata-row insertion executor and can be a purpose-bound SYSTEM file worker distinct from the human initiator; later finalization preserves created_by and records its executor in audit. Explicit server-originated uploads require a legitimate purpose-bound SYSTEM initiator, never unknown/NULL attribution.
+
+Entitlement/module/purpose checks and current typed student/family, employee, payment, approval, medical or payroll authorization remain mandatory. Neither uploader equality nor a forged uploaded_by_principal_id grants access. This clarification changes no capability, package, registry or snapshot decision; see [provenance semantics](04_provider_neutral_object_storage.md#final-f23-provenance-clarification).

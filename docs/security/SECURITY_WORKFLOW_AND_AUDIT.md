@@ -93,7 +93,7 @@ AI queries must go through permission-aware services/views and must not receive 
 
 ## Provider-neutral files and entitlement gate - ADR-003 / ADR-004
 
-PostgreSQL RLS protects file metadata/business access; raw object access is separately enforced by the protected server file service. Derive principal server-side; require current permission/scope, typed owning-domain relationship, purpose/classification/state. Uploader ownership alone is insufficient. Approval, medical and payroll evidence keep their stronger domain restrictions. AVAILABLE is necessary but not sufficient for private download.
+PostgreSQL RLS protects file metadata/business access; raw object access is separately enforced by the protected server file service. Derive principal server-side; require current permission/scope, typed owning-domain relationship, purpose/classification/state. Uploader provenance is not domain ownership and never independently authorizes access. Approval, medical and payroll evidence keep their stronger domain restrictions. AVAILABLE is necessary but not sufficient for private download.
 
 Resolve immutable storage_location_key/object_key from trusted metadata and deployment allowlist. Never accept client provider credentials, endpoints or arbitrary buckets/containers. Isolated server provider credentials/signing secrets remain outside application settings and Flutter. Issue bounded temporary private access after current authorization; signed URLs are bearer capabilities until expiry, never persistent database/log/audit evidence. A new issuance reauthorizes. Explicit public branding is a separately authorized classification, not a private-file bypass.
 

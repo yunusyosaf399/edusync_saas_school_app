@@ -64,3 +64,7 @@ Typed numeric quota capabilities and reconciled usage may be added later; no pri
 [Storage purpose architecture](../architecture/05_storage_entitlements_and_document_purposes.md) defines taxonomy, packages, enforcement and snapshot lifecycle; [test strategy](../testing/01_foundation_test_strategy.md) and [execution plan](../testing/02_foundation_database_execution_plan.md) define future tests.
 
 Names/prices/total quotas, employee-photo and branding packaging, exact snapshot TTL/refresh/clock settings, provider implementation and suspension read/export policy remain TBD. T11 is RESOLVED FOR SQL DRAFT; activation stays closed until those relevant security contracts are implemented and tested. Foundation remains ready for files-only SQL drafting; no automatic SQL generation.
+
+## Final F23 semantic clarification
+
+uploaded_by_principal_id records immutable NOT NULL initiating/submitting Principal provenance; it is not domain ownership or access authorization. created_by remains the trusted metadata-row insertion executor and can differ for a purpose-bound SYSTEM worker. Typed domain relationships and normal authorization remain authoritative. This naming clarification preserves the accepted provider-neutral/entitlement architecture and introduces no table or new FK topology.

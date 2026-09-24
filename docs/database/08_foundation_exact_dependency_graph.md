@@ -153,7 +153,7 @@ Every line includes actor and composite relationships, not only the selected ERD
 | notifications | created_by | principals | id | Inline; parent already created |
 | notification_preferences | principal_id | principals | id | Inline; parent already created |
 | notification_preferences | created_by | principals | id | Inline; parent already created |
-| file_objects | owner_principal_id | principals | id | Inline; parent already created |
+| file_objects | uploaded_by_principal_id | principals | id | Inline; parent already created |
 | file_objects | campus_id | campuses | id | Inline; parent already created |
 | file_objects | replaces_file_id | file_objects | id | Inline self FK |
 | file_objects | created_by | principals | id | Inline; parent already created |

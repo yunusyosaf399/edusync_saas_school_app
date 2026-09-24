@@ -163,7 +163,7 @@ Every existing non-PK unique/index proposal was reviewed. Candidate-key indexes 
 | notifications | KEEP: event_id,recipient_id,context_key,category_code; id,recipient_id | KEEP: recipient_id,created_at — partial read_at/archived_at absent for unread inbox |
 | notification_preferences | KEEP: principal_id,category_code,channel_code | No secondary index justified |
 | notification_channel_deliveries | DEFER ALL with table | DEFER ALL |
-| file_objects | KEEP: storage_location_key,object_key | KEEP: owner_principal_id,state — own upload reconciliation; KEEP: campus_id,state — scoped document administration; KEEP: replaces_file_id — version lineage lookup |
+| file_objects | KEEP: storage_location_key,object_key | KEEP: uploaded_by_principal_id,state — initiating-principal/state reconciliation (not an access predicate); KEEP: campus_id,state — scoped document administration; KEEP: replaces_file_id — version lineage lookup |
 | setting_revisions | KEEP: setting_key,revision — partial school-level campus_id absent; setting_key,campus_id,revision — partial campus_id present; setting_key,effective_from — partial school-level; setting_key,campus_id,effective_from — partial campus_id present | KEEP: supersedes_id — revision lineage lookup |
 
 Covered principal_id/kind lookup on principal_auth_bindings does not create an additional index; its principal_id UNIQUE suffices. Person non-retired lookup reuses the accepted partial UNIQUE. Actor-FK child indexes are not automatically required where parents cannot be normally deleted and no query uses them; add only with measured investigation/maintenance need. Conversely historical new_auth_user_id lookup is added for non-reassignment, and operation_id on receipts supports its FK/registry usage. Planned interval lookup indexes are required for the newly selected non-overlap command. Actual query plans will be checked during implementation, not claimed here.
@@ -185,3 +185,11 @@ T11 remains **RESOLVED FOR SQL DRAFT**. There are **zero storage SQL-design bloc
 Downgrade preserves files and normal authorized reads; removed-purpose uploads/replacements deny. Suspension preserves data and denies new use; read/export/retention policy remains TBD. Commercial names/prices, exact package membership and total quotas remain TBD, not schema blockers. Generated PDFs stay on demand.
 
 Ready for **FOUNDATION SQL MIGRATION DRAFT - FILES ONLY, NO SUPABASE EXECUTION**. No SQL has been started.
+
+## Final F23 uploader clarification - 2026-09-24
+
+The misleading former file-owner field is renamed uploaded_by_principal_id: immutable NOT NULL initiating/submitting Principal provenance, FK principals.id with DELETE/UPDATE RESTRICT. Business ownership/access remain typed and domain-controlled. created_by identifies the metadata-row insertion executor; a human initiator and purpose-bound SYSTEM worker remain separately attributable. Later finalization records its executor in audit and does not rewrite either immutable field.
+
+KEEP (uploaded_by_principal_id, state) for the existing protected initiating-principal/state upload-reconciliation lookup, not an access predicate or an automatic uploader file list. No new index or capability. The 33-table Foundation, three late FKs and dependency topology are unchanged. Provider neutrality, purpose_code, entitlements, storage_location_key, 1 MiB and SHA-256 remain intact.
+
+T11 remains **RESOLVED FOR SQL DRAFT**; no contradiction or new SQL-design blocker was discovered. Other decisions remain approved. Ready for **FOUNDATION SQL MIGRATION DRAFT - FILES ONLY, NO SUPABASE EXECUTION**; SQL is not started.

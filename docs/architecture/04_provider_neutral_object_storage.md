@@ -33,7 +33,7 @@ Default business uploads are PRIVATE. Student photos (unless explicitly permitte
 
 School logos, explicitly public branding and school-approved public announcement assets may be PUBLIC/low-risk only after explicit authorized classification. A logo FK does not make its object public. Private and public delivery are separated by validated location policy; pending/quarantined files are never publicly readable. Reclassification cannot silently change immutable metadata; use a reviewed replacement/publication path. Public disclosure cannot promise recall of copies already downloaded.
 
-For private access require verified current principal + permission + scope/context + owning domain relationship + classification/state. A teacher's file.view alone cannot disclose another student's evidence. owner_principal_id or uploader identity is insufficient. Approval evidence requires approval visibility and file clearance; medical/payroll evidence requires its stronger domain clearance. Unknown domain resolver denies access.
+For private access require verified current principal + permission + scope/context + owning domain relationship + classification/state. A teacher's file.view alone cannot disclose another student's evidence. uploaded_by_principal_id records upload provenance only and is never sufficient authorization. Approval evidence requires approval visibility and file clearance; medical/payroll evidence requires its stronger domain clearance. Unknown domain resolver denies access.
 
 RLS protects metadata/business rows; metadata visibility is not raw object authorization. All Android, Windows and Web clients use the same protected file-service boundary.
 
@@ -80,3 +80,13 @@ TBD before activation: provider/SDK, physical mapping, actual logical codes, upl
 ## Entitlement extension - ADR-004
 
 [Storage purposes and entitlements](05_storage_entitlements_and_document_purposes.md) adds immutable purpose_code to F23 and the effective school capability/module gate to upload intent issuance and finalization. Purpose is deployment-controlled and bound to typed domain use, not client-selected packaging. No new relation. Existing private reads do not require current upload capability after downgrade; suspension read/export policy remains a separate activation decision. All provider-neutral, measured metadata, private access and lineage guarantees above remain.
+
+## Final F23 provenance clarification
+
+uploaded_by_principal_id means **the stable application Principal responsible for initiating/submitting the upload represented by this file metadata row**. It is immutable, NOT NULL provenance. It does not identify the business document owner/subject, determine access, grant modification of a linked record or identify the student/employee/payment relationship.
+
+created_by separately identifies the trusted Principal/executor that inserted the metadata row. A Parent can initiate while a purpose-bound file-validation SYSTEM Principal inserts the measured metadata. In a synchronous case they may coincide. A worker finalizing an existing row records its executor in audit rather than rewriting created_by. A legitimate server-originated source upload still has an explicitly authorized purpose-bound SYSTEM initiator; NULL/unknown attribution is not permitted.
+
+Business ownership belongs to typed domain relationships. Conceptual student_document -> student/file_object, employee_document -> employee/file_object, payment_evidence -> payment or request/file_object, and medical_document -> medical record/file_object are future domain examples, not new tables. Existing approval_request_files -> approval request/file_object remains valid. A Nurse/HR/Accountant/Teacher/requester who submits evidence does not thereby become its subject or business owner.
+
+Access requires current principal, permission, scope/context, typed domain relationship, purpose policy, classification/state and applicable workflow restrictions. Upload additionally retains current school entitlement/module checks. Parent-child, employee, payment, approval, medical and payroll authorization cannot be replaced by uploader equality. An uploader may later lose access while evidence stays valid; another domain-authorized actor need not be the uploader. No uploader-self capability is granted here; any later such capability needs its own explicit approved rule.

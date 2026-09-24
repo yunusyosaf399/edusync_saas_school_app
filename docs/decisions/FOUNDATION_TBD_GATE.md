@@ -72,3 +72,11 @@ T11 remains **RESOLVED FOR SQL DRAFT**. There are **zero storage SQL-design bloc
 Downgrade preserves files and normal authorized reads; removed-purpose uploads/replacements deny. Suspension preserves data and denies new use; read/export/retention policy remains TBD. Commercial names/prices, exact package membership and total quotas remain TBD, not schema blockers. Generated PDFs stay on demand.
 
 Ready for **FOUNDATION SQL MIGRATION DRAFT - FILES ONLY, NO SUPABASE EXECUTION**. No SQL has been started.
+
+## Final F23 uploader clarification - 2026-09-24
+
+The misleading former file-owner field is renamed uploaded_by_principal_id: immutable NOT NULL initiating/submitting Principal provenance, FK principals.id with DELETE/UPDATE RESTRICT. Business ownership/access remain typed and domain-controlled. created_by identifies the metadata-row insertion executor; a human initiator and purpose-bound SYSTEM worker remain separately attributable. Later finalization records its executor in audit and does not rewrite either immutable field.
+
+KEEP (uploaded_by_principal_id, state) for the existing protected initiating-principal/state upload-reconciliation lookup, not an access predicate or an automatic uploader file list. No new index or capability. The 33-table Foundation, three late FKs and dependency topology are unchanged. Provider neutrality, purpose_code, entitlements, storage_location_key, 1 MiB and SHA-256 remain intact.
+
+T11 remains **RESOLVED FOR SQL DRAFT**; no contradiction or new SQL-design blocker was discovered. Other decisions remain approved. Ready for **FOUNDATION SQL MIGRATION DRAFT - FILES ONLY, NO SUPABASE EXECUTION**; SQL is not started.

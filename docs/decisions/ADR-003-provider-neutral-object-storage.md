@@ -72,3 +72,7 @@ T11 is RESOLVED FOR SQL DRAFT; provider/SDK selection, mapping, expiry, intent p
 ## Subsequent extension
 
 [ADR-004](ADR-004-storage-plan-entitlements.md) adds immutable purpose_code and entitlement/module checks for new upload use. This extends F23 without changing this ADR's provider boundary, measured metadata constraints or no-new-table decision. Existing authorized reads survive downgrade.
+
+## Final F23 semantic clarification
+
+uploaded_by_principal_id records immutable NOT NULL initiating/submitting Principal provenance; it is not domain ownership or access authorization. created_by remains the trusted metadata-row insertion executor and can differ for a purpose-bound SYSTEM worker. Typed domain relationships and normal authorization remain authoritative. This naming clarification preserves the accepted provider-neutral/entitlement architecture and introduces no table or new FK topology.

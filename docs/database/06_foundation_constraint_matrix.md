@@ -50,7 +50,7 @@ The fully qualified namespace is listed in the catalog. Every PK is immutable UU
 | notifications / F22 | id | (recipient_id,recipient_kind) → principals(id,kind); event_id → outbox_events.id; created_by → principals.id | event_id,recipient_id,context_key,category_code; id,recipient_id |
 | notification_preferences / F27 | id | principal_id → principals.id; created_by → principals.id | principal_id,category_code,channel_code |
 | notification_channel_deliveries / F28 | id | (notification_id,recipient_id) → notifications(id,recipient_id); created_by → principals.id | notification_id,channel_code,endpoint_ref,endpoint_version |
-| file_objects / F23 | id | owner_principal_id → principals.id; campus_id → campuses.id; replaces_file_id → file_objects.id; created_by → principals.id | storage_location_key,object_key |
+| file_objects / F23 | id | uploaded_by_principal_id → principals.id; campus_id → campuses.id; replaces_file_id → file_objects.id; created_by → principals.id | storage_location_key,object_key |
 | setting_revisions / F24 | id | campus_id → campuses.id; supersedes_id → setting_revisions.id; created_by → principals.id | setting_key,revision — partial school-level campus_id absent; setting_key,campus_id,revision — partial campus_id present; setting_key,effective_from — partial school-level; setting_key,campus_id,effective_from — partial campus_id present |
 
 ## 3. Per-table CHECK, exclusion, immutability and concurrency matrix
@@ -91,7 +91,7 @@ I/F/E/V have the catalog's exact meanings. All PK/created_at/created_by fields a
 | notifications | recipient_kind INDIVIDUAL/FAMILY; nonblank category_code/context_key; summary object; row_version > 0 | None; protected rules apply | recipient_id (I), recipient_kind (I), event_id (I), category_code (I), context_key (I), summary (I), read_at (E), archived_at (E) | row_version expected value; server increments |
 | notification_preferences | nonblank category_code; channel_code IN_APP (initial Foundation); quiet_hours object if present; row_version > 0; quiet_hours is NULL in initial Foundation | None; protected rules apply | principal_id (I), category_code (I), channel_code (I) | row_version expected value; server increments |
 | notification_channel_deliveries | channel_code EMAIL/PUSH; endpoint_version > 0; attempt_count >= 0; state PENDING/LEASED/RETRY/SENT/CANCELLED/DEAD; lease fields both present iff LEASED; SENT iff sent_at present; row_version > 0 | None; protected rules apply | notification_id (I), recipient_id (I), channel_code (I), endpoint_ref (I), endpoint_version (I), sent_at (E) | DEFERRED; no initial SQL |
-| file_objects | byte_size between 1 and 1048576 inclusive; hash exactly 32 bytes; nonblank storage_location_key/object_key/content_type/classification; purpose_code matches ^[A-Z][A-Z0-9_]{0,63}$; state PENDING/VALIDATED/AVAILABLE/QUARANTINED/ARCHIVED/PURGED; AVAILABLE implies validated_at present; replaces_file_id differs from id; row_version > 0 | None; protected rules apply | owner_principal_id (I), campus_id (I), storage_location_key (I), purpose_code (I), object_key (I), content_type (I), byte_size (I), content_hash (I), classification (I), validated_at (E), replaces_file_id (I) | row_version expected value; server increments |
+| file_objects | byte_size between 1 and 1048576 inclusive; hash exactly 32 bytes; nonblank storage_location_key/object_key/content_type/classification; purpose_code matches ^[A-Z][A-Z0-9_]{0,63}$; state PENDING/VALIDATED/AVAILABLE/QUARANTINED/ARCHIVED/PURGED; AVAILABLE implies validated_at present; replaces_file_id differs from id; row_version > 0 | None; protected rules apply | uploaded_by_principal_id (I), campus_id (I), storage_location_key (I), purpose_code (I), object_key (I), content_type (I), byte_size (I), content_hash (I), classification (I), validated_at (E), replaces_file_id (I) | row_version expected value; server increments |
 | setting_revisions | nonblank setting_key; positive revision/value_schema_version; value JSON object; supersedes_id differs from id | No EXCLUDE; unique effective point and locked revision chain | setting_key (I), campus_id (I), revision (I), value_schema_version (I), value (I), effective_from (I), supersedes_id (I) | Append-only; UNIQUE identity/sequence and parent lock |
 
 ## 4. Index plan
@@ -132,7 +132,7 @@ Each PK and every UNIQUE in section 2 supplies an index for identity lookup, the
 | notifications | recipient_id,created_at — partial read_at/archived_at absent for unread inbox |
 | notification_preferences | None beyond PK/UNIQUE |
 | notification_channel_deliveries | DEFER ALL with table |
-| file_objects | owner_principal_id,state — own upload reconciliation; campus_id,state — scoped document administration; replaces_file_id — version lineage lookup |
+| file_objects | uploaded_by_principal_id,state — initiating-principal/state reconciliation (not an access predicate); campus_id,state — scoped document administration; replaces_file_id — version lineage lookup |
 | setting_revisions | supersedes_id — revision lineage lookup |
 
 Long-lived parents are not routinely deleted; absence of a child-FK index here is deliberate unless a shown lookup needs it. Revisit large referencing tables before any approved retention maintenance, rather than inventing all FK indexes now. Reviewer worklists join approval_step_reviewers(reviewer_id, withdrawn_at, step_id) to step state. Scope lookup starts with the principal assignment index, then assignment_permission_scopes(assignment_id, permission_id, revoked_at), matching the same grant and resolver. Receipt uniqueness arbitrates concurrent retries. Unread notification and due-delivery partial indexes must use stored state/null predicates, not a volatile current-time expression.
@@ -194,3 +194,9 @@ The [provider-neutral contract](../architecture/04_provider_neutral_object_stora
 ## F23 purpose enforcement - ADR-004
 
 purpose_code is TEXT NOT NULL, immutable, no default; lexical CHECK ^[A-Z][A-Z0-9_]{0,63}$. The deployment registry and typed owning-domain contract are checked by protected commands; lexical validity alone never enables a purpose. No purpose FK/table or extra index. Entitlement/module checks occur in the trusted server service before private file-worker metadata transitions. Unknown codes and purpose/content/domain mismatches reject. Downgrade cannot delete or invalidate previously available evidence. No constraints/topology outside F23 change.
+
+## Final F23 uploader clarification
+
+uploaded_by_principal_id replaces the misleading former owner field as immutable UUID NOT NULL -> principals.id, ON DELETE RESTRICT / ON UPDATE RESTRICT. It records the verified initiating/submitting Principal, never inferred business ownership or access. created_by separately records the trusted metadata-row insertion executor; worker finalization cannot rewrite either attribution. Purpose-bound SYSTEM initiators are allowed only for explicit legitimate system operations, not unknown-uploader fallback.
+
+KEEP (uploaded_by_principal_id, state) for the existing protected initiating-principal/state reconciliation lookup (PENDING/QUARANTINED); it also supports the leading attribution FK lookup. It does not authorize an uploader-only file list. Existing indexes and FK topology otherwise remain unchanged.

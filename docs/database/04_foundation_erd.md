@@ -256,7 +256,7 @@ erDiagram
   schoolProfiles {
     uuid id PK
   }
-  principals ||--o{ fileObjects : "owner_principal_id"
+  principals ||--o{ fileObjects : "uploaded_by_principal_id"
   campuses o|--o{ fileObjects : "campus_id"
   fileObjects o|--o{ fileObjects : "replaces_file_id"
   fileObjects o|--o{ schoolProfiles : "logo_file_id"

@@ -94,3 +94,20 @@ Documentation-only acceptance cases for [ADR-003](../decisions/ADR-003-provider-
 | Generated artifacts/quotas | Generated PDFs stay on demand; no implicit archiving or invented GB cap; future usage distinguishes stored/archived/quarantined/purged and pre-row orphan bytes |
 
 Provider choice, TTL/refresh/clock-skew settings, content allowlists, trusted intent persistence and snapshot transport/fencing must be selected and tested before upload activation. Metadata/SQL readiness is not adapter or commercial enforcement deployment readiness.
+
+## F23 upload provenance acceptance cases
+
+Planned tests only; no executable tests introduced. Upload entitlement/module/purpose and existing domain rules remain prerequisites.
+
+| Case | Required result |
+|---|---|
+| Parent submits child's birth certificate | uploaded_by_principal_id is Parent; typed child/student relationship owns document context; access follows current family/student authorization, not uploader equality |
+| HR submits employee contract | HR remains uploader, not employee subject/business owner; HR/domain authorization governs access |
+| Accountant submits payment evidence | Accountant attribution does not replace Finance/payment relationship authorization |
+| File worker creates metadata for human upload | uploaded_by_principal_id preserves verified human initiator; created_by is purpose-bound SYSTEM insertion executor; later finalization of an existing row preserves created_by and audits finalizer |
+| Uploader loses permission | File remains valid evidence; former uploader cannot access it solely through upload provenance |
+| Other authorized actor | Access through typed owning-domain permission succeeds even though actor did not upload file |
+| Forged uploaded_by_principal_id | Client claim rejected/ignored; persisted initiator comes from verified operation context, never attacker-selected Principal |
+| FAMILY upload | Family-authorized evidence may be submitted; file relation never grants staff authority |
+| SYSTEM/null attribution | Explicit purpose-bound server operation can be SYSTEM initiator; unknown/NULL uploader and generic SYSTEM substitution reject |
+| Attribution integrity / reconciliation | Initiator/creator remain immutable and principal deletion/update is restricted; protected initiating-principal/state reconciliation works without exposing arbitrary uploader-only reads |
