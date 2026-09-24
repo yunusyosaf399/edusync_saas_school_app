@@ -1,4 +1,5 @@
--- FOUNDATION DRAFT 2/8. Files only; SQL HAS NOT BEEN EXECUTED.
+-- FOUNDATION DRAFT 2/8. Corrected after the first disposable local apply failed;
+-- this corrected revision has not been executed.
 -- Structural DDL only. No school data, bootstrap or runtime entry points.
 SET ROLE schoolos_schema_owner;
 
@@ -66,11 +67,22 @@ CREATE TABLE app_private.principal_auth_bindings (
   CONSTRAINT principal_auth_bindings_ck_05 CHECK (isfinite(tokens_valid_from)),
   CONSTRAINT principal_auth_bindings_ck_06 CHECK (row_version > 0),
   CONSTRAINT principal_auth_bindings_principal_id_principal_kind_fkey FOREIGN KEY (principal_id,principal_kind) REFERENCES app_private.principals (id,kind) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT principal_auth_bindings_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals (id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT principal_auth_bindings_auth_user_id_fkey FOREIGN KEY (auth_user_id) REFERENCES auth.users (id) ON DELETE SET NULL ON UPDATE RESTRICT
+  CONSTRAINT principal_auth_bindings_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals (id) ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ALTER TABLE app_private.principal_auth_bindings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_private.principal_auth_bindings FORCE ROW LEVEL SECURITY;
+
+-- The first local apply proved postgres cannot re-grant managed Auth privileges
+-- to the application owner. Keep table ownership with schoolos_schema_owner;
+-- provisionally install only this external FK as the trusted deployment role.
+-- The next separately authorized local execution must prove this role can ALTER
+-- the application-owned table and reference auth.users(id).
+RESET ROLE;
+ALTER TABLE app_private.principal_auth_bindings
+  ADD CONSTRAINT principal_auth_bindings_auth_user_id_fkey
+  FOREIGN KEY (auth_user_id) REFERENCES auth.users (id)
+  ON DELETE SET NULL ON UPDATE RESTRICT;
+SET ROLE schoolos_schema_owner;
 
 CREATE TABLE app_private.principal_binding_events (
   id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),

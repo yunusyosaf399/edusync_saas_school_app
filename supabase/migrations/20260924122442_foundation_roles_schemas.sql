@@ -1,6 +1,7 @@
--- FOUNDATION DRAFT 1/8. Files only; SQL HAS NOT BEEN EXECUTED.
+-- FOUNDATION DRAFT 1/8. Corrected after the first disposable local apply failed;
+-- this corrected revision has not been executed.
 -- Requires trusted deployment DDL authority: CREATE ROLE, CREATE SCHEMA,
--- membership grants, managed auth.users REFERENCES for the schema owner.
+-- membership grants, and the cross-boundary Auth FK installation in draft 2/8.
 -- Do not weaken these preflight requirements to service_role or authenticated DML.
 CREATE ROLE schoolos_schema_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
 CREATE ROLE schoolos_bootstrap_executor NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
@@ -50,12 +51,6 @@ ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_platform_executor
   REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_evidence_writer
   REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
--- Pre-execution managed-platform gate: the trusted deployment grantor must
--- own (or hold grant options on) auth and auth.users. Stop before execution if
--- it cannot grant these exact privileges; never drop the Auth FK as a fallback.
--- The schema owner needs them only to declare its auth.users(id) foreign key.
-GRANT USAGE ON SCHEMA auth TO schoolos_schema_owner;
-GRANT REFERENCES (id) ON TABLE auth.users TO schoolos_schema_owner;
 CREATE SCHEMA app AUTHORIZATION schoolos_schema_owner;
 CREATE SCHEMA app_private AUTHORIZATION schoolos_schema_owner;
 REVOKE ALL ON SCHEMA app, app_private FROM PUBLIC, anon, authenticated, service_role;

@@ -55,3 +55,6 @@ private/
 *.p12
 *.pem
 *.key
+
+# Supabase CLI local runtime state (may contain project links or credentials)
+/supabase/.temp/
