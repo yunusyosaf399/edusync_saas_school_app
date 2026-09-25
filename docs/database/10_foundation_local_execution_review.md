@@ -376,3 +376,46 @@ Final database/Auth containers were healthy with restart count 0. PostgreSQL pos
 Exactly nine migration versions remained applied: `20260924122442`, `20260924122445`, `20260924122446`, `20260924122448`, `20260924122450`, `20260924122451`, `20260924122453`, `20260924122455`, `20260924183537`. No migration repair, migration 10, schema modification, reset, remote-project action or credential commit occurred. **Only this review changed**; migrations 1–9, all tests, config, application code and dependencies stayed unchanged. No helper file was needed. **No remaining blocker for this integration gate.**
 
 **Next task: FOUNDATION CLEAN RESET + NINE-MIGRATION REBUILD + POST-RESET FULL VALIDATION.** It was not started.
+
+## Attempt 10 — clean local reset, nine-migration rebuild and post-reset validation, 2026-09-25
+
+**Result: PASS for the complete disposable local rebuild gate.** Tested repository HEAD `d3eed4d1b43dc184aa5670eea6a34a37c94a6fb1` from a clean worktree. Docker Linux server `29.4.3`, Supabase CLI `2.98.2`, local PostgreSQL `17.6`, and Git `2.51.2.windows.1`; no tool was updated. The Supabase project ID was `saas_OS_school_app`, the API and DB targets were respectively `127.0.0.1:54321` and `127.0.0.1:54322`, and `supabase/.temp/` contained only `cli-latest` (no linked `project-ref` or pooler artifact). `config.toml` exposed `public`, `graphql_public`, and `app`, excluding `app_private`. The repository held exactly nine SQL migrations and nine database test files; `supabase/seed.sql` was absent. The installed CLI help confirmed `--local --no-seed` as supported flags.
+
+Before reset, local migration history held all nine versions. The Attempt 9 retained SYSTEM actor was RETIRED, its binding was detached, both BOUND/UNBOUND events and both audits existed, and the deleted integration Auth UUID remained absent. The single authorized command **`supabase db reset --local --no-seed`** exited 0. It recreated the local database and applied all nine files from zero in lexical order: `20260924122442`, `20260924122445`, `20260924122446`, `20260924122448`, `20260924122450`, `20260924122451`, `20260924122453`, `20260924122455`, `20260924183537`. No migration failed, skipped, duplicated or required repair. No seed data was applied. After reset the migration history contained those exact nine versions once each.
+
+Trusted inspection found the former fixture IDs `09100001-0000-4000-8000-000000000001` through `09100004-0000-4000-8000-000000000004` absent, with zero old binding events and audits. `auth.users` was empty. Before test user recreation, all **33 application tables** in `app` and `app_private` were individually counted and contained **zero rows**; the rebuild installed schema objects, not business data.
+
+| Rebuilt physical inventory | Live count |
+|---|---:|
+| Application schemas / tables / columns | 2 / 33 / 385 |
+| Application FKs / named late FKs | 90 / 3 |
+| Reviewed non-constraint indexes / RLS policies | 49 / 49 |
+| Non-internal triggers / application SECURITY DEFINER functions | 63 / 39 |
+| Tables with ENABLE RLS / FORCE RLS | 33 / 33 |
+| Deferred F28 `notification_channel_deliveries` | 0 |
+| Applied migration versions | 9 |
+
+The rebuilt `principal_auth_bindings_auth_user_id_fkey` again ran from `app_private.principal_auth_bindings` to `auth.users` with **ON DELETE SET NULL / ON UPDATE RESTRICT**; the child table owner remained `schoolos_schema_owner`. There were exactly **12 School OS roles**: nine NOLOGIN and three LOGIN. All 12 remained NOINHERIT, NOSUPERUSER, NOCREATEDB, NOCREATEROLE and NOBYPASSRLS, with zero application-role memberships. Live `current_principal_id()` was owned by `schoolos_authz_reader`, STABLE SECURITY DEFINER, with `search_path=pg_catalog, pg_temp`. Its installed source read `request.jwt.claims` and optional `request.jwt.claim.sub`, without `auth.uid()` or `auth.jwt()` calls.
+
+The `schoolos_authz_reader` role had no Auth schema USAGE/CREATE, no `auth.users` SELECT/INSERT/UPDATE/DELETE, and no `supabase_auth_admin` membership. PUBLIC, anon and service_role each had **zero** application function EXECUTE; authenticated had exactly **six** reviewed read functions and no direct EXECUTE on `current_principal_id()` or `has_complete_grant(text,text,uuid)`. Authenticated column-level SELECT was limited to `app.academic_years`, `app.campuses`, `app.notification_preferences`, `app.notifications` and `app.rooms`; direct application table mutation count was zero. Anon application table access count was zero. No denied internal helper was invoked directly.
+
+The actual local Data API accepted an anon-key `Accept-Profile: app` request to `/rest/v1/` with **HTTP 200**, and rejected `Accept-Profile: app_private` with **HTTP 406**. The key remained only in process memory. This independently confirmed the runtime exposure rather than relying only on the TOML file.
+
+After proving an empty Auth state, exactly five required synthetic users were created through local Auth signup, each with a generated disposable password: `foundation-test-001@example.invalid`, `foundation-rbac-001@example.invalid`, `foundation-family-001@example.invalid`, `foundation-own-001@example.invalid`, and `foundation-own-002@example.invalid`. Each email existed exactly once; their new UUIDs were resolved by the tests. The deleted Attempt 9 integration user was **not** recreated. No password, key, access/refresh token or other credential was logged or committed.
+
+| Serial post-reset test | Result |
+|---|---:|
+| 01 Foundation catalog | 44/44 PASS |
+| 02 Auth helper preflight | 6/6 PASS |
+| 07 positive RBAC/RLS | 33/33 PASS |
+| 08 FAMILY/OWN scope | 41/41 PASS |
+| 09 Auth-deletion trigger contract | 23/23 PASS |
+| Full suite, including preserved structural files 03–06 | **9 files / 220 planned / 220 passed — PASS** |
+
+No second real Auth Admin deletion was performed. The full suite tested file constraints, family intervals, approval lifecycle and immutable evidence in files 03–06 alongside the critical identity and authorization tests. All `supabase test db` commands ran serially. Both `supabase db lint --local --level error --fail-on error` and `supabase db lint --local --level warning --fail-on error` exited 0 and reported `No schema errors found` for `app`, `app_private`, `extensions` and `public`.
+
+After tests and lint, all 33 application tables were counted again and remained **empty**. There were zero committed ACTIVE identity-reconciliation actors, five distinct required synthetic Auth users, no integration Auth user, and no old retained fixture/evidence. Migration history still contained exactly the same nine versions. The database and Auth containers were running and healthy with restart count 0; API container was running with restart count 0. PostgreSQL postmaster start time after the reset was `2026-09-25 10:20:15.125955+00`; no signal 11, segmentation fault, interrupted-database, crash-recovery or unexpected server-process termination appeared in the recent database logs. The successfully rebuilt local database was preserved for inspection.
+
+**Only this execution review changed in the repository.** Migrations 1–9, tests 01–09, Supabase config, Flutter code, dependencies and other architecture/security documents were unchanged. No migration 10, second reset, remote link/deploy/contact, or credential commit occurred. **No remaining blocker for this local clean-rebuild gate.**
+
+**Next task: FOUNDATION MANAGED SUPABASE THROWAWAY PREFLIGHT — STATIC + DEPLOYMENT PLAN.** No managed project was linked or contacted.
