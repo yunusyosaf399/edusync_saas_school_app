@@ -1,6 +1,6 @@
 # Foundation local execution review — 2026-09-24
 
-**Current result: FAIL — RUNTIME AUTH/SECURITY PREFLIGHT.** This review preserves three local stages. Attempt 1 was blocked by Docker; attempt 2 exposed the original Strategy A Auth FK privilege failure; attempt 3 applied all eight corrected migrations and passed catalog/lint checks, but an authenticated RLS read failed at `auth.uid()` with `permission denied for schema auth`. A separate direct internal-helper attempt terminated a PostgreSQL backend with signal 11. The eight migrations were not changed during attempt 3. No remote Supabase project was contacted.
+**Current result: PASS — narrow migration-9/request-identity execution gate; full Foundation validation remains pending.** This review preserves the earlier Docker, Auth FK, runtime Auth-helper, and migration-9 role-switch failures as historical evidence. Attempt 5 below applied corrected migration 9 and passed the targeted local checks. Positive RBAC/RLS, full pgTAP, and reset/rebuild remain separate gates. No remote Supabase project was contacted.
 
 ## Attempt 1 — Docker prerequisite blocked
 
@@ -211,3 +211,42 @@ The **pending migration 9 source was corrected but not executed**. It now replac
 This is **source-only correction design**, not a new local attempt or a Foundation PASS. No Supabase start, SQL, migration apply, database test, lint, reset, Auth/REST call or remote-project action occurred in this review. The corrected migration's local execution and all gates listed in attempt 4 remain pending. The exact migration-runner identity and its ability to replace the existing function without broadening schema privileges must be checked in the next local validation; managed-project behavior is unproven.
 
 **Next task: FOUNDATION MIGRATION 9 REQUEST-IDENTITY CORRECTION — INDEPENDENT STATIC REVIEW.**
+
+## Attempt 5 — corrected migration 9 and request-identity gate, 2026-09-25
+
+**Result: PASS for this narrow local gate only.** Tested source commit `7a8caeac678f064d06fd1b63927a10acf8a2a120` from a clean worktree. Docker CLI/server `29.4.3` (`OSType=linux`), Supabase CLI `2.98.2` (not updated), local PostgreSQL `17.6`, Git `2.51.2.windows.1`. The local API schema list was exactly `["public", "graphql_public", "app"]`; `app_private` remained unexposed. `supabase start` reported that the local stack started and the database/API containers were healthy. The PowerShell output-filter wrapper returned exit code 1 after surfacing native stderr progress text, so startup was confirmed independently through container health and successful local database commands. No credential-bearing startup values are recorded here.
+
+Before apply, `supabase migration list --local` showed exactly versions `20260924122442`, `20260924122445`, `20260924122446`, `20260924122448`, `20260924122450`, `20260924122451`, `20260924122453`, and `20260924122455` applied, with `20260924183537` pending. `supabase migration up --local` exited 0, printed `Applying migration 20260924183537_foundation_auth_helper_schema_usage.sql...` and `Local database is up to date.` The subsequent local history contained those nine versions, each once, and no extra version. No migration repair or manual history edit was used.
+
+Live inspection of `app_private.current_principal_id()` found owner `schoolos_authz_reader`, volatility `s` (STABLE), `prosecdef = true` (SECURITY DEFINER), and `search_path=pg_catalog, pg_temp`. Thus `CREATE OR REPLACE` did not transfer ownership. `has_function_privilege` returned false for authenticated direct EXECUTE on both `current_principal_id()` and `has_complete_grant(text,text,uuid)`, and true for the reviewed `schoolos_read_executor` on both. Neither denied helper was invoked as authenticated. For `schoolos_authz_reader`, Auth schema USAGE/CREATE, `auth.users` SELECT/INSERT/UPDATE/DELETE, and membership in `supabase_auth_admin` all returned false. The live definition reads `request.jwt.claims` and the optional `request.jwt.claim.sub`; it does not call `auth.uid()` or `auth.jwt()`. Inspection confirmed the JSON-object, UUID-subject, subject-agreement, JSON-false `is_anonymous`, numeric `iat`, binding, ACTIVE INDIVIDUAL/FAMILY, kind-match, and token-cutoff conditions in the installed body.
+
+`supabase test db supabase/tests/database/01_foundation_catalog.sql --local` passed **44/44**. The existing synthetic local Auth user `foundation-test-001@example.invalid` was found, so no signup or password creation was needed. `supabase test db supabase/tests/database/02_auth_helper_preflight.sql --local` passed **6/6**, including both request-subject representations and zero campus rows for the unbound authenticated user.
+
+For malformed-context diagnostics, disposable SYSTEM/INDIVIDUAL principals, a person, binding to that synthetic Auth user, school, and campus were inserted inside transactions that rolled back. A valid-context control, invoked only by `schoolos_read_executor`, resolved the bound principal. The first fixture setup tried to read `auth.users` after switching to `schoolos_schema_owner` and received `permission denied for schema auth`; that transaction did not commit. The diagnostic was rerun by obtaining the synthetic UUID as the local administrative connection before switching roles, without granting Auth access. No positive role/grant/scope chain was created or tested.
+
+| Malformed request context | Identity-path result | Authenticated protected-campus result |
+|---|---|---|
+| A. Empty/missing JSON claims | NULL | 0 rows |
+| B. Invalid JSON (`{not-json`) | PostgreSQL parse error while RLS evaluated the resolver | PostgreSQL error, no row returned |
+| C. JSON missing `sub` | NULL | 0 rows |
+| D. Malformed UUID `sub` | NULL | 0 rows |
+| E. JSON `is_anonymous = true` | NULL | 0 rows |
+| F. Missing `iat` | NULL | 0 rows |
+| G. Nonnumeric `iat` | NULL | 0 rows |
+| H. JSON/per-claim subject mismatch | NULL | 0 rows |
+
+For B, the authenticated campus query produced `ERROR: invalid input syntax for type json`, `DETAIL: Token "not" is invalid`, with context at `app_private.current_principal_id()` line 12, `has_complete_grant(...)` line 4, and `can_campus_read` statement 1. The connection exited with no authorized principal or protected row; its uncommitted fixture rolled back. No database crash occurred. Both `supabase db lint --local --level error --fail-on error` and `supabase db lint --local --level warning --fail-on error` exited 0 after linting `app`, `app_private`, `extensions`, and `public`, reporting `No schema errors found`.
+
+| Live inventory after migration 9 | Count |
+|---|---:|
+| Application tables / columns | 33 / 385 |
+| Logical application FKs / named late FKs | 90 / 3 |
+| Reviewed non-constraint indexes / policies | 49 / 49 |
+| Non-internal application triggers / SECURITY DEFINER functions | 63 / 39 |
+| Tables with ENABLE RLS / FORCE RLS | 33 / 33 |
+| F28 `notification_channel_deliveries` | 0 |
+| Applied migration versions / leftover diagnostic principals | 9 / 0 |
+
+No gate in this narrow run failed. Migrations 1–9, test files, Flutter code, dependencies, and `supabase/config.toml` were not changed during execution. The sole tracked repository edit is this review. No reset/rebuild, positive RBAC/RLS suite, Auth deletion reconciliation, full pgTAP suite, or remote project action was performed. No password, token, API key, service key, JWT secret, or other credential was committed or recorded. The prior unauthorized direct-helper signal-11 incident was not retested; the denied EXECUTE boundary was checked through the catalog instead.
+
+**Next task: FOUNDATION POSITIVE RBAC + RLS RUNTIME VALIDATION.** Do not start it as part of this gate.
