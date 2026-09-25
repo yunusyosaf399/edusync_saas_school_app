@@ -311,3 +311,68 @@ Live catalog inspection confirmed `principal_auth_bindings_auth_user_id_fkey` ta
 The new `supabase/tests/database/09_auth_deletion_reconciliation.sql` passed **23/23** on its own. It creates a deterministic SYSTEM actor, Person, INDIVIDUAL principal, and binding inside a transaction using the existing synthetic `foundation-test-001@example.invalid` Auth subject. It verifies BOUND evidence, live principal resolution through `schoolos_read_executor`, a simulated `auth_user_id` NULL transition, exact version advancement, token-cutoff advancement, retained `bound_at`, surviving Person/principal/binding and BOUND evidence, exactly one UNBOUND event/audit, and non-resolution for fresh and stale old-subject claims. It also empirically confirms that ordinary DELETE of both binding events and audit rows raises SQLSTATE `P0001` (`immutable foundation evidence`). All its application rows and evidence rolled back; deterministic residue counts were zero. This is **trigger-contract evidence, not an external Auth deletion result**.
 
 The requested external Auth Admin deletion needs the binding fixture committed so the Auth service can see it. Once committed, `principal_binding_events` and `audit_events` reject DELETE, while their foreign keys retain the binding and reconciliation actor. Thus the requested zero-residue cleanup cannot be completed under active evidence guards. No dedicated deletion Auth user was created and no Auth Admin delete was issued pending a choice between retaining a clearly identified synthetic fixture or authorizing an exceptional local cleanup after assertions. The real FK/Auth reconciliation behavior, regression tests, full-suite result, lint, and final residue result remain **unverified in this attempt**. Migrations 1–9, existing tests, Supabase configuration, Flutter code, and dependencies were not changed; no migration 10, reset, remote-project action, or credential recording occurred.
+
+## Attempt 9 — real Auth Admin deletion and FK reconciliation, 2026-09-25
+
+**Result: PASS for the real local integration gate.** Tested HEAD `d50438f7104f1ef73e46488cfaf7de32975fe4c3` from a clean worktree. The user authorized retaining committed synthetic history until a separately requested disposable reset, resolving attempt 8's cleanup conflict without bypassing guards. Docker Linux server `29.4.3`, Supabase CLI `2.98.2`, PostgreSQL `17.6`, GoTrue `v2.188.1`, Git `2.51.2.windows.1`; no tool update occurred. Local database/Auth containers and the Auth health endpoint were healthy. API schemas remained `["public", "graphql_public", "app"]`, excluding `app_private`. Existing test 09 passed **23/23** before integration.
+
+The absent dedicated `foundation-auth-delete-integration-001@example.invalid` user was created through local Auth signup at `127.0.0.1:54321` with a generated disposable password. Its UUID was `70031b99-a653-429f-a865-472f65901be2` (disposable metadata). No existing test Auth user was reused. Password, keys and returned session material were held only in process memory, never logged or committed.
+
+There were zero committed ACTIVE identity-reconciliation actors. One SYSTEM actor, Person, ACTIVE INDIVIDUAL principal and binding were inserted normally as `schoolos_schema_owner` in a committed transaction. Triggers generated the evidence; none was manually inserted. Pre-delete inspection confirmed the Auth row, four fixture rows, exactly one BOUND event and one `identity.binding_changed` / `WORKER` audit. Matching JSON/per-claim subject, `role=authenticated`, `is_anonymous=false` and `iat=1790330869` resolved to the subject principal through `schoolos_read_executor`. No client helper privilege was granted.
+
+The real request was **`DELETE http://127.0.0.1:54321/auth/v1/admin/users/70031b99-a653-429f-a865-472f65901be2`**, using local service-role authorization in memory and body `{"should_soft_delete":false}`. It returned **HTTP 200**. No direct SQL Auth deletion or manual binding UPDATE was issued.
+
+| Runtime check | Observed result |
+|---|---|
+| Dedicated Auth UUID | Present before; **0 rows** after deletion |
+| Binding | Same ID retained; Auth UUID became NULL through real FK SET NULL |
+| Principal / Person | Both retained; INDIVIDUAL remains ACTIVE |
+| Binding version / row version | Both **1 → 2** |
+| Token cutoff UTC | `2026-09-25 10:07:49+00` → `2026-09-25 10:08:21+00` |
+| Historical bound_at UTC | `2026-09-25 10:07:49.368598+00`, exactly unchanged |
+| Binding evidence | Original BOUND plus exactly one new UNBOUND |
+| Audit evidence | Original WORKER audit plus exactly one AUTH_RECONCILIATION audit |
+| Fresh deleted-subject claims, iat `1790330936` | NULL principal |
+| Stale pre-delete claims, iat `1790330869` | NULL principal |
+
+The deletion transaction's evidence timestamp was `2026-09-25 10:08:20.346177+00`. Its integral-second cutoff `10:08:21+00` is strictly later and consistent with the reviewed maximum of ceiling(clock epoch) and old cutoff + one second. The UNBOUND event has the same binding/principal, deleted UUID as old subject, NULL new subject, version 2 and the SYSTEM reconciliation actor as creator. The new audit has `identity.binding_changed`, `AUTH_RECONCILIATION`, matching SYSTEM actor, binding target, deleted subject snapshot, SUCCEEDED outcome, empty authority evidence, and details exactly `{"event_kind":"UNBOUND","binding_version":2}`. No token/password/session data appeared in these payloads. Complete JSON snapshots of the original BOUND event and audit matched their pre-delete snapshots unchanged.
+
+Safe expected-error checks in a rolled-back transaction attempted ordinary DELETE of each of the two binding events and each of the two audit rows. All four raised **`P0001: immutable foundation evidence`** and remained intact. No trigger/FK was disabled or bypassed. No relink, recovery or replacement Auth user was attempted.
+
+### Intentionally retained synthetic history
+
+These eight application rows remain until the separately authorized disposable reset:
+
+| Row | Retained ID |
+|---|---|
+| Reconciliation SYSTEM principal | `09100001-0000-4000-8000-000000000001` |
+| Person | `09100002-0000-4000-8000-000000000002` |
+| INDIVIDUAL principal | `09100003-0000-4000-8000-000000000003` |
+| Detached binding | `09100004-0000-4000-8000-000000000004` |
+| BOUND event | `8feb808c-01fc-4e6a-81fb-47dd8416b6ee` |
+| UNBOUND event | `c08929ca-74b6-46da-aa30-834ada3f54e1` |
+| Initial audit | `195a0931-b788-4157-b78f-098e2773d11b` |
+| Reconciliation audit | `86211393-0a7e-4a74-8c06-b2b5d6290f5c` |
+
+After all integration assertions, inspection confirmed principal state is mutable under the existing guard. The dedicated SYSTEM actor was normally transitioned to **RETIRED** as schema owner, advancing its row version to 2 without rewriting evidence or provenance. Zero committed ACTIVE reconciliation actors remained, so isolated tests could create their own actor. The subject principal remains ACTIVE but unbound. This retained history is intentional, not failed cleanup.
+
+### Serial regressions and final checks
+
+| Test/check | Observed result |
+|---|---|
+| 01 catalog | 44/44 PASS |
+| 02 Auth preflight | 6/6 PASS |
+| 07 positive RBAC | 33/33 PASS |
+| 08 FAMILY/OWN | 41/41 PASS |
+| 09 contract after integration | 23/23 PASS |
+| Full `supabase test db --local` | **9 files / 220 planned / 220 passed — PASS** |
+| Error-level lint, `--fail-on error` | Exit 0, `No schema errors found` |
+| Warning-level lint, `--fail-on error` | Exit 0, `No schema errors found` |
+
+Commands ran serially. No test needed an isolation correction. External integration assertions are reported separately from pgTAP totals. Lint covered `app`, `app_private`, `extensions` and `public`.
+
+Final database/Auth containers were healthy with restart count 0. PostgreSQL postmaster start time remained `2026-09-25 06:42:38.175144+00` before and after the gate: no crash, restart or signal-11 recurrence was observed. Both evidence guards remained enabled (`tgenabled=O`), and the deleted Auth UUID remained absent.
+
+Exactly nine migration versions remained applied: `20260924122442`, `20260924122445`, `20260924122446`, `20260924122448`, `20260924122450`, `20260924122451`, `20260924122453`, `20260924122455`, `20260924183537`. No migration repair, migration 10, schema modification, reset, remote-project action or credential commit occurred. **Only this review changed**; migrations 1–9, all tests, config, application code and dependencies stayed unchanged. No helper file was needed. **No remaining blocker for this integration gate.**
+
+**Next task: FOUNDATION CLEAN RESET + NINE-MIGRATION REBUILD + POST-RESET FULL VALIDATION.** It was not started.
