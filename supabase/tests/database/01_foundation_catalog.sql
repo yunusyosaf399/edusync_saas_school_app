@@ -2,7 +2,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path = extensions, pg_catalog, public;
-SELECT plan(43);
+SELECT plan(44);
 
 SELECT is((SELECT count(*) FROM pg_namespace WHERE nspname IN ('app','app_private')), 2::bigint, 'both application schemas exist');
 SELECT is((SELECT count(*) FROM pg_class t JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname IN ('app','app_private') AND t.relkind='r'), 33::bigint, '33 application tables');
@@ -32,14 +32,15 @@ SELECT is((SELECT count(*) FROM pg_roles WHERE rolname LIKE 'schoolos_%'), 12::b
 SELECT is((SELECT count(*) FROM pg_roles WHERE rolname LIKE 'schoolos_%' AND rolcanlogin), 3::bigint, 'only three purpose-bound logins');
 SELECT is((SELECT count(*) FROM pg_roles WHERE rolname LIKE 'schoolos_%' AND (rolsuper OR rolbypassrls OR rolinherit OR rolcreatedb OR rolcreaterole)), 0::bigint, 'application roles have no elevated attributes');
 SELECT is((SELECT count(*) FROM pg_auth_members am JOIN pg_roles r ON r.oid=am.member WHERE r.rolname LIKE 'schoolos_%'), 0::bigint, 'application roles inherit no memberships');
-SELECT ok(has_schema_privilege('schoolos_authz_reader','auth','USAGE'), 'authz reader can resolve managed Auth helpers');
+SELECT ok(NOT has_schema_privilege('schoolos_authz_reader','auth','USAGE'), 'authz reader needs no managed Auth schema access');
 SELECT ok(NOT has_schema_privilege('schoolos_authz_reader','auth','CREATE'), 'authz reader cannot create in Auth schema');
 SELECT ok(NOT has_any_column_privilege('schoolos_authz_reader','auth.users','SELECT'), 'authz reader cannot select Auth users or columns');
 SELECT ok(NOT has_any_column_privilege('schoolos_authz_reader','auth.users','INSERT'), 'authz reader cannot insert Auth users or columns');
 SELECT ok(NOT has_any_column_privilege('schoolos_authz_reader','auth.users','UPDATE'), 'authz reader cannot update Auth users or columns');
 SELECT ok(NOT has_table_privilege('schoolos_authz_reader','auth.users','DELETE'), 'authz reader cannot delete Auth users');
-SELECT ok(has_function_privilege('schoolos_authz_reader','auth.uid()','EXECUTE'), 'authz reader can execute managed auth.uid');
-SELECT ok(has_function_privilege('schoolos_authz_reader','auth.jwt()','EXECUTE'), 'authz reader can execute managed auth.jwt');
+SELECT is((SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE oid='app_private.current_principal_id()'::regprocedure), 'schoolos_authz_reader', 'current-principal owner remains authz reader');
+SELECT ok((SELECT prosecdef AND provolatile='s' AND proconfig @> ARRAY['search_path=pg_catalog, pg_temp']::text[] FROM pg_proc WHERE oid='app_private.current_principal_id()'::regprocedure), 'current-principal retains stable definer and hardened search path');
+SELECT ok((SELECT prosrc LIKE '%request.jwt.claims%' AND prosrc LIKE '%request.jwt.claim.sub%' AND prosrc NOT LIKE '%auth.uid()%' AND prosrc NOT LIKE '%auth.jwt()%' FROM pg_proc WHERE oid='app_private.current_principal_id()'::regprocedure), 'current-principal reads request context without managed Auth helpers');
 SELECT is((SELECT count(*) FROM pg_default_acl d JOIN pg_roles r ON r.oid=d.defaclrole WHERE r.rolname LIKE 'schoolos_%' AND d.defaclobjtype='f'), 9::bigint, 'nine function-owner default ACLs');
 SELECT is((SELECT count(*) FROM pg_default_acl d JOIN pg_roles r ON r.oid=d.defaclrole CROSS JOIN LATERAL aclexplode(d.defaclacl) a WHERE r.rolname LIKE 'schoolos_%' AND d.defaclobjtype='f' AND a.grantee=0 AND a.privilege_type='EXECUTE'), 0::bigint, 'new application functions do not default to PUBLIC EXECUTE');
 
