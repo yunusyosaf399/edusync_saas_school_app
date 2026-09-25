@@ -1,6 +1,6 @@
 # Foundation local execution review — 2026-09-24
 
-**Current result: PASS — positive RBAC + RLS runtime gate; full Foundation validation remains pending.** This review preserves the earlier Docker, Auth FK, runtime Auth-helper, and migration-9 role-switch failures as historical evidence. Attempt 5 applied corrected migration 9; attempt 6 below proves a complete live campus grant and targeted denial paths. FAMILY/OWN runtime authority, Auth deletion reconciliation, and reset/rebuild remain separate gates. No remote Supabase project was contacted.
+**Current result: PASS — FAMILY + OWN-scope runtime gate; full Foundation validation remains pending.** This review preserves the earlier Docker, Auth FK, runtime Auth-helper, and migration-9 role-switch failures as historical evidence. Attempts 5–7 applied corrected migration 9 and passed the request-identity, individual RBAC/RLS, and FAMILY/OWN gates. Auth deletion reconciliation and reset/rebuild remain separate gates. No remote Supabase project was contacted.
 
 ## Attempt 1 — Docker prerequisite blocked
 
@@ -276,3 +276,28 @@ The new test passed independently: **33/33 assertions**. The unchanged catalog t
 Post-test local inspection found nine migration versions, the dedicated synthetic Auth user still present, and **zero** application principals, campuses, roles, or permissions with the test IDs. No database defect was found in this gate. Migrations 1–9, existing tests, Supabase config, Flutter files, and dependencies were unchanged; the only repository changes are the new test file and this review. No reset/rebuild, Auth deletion, FAMILY/OWN runtime phase, linked/remote Supabase action, or real user/school data was used. No password, access/refresh token, service/API key, JWT secret, or other credential was recorded or committed.
 
 **Next task: FOUNDATION FAMILY + OWN-SCOPE RUNTIME VALIDATION.** Do not start it automatically.
+
+## Attempt 7 — FAMILY and OWN-scope runtime, 2026-09-25
+
+**Result: PASS for this local gate; not a full Foundation PASS.** Tested source commit `3fa9dd06d6afdb22ffc534e481a370cdb6826d10` from a clean worktree. Docker CLI/Linux server `29.4.3`, Supabase CLI `2.98.2` (not updated), PostgreSQL `17.6`, Git `2.51.2.windows.1`. The already-running local stack was healthy, all nine migration versions were applied, and local API schemas remained `["public", "graphql_public", "app"]` with `app_private` excluded. Test commands ran serially to avoid the earlier pgTAP setup race.
+
+Three absent, dedicated synthetic users (`foundation-family-001@example.invalid`, `foundation-own-001@example.invalid`, `foundation-own-002@example.invalid`) were created through the **local** Auth signup endpoint with disposable generated passwords. Only their UUIDs were used for test setup; they were not deleted. `supabase/tests/database/08_family_own_scope.sql` creates a single ACTIVE identity-reconciliation SYSTEM principal, an ACTIVE FAMILY principal without a Person, two ACTIVE INDIVIDUAL principals with distinct People, and three separate Auth bindings. Normal triggers generated three BOUND history events and three audit events. All application fixtures, including an outbox-backed notification for FAMILY/A/B and preferences for A/B, were created inside one transaction and rolled back. The test uses only the existing reviewed permission codes `notification.own`, `notification.preference.own`, `principal.self`, and `campus.view`. Its `notification.own` family-safe classification and all role/scope catalog rows are transaction-only test definitions, not deployment catalog changes.
+
+| Runtime or structural check | Empirical result |
+|---|---|
+| FAMILY → non-family staff role; family-only role → unsafe `campus.view` grant | Both INSERTs rejected with SQLSTATE `23514`, respectively `principal_role_assignments_ck_02` and `role_permission_grants_ck_01`. No trigger or constraint was disabled. |
+| Complete FAMILY-only ACTIVE role → ENABLED family-safe `notification.own` → OWN/SELF_PRINCIPAL scope | FAMILY read **1** own notification and **0** of A's. FAMILY is not globally denied. |
+| FAMILY role assignment beside a live, unrelated normal-role staff Campus grant and A's staff assignment | FAMILY read **0** campus rows; A's complete staff chain read **1**. No cross-role, cross-principal or cross-kind authority mixing. Unsafe FAMILY authority was blocked structurally and at the tested Campus read surface. |
+| A's `notification.own` chain | A's notification **1**, B's **0**, two-notification query **only A**. Revoking A's notification grant changed A's result to **0**. |
+| A's `notification.preference.own` chain | A's preference **1**, B's **0**, two-preference query **only A**. Revoking A's preference scope changed A's result to **0**. |
+| A's `principal.self` chain and checked `app.read_own_principal()` projection | Exactly **1** row with A's UUID, `INDIVIDUAL` kind and A's label. Revoking the self grant returned **0** rows. |
+| B identity and cross-principal projection | B without a self scope got **0** rows; after adding its own valid scope, B got B's UUID and **0** A rows. A still got A's UUID and could not read B's notification despite B's live OWN authority. |
+| A JWT `iat` read against A binding's actual `tokens_valid_from` | Strictly stale `iat`: **0** A notifications and **0** self projections. `iat` at the actual cutoff: **1** of each. Cutoff was read, not edited. |
+| A state SUSPENDED and RETIRED, tested independently | **0** own notifications, **0** own preferences and **0** self projections in each state. Savepoint rollback restored the base ACTIVE fixture. |
+| Authenticated direct-table/internal-helper boundary | Exactly five reviewed application table read surfaces; no direct SELECT on eight private identity/RBAC input tables and no direct EXECUTE on the identity or complete-grant helpers. Denied helpers were not invoked. |
+
+The new test passed independently: **41/41 assertions**. Existing tests passed serially without edits: catalog **44/44**, Auth preflight **6/6**, positive RBAC **33/33**. The subsequent full `supabase test db --local` run passed **8 files / 197 assertions**. Both `supabase db lint --local --level error --fail-on error` and warning-level lint with the same failure threshold exited 0, reporting `No schema errors found` for `app`, `app_private`, `extensions`, and `public`.
+
+Post-test inspection found **zero** deterministic fixture IDs in principals, bindings, roles, permissions, assignments, grants, scopes, notifications, preferences, people, school, campus, command receipt and outbox event. The three dedicated synthetic Auth users remained, and migration history still contained nine versions. No database authorization defect was found in this gate. Only the new test and this review changed in the repository; migrations 1–9, earlier tests, Supabase config, Flutter code and dependencies were unchanged. No Auth deletion/reconciliation, database reset/rebuild, remote-project action, real data, or credential recording/commit occurred.
+
+**Next task: FOUNDATION AUTH DELETION + RECONCILIATION RUNTIME VALIDATION.** Do not start it automatically.
