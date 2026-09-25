@@ -1,6 +1,6 @@
 # Foundation local execution review — 2026-09-24
 
-**Current result: PASS — narrow migration-9/request-identity execution gate; full Foundation validation remains pending.** This review preserves the earlier Docker, Auth FK, runtime Auth-helper, and migration-9 role-switch failures as historical evidence. Attempt 5 below applied corrected migration 9 and passed the targeted local checks. Positive RBAC/RLS, full pgTAP, and reset/rebuild remain separate gates. No remote Supabase project was contacted.
+**Current result: PASS — positive RBAC + RLS runtime gate; full Foundation validation remains pending.** This review preserves the earlier Docker, Auth FK, runtime Auth-helper, and migration-9 role-switch failures as historical evidence. Attempt 5 applied corrected migration 9; attempt 6 below proves a complete live campus grant and targeted denial paths. FAMILY/OWN runtime authority, Auth deletion reconciliation, and reset/rebuild remain separate gates. No remote Supabase project was contacted.
 
 ## Attempt 1 — Docker prerequisite blocked
 
@@ -250,3 +250,29 @@ For B, the authenticated campus query produced `ERROR: invalid input syntax for 
 No gate in this narrow run failed. Migrations 1–9, test files, Flutter code, dependencies, and `supabase/config.toml` were not changed during execution. The sole tracked repository edit is this review. No reset/rebuild, positive RBAC/RLS suite, Auth deletion reconciliation, full pgTAP suite, or remote project action was performed. No password, token, API key, service key, JWT secret, or other credential was committed or recorded. The prior unauthorized direct-helper signal-11 incident was not retested; the denied EXECUTE boundary was checked through the catalog instead.
 
 **Next task: FOUNDATION POSITIVE RBAC + RLS RUNTIME VALIDATION.** Do not start it as part of this gate.
+
+## Attempt 6 — positive RBAC and RLS runtime, 2026-09-25
+
+**Result: PASS for this authorization gate; not a full Foundation PASS.** Tested source commit `fb54fc3571fca8028d8a3507ab3782589cdc6e2d` from a clean worktree. Docker CLI/Linux server `29.4.3`, Supabase CLI `2.98.2` (not updated), local PostgreSQL `17.6`, Git `2.51.2.windows.1`. The local stack was already running and healthy; no restart was needed. `supabase migration list --local` showed precisely the nine applied Foundation versions. Local API schemas remained `["public", "graphql_public", "app"]`, excluding `app_private`.
+
+The dedicated `foundation-rbac-001@example.invalid` user was absent and was created through the local Auth signup service at `127.0.0.1` with a generated disposable password. Only its UUID was used in the test; the password and returned session material were discarded. The user was **not deleted**. The new `supabase/tests/database/07_authorization_rbac.sql` builds one ACTIVE identity-reconciliation SYSTEM principal, a Person, an ACTIVE INDIVIDUAL principal, and a binding to that Auth UUID. The reviewed binding trigger generated one BOUND history event and one audit event; neither was forged. The same transaction creates one school, Campuses A/B, an ACTIVE non-family Role A, ENABLED `campus.view`, a live grant and assignment, enabled CAMPUS/DIRECT contract, and an assignment scope for A. All application fixtures and their evidence roll back. Savepoint cases capture authenticated RLS counts before rollback, then assert those counts with pgTAP after restoring the base chain.
+
+| Authorization check | Empirical result |
+|---|---|
+| Complete bound Role A → `campus.view` → CAMPUS/DIRECT scope | Campus A: **1 row**; Campus B: **0**; two-campus query: **only A**. |
+| Required assignment, grant, or assignment scope revoked independently | Campus A: **0** for each case. |
+| Role RETIRED; permission DISABLED | Campus A: **0** for each case. |
+| Bound principal SUSPENDED; bound principal RETIRED | Campus A: **0** for each state. |
+| JWT `iat` strictly before actual binding `tokens_valid_from`; `iat` at its epoch-second cutoff | Campus A: **0** stale; **1** fresh. The cutoff was read from the inserted binding, not assumed or edited. |
+| JSON/per-claim subject mismatch; `is_anonymous=true` | Campus A: **0** for each case. |
+| Role A assignment/scope with revoked Role A grant plus unrelated live Role B grant for the same permission | Both unrelated pieces existed; Campus A: **0**. No cross-role grant mixing. |
+| Valid CAMPUS/DIRECT scope for B only | Campus A: **0**; Campus B: **1**; two-campus query: **only B**. |
+| Separate ALL/DIRECT contract and scope | Campus A: **1** and Campus B: **1**. This branch is applicable because the reviewed Foundation campus RLS contract allows ALL or matching CAMPUS; its fixtures rolled back. |
+| Authenticated campus INSERT/UPDATE/DELETE/TRUNCATE privileges | All **denied** by catalog checks; no denied mutation was issued. |
+| Authenticated authz-reader membership, direct private identity/RBAC SELECT, direct `current_principal_id()` or `has_complete_grant()` EXECUTE | All **denied** by catalog checks; the internal helpers were not invoked as authenticated. |
+
+The new test passed independently: **33/33 assertions**. The unchanged catalog test passed **44/44**. An initial concurrent launch of catalog and Auth preflight CLIs caused the latter to stop before assertions with `failed to enable pgTAP: ERROR: duplicate key value violates unique constraint "pg_extension_name_index" (SQLSTATE 23505)`; this was a CLI extension-setup race, not an Auth assertion result. Rerunning the unchanged Auth preflight alone passed **6/6**. Then `supabase test db --local` passed **7 files / 156 assertions**, including all six preserved earlier test files and the new RBAC file. Error-level and warning-level lint (both with `--fail-on error`) exited 0 after linting `app`, `app_private`, `extensions`, and `public`, each reporting `No schema errors found`.
+
+Post-test local inspection found nine migration versions, the dedicated synthetic Auth user still present, and **zero** application principals, campuses, roles, or permissions with the test IDs. No database defect was found in this gate. Migrations 1–9, existing tests, Supabase config, Flutter files, and dependencies were unchanged; the only repository changes are the new test file and this review. No reset/rebuild, Auth deletion, FAMILY/OWN runtime phase, linked/remote Supabase action, or real user/school data was used. No password, access/refresh token, service/API key, JWT secret, or other credential was recorded or committed.
+
+**Next task: FOUNDATION FAMILY + OWN-SCOPE RUNTIME VALIDATION.** Do not start it automatically.
