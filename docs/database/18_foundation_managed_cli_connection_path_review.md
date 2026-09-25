@@ -10,7 +10,7 @@
 
 ## Pinned CLI behavior
 
-The matching [CLI v2.98.2 flag registration](https://github.com/supabase/cli/blob/v2.98.2/cmd/db.go) marks `--db-url`, `--linked`, and `--local` mutually exclusive. `--dry-run` is independent. Although `--linked` defaults to true in help, an explicitly supplied `--db-url` takes precedence; **do not also pass `--linked`**. In [v2.98.2 connection parsing](https://github.com/supabase/cli/blob/v2.98.2/internal/utils/flags/db_url.go), the explicit URL branch loads the local config and calls `pgconn.ParseConfig` on the supplied value. It does not load a project ref or construct `db.<ref>.supabase.co`; that construction belongs to the linked branch. The internal name `direct` for this branch means an explicitly supplied database URL, not the Supabase direct endpoint. A checkout with its existing `supabase/config.toml` is needed, but **M1 does not require `supabase link`**.
+The matching [CLI v2.98.2 flag registration](https://github.com/supabase/cli/blob/v2.98.2/cmd/db.go) marks `--db-url`, `--linked`, and `--local` mutually exclusive. `--dry-run` is independent. Although `--linked` defaults to true in help, an explicitly supplied `--db-url` takes precedence; **do not also pass `--linked`**. In [v2.98.2 connection parsing](https://github.com/supabase/cli/blob/v2.98.2/internal/utils/flags/db_url.go), the explicit URL branch loads the local config and calls `pgconn.ParseConfig` on the supplied value. It does not load a project ref or construct `db.<ref>.supabase.co`; that construction belongs to the linked branch. The internal name `direct` for this branch means an explicitly supplied database URL, not the Supabase direct endpoint. A checkout with its existing `supabase/config.toml` is needed, but **M1 does not require `supabase link`**. Linked mode's `NewDbConfigWithPassword` starts at `db.<project-ref>.supabase.co:5432` and falls back to the pooler only if its TCP reachability probe fails and pooler configuration is available. In review 17, that probe did not produce a usable fallback: the direct path was reached, then the PostgreSQL startup message timed out. Automatic linked-mode fallback is therefore unreliable on this workstation.
 
 The [v2.98.2 push runner](https://github.com/supabase/cli/blob/v2.98.2/internal/db/push/push.go) passes that parsed config to `ConnectByConfig` for both dry-run and push. It uses the connection to inspect pending migrations and, on push, applies them through the same connection. [Migration application](https://github.com/supabase/cli/blob/v2.98.2/pkg/migration/apply.go) resets connection settings between migration files; [migration batches](https://github.com/supabase/cli/blob/v2.98.2/pkg/migration/file.go) include the history insert and are implicitly transactional. The source shows no direct-host rewrite or direct-only requirement on this path. It does **not** prove that a future managed database will allow the migrations' role and ownership operations.
 
@@ -42,17 +42,17 @@ For the fixed future components, `postgres.<PROJECT_REF>` (validated project ref
 4. Recheck target name/ref, URI host/username/ref, and migration hashes immediately before the CLI call. Run the dry-run **without `--linked`** and require exactly the nine frozen versions in order, no seed or extras:
 
    ```text
-   supabase db push --dry-run --db-url <PASSWORDLESS_SESSION_POOLER_URI>
+   supabase db push --dry-run --db-url <SESSION_POOLER_DATABASE_URI>
    ```
 
 5. Only if that dry-run passes, use the **same pooler URI and temporary `PGPASSWORD`** for exactly one actual push, with no seed, reset, repair, manual SQL fallback, or second push after failure:
 
    ```text
-   supabase db push --db-url <SAME_PASSWORDLESS_SESSION_POOLER_URI>
+   supabase db push --db-url <SAME_SESSION_POOLER_DATABASE_URI>
    ```
 
 6. Stop on the first meaningful connection, SQL, or privilege error; capture redacted evidence and use the fresh disposable project as the rollback boundary. If push succeeds, perform only the separately authorized M1 smoke checks. Do not infer M2 clearance from M1. Clear the password environment variable and retain or destroy the target according to that future task's outcome.
 
-The explicit URI points the CLI at the same **connection route** used for baseline inspection, avoiding the linked mode's direct-host selection. It does not prove that the two clients have identical effective identity or that managed deployment will accept `CREATE ROLE`, LOGIN role creation, grants to `postgres`, `SET ROLE`, `ALTER DEFAULT PRIVILEGES`, `CREATE SCHEMA AUTHORIZATION`, the Auth foreign key, or migration 9. Those remain empirical gates for the next throwaway attempt.
+In these command shapes, the URI placeholder means the passwordless session-pooler URI constructed above; even that URI must not be printed, logged, committed, or persisted. The explicit URI points the CLI at the same **connection route** used for baseline inspection, avoiding the linked mode's direct-host selection. It does not prove that the two clients have identical effective identity or that managed deployment will accept `CREATE ROLE`, LOGIN role creation, grants to `postgres`, `SET ROLE`, `ALTER DEFAULT PRIVILEGES`, `CREATE SCHEMA AUTHORIZATION`, the Auth foreign key, or migration 9. Those remain empirical gates for the next throwaway attempt.
 
 **Scope:** No managed project or former throwaway was contacted; no hosted URL, password, key, token, or project ref was used; no dry-run or push ran; no migration, test, configuration, application code, or earlier review was changed. The next separately authorized task is `FOUNDATION MANAGED SUPABASE THROWAWAY PREFLIGHT — SESSION-POOLER M1 DEPLOYMENT RETRY`.
