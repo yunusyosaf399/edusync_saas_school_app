@@ -167,3 +167,9 @@ The proposed ninth migration, `20260924183537_foundation_auth_helper_schema_usag
 This is **correction and static review preparation only**. Migration 9, its updated pgTAP tests, and any positive RLS/RBAC path have not been executed. No database, Docker, REST/Auth, reset, lint, or remote Supabase command was run for this correction. The signal-11 direct-helper event remains a separate unresolved platform behavior; no broader authenticated EXECUTE was granted or attempted as a workaround. The local review remains **FAIL — RUNTIME AUTH/SECURITY PREFLIGHT** until a separately reviewed migration is applied and the blocked tests pass. Managed-platform compatibility, including the migration runner's authority to `SET ROLE supabase_auth_admin`, remains unproven.
 
 **Next task: FOUNDATION MIGRATION 9 AUTH-HELPER PRIVILEGE — INDEPENDENT STATIC REVIEW.**
+
+## Auth preflight JWT simulation correction — 2026-09-25
+
+The negative Auth-helper preflight had a false-positive risk: it set only JSON `request.jwt.claims`, whereas the observed local managed `auth.uid()` reads the separate `request.jwt.claim.sub` setting. A zero-row campus result could therefore have followed from a NULL subject rather than a correctly resolved synthetic user with no binding or grant. The test now sets both transaction-local request settings from the same synthetic `auth.users` UUID and asserts that the subject setting, `auth.uid()`, and `auth.jwt() ->> 'sub'` agree before the RLS read. This is a test-harness correction only; migration 9 and migrations 1–8 remain unchanged. Migration 9 is still unexecuted. No SQL/runtime test was run for this correction, so the updated preflight has no result yet.
+
+**Next task: FOUNDATION AUTH PREFLIGHT JWT SIMULATION — INDEPENDENT STATIC REVIEW.**

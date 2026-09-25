@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path = extensions, pg_catalog, public;
-SELECT plan(3);
+SELECT plan(6);
 SELECT is((SELECT count(*) FROM auth.users WHERE email='foundation-test-001@example.invalid'), 1::bigint, 'synthetic local Auth user exists');
 
 SET ROLE schoolos_schema_owner;
@@ -21,13 +21,29 @@ SELECT is((SELECT count(*) FROM app_private.principal_auth_bindings
            WHERE auth_user_id=(SELECT id FROM auth.users WHERE email='foundation-test-001@example.invalid')),
           0::bigint, 'synthetic Auth user has no principal binding');
 
+-- Local Supabase auth.uid() reads this per-claim subject; auth.jwt() reads the
+-- JSON claims below. Both subjects come from the same synthetic Auth row.
+SELECT set_config(
+  'request.jwt.claim.sub',
+  (SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),
+  true
+);
 SELECT set_config('request.jwt.claims', jsonb_build_object(
   'sub', (SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),
   'role', 'authenticated',
   'iat', floor(extract(epoch FROM clock_timestamp()))::bigint,
   'is_anonymous', false
 )::text, true);
+SELECT is(current_setting('request.jwt.claim.sub', true)::uuid,
+          (SELECT id FROM auth.users WHERE email='foundation-test-001@example.invalid'),
+          'per-claim subject matches the synthetic local Auth user');
 SET ROLE authenticated;
+SELECT ok(auth.uid() IS NOT NULL
+          AND auth.uid() = current_setting('request.jwt.claim.sub', true)::uuid,
+          'auth.uid resolves the synthetic local Auth user');
+SELECT ok((auth.jwt() ->> 'sub') IS NOT NULL
+          AND (auth.jwt() ->> 'sub') = current_setting('request.jwt.claim.sub', true),
+          'auth.jwt subject matches the same synthetic local Auth user');
 -- With no binding, the row must be denied. A completed assertion proves that
 -- RLS traversed the custom-owner auth.uid()/auth.jwt() path without SQL error;
 -- it does not prove binding resolution or a positive RBAC grant.
