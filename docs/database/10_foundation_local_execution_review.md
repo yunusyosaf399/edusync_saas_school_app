@@ -173,3 +173,31 @@ This is **correction and static review preparation only**. Migration 9, its upda
 The negative Auth-helper preflight had a false-positive risk: it set only JSON `request.jwt.claims`, whereas the observed local managed `auth.uid()` reads the separate `request.jwt.claim.sub` setting. A zero-row campus result could therefore have followed from a NULL subject rather than a correctly resolved synthetic user with no binding or grant. The test now sets both transaction-local request settings from the same synthetic `auth.users` UUID and asserts that the subject setting, `auth.uid()`, and `auth.jwt() ->> 'sub'` agree before the RLS read. This is a test-harness correction only; migration 9 and migrations 1–8 remain unchanged. Migration 9 is still unexecuted. No SQL/runtime test was run for this correction, so the updated preflight has no result yet.
 
 **Next task: FOUNDATION AUTH PREFLIGHT JWT SIMULATION — INDEPENDENT STATIC REVIEW.**
+
+## Attempt 4 — migration 9 stopped at role switch, 2026-09-25
+
+**Result: FAIL — LOCAL MIGRATION APPLY.** At source commit `80f73deaea3616bc27a3f638fe444c56ff88d392`, the working tree was clean. Docker reported a healthy Linux server (`29.4.3`, `OSType=linux`), Supabase CLI was `2.98.2`, and the unchanged local API schema list was `["public", "graphql_public", "app"]`, excluding `app_private`. No linked-project command or remote database URL was used. `supabase start` restored the local database backup and started the stack. Before applying anything, read-only local migration history contained exactly the eight previously applied versions `20260924122442`, `20260924122445`, `20260924122446`, `20260924122448`, `20260924122450`, `20260924122451`, `20260924122453`, and `20260924122455`; migration `20260924183537` was pending.
+
+`supabase migration up --local` attempted only `20260924183537_foundation_auth_helper_schema_usage.sql` and failed at **statement 0**, before its `GRANT`:
+
+```text
+Applying migration 20260924183537_foundation_auth_helper_schema_usage.sql...
+ERROR: permission denied to set role "supabase_auth_admin" (SQLSTATE 42501)
+At statement: 0
+SET ROLE supabase_auth_admin
+```
+
+This proves the local migration connection lacked authority to perform that role switch. Migration 9 did **not** apply; the proposed Auth schema-USAGE grant did not run. No additional privilege was granted, and migrations 1–9 were not edited. The precise session-user/membership configuration was not investigated after the stop condition. This is an empirical failure of the proposed migration's local role boundary, separate from the previously successful Strategy B Auth FK installation and the earlier runtime `auth.uid()` schema-usage failure.
+
+| Gate requested for attempt 4 | Result |
+|---|---|
+| Post-migration Auth USAGE/CREATE, Auth-helper EXECUTE, `auth.users` DML/read, admin membership and ownership inventory | Not measured; migration 9 failed before its grant. The previous attempt measured missing schema USAGE before migration 9. |
+| Synthetic Auth fixture and corrected 6-assertion preflight | Not run. |
+| 43-assertion catalog test, positive/negative RBAC, campus isolation, scope mixing, principal states, token cutoff, FAMILY and OWN-scope reads | Not run. |
+| Direct-access checks, full pgTAP suite, local lint, Auth deletion reconciliation and Data API exposure | Not run. |
+| First-pass gate and `supabase db reset --local --no-seed` | Gate failed; reset was not authorized or run. |
+| Clean-rebuild inventory and post-reset tests | Not run; no new live counts are claimed. |
+
+No synthetic user, seed, test file, migration, Flutter code, dependency or local configuration was changed in this attempt. Only this execution review records the result. The local stack was stopped with `supabase stop --project-id saas_OS_school_app` **without** `--no-backup`; the CLI reported that local data were backed up to a Docker volume. No remote Supabase project was contacted, and no password, token, API key or storage credential was committed or recorded here.
+
+**Blocker and next task:** Independently review the migration-runner authority required for `SET ROLE supabase_auth_admin` and design a separately reviewed, narrowly scoped correction. Preserve migrations 1–9 unchanged in this execution task. Do not treat the prior partial test passes as a Foundation local-validation PASS; the catalog, corrected Auth preflight, full authorization suite, lint, reset and post-reset gates remain pending.
