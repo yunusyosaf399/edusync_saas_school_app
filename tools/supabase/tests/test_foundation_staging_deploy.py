@@ -174,6 +174,23 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(deploy.p1.PsqlFailure("DB_PROBE", "PSQL_PROCESS_TIMEOUT", 124).category,
                          "PSQL_PROCESS_TIMEOUT")
 
+    def test_main_preflight_preserves_safe_psql_timeout_categories(self):
+        for category, exit_code in (("PSQL_CONNECT_TIMEOUT", 2), ("PSQL_PROCESS_TIMEOUT", 124)):
+            ops = FakeOps()
+            ops.probe = Mock(side_effect=deploy.p1.PsqlFailure("DB_PROBE_VERSION", category, exit_code))
+            with self.subTest(category=category), \
+                 patch.dict(deploy.os.environ, {"SUPABASE_ACCESS_TOKEN": "FAKE_TOKEN",
+                                                "SCHOOL_OS_STAGING_DB_PASSWORD": "FAKE_PASSWORD"}), \
+                 patch.object(deploy, "source_gate", return_value=self.sha), \
+                 redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(deploy.main(["preflight", "--source-sha", self.sha], ops=ops), 1)
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(error.getvalue().strip(),
+                             f"PSQL_FAILURE stage=DB_PROBE_VERSION class={category} exit={exit_code}")
+            self.assertNotIn("FAKE_TOKEN", error.getvalue())
+            self.assertNotIn("FAKE_PASSWORD", error.getvalue())
+            self.assertEqual(ops.calls, ["identity", "health", "route"])
+
     def test_history_absent_is_fresh(self):
         ops = FakeOps()
         self.assertIsNone(deploy.history_probe(ops, "fake-uri", "FAKE_PASSWORD"))
@@ -278,25 +295,32 @@ class ExecutorTests(unittest.TestCase):
         result, ops = self.deploy_with_fakes("STAGING_FOUNDATION_BOOTSTRAP_ELIGIBLE")
         self.assertEqual(result["push_count"], 1)
         self.assertEqual(ops.pushes, 1)
+        self.assertEqual([call for call in ops.calls if isinstance(call, tuple) and
+                          call[:2] == ("db", "push")], [("db", "push", "--yes")])
         self.assertEqual(ops.calls.count("PATCH db_schema"), 1)
         self.assertEqual(result["drift"], "STAGING_DRIFT_PASS")
 
     def test_failed_push_never_retried(self):
         ops = FakeOps()
+        attempted = []
         def failed_push(command, uri, password, *, timeout=600):
             if command[:2] == ["db", "push"]:
                 ops.pushes += 1
+                attempted.append(command)
                 raise RuntimeError("FAKE_PASSWORD")
             return ""
         ops.command = failed_push
         self.assert_code("STAGING_PUSH_FAILED_NO_RETRY",
             lambda: self.deploy_with_fakes("STAGING_FOUNDATION_BOOTSTRAP_ELIGIBLE", ops=ops))
         self.assertEqual(ops.pushes, 1)
+        self.assertEqual(attempted, [["db", "push", "--yes"]])
 
     def test_exact_history_rerun_has_zero_pushes(self):
         result, ops = self.deploy_with_fakes("STAGING_FOUNDATION_ALREADY_DEPLOYED")
         self.assertEqual(result["push_count"], 0)
         self.assertEqual(ops.pushes, 0)
+        self.assertEqual([call for call in ops.calls if isinstance(call, tuple) and
+                          call[:2] == ("db", "push")], [])
         self.assertNotIn("PATCH db_schema", ops.calls)
 
     def test_final_drift_and_final_health_block(self):

@@ -363,7 +363,7 @@ def run_deploy(ops, args, manifest, foundation, stage_contract, token, password)
     if evidence["baseline_classification"] == "STAGING_FOUNDATION_BOOTSTRAP_ELIGIBLE":
         # Exactly one attempt. A failed/ambiguous push stops without repair or retry.
         try:
-            ops.command(["db", "push"], uri, password, timeout=900)
+            ops.command(["db", "push", "--yes"], uri, password, timeout=900)
         except Exception:
             raise DeployError("STAGING_PUSH_FAILED_NO_RETRY") from None
         evidence["push_count"] = 1
@@ -453,6 +453,9 @@ def main(argv=None, *, ops=None):
             evidence = run_deploy(ops, args, manifest, foundation, stage_contract, token, password)
             print("STAGING_DEPLOY_PASS " + json.dumps(evidence, sort_keys=True))
         return 0
+    except p1.PsqlFailure as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     except (DeployError, staging.StagingError, p1.RehearsalError, ManagedConfigError) as exc:
         code = str(exc) if isinstance(exc, DeployError) else "STAGING_OPERATION_FAILED"
         print(code, file=sys.stderr)
