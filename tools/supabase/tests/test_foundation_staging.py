@@ -2,6 +2,7 @@
 
 import copy
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -247,11 +248,148 @@ class StagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "supabase/config").mkdir(parents=True)
-            (root / "supabase/config/foundation_staging_target.json").write_text("{}", encoding="utf-8")
             with patch.object(staging, "inspect_source", return_value=([], [], [])), \
                  patch.object(staging, "inspect_local_config", return_value=[]):
-                with self.assertRaisesRegex(staging.StagingError, "STAGING_TARGET_MANIFEST_PREMATURE"):
+                with self.assertRaisesRegex(staging.StagingError, "STAGING_TARGET_MANIFEST_REQUIRED"):
                     staging.validate_local(self.contract, self.foundation, root=root)
+
+    def test_committed_manifest_loads(self):
+        manifest = staging.load_target_manifest(staging=self.contract)
+        self.assertEqual(manifest["project_ref"], "whwongqcgjakcfrzbvcg")
+        self.assertEqual(manifest["project_name"], "schoolos-staging-main")
+
+    def test_missing_target_manifest_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(staging.StagingError, "TARGET_MANIFEST_UNREADABLE"):
+                staging.load_target_manifest(Path(folder) / "missing.json", self.contract)
+
+    def test_malformed_target_json_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "target.json"
+            path.write_text("{broken", encoding="utf-8")
+            with self.assertRaisesRegex(staging.StagingError, "TARGET_MANIFEST_UNREADABLE"):
+                staging.load_target_manifest(path, self.contract)
+
+    def test_local_validate_rejects_wrong_pinned_target(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config = root / "supabase/config"
+            config.mkdir(parents=True)
+            path = config / "foundation_staging_target.json"
+            for key, value, code in (("project_ref", "invalid", "TARGET_REF"),
+                                     ("project_name", "customer", "TARGET_NAME"),
+                                     ("organization_id", "", "TARGET_ORGANIZATION"),
+                                     ("region", "other", "TARGET_REGION"),
+                                     ("environment", "production", "TARGET_ENVIRONMENT")):
+                bad = dict(self.target)
+                bad[key] = value
+                path.write_text(json.dumps(bad), encoding="utf-8")
+                with self.subTest(key=key), \
+                     patch.object(staging, "inspect_source", return_value=([], [], [])), \
+                     patch.object(staging, "inspect_local_config", return_value=[]):
+                    with self.assertRaisesRegex(staging.StagingError, code):
+                        staging.validate_local(self.contract, self.foundation, root=root)
+
+    def test_identity_check_requires_token_before_http(self):
+        with patch.dict(staging.os.environ, {}, clear=True), \
+             patch.object(staging, "management_get", side_effect=AssertionError("network")), \
+             patch.object(staging, "validate_local", return_value="STAGING_VALIDATE_PASS"), \
+             redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(staging.main(["identity-check"]), 1)
+        self.assertIn("STAGING_IDENTITY_TOKEN_MISSING", error.getvalue())
+
+    def test_detail_mismatch_fails(self):
+        for key, wrong in (("id", "b" * 20), ("name", "wrong"),
+                           ("organization_id", "wrong"), ("region", "wrong")):
+            item = {**self.live_item(), key: wrong}
+            with self.subTest(key=key), \
+                 self.assertRaisesRegex(staging.StagingError, "STAGING_IDENTITY_DETAIL_MISMATCH"):
+                staging.check_live_identity(self.target, self.contract, "FAKE_MANAGEMENT_TOKEN",
+                                            get=lambda path, token: (200, item))
+
+    def test_project_not_found_fails(self):
+        with self.assertRaisesRegex(staging.StagingError, "STAGING_IDENTITY_PROJECT_NOT_FOUND"):
+            staging.check_live_identity(self.target, self.contract, "FAKE_MANAGEMENT_TOKEN",
+                                        get=lambda path, token: (404, None))
+
+    def test_list_absence_fails(self):
+        expected = self.live_item()
+        def get(path, token):
+            return (200, expected) if path.endswith(self.target["project_ref"]) else (200, [])
+        with self.assertRaisesRegex(staging.StagingError, "STAGING_IDENTITY_LIST_MISMATCH"):
+            staging.check_live_identity(self.target, self.contract, "FAKE_MANAGEMENT_TOKEN", get=get)
+
+    def test_duplicate_list_identity_fails(self):
+        expected = self.live_item()
+        def get(path, token):
+            return (200, expected) if path.endswith(self.target["project_ref"]) else (200, [expected, expected])
+        with self.assertRaisesRegex(staging.StagingError, "STAGING_IDENTITY_LIST_MISMATCH"):
+            staging.check_live_identity(self.target, self.contract, "FAKE_MANAGEMENT_TOKEN", get=get)
+
+    def test_list_identity_mismatch_fails(self):
+        expected = self.live_item()
+        bad = {**expected, "region": "wrong"}
+        def get(path, token):
+            return (200, expected) if path.endswith(self.target["project_ref"]) else (200, [bad])
+        with self.assertRaisesRegex(staging.StagingError, "STAGING_IDENTITY_LIST_MISMATCH"):
+            staging.check_live_identity(self.target, self.contract, "FAKE_MANAGEMENT_TOKEN", get=get)
+
+    def live_item(self):
+        return {"id": self.target["project_ref"], "name": self.target["project_name"],
+                "organization_id": self.target["organization_id"], "region": self.target["region"]}
+
+    def test_correct_detail_and_list_pass(self):
+        item = self.live_item()
+        paths = []
+        def get(path, token):
+            paths.append(path)
+            return (200, item) if path.endswith(self.target["project_ref"]) else (200, [item])
+        self.assertEqual(staging.check_live_identity(self.target, self.contract, "FAKE_MANAGEMENT_TOKEN", get=get),
+                         "STAGING_IDENTITY_PASS")
+        self.assertEqual(paths, ["/v1/projects/" + self.target["project_ref"], "/v1/projects"])
+
+    def test_management_transport_get_only(self):
+        item = self.live_item()
+        class Response:
+            status = 200
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return json.dumps(item).encode("utf-8")
+        with patch.object(staging.urllib.request, "urlopen", return_value=Response()) as opened:
+            status, result = staging.management_get("/v1/projects/" + self.target["project_ref"],
+                                                     "FAKE_MANAGEMENT_TOKEN")
+        request = opened.call_args.args[0]
+        self.assertEqual(request.get_method(), "GET")
+        self.assertIsNone(request.data)
+        self.assertEqual(status, 200)
+        self.assertEqual(result, item)
+
+    def test_no_mutating_http_method_or_remote_apply_mode(self):
+        self.assertNotIn("apply", staging.main.__code__.co_consts)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            staging.main(["apply"])
+        self.assertEqual(error.exception.code, 2)
+
+    def test_http_errors_are_redacted(self):
+        with patch.object(staging.urllib.request, "urlopen",
+                          side_effect=staging.urllib.error.URLError("FAKE_MANAGEMENT_TOKEN")):
+            with self.assertRaisesRegex(staging.StagingError, "^STAGING_IDENTITY_MANAGEMENT_HTTP_ERROR$") as error:
+                staging.management_get("/v1/projects/" + self.target["project_ref"], "FAKE_MANAGEMENT_TOKEN")
+        self.assertNotIn("FAKE_MANAGEMENT_TOKEN", str(error.exception))
+
+    def test_token_never_appears_in_safe_result_or_error(self):
+        secret = "FAKE_MANAGEMENT_TOKEN"
+        item = self.live_item()
+        def get(path, token):
+            return (200, item) if path.endswith(self.target["project_ref"]) else (200, [item])
+        self.assertNotIn(secret, staging.check_live_identity(self.target, self.contract, secret, get=get))
+        with self.assertRaises(staging.StagingError) as error:
+            staging.check_live_identity(self.target, self.contract, secret,
+                                        get=lambda path, token: (_ for _ in ()).throw(RuntimeError(secret)))
+        self.assertEqual(str(error.exception), "STAGING_IDENTITY_MANAGEMENT_HTTP_ERROR")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
-"""Local-only staging contract, target and synthetic drift validation.
+"""Staging contract, target and synthetic drift validation.
 
-No mode in this module connects to a managed project or applies a change.
+Only explicit identity-check may perform read-only Management API GET requests.
+No mode applies a hosted change.
 """
 
 import argparse
@@ -8,12 +9,15 @@ import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from foundation_guard import ROOT, GuardError, inspect_local_config, inspect_source, load_contract
 
 STAGING_CONTRACT = ROOT / "supabase/config/foundation_staging_contract.json"
 TARGET_MANIFEST = ROOT / "supabase/config/foundation_staging_target.json"
+MANAGEMENT_API = "https://api.supabase.com"
 CONTRACT_REL = "supabase/config/foundation_managed_contract.json"
 MANIFEST_FIELDS = (
     "environment", "project_ref", "project_name", "organization_id", "region", "foundation_id"
@@ -24,8 +28,9 @@ DRIFT_CATEGORIES = (
     "WORKER_ACTIVATION_BOUNDARY",
 )
 STEPS = (
-    "frozen source integrity", "clean exact Git commit", "exact staging target manifest",
-    "independent managed target identity", "project and service health", "secret preflight",
+    "frozen source integrity", "clean exact Git commit", "committed exact staging target manifest",
+    "read-only live identity verification against independent project detail and list",
+    "project and service health", "secret preflight",
     "TLS Supavisor session pooler 5432", "clean-project baseline for first deployment",
     "exact migration dry-run", "explicit migration authorization", "one migration push",
     "exact migration-history verification", "catalog and security drift checks",
@@ -126,7 +131,8 @@ def load_staging_contract(path=STAGING_CONTRACT, foundation=None):
 
 
 def validate_target_manifest(manifest, staging):
-    """Pure future-target check; no project lookup or manifest file creation."""
+    """Pure target check; no project lookup or manifest file creation."""
+    _no_embedded_secrets(manifest)
     _fields(manifest, MANIFEST_FIELDS, "TARGET_MANIFEST_SHAPE")
     project = staging["project_policy"]
     require(manifest["environment"] == "staging", "TARGET_ENVIRONMENT")
@@ -141,6 +147,64 @@ def validate_target_manifest(manifest, staging):
     require(manifest["region"] in project["allowed_regions"], "TARGET_REGION")
     require(manifest["foundation_id"] == staging["foundation_id"], "TARGET_FOUNDATION_ID")
     return "TARGET_MANIFEST_PASS"
+
+
+def load_target_manifest(path=TARGET_MANIFEST, staging=None):
+    """Read only the committed, non-secret exact-target identity manifest."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise StagingError("TARGET_MANIFEST_UNREADABLE") from None
+    validate_target_manifest(data, staging or load_staging_contract())
+    return data
+
+
+def management_get(path, token):
+    """The sole live transport: exact Management API GET, with redacted failures."""
+    request = urllib.request.Request(
+        MANAGEMENT_API + path, method="GET", headers={"Authorization": "Bearer " + token}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return 404, None
+        raise StagingError("STAGING_IDENTITY_MANAGEMENT_HTTP_ERROR") from None
+    except (urllib.error.URLError, OSError, ValueError, UnicodeError):
+        raise StagingError("STAGING_IDENTITY_MANAGEMENT_HTTP_ERROR") from None
+
+
+def check_live_identity(manifest, staging, token, *, get=management_get):
+    """Compare both exact-ref GET responses to the pinned manifest; never mutate."""
+    validate_target_manifest(manifest, staging)
+    require(isinstance(token, str) and bool(token), "STAGING_IDENTITY_TOKEN_MISSING")
+    ref = manifest["project_ref"]
+
+    def safe_get(path):
+        try:
+            result = get(path, token)
+            require(isinstance(result, tuple) and len(result) == 2 and
+                    type(result[0]) is int, "STAGING_IDENTITY_MANAGEMENT_HTTP_ERROR")
+            return result
+        except Exception:
+            raise StagingError("STAGING_IDENTITY_MANAGEMENT_HTTP_ERROR") from None
+
+    detail_status, detail = safe_get("/v1/projects/" + ref)
+    require(detail_status != 404, "STAGING_IDENTITY_PROJECT_NOT_FOUND")
+    require(detail_status == 200, "STAGING_IDENTITY_MANAGEMENT_HTTP_ERROR")
+    expected = {"id": ref, "name": manifest["project_name"],
+                "organization_id": manifest["organization_id"], "region": manifest["region"]}
+    require(isinstance(detail, dict) and all(detail.get(key) == value for key, value in expected.items()),
+            "STAGING_IDENTITY_DETAIL_MISMATCH")
+
+    list_status, projects = safe_get("/v1/projects")
+    require(list_status == 200, "STAGING_IDENTITY_MANAGEMENT_HTTP_ERROR")
+    require(isinstance(projects, list), "STAGING_IDENTITY_LIST_MISMATCH")
+    matches = [item for item in projects if isinstance(item, dict) and item.get("id") == ref]
+    require(len(matches) == 1 and all(matches[0].get(key) == value for key, value in expected.items()),
+            "STAGING_IDENTITY_LIST_MISMATCH")
+    return "STAGING_IDENTITY_PASS"
 
 
 def secret_presence(environ=None):
@@ -212,14 +276,17 @@ def validate_local(staging=None, foundation=None, *, root=ROOT):
         inspect_local_config(root, foundation)
     except GuardError:
         raise StagingError("STAGING_LOCAL_CONFIG") from None
-    require(not list((Path(root) / TARGET_MANIFEST.relative_to(ROOT).parent).glob("*staging*target*.json")),
-            "STAGING_TARGET_MANIFEST_PREMATURE")
+    target = Path(root) / TARGET_MANIFEST.relative_to(ROOT)
+    candidates = list(target.parent.glob("*staging*target*.json"))
+    require(target.is_file() and candidates == [target], "STAGING_TARGET_MANIFEST_REQUIRED")
+    load_target_manifest(target, staging)
     return "STAGING_VALIDATE_PASS"
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", nargs="?", choices=("plan", "validate", "secret-preflight", "drift-plan"),
+    parser.add_argument("mode", nargs="?", choices=("plan", "validate", "secret-preflight",
+                                               "drift-plan", "identity-check"),
                         default="plan")
     args = parser.parse_args(argv)
     try:
@@ -231,6 +298,14 @@ def main(argv=None):
         staging = load_staging_contract(foundation=foundation)
         if args.mode == "validate":
             print(validate_local(staging, foundation))
+        elif args.mode == "identity-check":
+            validate_local(staging, foundation)
+            manifest = load_target_manifest(staging=staging)
+            result = check_live_identity(manifest, staging, os.environ.get("SUPABASE_ACCESS_TOKEN"))
+            print(result)
+            print("project_ref=" + manifest["project_ref"])
+            print("project_name=" + manifest["project_name"])
+            print("region=" + manifest["region"])
         elif args.mode == "drift-plan":
             print("STAGING_DRIFT_PLAN read-only; fail closed; no automatic repair")
             for category in DRIFT_CATEGORIES:
