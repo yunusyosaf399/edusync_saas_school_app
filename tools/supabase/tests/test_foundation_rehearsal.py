@@ -1,6 +1,7 @@
 """P1 safety tests; all destructive paths use fakes only."""
 
 import io
+import json
 import sys
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
@@ -20,6 +21,13 @@ class RehearsalSafetyTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()):
             self.assertEqual(p1.main(["run"]), 2)
             self.assertEqual(p1.main(["run", "--run", "--confirm-organization-name", "Other"]), 2)
+
+    def test_run_without_token_fails_before_network(self):
+        with patch.dict(p1.os.environ, {}, clear=True), \
+             patch.object(p1, "api", side_effect=AssertionError("network")), \
+             redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(p1.main(["run", "--run", "--confirm-organization-name", p1.ORG_NAME]), 2)
+        self.assertIn("SUPABASE_ACCESS_TOKEN_ABSENT", output.getvalue())
 
     def test_wrong_organization_confirmation_blocks_before_api(self):
         with patch.object(p1, "api", side_effect=AssertionError("network")):
@@ -64,12 +72,13 @@ class RehearsalSafetyTests(unittest.TestCase):
         ref, peer = "a" * 20, "b" * 20
         with patch.object(p1, "api", side_effect=[(404, None), (200, [{"id": ref}, {"id": peer}])]):
             with self.assertRaisesRegex(p1.RehearsalError, "DELETE_ABSENCE_UNCONFIRMED"):
-                p1.confirm_absence("secret", ref, {peer}, attempts=1, sleep=lambda _: None)
+                p1.confirm_absence("secret", ref, {peer}, state=p1.CleanupState(delete_count=1), attempts=1, sleep=lambda _: None)
         with patch.object(p1, "api", side_effect=[(404, None), (200, [])]):
             with self.assertRaisesRegex(p1.RehearsalError, "DELETE_ABSENCE_UNCONFIRMED"):
-                p1.confirm_absence("secret", ref, {peer}, attempts=1, sleep=lambda _: None)
+                p1.confirm_absence("secret", ref, {peer}, state=p1.CleanupState(delete_count=1), attempts=1, sleep=lambda _: None)
         with patch.object(p1, "api", side_effect=[(404, None), (200, [{"id": peer}])]):
-            self.assertTrue(p1.confirm_absence("secret", ref, {peer}, attempts=1, sleep=lambda _: None))
+            evidence = p1.confirm_absence("secret", ref, {peer}, state=p1.CleanupState(delete_count=1), attempts=1, sleep=lambda _: None)
+            self.assertEqual(evidence["phase"], "CLEANUP_CONFIRMED")
 
     def test_management_http_exception_is_redacted(self):
         import urllib.error
@@ -79,6 +88,160 @@ class RehearsalSafetyTests(unittest.TestCase):
             with self.assertRaises(p1.RehearsalError) as caught:
                 p1.api("GET", "/v1/projects", "secret-pw")
             self.assertNotIn("secret-pw", str(caught.exception))
+
+
+class P1RDiagnosticTests(unittest.TestCase):
+    def test_allowlisted_psql_categories(self):
+        cases = {
+            "password authentication failed for user secret": "PSQL_AUTH_FAILED",
+            "Tenant or user not found secret": "PSQL_TENANT_OR_USER_NOT_FOUND",
+            "could not translate host name private.example": "PSQL_DNS_FAILED",
+            "connection refused private.example": "PSQL_CONNECTION_REFUSED",
+            "connection timed out private.example": "PSQL_CONNECT_TIMEOUT",
+            "SSL error: secret": "PSQL_TLS_FAILED",
+            "server closed the connection unexpectedly": "PSQL_SERVER_CLOSED",
+            "FATAL: database \"postgres\" does not exist": "PSQL_DATABASE_UNAVAILABLE",
+            "no pg_hba.conf entry for host secret": "PSQL_PG_HBA_DENIED",
+            "psql: ERROR: syntax error at or near secret": "PSQL_SQL_ERROR",
+            "mystery output with secret": "PSQL_UNKNOWN_FAILURE",
+        }
+        for message, expected in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(p1.classify_psql_failure(message, "", 3), expected)
+
+    def test_stage_aware_psql_error_is_secret_free(self):
+        fake_secret = "FAKE_DB_PASSWORD_123"
+        fake = type("Result", (), {"returncode": 3, "stdout": "",
+             "stderr": "psql: password authentication failed " + fake_secret +
+                       " postgresql://postgres.fake:pass@host:5432/postgres Authorization: Bearer FAKE_PAT"})()
+        ref = "a" * 20
+        uri = "postgresql://postgres." + ref + "@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require"
+        with patch.object(p1.subprocess, "run", return_value=fake):
+            with self.assertRaises(p1.PsqlFailure) as caught:
+                p1.db_sql(uri, fake_secret, "SELECT 1;", stage="DB_PROBE_VERSION")
+        output = str(caught.exception) + json.dumps(caught.exception.__dict__)
+        self.assertIn("stage=DB_PROBE_VERSION", output)
+        self.assertIn("class=PSQL_AUTH_FAILED", output)
+        for secret in (fake_secret, "FAKE_PAT", "Authorization", "postgresql://", "host"):
+            self.assertNotIn(secret, output)
+
+    def test_probe_retries_only_transient_read_only_failure(self):
+        ref = "a" * 20
+        uri = "postgresql://postgres." + ref + "@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require"
+        transient = p1.PsqlFailure("DB_PROBE_VERSION", "PSQL_AUTH_FAILED", 3)
+        with patch.object(p1, "db_sql", side_effect=[transient, ["17.6", "postgres", "postgres"]]) as query:
+            self.assertEqual(p1.probe_database_connection(uri, "fake", attempts=2, delay=0, sleep=lambda _: None), "17.6")
+            self.assertEqual(query.call_count, 2)
+            self.assertTrue(all("SELECT current_setting" in c.args[2] for c in query.call_args_list))
+        permanent = p1.PsqlFailure("DB_PROBE_VERSION", "PSQL_TLS_FAILED", 3)
+        with patch.object(p1, "db_sql", side_effect=permanent) as query:
+            with self.assertRaises(p1.PsqlFailure):
+                p1.probe_database_connection(uri, "fake", attempts=4, delay=0, sleep=lambda _: None)
+            self.assertEqual(query.call_count, 1)
+
+    def test_probe_retry_exhaustion_is_bounded(self):
+        failure = p1.PsqlFailure("DB_PROBE_VERSION", "PSQL_CONNECT_TIMEOUT", 124)
+        with patch.object(p1, "db_sql", side_effect=failure) as query:
+            with self.assertRaises(p1.PsqlFailure):
+                p1.probe_database_connection("synthetic", "fake", attempts=3, delay=0, sleep=lambda _: None)
+            self.assertEqual(query.call_count, 3)
+
+    def test_failed_push_is_never_retried_and_output_is_redacted(self):
+        ref = "a" * 20
+        uri = "postgresql://postgres." + ref + "@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require"
+        fake = type("Result", (), {"returncode": 1,
+             "stdout": "FAKE_JWT FAKE_SERVICE_KEY FAKE_DB_PASSWORD Authorization: Bearer FAKE_PAT",
+             "stderr": "postgresql://postgres:FAKE_DB_PASSWORD@host/db"})()
+        with patch.object(p1.subprocess, "run", return_value=fake) as run:
+            with self.assertRaises(p1.RehearsalError) as caught:
+                p1.cli(["db", "push", "--yes"], uri, "FAKE_DB_PASSWORD")
+            self.assertEqual(run.call_count, 1)
+        output = str(caught.exception) + json.dumps(caught.exception.__dict__)
+        self.assertIn("CLI_PUSH_FAILED", output)
+        for secret in ("FAKE_JWT", "FAKE_SERVICE_KEY", "FAKE_DB_PASSWORD", "FAKE_PAT",
+                       "Authorization", "postgresql://"):
+            self.assertNotIn(secret, output)
+
+    def test_session_route_validation(self):
+        ref = "a" * 20
+        host = "aws-0-ap-northeast-2.pooler.supabase.com"
+        response = [{"db_host": host, "db_user": "postgres." + ref,
+                     "db_name": "postgres", "db_port": 6543, "pool_mode": "transaction"}]
+        route = p1.route_from_pooler_response(response, ref)
+        self.assertEqual(route, "postgresql://postgres." + ref + "@" + host +
+                         ":5432/postgres?sslmode=require")
+        for bad in (route.replace(":5432/", ":6543/"),
+                    route.replace(host, "non-supabase.example"),
+                    route.replace("postgres." + ref, "postgres:fake-password@postgres." + ref),
+                    route.replace("postgres." + ref, "postgres." + "b" * 20)):
+            with self.assertRaises(p1.RehearsalError):
+                p1.validate_session_uri(bad, ref)
+        with self.assertRaises(p1.RehearsalError):
+            p1.route_from_pooler_response(response + [dict(response[0], db_host="other.pooler.supabase.com")], ref)
+        with self.assertRaises(p1.RehearsalError):
+            p1.route_from_pooler_response([dict(response[0], db_user="postgres." + "b" * 20)], ref)
+
+
+class P1RCleanupTests(unittest.TestCase):
+    def setUp(self):
+        self.ref, self.peer = "a" * 20, "b" * 20
+        self.name, self.org = p1.PREFIX + "unit", "test-org"
+        self.good = {"id": self.ref, "name": self.name,
+                     "organization_id": self.org, "region": p1.REGION}
+
+    def test_one_delete_then_403_200_404_and_absence(self):
+        calls = []
+        responses = iter([(200, self.good), (200, [self.good, {"id": self.peer}]),
+                          (200, None), (403, None), (200, [self.good, {"id": self.peer}]),
+                          (200, self.good), (200, [{"id": self.peer}]),
+                          (404, None), (200, [{"id": self.peer}])])
+        def fake(method, path, token, *args, **kwargs):
+            calls.append((method, path))
+            return next(responses)
+        with patch.object(p1, "api", side_effect=fake):
+            state = p1.CleanupState(phase="PROJECT_CREATED")
+            result = p1.delete_project_once("fake-token", self.ref, self.name, self.org,
+                       p1.REGION, {self.peer}, state=state, attempts=3, delay=0, sleep=lambda _: None)
+        self.assertEqual(result["phase"], "CLEANUP_CONFIRMED")
+        self.assertEqual(result["delete_status"], 200)
+        self.assertEqual(len([c for c in calls if c[0] == "DELETE"]), 1)
+
+    def test_identity_mismatch_never_deletes(self):
+        calls = []
+        def fake(method, path, token, *args, **kwargs):
+            calls.append(method)
+            return (200, dict(self.good, region="wrong")) if len(calls) == 1 else (200, [])
+        with patch.object(p1, "api", side_effect=fake):
+            with self.assertRaisesRegex(p1.RehearsalError, "DETAIL_IDENTITY_MISMATCH"):
+                p1.delete_project_once("fake", self.ref, self.name, self.org,
+                                       p1.REGION, {self.peer})
+        self.assertNotIn("DELETE", calls)
+
+    def test_delayed_absence_timeout_and_peer_loss(self):
+        state = p1.CleanupState(phase="DELETE_ACCEPTED", delete_count=1)
+        with patch.object(p1, "api", side_effect=[(404, None), (200, [{"id": self.ref}])]):
+            with self.assertRaisesRegex(p1.RehearsalError, "DELETE_ABSENCE_UNCONFIRMED"):
+                p1.confirm_absence("fake", self.ref, {self.peer}, state=state,
+                                   attempts=1, delay=0, sleep=lambda _: None)
+        with patch.object(p1, "api", side_effect=[(404, None), (200, [])]):
+            with self.assertRaisesRegex(p1.RehearsalError, "DELETE_ABSENCE_UNCONFIRMED"):
+                p1.confirm_absence("fake", self.ref, {self.peer}, state=state,
+                                   attempts=1, delay=0, sleep=lambda _: None)
+        self.assertFalse(state.peers_preserved)
+
+    def test_ambiguous_creation_reconciliation(self):
+        self.assertEqual(p1.reconcile_created_project([self.good], self.name, self.org, p1.REGION), self.ref)
+        for projects in ([], [self.good, self.good], [dict(self.good, region="wrong")]):
+            with self.assertRaisesRegex(p1.RehearsalError, "CREATION_RECONCILIATION_AMBIGUOUS"):
+                p1.reconcile_created_project(projects, self.name, self.org, p1.REGION)
+
+    def test_cleanup_evidence_contains_no_secrets(self):
+        state = p1.CleanupState(phase="DELETE_ACCEPTED", delete_count=1,
+                                delete_status=200, delete_at="2026-09-27T00:00:00Z")
+        dump = json.dumps(state.safe_evidence())
+        for secret in ("FAKE_DB_PASSWORD", "FAKE_PAT", "FAKE_JWT", "FAKE_SERVICE_KEY",
+                       "Authorization", "postgresql://"):
+            self.assertNotIn(secret, dump)
 
 
 if __name__ == "__main__":

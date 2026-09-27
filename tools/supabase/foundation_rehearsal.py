@@ -16,8 +16,9 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import quote
+from urllib.parse import urlsplit, parse_qs
 
 from foundation_guard import ROOT, inspect_local_config, inspect_source, load_contract
 from foundation_local_ci import parse_tap
@@ -42,12 +43,71 @@ class RehearsalError(RuntimeError):
     pass
 
 
+class PsqlFailure(RehearsalError):
+    """Only allowlisted diagnostic fields, never subprocess output."""
+
+    def __init__(self, stage, category, returncode):
+        self.stage = stage
+        self.category = category
+        self.returncode = returncode
+        super().__init__(f"PSQL_FAILURE stage={stage} class={category} exit={returncode}")
+
+
+@dataclass
+class CleanupState:
+    phase: str = "PROJECT_NOT_CREATED"
+    target_ref: str | None = None
+    target_name: str | None = None
+    delete_count: int = 0
+    delete_status: int | None = None
+    delete_at: str | None = None
+    detail_absent: bool = False
+    list_absent: bool = False
+    peers_preserved: bool = False
+    confirmed_at: str | None = None
+
+    def safe_evidence(self):
+        return {"phase": self.phase, "target_ref": self.target_ref,
+                "target_name": self.target_name, "delete_count": self.delete_count,
+                "delete_status": self.delete_status, "delete_at": self.delete_at,
+                "detail_absent": self.detail_absent, "list_absent": self.list_absent,
+                "peers_preserved": self.peers_preserved, "confirmed_at": self.confirmed_at}
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def classify_psql_failure(stderr, stdout, returncode):
+    """Classify captured text; return only fixed codes, never source fragments."""
+    message = ((stderr or "") + "\n" + (stdout or "")).lower()
+    patterns = (
+        ("PSQL_TENANT_OR_USER_NOT_FOUND", ("tenant or user not found", "tenant not found", "user not found")),
+        ("PSQL_AUTH_FAILED", ("password authentication failed", "authentication failed")),
+        ("PSQL_PG_HBA_DENIED", ("no pg_hba.conf entry", "pg_hba.conf rejects")),
+        ("PSQL_DNS_FAILED", ("could not translate host name", "name or service not known", "no such host")),
+        ("PSQL_CONNECTION_REFUSED", ("connection refused",)),
+        ("PSQL_CONNECT_TIMEOUT", ("connection timed out", "timeout expired", "i/o timeout")),
+        ("PSQL_TLS_FAILED", ("ssl error", "certificate verify failed", "tls handshake", "ssl connection has been closed")),
+        ("PSQL_SERVER_CLOSED", ("server closed the connection unexpectedly", "unexpected eof on client connection")),
+        ("PSQL_DATABASE_UNAVAILABLE", ("the database system is starting up", "database system is in recovery")),
+    )
+    for category, needles in patterns:
+        if any(needle in message for needle in needles):
+            return category
+    if re.search(r"fatal:\s+database\s+.+does not exist", message):
+        return "PSQL_DATABASE_UNAVAILABLE"
+    if re.search(r"\berror:\s+", message):
+        return "PSQL_SQL_ERROR"
+    return "PSQL_UNKNOWN_FAILURE"
+
+
 def require(condition, code):
     if not condition:
         raise RehearsalError(code)
 
 
-def api(method, path, token, body=None, *, allow_404=False):
+def api(method, path, token, body=None, *, allow_404=False, allow_403=False):
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(API + path, data=data, method=method,
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
@@ -58,6 +118,8 @@ def api(method, path, token, body=None, *, allow_404=False):
     except urllib.error.HTTPError as exc:
         if allow_404 and exc.code == 404:
             return 404, None
+        if allow_403 and exc.code == 403:
+            return 403, None
         # Never include the response body, request, or URL with credentials.
         raise RehearsalError("MANAGEMENT_HTTP_" + str(exc.code)) from None
     except (OSError, ValueError):
@@ -81,18 +143,59 @@ def verify_target(token, ref, name, org_id, region):
     return detail, projects
 
 
-def confirm_absence(token, ref, peers, *, attempts=15, sleep=time.sleep):
-    for _ in range(attempts):
-        status, _ = api("GET", "/v1/projects/" + ref, token, allow_404=True)
-        _, projects = api("GET", "/v1/projects", token)
-        refs = {p.get("id") for p in projects}
-        if status == 404 and ref not in refs and peers <= refs:
-            return True
-        sleep(3)
+def confirm_absence(token, ref, peers, *, state=None, attempts=30, delay=5, sleep=time.sleep):
+    """Poll for up to about 2.5 minutes; a transient 403 is not absence."""
+    state = state or CleanupState(phase="DELETE_ACCEPTED")
+    require(state.delete_count == 1, "DELETE_NOT_ACCEPTED")
+    for attempt in range(attempts):
+        status, _ = api("GET", "/v1/projects/" + ref, token, allow_404=True, allow_403=True)
+        list_status, projects = api("GET", "/v1/projects", token)
+        require(list_status == 200 and isinstance(projects, list), "PROJECT_LIST_UNAVAILABLE")
+        refs = {p.get("id") for p in projects if isinstance(p, dict)}
+        state.detail_absent = status == 404
+        state.list_absent = ref not in refs
+        state.peers_preserved = peers <= refs
+        if state.detail_absent and state.list_absent and state.peers_preserved:
+            state.phase = "CLEANUP_CONFIRMED"
+            state.confirmed_at = utc_now()
+            return state.safe_evidence()
+        if attempt + 1 < attempts:
+            sleep(delay)
     raise RehearsalError("DELETE_ABSENCE_UNCONFIRMED")
 
 
-def run_command(argv, *, env=None, timeout=300):
+def delete_project_once(token, ref, name, org_id, region, peers, *, state=None,
+                        attempts=30, delay=5, sleep=time.sleep):
+    state = state or CleanupState(phase="PROJECT_CREATED")
+    require(state.delete_count == 0, "DELETE_ALREADY_SENT")
+    verify_target(token, ref, name, org_id, region)
+    state.target_ref = ref
+    state.target_name = name
+    state.phase = "DELETE_NOT_SENT"
+    state.delete_count = 1
+    state.phase = "DELETE_SENT"
+    state.delete_at = utc_now()
+    status, _ = api("DELETE", "/v1/projects/" + ref, token)
+    state.delete_status = status
+    require(status in (200, 202, 204), "DELETE_NOT_ACCEPTED")
+    state.phase = "DELETE_ACCEPTED"
+    return confirm_absence(token, ref, peers, state=state, attempts=attempts, delay=delay, sleep=sleep)
+
+
+def reconcile_created_project(projects, name, org_id, region):
+    require(name.startswith(PREFIX) and isinstance(projects, list), "CREATION_RECONCILIATION_INVALID")
+    matches = [p for p in projects if isinstance(p, dict) and p.get("name") == name and
+               p.get("organization_id") == org_id and p.get("region") == region]
+    require(len(matches) == 1 and REF_RE.fullmatch(matches[0].get("id") or ""),
+            "CREATION_RECONCILIATION_AMBIGUOUS")
+    return matches[0]["id"]
+
+
+def safe_stage(stage):
+    return stage if isinstance(stage, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{2,40}", stage) else "UNKNOWN_STAGE"
+
+
+def run_command(argv, *, env=None, timeout=300, stage="LOCAL_COMMAND"):
     if env is None:
         env = os.environ.copy()
         env.pop("SUPABASE_ACCESS_TOKEN", None)
@@ -100,16 +203,19 @@ def run_command(argv, *, env=None, timeout=300):
         result = subprocess.run(argv, cwd=ROOT, env=env, text=True,
                                 capture_output=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
-        raise RehearsalError("COMMAND_START_OR_TIMEOUT") from None
+        raise RehearsalError("CLI_FAILURE stage=" + safe_stage(stage) + " class=START_OR_TIMEOUT") from None
     if result.returncode:
         # Output may contain a URI, DB password, or key. Do not echo it.
-        raise RehearsalError("COMMAND_FAILED " + argv[0] + " exit=" + str(result.returncode))
+        raise RehearsalError("CLI_FAILURE stage=" + safe_stage(stage) +
+                             " exit=" + str(result.returncode))
     return result.stdout + "\n" + result.stderr
 
 
-def db_sql(uri, password, sql, *, readonly=True):
-    require(uri.startswith("postgresql://") and ":5432/" in uri and "sslmode=require" in uri,
-            "SESSION_POOLER_URI_REQUIRED")
+def db_sql(uri, password, sql, *, readonly=True, stage="DB_QUERY", timeout=120):
+    parsed = urlsplit(uri)
+    username = parsed.username or ""
+    ref = username.removeprefix("postgres.")
+    validate_session_uri(uri, ref)
     env = os.environ.copy()
     env.pop("SUPABASE_ACCESS_TOKEN", None)
     env["PGPASSWORD"] = password
@@ -118,25 +224,68 @@ def db_sql(uri, password, sql, *, readonly=True):
            "psql", "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", uri]
     try:
         result = subprocess.run(cmd, input=wrapper, cwd=ROOT, env=env, text=True,
-                                capture_output=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
-        raise RehearsalError("PSQL_START_OR_TIMEOUT") from None
+                                capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise PsqlFailure(safe_stage(stage), "PSQL_CONNECT_TIMEOUT", 124) from None
+    except OSError:
+        raise PsqlFailure(safe_stage(stage), "PSQL_UNKNOWN_FAILURE", 127) from None
     if result.returncode:
-        raise RehearsalError("PSQL_FAILED exit=" + str(result.returncode))
+        raise PsqlFailure(safe_stage(stage),
+                          classify_psql_failure(result.stderr, result.stdout, result.returncode),
+                          result.returncode)
     return [line for line in result.stdout.splitlines() if line not in ("BEGIN", "COMMIT", "")]
 
 
-def count_sql(uri, password, sql):
-    lines = db_sql(uri, password, sql)
+def count_sql(uri, password, sql, *, stage="DB_COUNT"):
+    lines = db_sql(uri, password, sql, stage=stage)
     require(len(lines) == 1 and lines[0].isdigit(), "CATALOG_COUNT_MALFORMED")
     return int(lines[0])
 
 
 def cli(command, uri, password, *, timeout=600):
+    parsed = urlsplit(uri)
+    validate_session_uri(uri, (parsed.username or "").removeprefix("postgres."))
     env = os.environ.copy()
     env.pop("SUPABASE_ACCESS_TOKEN", None)
     env["PGPASSWORD"] = password
-    return run_command(["supabase"] + command + ["--db-url", uri], env=env, timeout=timeout)
+    if command[:3] == ["db", "push", "--dry-run"]:
+        stage = "CLI_DRY_RUN_FAILED"
+    elif command[:2] == ["db", "push"]:
+        stage = "CLI_PUSH_FAILED"
+    elif command[:2] == ["db", "lint"]:
+        stage = "CLI_LINT_FAILED"
+    elif command[:2] == ["test", "db"]:
+        stage = "CLI_TEST_FAILED"
+    else:
+        stage = "CLI_UNKNOWN_FAILED"
+    return run_command(["supabase"] + command + ["--db-url", uri], env=env,
+                       timeout=timeout, stage=stage)
+
+
+RETRYABLE_PROBE_CLASSES = frozenset({
+    "PSQL_AUTH_FAILED", "PSQL_TENANT_OR_USER_NOT_FOUND", "PSQL_CONNECTION_REFUSED",
+    "PSQL_CONNECT_TIMEOUT", "PSQL_SERVER_CLOSED", "PSQL_DATABASE_UNAVAILABLE",
+})
+
+
+def probe_database_connection(uri, password, *, attempts=4, delay=8, sleep=time.sleep):
+    """Retry only a read-only initial probe; never retry migration commands."""
+    require(1 <= attempts <= 4 and 0 <= delay <= 8, "PROBE_RETRY_BOUNDS_INVALID")
+    for attempt in range(attempts):
+        try:
+            lines = db_sql(uri, password,
+                "SELECT current_setting('server_version');\n"
+                "SELECT current_database();\nSELECT current_user;",
+                stage="DB_PROBE_VERSION", timeout=25)
+            require(len(lines) == 3 and lines[1:] == ["postgres", "postgres"],
+                    "DB_PROBE_IDENTITY_MISMATCH")
+            require(int(lines[0].split(".")[0]) >= 15, "DB_PROBE_VERSION_UNSUPPORTED")
+            return lines[0]
+        except PsqlFailure as exc:
+            if exc.category not in RETRYABLE_PROBE_CLASSES or attempt + 1 == attempts:
+                raise
+            sleep(delay)
+    raise RehearsalError("DB_PROBE_RETRY_EXHAUSTED")
 
 
 def project_health(token, ref, *, attempts=30, sleep=time.sleep):
@@ -174,19 +323,47 @@ def make_password():
     return "".join(secrets.choice(alphabet) for _ in range(48))
 
 
-def pooler_uri(token, ref):
-    _, pool = api("GET", "/v1/projects/" + ref + "/config/database/pooler", token)
+def validate_session_uri(uri, ref):
+    """Accept only the reviewed passwordless TLS Supavisor session route."""
+    try:
+        parsed = urlsplit(uri)
+        query = parse_qs(parsed.query, strict_parsing=True)
+        valid = (bool(REF_RE.fullmatch(ref or "")) and parsed.scheme == "postgresql" and
+                 parsed.username == "postgres." + ref and
+                 parsed.password is None and parsed.hostname is not None and
+                 re.fullmatch(r"[a-z0-9-]+\.pooler\.supabase\.com", parsed.hostname) and
+                 parsed.port == 5432 and parsed.path == "/postgres" and
+                 query == {"sslmode": ["require"]} and not parsed.fragment)
+    except ValueError:
+        valid = False
+    require(bool(valid), "SESSION_POOLER_URI_REQUIRED")
+    return uri
+
+
+def route_from_pooler_response(pool, ref):
+    require(REF_RE.fullmatch(ref or ""), "PROJECT_REF_INVALID")
     entries = pool if isinstance(pool, list) else [pool]
     hosts = []
     for entry in entries:
         if isinstance(entry, dict):
-            for key in ("host", "db_host", "connection_string"):
-                value = entry.get(key)
-                if isinstance(value, str) and "pooler.supabase.com" in value:
-                    hosts += re.findall(r"[a-z0-9.-]*pooler\.supabase\.com", value)
+            host = entry.get("db_host")
+            require(entry.get("db_user") == "postgres." + ref and
+                    entry.get("db_name") == "postgres" and
+                    isinstance(host, str) and
+                    re.fullmatch(r"[a-z0-9-]+\.pooler\.supabase\.com", host),
+                    "OFFICIAL_POOLER_ROUTE_INVALID")
+            hosts.append(host)
     require(len(set(hosts)) == 1, "OFFICIAL_POOLER_HOST_UNAVAILABLE")
-    host = hosts[0]
-    return "postgresql://postgres." + ref + "@" + host + ":5432/postgres?sslmode=require"
+    # The API may describe a transaction endpoint on 6543. Only its official
+    # host is reused; the reviewed session endpoint is port 5432.
+    return validate_session_uri("postgresql://postgres." + ref + "@" + hosts[0] +
+                                ":5432/postgres?sslmode=require", ref)
+
+
+def pooler_uri(token, ref):
+    status, pool = api("GET", "/v1/projects/" + ref + "/config/database/pooler", token)
+    require(status == 200, "OFFICIAL_POOLER_RESPONSE_UNAVAILABLE")
+    return route_from_pooler_response(pool, ref)
 
 
 def migration_versions(contract):
@@ -215,6 +392,7 @@ def run_rehearsal(token, confirm, *, transport=api):
     ref = None
     created = False
     creation_attempted = False
+    cleanup = CleanupState()
     evidence = {"name": name, "organization": ORG_NAME, "organization_id": org_id,
                 "region": REGION, "peer_count": len(peers), "starting_head":
                 run_command(["git", "rev-parse", "HEAD"], timeout=20).strip()}
@@ -227,19 +405,20 @@ def run_rehearsal(token, confirm, *, transport=api):
         ref = project.get("id") if isinstance(project, dict) else None
         require(status in (200, 201) and REF_RE.fullmatch(ref or ""), "MALFORMED_CREATION_RESPONSE")
         created = True
+        cleanup.phase = "PROJECT_CREATED"
         evidence["ref"] = ref
         print("P1_PROJECT_CREATED", name, ref, flush=True)
         project_health(token, ref)
         verify_target(token, ref, name, org_id, REGION)
         uri = pooler_uri(token, ref)
         evidence["route"] = "TLS Supavisor session pooler 5432"
-        evidence["postgresql_version"] = db_sql(uri, password, "SELECT current_setting('server_version');")[0]
+        evidence["postgresql_version"] = probe_database_connection(uri, password)
         baseline = [
-            count_sql(uri, password, "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'schoolos\\_%' ESCAPE '\\';"),
-            count_sql(uri, password, "SELECT count(*) FROM pg_namespace WHERE nspname IN ('app','app_private');"),
+            count_sql(uri, password, "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'schoolos\\_%' ESCAPE '\\';", stage="DB_BASELINE_ROLES"),
+            count_sql(uri, password, "SELECT count(*) FROM pg_namespace WHERE nspname IN ('app','app_private');", stage="DB_BASELINE_SCHEMAS"),
             count_sql(uri, password, "SELECT count(*) FROM supabase_migrations.schema_migrations WHERE version IN ("+
-                      ",".join("'"+v+"'" for v in migration_versions(contract))+");"),
-            count_sql(uri, password, "SELECT count(*) FROM auth.users WHERE email LIKE 'foundation-%@example.invalid';")]
+                      ",".join("'"+v+"'" for v in migration_versions(contract))+");", stage="DB_MIGRATION_HISTORY"),
+            count_sql(uri, password, "SELECT count(*) FROM auth.users WHERE email LIKE 'foundation-%@example.invalid';", stage="DB_BASELINE_AUTH")]
         require(baseline == [0, 0, 0, 0], "DIRTY_BASELINE")
         evidence["baseline"] = baseline
         expected = migration_versions(contract)
@@ -249,7 +428,7 @@ def run_rehearsal(token, confirm, *, transport=api):
         require("Finished supabase db push" in push or "Applying migration" in push,
                 "PUSH_SUCCESS_OUTPUT_UNEXPECTED")
         evidence["push_count"] = 1
-        history = db_sql(uri, password, "SELECT version FROM supabase_migrations.schema_migrations ORDER BY version;")
+        history = db_sql(uri, password, "SELECT version FROM supabase_migrations.schema_migrations ORDER BY version;", stage="DB_MIGRATION_HISTORY")
         require(history == expected, "MIGRATION_HISTORY_MISMATCH")
         evidence["history"] = history
         counts = {}
@@ -262,13 +441,13 @@ def run_rehearsal(token, confirm, *, transport=api):
           "security_definer_functions": "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname IN ('app','app_private') AND p.prosecdef;",
         }
         for key, sql in queries.items():
-            counts[key] = count_sql(uri, password, sql)
+            counts[key] = count_sql(uri, password, sql, stage="DB_SECURITY_SMOKE")
             require(counts[key] == contract["expected_catalog"][key], "CATALOG_" + key.upper() + "_MISMATCH")
         evidence["counts"] = counts
-        fk = db_sql(uri, password, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='principal_auth_bindings_auth_user_id_fkey';")
+        fk = db_sql(uri, password, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='principal_auth_bindings_auth_user_id_fkey';", stage="DB_SECURITY_SMOKE")
         require(len(fk) == 1 and "REFERENCES auth.users(id)" in fk[0] and
                 "ON UPDATE RESTRICT" in fk[0] and "ON DELETE SET NULL" in fk[0], "AUTH_FK_MISMATCH")
-        owner = db_sql(uri, password, "SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE oid='app_private.current_principal_id()'::regprocedure;")
+        owner = db_sql(uri, password, "SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE oid='app_private.current_principal_id()'::regprocedure;", stage="DB_SECURITY_SMOKE")
         require(owner == ["schoolos_authz_reader"], "HELPER_OWNER_MISMATCH")
         evidence["security_smoke"] = "PASS"
         try:
@@ -284,9 +463,9 @@ def run_rehearsal(token, confirm, *, transport=api):
         for level in ("error", "warning"):
             cli(["db", "lint", "--level", level, "--fail-on", "error"], uri, password)
         evidence["lint"] = "error and warning PASS"
-        db_sql(uri, password, "CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;", readonly=False)
+        db_sql(uri, password, "CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;", readonly=False, stage="DB_PGTAP_INSTALL")
         evidence["pgtap_version"] = db_sql(uri, password,
-            "SELECT extversion FROM pg_extension WHERE extname='pgtap';")[0]
+            "SELECT extversion FROM pg_extension WHERE extname='pgtap';", stage="DB_PGTAP_VERSION")[0]
         require(evidence["pgtap_version"] == "1.3.3", "PGTAP_VERSION_MISMATCH")
         _, key_data = api("GET", "/v1/projects/" + ref + "/api-keys?reveal=true", token)
         keys = key_data if isinstance(key_data, list) else []
@@ -305,7 +484,7 @@ def run_rehearsal(token, confirm, *, transport=api):
                 raise RehearsalError("AUTH_CREATE_FAILED") from None
             user_password = None
         service = None
-        require(count_sql(uri, password, "SELECT count(*) FROM auth.users WHERE email LIKE 'foundation-%@example.invalid';") == 5,
+        require(count_sql(uri, password, "SELECT count(*) FROM auth.users WHERE email LIKE 'foundation-%@example.invalid';", stage="DB_AUTH_FIXTURE_CHECK") == 5,
                 "AUTH_FIXTURE_COUNT_MISMATCH")
         evidence["auth_users"] = 5
         total = 0
@@ -322,7 +501,7 @@ def run_rehearsal(token, confirm, *, transport=api):
         require(not inspect_source(ROOT, contract, future="fail")[0], "POST_TEST_SOURCE_DRIFT")
         require(configure(ref, expected_name=name, expected_organization=org_id, token=token)
                 == "MANAGED_CONFIG_PASS", "POST_TEST_CONFIG_DRIFT")
-        require(db_sql(uri, password, "SELECT version FROM supabase_migrations.schema_migrations ORDER BY version;")
+        require(db_sql(uri, password, "SELECT version FROM supabase_migrations.schema_migrations ORDER BY version;", stage="DB_MIGRATION_HISTORY")
                 == expected, "POST_TEST_HISTORY_DRIFT")
         evidence["drift"] = "PASS"
         try:
@@ -337,35 +516,36 @@ def run_rehearsal(token, confirm, *, transport=api):
         # Release local references to secrets before deleting the project.
         uri = None
         password = None
-        verify_target(token, ref, name, org_id, REGION)
-        status, _ = api("DELETE", "/v1/projects/" + ref, token)
-        require(status in (200, 202, 204), "DELETE_FAILED")
+        evidence["delete"] = delete_project_once(token, ref, name, org_id, REGION, peers,
+                                                  state=cleanup)
         created = False
-        confirm_absence(token, ref, peers)
-        evidence["delete"] = "confirmed: detail 404, list absent, peers retained"
         return evidence
     except Exception:
-        if creation_attempted and not ref:
+        if creation_attempted and not created:
             # A lost/malformed creation response can still have created a
             # project. Discover only the unique generated name in this org.
             try:
                 _, listed = api("GET", "/v1/projects", token)
-                found = [p for p in listed if p.get("name") == name and
-                         p.get("organization_id") == org_id and p.get("region") == REGION]
-                if len(found) == 1 and REF_RE.fullmatch(found[0].get("id") or ""):
-                    ref = found[0]["id"]
-                    created = True
+                ref = reconcile_created_project(listed, name, org_id, REGION)
+                created = True
+                cleanup.phase = "PROJECT_CREATED"
             except Exception:
                 pass
         if created and ref:
             # Best-effort exact-target cleanup. Never delete after an identity mismatch.
             try:
-                verify_target(token, ref, name, org_id, REGION)
-                api("DELETE", "/v1/projects/" + ref, token)
-                confirm_absence(token, ref, peers)
-                print("P1_FAILURE_CLEANUP_CONFIRMED", ref, flush=True)
+                if cleanup.delete_count == 0:
+                    delete_project_once(token, ref, name, org_id, REGION, peers,
+                                        state=cleanup)
+                elif cleanup.delete_count == 1:
+                    confirm_absence(token, ref, peers, state=cleanup)
+                require(cleanup.phase == "CLEANUP_CONFIRMED", "CLEANUP_NOT_CONFIRMED")
+                print("P1_FAILURE_CLEANUP_CONFIRMED", ref,
+                      json.dumps(cleanup.safe_evidence(), sort_keys=True), flush=True)
             except Exception:
-                print("P1_FAILURE_CLEANUP_UNCONFIRMED", ref, file=sys.stderr, flush=True)
+                print("P1_FAILURE_CLEANUP_UNCONFIRMED", ref,
+                      json.dumps(cleanup.safe_evidence(), sort_keys=True),
+                      file=sys.stderr, flush=True)
         raise
 
 

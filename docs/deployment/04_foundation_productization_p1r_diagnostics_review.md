@@ -1,0 +1,39 @@
+# Foundation deployment productization — P1R diagnostics and cleanup review
+
+**DEPLOYMENT PRODUCTIZATION P1R PASS — CONNECTION DIAGNOSTICS HARDENED — READY FOR SEPARATE P1 RETRY AUTHORIZATION.** This is a local/static hardening pass. It creates or contacts **zero** managed Supabase projects and does not retry P1 or start P2.
+
+## Starting point and scope
+
+- Starting HEAD: `29f6de91616a920d9cace0681149f1d564a785e4`; worktree clean.
+- [P1's failed attempt](03_foundation_productization_p1_rehearsal_review.md) created one disposable project, then stopped at the first read-only `psql` query with `PSQL_FAILED exit=3`. The runner discarded stderr. The project was later confirmed absent by direct HTTP 404 and independent list absence; no dry-run or push ran.
+- **The old failure's root cause remains unclassified due to insufficient sanitized diagnostics.** Neither the historical exit code nor the later project absence proves a bad password, pooler propagation, host, TLS, DNS, or outage. Historical P1 evidence was not rewritten.
+
+## Allowlisted connection diagnostics
+
+`classify_psql_failure()` reads captured `psql` stdout/stderr in memory and returns only a fixed category: `PSQL_AUTH_FAILED`, `PSQL_TENANT_OR_USER_NOT_FOUND`, `PSQL_DNS_FAILED`, `PSQL_CONNECTION_REFUSED`, `PSQL_CONNECT_TIMEOUT`, `PSQL_TLS_FAILED`, `PSQL_SERVER_CLOSED`, `PSQL_DATABASE_UNAVAILABLE`, `PSQL_PG_HBA_DENIED`, `PSQL_SQL_ERROR`, or `PSQL_UNKNOWN_FAILURE`. Unknown text remains unknown. No raw stderr fragment, URI, password, token, header, SQL, hostname or username is copied into a `PsqlFailure`, evidence object, or log. A safe error has the shape `PSQL_FAILURE stage=DB_PROBE_VERSION class=PSQL_AUTH_FAILED exit=3`.
+
+The database wrapper now assigns stages for the initial probe, roles/schema/Auth baseline, migration history, security smoke, pgTAP install/version and later counts. Supabase CLI failures similarly identify only a fixed stage (`CLI_DRY_RUN_FAILED`, `CLI_PUSH_FAILED`, `CLI_LINT_FAILED`, `CLI_TEST_FAILED`), an exit code, and no raw captured output. A failed `db push` remains a single attempt: no automatic push retry, repair, or migration rewrite.
+
+The dedicated `probe_database_connection()` performs only an explicit `BEGIN READ ONLY` transaction containing `server_version`, `current_database()` and `current_user` selects, then checks expected database/user and PostgreSQL major 15+. It retries only classified potentially transient connection categories: authentication, tenant/user lookup, connection refused/timeout, server closed, and database temporarily unavailable. DNS, TLS, pg_hba, SQL, unknown, identity and version failures do not retry. Maximum: **4 attempts**, each with a **25-second** process timeout and **8 seconds** between attempts; total worst-case approximately **124 seconds**. This policy applies only to the initial read-only probe; catalog queries and all migration commands never auto-retry.
+
+## Session-pooler route review
+
+The [approved connection-path review](../database/18_foundation_managed_cli_connection_path_review.md), [successful M1 evidence](../database/19_foundation_managed_throwaway_m1_session_pooler_review.md), and [M4/M5 continuity](../database/22_foundation_managed_throwaway_m4_auth_deletion_review.md) establish the session route: official fresh-project Supavisor `db_host`, `postgres.<ref>` user, `postgres` database, port **5432**, and `sslmode=require`, with a passwordless URI and process-only `PGPASSWORD`. The official pooler response may describe transaction mode on 6543; the runner uses only its verified host and constructs session port 5432. Fixed alphanumeric project ref, username, host, database and query components do not need percent encoding. The database password stays out of the URI.
+
+The previous URI shape is unchanged. P1R changes only **validation**: it reads the official `db_host`/`db_user`/`db_name` fields, rejects missing or incompatible multiple hosts, checks the user/ref relationship, and validates the final URI's scheme, host class, username, absence of password, port, database, TLS query and fragment. Unit fixtures reject port 6543, non-Supabase hosts, embedded credentials and wrong project-ref usernames. This review does not infer that the route caused the old failure.
+
+## Deletion and ambiguous creation
+
+`CleanupState` tracks project-created status, whether one DELETE was sent/accepted, safe HTTP status and timestamp, detail absence, list absence, preservation of every pre-existing peer ref, and final confirmation time. Immediately before a DELETE, independent detail/list identity must agree on the exact disposable ref, name, organization and region. A normal cleanup sends **one DELETE**. An ambiguous response does not trigger another DELETE; it can be followed only by GET/list absence polling.
+
+Absence polling now allows a transient post-DELETE detail 403 or 200 without treating it as deletion. It requires **all three**: detail HTTP 404, target ref missing from the independent list, and all original peer refs retained. Its maximum is **30 observations at 5-second intervals** (about 145 seconds between the first and last observation). A timeout or peer disappearance remains unconfirmed. A malformed creation response can be reconciled only by a unique project with the exact generated P1 name, organization and region; zero or multiple matches do not authorize deletion.
+
+## Test and remote boundary evidence
+
+- Starting P0/P1 suite: **21/21**. P1R diagnostic, route, retry, cleanup, ambiguity, one-DELETE, missing-token and fake-secret tests expanded the combined suite to **33/33** (0 failed). Synthetic captured output includes fake DB password, Management token, JWT, service key, Authorization header and credential-bearing URI. No such value appears in exceptions or safe evidence. All API/destructive behavior is mocked.
+- Foundation static guard: `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests` and `LOCAL_CONFIG_PASS`; zero future migrations. Default P1 `plan` remains read-only, and `run` still requires `--run` plus exact Ilmora confirmation. The separate P0 deployer remains plan-only.
+- Local Foundation CI: **PASS** with pinned CLI 2.98.2 and Docker Linux. Local `--no-seed` reset rebuilt all nine frozen migrations. Five synthetic local Auth prerequisites were created through the local Auth Admin API. Error-level and warning-level lint passed. The nine frozen SQL test files ran serially: 01 **44/44**, 02 **6/6**, 03 **16/16**, 04 **16/16**, 05 **25/25**, 06 **16/16**, 07 **33/33**, 08 **41/41**, 09 **23/23**; total **220/220**. The driver did not start the already-running local stack, so it did not stop it.
+- Managed API calls performed in P1R: **0**. Managed projects created: **0**. Managed projects contacted: **0**. No token value was read or used. No hosted SQL, migration dry-run/push, Auth fixture, Data API change, or deletion occurred.
+- Migrations 1–9, database tests 01–09, Foundation contract, P0 closure, M0–M5 and P1 reviews, Flutter and dependencies remain unchanged. GitHub Actions remains local-only; no hosted credential or P1 run was added to its workflow.
+
+P1R hardens readiness only. It does not authorize a new managed project by itself. The next separately authorized task, if all local gates finish successfully, is `FOUNDATION DEPLOYMENT PRODUCTIZATION — P1 RETRY DISPOSABLE END-TO-END BOOTSTRAP REHEARSAL`. P2 remains blocked until P1 eventually passes.
