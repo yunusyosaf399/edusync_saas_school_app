@@ -58,3 +58,8 @@ private/
 
 # Supabase CLI local runtime state (may contain project links or credentials)
 /supabase/.temp/
+
+# Excel temporary lock files
+~$*.xlsx
+# Excel temporary lock files
+~$*.xlsx
