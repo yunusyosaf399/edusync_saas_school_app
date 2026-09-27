@@ -1,0 +1,54 @@
+{
+  "format_version": 1,
+  "environment": "staging",
+  "foundation_contract": "supabase/config/foundation_managed_contract.json",
+  "foundation_id": "schoolos-foundation-v1",
+  "project_policy": {
+    "dedicated_project_required": true,
+    "customer_project_forbidden": true,
+    "required_name_prefix": "schoolos-staging-",
+    "allowed_regions": ["ap-northeast-2"],
+    "manifest_fields": ["environment", "project_ref", "project_name", "organization_id", "region", "foundation_id"]
+  },
+  "source_policy": {
+    "clean_worktree_required": true,
+    "full_commit_sha_required": true,
+    "foundation_guard_required": true,
+    "unreviewed_future_migrations_forbidden": true,
+    "record_exact_commit_in_evidence": true
+  },
+  "migration_policy": {
+    "foundation_only": true,
+    "exact_history_required": true,
+    "explicit_push_authorization_required": true,
+    "session_pooler_required": true
+  },
+  "data_api_policy": {
+    "use_foundation_contract": true,
+    "unexpected_exposure_blocks": true,
+    "automatic_patch_forbidden": true
+  },
+  "secret_policy": {
+    "management_token_env": "SUPABASE_ACCESS_TOKEN",
+    "staging_db_password_env": "SCHOOL_OS_STAGING_DB_PASSWORD",
+    "values_in_repository_forbidden": true,
+    "values_in_logs_forbidden": true,
+    "values_in_cli_arguments_forbidden": true,
+    "service_admin_key_memory_only_when_authorized": true,
+    "public_client_key_is_not_authorization": true
+  },
+  "drift_policy": {
+    "fail_closed": true,
+    "read_only_audit": true,
+    "automatic_repair_forbidden": true
+  },
+  "destructive_action_policy": {
+    "automatic_project_delete_forbidden": true,
+    "automatic_database_reset_forbidden": true,
+    "migration_history_edits_forbidden": true,
+    "destructive_repair_forbidden": true,
+    "production_promotion_forbidden": true,
+    "customer_data_copying_forbidden": true
+  },
+  "worker_activation": "deferred"
+}

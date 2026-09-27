@@ -216,7 +216,7 @@ For a new module, define at minimum:
 
 ## Current next phase
 
-The frozen Foundation database architecture and nine migrations have passed local and disposable managed-Supabase validation. The current engineering track is **deployment productization**: reproducible school-project configuration, bootstrap, local CI, and drift safety. Production or staging remote actions require separate authorization. Later domain modules still follow the approved dependency order and must not be implemented merely because Foundation deployment is validated.
+The frozen Foundation database architecture and nine migrations have passed local and disposable managed-Supabase validation. The managed Foundation bootstrap rehearsal (P1) passed and its disposable project was destroyed. Deployment productization is in **P2 staging-contract work**: P2A defines local/static staging policy, secret handling, and read-only drift validation. Provisioning or deploying to a staging project requires separate authorization; production remains unauthorized. Later domain modules and UI work still follow their approved dependency order and are not authorized merely because P1 passed.
 
 ## Storage plans and file purposes
 
