@@ -216,7 +216,7 @@ For a new module, define at minimum:
 
 ## Current next phase
 
-The frozen Foundation database architecture and nine migrations have passed local and disposable managed-Supabase validation. The managed Foundation bootstrap rehearsal (P1) passed and its disposable project was destroyed. Deployment productization is in **P2 staging-contract work**: P2A defines local/static staging policy, secret handling, and read-only drift validation. Provisioning or deploying to a staging project requires separate authorization; production remains unauthorized. Later domain modules and UI work still follow their approved dependency order and are not authorized merely because P1 passed.
+The frozen Foundation database architecture and nine migrations have passed local, disposable managed-Supabase, and first persistent staging validation. The managed Foundation bootstrap rehearsal (P1) passed and its disposable project was destroyed. The persistent staging Foundation deployment (P2B2) is complete and validated on the target pinned in `supabase/config/foundation_staging_target.json`. Future Foundation staging reruns are audit/idempotent by default: an already-exact nine-migration history requires zero pushes. Worker activation, migration 10, and production/customer deployment remain separately gated. Later domain modules and UI work still follow their approved dependency order and are not authorized merely because Foundation staging passed.
 
 ## Storage plans and file purposes
 
