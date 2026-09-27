@@ -1,0 +1,404 @@
+"""One-shot, disposable-only Foundation managed bootstrap rehearsal.
+
+Default invocation is a non-mutating plan. A run creates its own P1-prefixed
+project and deletes that same project after validation. It never accepts an
+existing project ref or credentials on the command line.
+"""
+
+import argparse
+import json
+import os
+import re
+import secrets
+import string
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from urllib.parse import quote
+
+from foundation_guard import ROOT, inspect_local_config, inspect_source, load_contract
+from foundation_local_ci import parse_tap
+from foundation_managed_config import ManagedConfigError, execute as configure
+
+API = "https://api.supabase.com"
+PREFIX = "schoolos-foundation-productization-p1-"
+ORG_NAME = "Ilmora"
+REGION = "ap-northeast-2"
+REF_RE = re.compile(r"^[a-z]{20}$")
+EMAILS = (
+    "foundation-test-001@example.invalid",
+    "foundation-rbac-001@example.invalid",
+    "foundation-family-001@example.invalid",
+    "foundation-own-001@example.invalid",
+    "foundation-own-002@example.invalid",
+)
+IMAGE = "public.ecr.aws/supabase/postgres:17.6.1.106"
+
+
+class RehearsalError(RuntimeError):
+    pass
+
+
+def require(condition, code):
+    if not condition:
+        raise RehearsalError(code)
+
+
+def api(method, path, token, body=None, *, allow_404=False):
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(API + path, data=data, method=method,
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=35) as response:
+            raw = response.read()
+            return response.status, json.loads(raw) if raw else None
+    except urllib.error.HTTPError as exc:
+        if allow_404 and exc.code == 404:
+            return 404, None
+        # Never include the response body, request, or URL with credentials.
+        raise RehearsalError("MANAGEMENT_HTTP_" + str(exc.code)) from None
+    except (OSError, ValueError):
+        raise RehearsalError("MANAGEMENT_REQUEST_FAILED") from None
+
+
+def safe_identity(item, ref, name, org_id, region):
+    return (isinstance(item, dict) and item.get("id") == ref and
+            item.get("name") == name and item.get("organization_id") == org_id and
+            item.get("region") == region)
+
+
+def verify_target(token, ref, name, org_id, region):
+    require(REF_RE.fullmatch(ref or "") and name.startswith(PREFIX), "DISPOSABLE_TARGET_REQUIRED")
+    status, detail = api("GET", "/v1/projects/" + ref, token)
+    status2, projects = api("GET", "/v1/projects", token)
+    require(status == 200 and safe_identity(detail, ref, name, org_id, region), "DETAIL_IDENTITY_MISMATCH")
+    matches = [p for p in projects if isinstance(p, dict) and p.get("id") == ref]
+    require(status2 == 200 and len(matches) == 1 and
+            safe_identity(matches[0], ref, name, org_id, region), "LIST_IDENTITY_MISMATCH")
+    return detail, projects
+
+
+def confirm_absence(token, ref, peers, *, attempts=15, sleep=time.sleep):
+    for _ in range(attempts):
+        status, _ = api("GET", "/v1/projects/" + ref, token, allow_404=True)
+        _, projects = api("GET", "/v1/projects", token)
+        refs = {p.get("id") for p in projects}
+        if status == 404 and ref not in refs and peers <= refs:
+            return True
+        sleep(3)
+    raise RehearsalError("DELETE_ABSENCE_UNCONFIRMED")
+
+
+def run_command(argv, *, env=None, timeout=300):
+    if env is None:
+        env = os.environ.copy()
+        env.pop("SUPABASE_ACCESS_TOKEN", None)
+    try:
+        result = subprocess.run(argv, cwd=ROOT, env=env, text=True,
+                                capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        raise RehearsalError("COMMAND_START_OR_TIMEOUT") from None
+    if result.returncode:
+        # Output may contain a URI, DB password, or key. Do not echo it.
+        raise RehearsalError("COMMAND_FAILED " + argv[0] + " exit=" + str(result.returncode))
+    return result.stdout + "\n" + result.stderr
+
+
+def db_sql(uri, password, sql, *, readonly=True):
+    require(uri.startswith("postgresql://") and ":5432/" in uri and "sslmode=require" in uri,
+            "SESSION_POOLER_URI_REQUIRED")
+    env = os.environ.copy()
+    env.pop("SUPABASE_ACCESS_TOKEN", None)
+    env["PGPASSWORD"] = password
+    wrapper = "BEGIN READ ONLY;\n" + sql + "\nCOMMIT;" if readonly else sql
+    cmd = ["docker", "run", "--rm", "-i", "-e", "PGPASSWORD", IMAGE,
+           "psql", "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", uri]
+    try:
+        result = subprocess.run(cmd, input=wrapper, cwd=ROOT, env=env, text=True,
+                                capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        raise RehearsalError("PSQL_START_OR_TIMEOUT") from None
+    if result.returncode:
+        raise RehearsalError("PSQL_FAILED exit=" + str(result.returncode))
+    return [line for line in result.stdout.splitlines() if line not in ("BEGIN", "COMMIT", "")]
+
+
+def count_sql(uri, password, sql):
+    lines = db_sql(uri, password, sql)
+    require(len(lines) == 1 and lines[0].isdigit(), "CATALOG_COUNT_MALFORMED")
+    return int(lines[0])
+
+
+def cli(command, uri, password, *, timeout=600):
+    env = os.environ.copy()
+    env.pop("SUPABASE_ACCESS_TOKEN", None)
+    env["PGPASSWORD"] = password
+    return run_command(["supabase"] + command + ["--db-url", uri], env=env, timeout=timeout)
+
+
+def project_health(token, ref, *, attempts=30, sleep=time.sleep):
+    for _ in range(attempts):
+        status, project = api("GET", "/v1/projects/" + ref, token)
+        if status == 200 and project.get("status") == "ACTIVE_HEALTHY":
+            hs, services = api("GET", "/v1/projects/" + ref + "/health?services=db,auth,rest", token)
+            observed = {s.get("name"): s.get("status") for s in services} if isinstance(services, list) else {}
+            if hs == 200 and all(observed.get(name) == "ACTIVE_HEALTHY"
+                                 for name in ("db", "auth", "rest")):
+                return True
+        sleep(10)
+    raise RehearsalError("HEALTH_TIMEOUT")
+
+
+def choose_org(token, confirm):
+    require(confirm == ORG_NAME, "ORGANIZATION_CONFIRMATION_MISMATCH")
+    status, orgs = api("GET", "/v1/organizations", token)
+    matches = [o for o in orgs if o.get("name") == ORG_NAME]
+    require(status == 200 and len(matches) == 1, "TEST_ORGANIZATION_NOT_UNIQUE")
+    org_id = matches[0].get("id")
+    require(isinstance(org_id, str) and org_id, "ORGANIZATION_ID_MISSING")
+    _, projects = api("GET", "/v1/projects", token)
+    peers = {p["id"] for p in projects if p.get("organization_id") == org_id}
+    return org_id, peers
+
+
+def make_name(now=None):
+    now = now or datetime.now(timezone.utc)
+    return PREFIX + now.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+
+
+def make_password():
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(48))
+
+
+def pooler_uri(token, ref):
+    _, pool = api("GET", "/v1/projects/" + ref + "/config/database/pooler", token)
+    entries = pool if isinstance(pool, list) else [pool]
+    hosts = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            for key in ("host", "db_host", "connection_string"):
+                value = entry.get(key)
+                if isinstance(value, str) and "pooler.supabase.com" in value:
+                    hosts += re.findall(r"[a-z0-9.-]*pooler\.supabase\.com", value)
+    require(len(set(hosts)) == 1, "OFFICIAL_POOLER_HOST_UNAVAILABLE")
+    host = hosts[0]
+    return "postgresql://postgres." + ref + "@" + host + ":5432/postgres?sslmode=require"
+
+
+def migration_versions(contract):
+    return [m["version"] for m in contract["frozen_foundation"]["migrations"]]
+
+
+def verify_dry_run(output, expected):
+    versions = re.findall(r"(?<!\d)(\d{14})_[A-Za-z0-9_]+\.sql", output)
+    require(versions == expected, "DRY_RUN_MISMATCH")
+    return versions
+
+
+def run_rehearsal(token, confirm, *, transport=api):
+    # This runner is deliberately closed over the Management API and cannot
+    # accept a user-supplied project ref or arbitrary organization.
+    contract = load_contract()
+    errors, _, extras = inspect_source(ROOT, contract, future="fail")
+    inspect_local_config(ROOT, contract)
+    require(not errors and not extras, "SOURCE_GATE_FAILED")
+    require(run_command(["supabase", "--version"], timeout=30).splitlines()[0].strip() ==
+            contract["supabase_cli_version"], "CLI_VERSION_MISMATCH")
+    org_id, peers = choose_org(token, confirm)
+    name = make_name()
+    require(name.startswith(PREFIX), "DISPOSABLE_NAME_REQUIRED")
+    password = make_password()
+    ref = None
+    created = False
+    creation_attempted = False
+    evidence = {"name": name, "organization": ORG_NAME, "organization_id": org_id,
+                "region": REGION, "peer_count": len(peers), "starting_head":
+                run_command(["git", "rev-parse", "HEAD"], timeout=20).strip()}
+    try:
+        creation_attempted = True
+        status, project = api("POST", "/v1/projects", token,
+            {"name": name, "organization_id": org_id, "region": REGION,
+             "plan": "free", "db_pass": password})
+        # A creation response with no safe ref cannot be targeted for cleanup.
+        ref = project.get("id") if isinstance(project, dict) else None
+        require(status in (200, 201) and REF_RE.fullmatch(ref or ""), "MALFORMED_CREATION_RESPONSE")
+        created = True
+        evidence["ref"] = ref
+        print("P1_PROJECT_CREATED", name, ref, flush=True)
+        project_health(token, ref)
+        verify_target(token, ref, name, org_id, REGION)
+        uri = pooler_uri(token, ref)
+        evidence["route"] = "TLS Supavisor session pooler 5432"
+        evidence["postgresql_version"] = db_sql(uri, password, "SELECT current_setting('server_version');")[0]
+        baseline = [
+            count_sql(uri, password, "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'schoolos\\_%' ESCAPE '\\';"),
+            count_sql(uri, password, "SELECT count(*) FROM pg_namespace WHERE nspname IN ('app','app_private');"),
+            count_sql(uri, password, "SELECT count(*) FROM supabase_migrations.schema_migrations WHERE version IN ("+
+                      ",".join("'"+v+"'" for v in migration_versions(contract))+");"),
+            count_sql(uri, password, "SELECT count(*) FROM auth.users WHERE email LIKE 'foundation-%@example.invalid';")]
+        require(baseline == [0, 0, 0, 0], "DIRTY_BASELINE")
+        evidence["baseline"] = baseline
+        expected = migration_versions(contract)
+        dry = cli(["db", "push", "--dry-run"], uri, password)
+        evidence["dry_run"] = verify_dry_run(dry, expected)
+        push = cli(["db", "push", "--yes"], uri, password, timeout=900)
+        require("Finished supabase db push" in push or "Applying migration" in push,
+                "PUSH_SUCCESS_OUTPUT_UNEXPECTED")
+        evidence["push_count"] = 1
+        history = db_sql(uri, password, "SELECT version FROM supabase_migrations.schema_migrations ORDER BY version;")
+        require(history == expected, "MIGRATION_HISTORY_MISMATCH")
+        evidence["history"] = history
+        counts = {}
+        queries = {
+          "roles": "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'schoolos\\_%' ESCAPE '\\';",
+          "tables": "SELECT count(*) FROM pg_tables WHERE schemaname IN ('app','app_private');",
+          "policies": "SELECT count(*) FROM pg_policies WHERE schemaname IN ('app','app_private');",
+          "rls_enabled": "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('app','app_private') AND c.relkind='r' AND c.relrowsecurity;",
+          "rls_forced": "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('app','app_private') AND c.relkind='r' AND c.relforcerowsecurity;",
+          "security_definer_functions": "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname IN ('app','app_private') AND p.prosecdef;",
+        }
+        for key, sql in queries.items():
+            counts[key] = count_sql(uri, password, sql)
+            require(counts[key] == contract["expected_catalog"][key], "CATALOG_" + key.upper() + "_MISMATCH")
+        evidence["counts"] = counts
+        fk = db_sql(uri, password, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='principal_auth_bindings_auth_user_id_fkey';")
+        require(len(fk) == 1 and "REFERENCES auth.users(id)" in fk[0] and
+                "ON UPDATE RESTRICT" in fk[0] and "ON DELETE SET NULL" in fk[0], "AUTH_FK_MISMATCH")
+        owner = db_sql(uri, password, "SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE oid='app_private.current_principal_id()'::regprocedure;")
+        require(owner == ["schoolos_authz_reader"], "HELPER_OWNER_MISMATCH")
+        evidence["security_smoke"] = "PASS"
+        try:
+            configure(ref, apply=False, expected_name=name, expected_organization=org_id, token=token)
+            evidence["initial_config"] = "already compliant"
+        except ManagedConfigError as exc:
+            require(str(exc).startswith("MANAGED_CONFIG_DRIFT"), "UNEXPECTED_CONFIG_STATE")
+            evidence["initial_config"] = "reviewed drift: app absent"
+        evidence["config_apply"] = configure(ref, apply=True, confirm_ref=ref,
+            expected_name=name, expected_organization=org_id, token=token)
+        require(configure(ref, expected_name=name, expected_organization=org_id, token=token)
+                == "MANAGED_CONFIG_PASS", "POST_CONFIG_DRIFT")
+        for level in ("error", "warning"):
+            cli(["db", "lint", "--level", level, "--fail-on", "error"], uri, password)
+        evidence["lint"] = "error and warning PASS"
+        db_sql(uri, password, "CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;", readonly=False)
+        evidence["pgtap_version"] = db_sql(uri, password,
+            "SELECT extversion FROM pg_extension WHERE extname='pgtap';")[0]
+        require(evidence["pgtap_version"] == "1.3.3", "PGTAP_VERSION_MISMATCH")
+        _, key_data = api("GET", "/v1/projects/" + ref + "/api-keys?reveal=true", token)
+        keys = key_data if isinstance(key_data, list) else []
+        service = next((k.get("api_key") for k in keys if k.get("name") == "service_role"), None)
+        require(isinstance(service, str) and service, "SERVICE_KEY_UNAVAILABLE")
+        for email in EMAILS:
+            user_password = make_password()
+            request = urllib.request.Request("https://" + ref + ".supabase.co/auth/v1/admin/users",
+                data=json.dumps({"email": email, "password": user_password, "email_confirm": True}).encode(),
+                method="POST", headers={"apikey": service, "Authorization": "Bearer " + service,
+                                        "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(request, timeout=35) as response:
+                    require(response.status in (200, 201), "AUTH_CREATE_FAILED")
+            except (OSError, urllib.error.HTTPError):
+                raise RehearsalError("AUTH_CREATE_FAILED") from None
+            user_password = None
+        service = None
+        require(count_sql(uri, password, "SELECT count(*) FROM auth.users WHERE email LIKE 'foundation-%@example.invalid';") == 5,
+                "AUTH_FIXTURE_COUNT_MISMATCH")
+        evidence["auth_users"] = 5
+        total = 0
+        tests = {}
+        for item in contract["frozen_foundation"]["database_tests"]:
+            output = cli(["test", "db", "supabase/tests/database/" + item["file"]],
+                         uri, password, timeout=300)
+            count = parse_tap(output, item["assertions"])
+            tests[item["file"]] = count
+            total += count
+        require(total == 220, "TAP_TOTAL_MISMATCH")
+        evidence["tests"] = tests
+        evidence["total"] = total
+        require(not inspect_source(ROOT, contract, future="fail")[0], "POST_TEST_SOURCE_DRIFT")
+        require(configure(ref, expected_name=name, expected_organization=org_id, token=token)
+                == "MANAGED_CONFIG_PASS", "POST_TEST_CONFIG_DRIFT")
+        require(db_sql(uri, password, "SELECT version FROM supabase_migrations.schema_migrations ORDER BY version;")
+                == expected, "POST_TEST_HISTORY_DRIFT")
+        evidence["drift"] = "PASS"
+        try:
+            configure(ref, apply=True, confirm_ref="wrong-confirmation",
+                expected_name=name, expected_organization=org_id, token=token)
+            raise RehearsalError("FAILURE_INJECTION_DID_NOT_BLOCK")
+        except ManagedConfigError as exc:
+            require(str(exc) == "APPLY_CONFIRMATION_MISMATCH", "FAILURE_INJECTION_UNEXPECTED")
+        evidence["wrong_confirmation"] = "blocked before HTTP PATCH"
+        project_health(token, ref)
+        evidence["final_health"] = "ACTIVE_HEALTHY"
+        # Release local references to secrets before deleting the project.
+        uri = None
+        password = None
+        verify_target(token, ref, name, org_id, REGION)
+        status, _ = api("DELETE", "/v1/projects/" + ref, token)
+        require(status in (200, 202, 204), "DELETE_FAILED")
+        created = False
+        confirm_absence(token, ref, peers)
+        evidence["delete"] = "confirmed: detail 404, list absent, peers retained"
+        return evidence
+    except Exception:
+        if creation_attempted and not ref:
+            # A lost/malformed creation response can still have created a
+            # project. Discover only the unique generated name in this org.
+            try:
+                _, listed = api("GET", "/v1/projects", token)
+                found = [p for p in listed if p.get("name") == name and
+                         p.get("organization_id") == org_id and p.get("region") == REGION]
+                if len(found) == 1 and REF_RE.fullmatch(found[0].get("id") or ""):
+                    ref = found[0]["id"]
+                    created = True
+            except Exception:
+                pass
+        if created and ref:
+            # Best-effort exact-target cleanup. Never delete after an identity mismatch.
+            try:
+                verify_target(token, ref, name, org_id, REGION)
+                api("DELETE", "/v1/projects/" + ref, token)
+                confirm_absence(token, ref, peers)
+                print("P1_FAILURE_CLEANUP_CONFIRMED", ref, flush=True)
+            except Exception:
+                print("P1_FAILURE_CLEANUP_UNCONFIRMED", ref, file=sys.stderr, flush=True)
+        raise
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", nargs="?", choices=("plan", "run"), default="plan")
+    parser.add_argument("--run", action="store_true")
+    parser.add_argument("--confirm-organization-name")
+    args = parser.parse_args(argv)
+    if args.mode == "plan":
+        if args.run:
+            parser.error("--run requires run mode")
+        print("P1_DISPOSABLE_PLAN: source gate; exact Ilmora confirmation; create one P1 project; "
+              "health/identity/baseline; session pooler 5432; nine migrations; security/config/lint/pgTAP; "
+              "five synthetic Auth users; serial 220 assertions; drift; exact-target deletion")
+        return 0
+    if not args.run or args.confirm_organization_name != ORG_NAME:
+        print("P1_RUN_CONFIRMATION_REQUIRED", file=sys.stderr)
+        return 2
+    token = os.environ.get("SUPABASE_ACCESS_TOKEN")
+    if not token:
+        print("SUPABASE_ACCESS_TOKEN_ABSENT", file=sys.stderr)
+        return 2
+    try:
+        result = run_rehearsal(token, args.confirm_organization_name)
+        print("P1_SAFE_EVIDENCE " + json.dumps(result, sort_keys=True))
+        return 0
+    except Exception as exc:
+        # Only our own sanitized codes are eligible for display.
+        code = str(exc) if isinstance(exc, RehearsalError) else type(exc).__name__
+        print("P1_FAIL " + code, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
