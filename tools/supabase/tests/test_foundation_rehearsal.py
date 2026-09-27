@@ -270,5 +270,52 @@ class P1RCleanupTests(unittest.TestCase):
             self.assertNotIn(secret, dump)
 
 
+class P1R2MigrationBaselineTests(unittest.TestCase):
+    def setUp(self):
+        self.versions = p1.migration_versions(p1.load_contract())
+
+    def test_absent_history_table_returns_zero_without_count_query(self):
+        with patch.object(p1, "db_sql", return_value=["f"]) as query, \
+             patch.object(p1, "count_sql", side_effect=AssertionError("count must not run")) as count:
+            self.assertEqual(p1.foundation_migration_baseline_count("fake-uri", "fake-password", self.versions), 0)
+        self.assertEqual(query.call_count, 1)
+        self.assertEqual(query.call_args.kwargs["stage"], "DB_BASELINE_MIGRATION_HISTORY_EXISTS")
+        self.assertIn("to_regclass", query.call_args.args[2])
+        count.assert_not_called()
+
+    def test_existing_empty_history_table_returns_zero(self):
+        with patch.object(p1, "db_sql", return_value=["t"]) as exists, \
+             patch.object(p1, "count_sql", return_value=0) as count:
+            self.assertEqual(p1.foundation_migration_baseline_count("fake-uri", "fake-password", self.versions), 0)
+        self.assertEqual(exists.call_count, 1)
+        self.assertEqual(count.call_count, 1)
+        self.assertEqual(count.call_args.kwargs["stage"], "DB_BASELINE_MIGRATION_HISTORY_COUNT")
+        self.assertTrue(all(version in count.call_args.args[2] for version in self.versions))
+
+    def test_existing_dirty_history_count_is_preserved(self):
+        with patch.object(p1, "db_sql", return_value=["t"]), \
+             patch.object(p1, "count_sql", return_value=1):
+            count = p1.foundation_migration_baseline_count("fake-uri", "fake-password", self.versions)
+        self.assertEqual(count, 1)
+        with self.assertRaisesRegex(p1.RehearsalError, "DIRTY_BASELINE"):
+            p1.require([0, 0, count, 0] == [0, 0, 0, 0], "DIRTY_BASELINE")
+
+    def test_malformed_existence_fails_closed(self):
+        for malformed in ([], ["unexpected"], ["t", "f"], [""], ["T"]):
+            with self.subTest(malformed=malformed), \
+                 patch.object(p1, "db_sql", return_value=malformed) as query, \
+                 patch.object(p1, "count_sql", side_effect=AssertionError("count must not run")):
+                with self.assertRaisesRegex(p1.RehearsalError, "BASELINE_HISTORY_EXISTENCE_MALFORMED"):
+                    p1.foundation_migration_baseline_count("fake-uri", "fake-password", self.versions)
+                self.assertEqual(query.call_count, 1)
+
+    def test_malformed_existing_count_fails_closed(self):
+        for malformed in ([], ["not-a-count"], ["0", "1"], ["-1"]):
+            with self.subTest(malformed=malformed), \
+                 patch.object(p1, "db_sql", side_effect=[["t"], malformed]):
+                with self.assertRaisesRegex(p1.RehearsalError, "CATALOG_COUNT_MALFORMED"):
+                    p1.foundation_migration_baseline_count("fake-uri", "fake-password", self.versions)
+
+
 if __name__ == "__main__":
     unittest.main()

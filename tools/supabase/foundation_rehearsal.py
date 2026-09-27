@@ -242,6 +242,28 @@ def count_sql(uri, password, sql, *, stage="DB_COUNT"):
     return int(lines[0])
 
 
+def foundation_migration_baseline_count(uri, password, expected_versions):
+    """An absent history table is clean before the first push, not a SQL error."""
+    require(len(expected_versions) == 9 and len(set(expected_versions)) == 9 and
+            all(re.fullmatch(r"\d{14}", version) for version in expected_versions),
+            "BASELINE_VERSIONS_INVALID")
+    existence = db_sql(
+        uri, password,
+        "SELECT to_regclass('supabase_migrations.schema_migrations') IS NOT NULL;",
+        stage="DB_BASELINE_MIGRATION_HISTORY_EXISTS",
+    )
+    require(existence in (["t"], ["f"]), "BASELINE_HISTORY_EXISTENCE_MALFORMED")
+    if existence == ["f"]:
+        return 0
+    versions = ",".join("'" + version + "'" for version in expected_versions)
+    return count_sql(
+        uri, password,
+        "SELECT count(*) FROM supabase_migrations.schema_migrations "
+        "WHERE version IN (" + versions + ");",
+        stage="DB_BASELINE_MIGRATION_HISTORY_COUNT",
+    )
+
+
 def cli(command, uri, password, *, timeout=600):
     parsed = urlsplit(uri)
     validate_session_uri(uri, (parsed.username or "").removeprefix("postgres."))
@@ -417,8 +439,7 @@ def run_rehearsal(token, confirm, *, transport=api):
         baseline = [
             count_sql(uri, password, "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'schoolos\\_%' ESCAPE '\\';", stage="DB_BASELINE_ROLES"),
             count_sql(uri, password, "SELECT count(*) FROM pg_namespace WHERE nspname IN ('app','app_private');", stage="DB_BASELINE_SCHEMAS"),
-            count_sql(uri, password, "SELECT count(*) FROM supabase_migrations.schema_migrations WHERE version IN ("+
-                      ",".join("'"+v+"'" for v in migration_versions(contract))+");", stage="DB_MIGRATION_HISTORY"),
+            foundation_migration_baseline_count(uri, password, migration_versions(contract)),
             count_sql(uri, password, "SELECT count(*) FROM auth.users WHERE email LIKE 'foundation-%@example.invalid';", stage="DB_BASELINE_AUTH")]
         require(baseline == [0, 0, 0, 0], "DIRTY_BASELINE")
         evidence["baseline"] = baseline
