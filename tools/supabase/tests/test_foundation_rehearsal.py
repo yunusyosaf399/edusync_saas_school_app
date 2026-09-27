@@ -2,6 +2,7 @@
 
 import io
 import json
+import subprocess
 import sys
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
@@ -98,6 +99,7 @@ class P1RDiagnosticTests(unittest.TestCase):
             "could not translate host name private.example": "PSQL_DNS_FAILED",
             "connection refused private.example": "PSQL_CONNECTION_REFUSED",
             "connection timed out private.example": "PSQL_CONNECT_TIMEOUT",
+            "psql: error: connection to server private.example failed: connection timed out": "PSQL_CONNECT_TIMEOUT",
             "SSL error: secret": "PSQL_TLS_FAILED",
             "server closed the connection unexpectedly": "PSQL_SERVER_CLOSED",
             "FATAL: database \"postgres\" does not exist": "PSQL_DATABASE_UNAVAILABLE",
@@ -125,6 +127,26 @@ class P1RDiagnosticTests(unittest.TestCase):
         for secret in (fake_secret, "FAKE_PAT", "Authorization", "postgresql://", "host"):
             self.assertNotIn(secret, output)
 
+    def test_subprocess_timeout_is_process_not_connection_timeout(self):
+        ref = "a" * 20
+        uri = "postgresql://postgres." + ref + "@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require"
+        password = "FAKE_DB_PASSWORD"
+        timeout = subprocess.TimeoutExpired(
+            cmd=["docker", "run", "FAKE_PAT", uri], timeout=25,
+            output=b"FAKE_JWT", stderr=b"Authorization: Bearer FAKE_SERVICE_KEY")
+        with patch.object(p1.subprocess, "run", side_effect=timeout):
+            with self.assertRaises(p1.PsqlFailure) as caught:
+                p1.db_sql(uri, password, "SELECT 1;", stage="DB_PROBE_VERSION", timeout=25)
+        failure = caught.exception
+        self.assertEqual(failure.stage, "DB_PROBE_VERSION")
+        self.assertEqual(failure.category, "PSQL_PROCESS_TIMEOUT")
+        self.assertNotEqual(failure.category, "PSQL_CONNECT_TIMEOUT")
+        self.assertEqual(failure.returncode, 124)
+        safe_output = str(failure) + json.dumps(failure.__dict__)
+        for secret in (uri, password, "FAKE_PAT", "FAKE_JWT", "FAKE_SERVICE_KEY",
+                       "Authorization", "docker", "SELECT 1"):
+            self.assertNotIn(secret, safe_output)
+
     def test_probe_retries_only_transient_read_only_failure(self):
         ref = "a" * 20
         uri = "postgresql://postgres." + ref + "@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require"
@@ -133,6 +155,10 @@ class P1RDiagnosticTests(unittest.TestCase):
             self.assertEqual(p1.probe_database_connection(uri, "fake", attempts=2, delay=0, sleep=lambda _: None), "17.6")
             self.assertEqual(query.call_count, 2)
             self.assertTrue(all("SELECT current_setting" in c.args[2] for c in query.call_args_list))
+        process_timeout = p1.PsqlFailure("DB_PROBE_VERSION", "PSQL_PROCESS_TIMEOUT", 124)
+        with patch.object(p1, "db_sql", side_effect=[process_timeout, ["17.6", "postgres", "postgres"]]) as query:
+            self.assertEqual(p1.probe_database_connection(uri, "fake", attempts=2, delay=0, sleep=lambda _: None), "17.6")
+            self.assertEqual(query.call_count, 2)
         permanent = p1.PsqlFailure("DB_PROBE_VERSION", "PSQL_TLS_FAILED", 3)
         with patch.object(p1, "db_sql", side_effect=permanent) as query:
             with self.assertRaises(p1.PsqlFailure):

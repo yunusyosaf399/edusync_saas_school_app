@@ -226,7 +226,7 @@ def db_sql(uri, password, sql, *, readonly=True, stage="DB_QUERY", timeout=120):
         result = subprocess.run(cmd, input=wrapper, cwd=ROOT, env=env, text=True,
                                 capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise PsqlFailure(safe_stage(stage), "PSQL_CONNECT_TIMEOUT", 124) from None
+        raise PsqlFailure(safe_stage(stage), "PSQL_PROCESS_TIMEOUT", 124) from None
     except OSError:
         raise PsqlFailure(safe_stage(stage), "PSQL_UNKNOWN_FAILURE", 127) from None
     if result.returncode:
@@ -264,7 +264,8 @@ def cli(command, uri, password, *, timeout=600):
 
 RETRYABLE_PROBE_CLASSES = frozenset({
     "PSQL_AUTH_FAILED", "PSQL_TENANT_OR_USER_NOT_FOUND", "PSQL_CONNECTION_REFUSED",
-    "PSQL_CONNECT_TIMEOUT", "PSQL_SERVER_CLOSED", "PSQL_DATABASE_UNAVAILABLE",
+    "PSQL_CONNECT_TIMEOUT", "PSQL_PROCESS_TIMEOUT", "PSQL_SERVER_CLOSED",
+    "PSQL_DATABASE_UNAVAILABLE",
 })
 
 
