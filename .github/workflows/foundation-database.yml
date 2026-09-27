@@ -1,0 +1,41 @@
+name: Foundation database (local stack)
+
+on:
+  push:
+    paths:
+      - '.github/workflows/foundation-database.yml'
+      - '.gitattributes'
+      - 'supabase/migrations/**'
+      - 'supabase/tests/database/**'
+      - 'supabase/config/**'
+      - 'supabase/config.toml'
+      - 'tools/supabase/**'
+  pull_request:
+    paths:
+      - '.github/workflows/foundation-database.yml'
+      - '.gitattributes'
+      - 'supabase/migrations/**'
+      - 'supabase/tests/database/**'
+      - 'supabase/config/**'
+      - 'supabase/config.toml'
+      - 'tools/supabase/**'
+  workflow_dispatch:
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: Tooling unit tests
+        run: python -m unittest discover -s tools/supabase/tests -v
+      - name: Frozen Foundation integrity
+        run: python tools/supabase/foundation_guard.py --require-lf
+      - name: Clean local Foundation validation
+        run: python tools/supabase/foundation_local_ci.py

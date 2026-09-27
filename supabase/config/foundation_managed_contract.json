@@ -1,0 +1,156 @@
+{
+  "format_version": 1,
+  "foundation_id": "schoolos-foundation-v1",
+  "supabase_cli_version": "2.98.2",
+  "postgresql": {
+    "minimum_major": 15,
+    "reviewed_managed_version": "17.6"
+  },
+  "frozen_foundation": {
+    "migrations": [
+      {
+        "version": "20260924122442",
+        "file": "20260924122442_foundation_roles_schemas.sql",
+        "sha256": "f8793604a4b8b0b25392540bf81dfe39e43941729998bb76a9dc8506e7dd0d1d",
+        "git_blob": "cebf9710f019f591f6c4bda5189e49ca7002bbc5"
+      },
+      {
+        "version": "20260924122445",
+        "file": "20260924122445_foundation_identity_school_files.sql",
+        "sha256": "f846b41121d3e125be8de0a1f0e7fd6e48d2d812ad2330107a5ffca3ac229b5b",
+        "git_blob": "16e98bc39d19b33204d0576668e48ef2b4626148"
+      },
+      {
+        "version": "20260924122446",
+        "file": "20260924122446_foundation_rbac_workflow.sql",
+        "sha256": "8245216fd8ac9e82d13c2f8d614010a41962b372bf16917e2f297caff8819351",
+        "git_blob": "e8457f4fbe3c278c90cc706a05371cf3728ab7af"
+      },
+      {
+        "version": "20260924122448",
+        "file": "20260924122448_foundation_receipts_events_settings.sql",
+        "sha256": "28f0b2a9b49b3245c292e16c9f67a468cb56d1e8aa8bc4cee12d8f8dd73ed795",
+        "git_blob": "b7c5ab80e1bb84978d06f382efd599df5baa46f7"
+      },
+      {
+        "version": "20260924122450",
+        "file": "20260924122450_foundation_late_fks_indexes.sql",
+        "sha256": "89aff7d01c6293cced0be0d9f23b90826996690bb8a9a7cfc9a60b60de319447",
+        "git_blob": "41259c8439d041c0de913e119e773fb9981c4b57"
+      },
+      {
+        "version": "20260924122451",
+        "file": "20260924122451_foundation_structural_triggers.sql",
+        "sha256": "d5612f73f07102cad4ef41b1642db04a2afc061271f6c2158aad73ff0fb4c4fb",
+        "git_blob": "4ce4d54229067173ddfab88cacd481bc1657e811"
+      },
+      {
+        "version": "20260924122453",
+        "file": "20260924122453_foundation_authorization_rls.sql",
+        "sha256": "f8f8d3dda44a1685c82561cf7825a87d1d662e0480c8b8adcb0714cb4919e056",
+        "git_blob": "b992465d95597ae273363c611e729b295e268513"
+      },
+      {
+        "version": "20260924122455",
+        "file": "20260924122455_foundation_privilege_lockdown.sql",
+        "sha256": "330d583878ab6282f6a0b56e5665a25e87d3c6cae93b8dd0ded915b9fcaddff2",
+        "git_blob": "caaa791e957a05a1deb1656f87d5198506e1d4f1"
+      },
+      {
+        "version": "20260924183537",
+        "file": "20260924183537_foundation_auth_helper_schema_usage.sql",
+        "sha256": "3ecddebe953935724636dff14a2c15f27da86e804e2877a37396d85cebdf69c1",
+        "git_blob": "30f517d67087011c21aa3b6fb4aaa80d9689cb72"
+      }
+    ],
+    "database_tests": [
+      {
+        "file": "01_foundation_catalog.sql",
+        "sha256": "5eb2b26c6a2e1cc3c2de46634e933ba355b7842eea3c1d2c5150dca3eaef6696",
+        "git_blob": "07072e0ff3348b7d06e8a283089caf27391d75c9",
+        "assertions": 44
+      },
+      {
+        "file": "02_auth_helper_preflight.sql",
+        "sha256": "89cf95b97c056778257595e68951ae59faf9101bd285e4870bbeb63f7242630c",
+        "git_blob": "4c5bd9953180698bcaa661f1816d910bc4e2bef2",
+        "assertions": 6
+      },
+      {
+        "file": "03_file_objects.sql",
+        "sha256": "8af39fccbae32d5c0a310e18a742613d9cf3d695582f88e69e03fbb0b8eb29e4",
+        "git_blob": "d6620b850cbff00fa5231027c259ca44dba14d14",
+        "assertions": 16
+      },
+      {
+        "file": "04_family_intervals.sql",
+        "sha256": "7a1fdbd33e516e30228bfad3f11ed7b318e7834df1b28fbe8733cd5284926f13",
+        "git_blob": "73a4596dc8e38d93a22698ee90352f01613f902d",
+        "assertions": 16
+      },
+      {
+        "file": "05_approval_lifecycle.sql",
+        "sha256": "cc6818e8c0c4b410a98f6a47bfa7852161ebf5aaaea8b4b8dd20fa075ce0e05c",
+        "git_blob": "1fc7526b45ec7178ac78d7ebca5d2af8a8b43b4e",
+        "assertions": 25
+      },
+      {
+        "file": "06_evidence_delivery.sql",
+        "sha256": "0f2a58e958a6fa37cd8c124538a74e2b48ddb50c971c6513be5cb75d4a54fbae",
+        "git_blob": "718aa2688b6fe6f021024d7a0ecb3813fa054990",
+        "assertions": 16
+      },
+      {
+        "file": "07_authorization_rbac.sql",
+        "sha256": "125a50b842279590be511ce700a43daa9b97464178cc28392e889ef9dc8aca5b",
+        "git_blob": "b7543f8a006b7d224c7124d88ac4e0471110c40a",
+        "assertions": 33
+      },
+      {
+        "file": "08_family_own_scope.sql",
+        "sha256": "7310070ef37b005d4b90ffa01d7f0fee995c63a45715563b8816c437a11fb5d8",
+        "git_blob": "da2ccb0a1db86f4db1fb5ff1c549037f9d23817e",
+        "assertions": 41
+      },
+      {
+        "file": "09_auth_deletion_reconciliation.sql",
+        "sha256": "22cdf44d6169ab8480cc845eb32f43c54ead9e09eaec48da364a987fd73eeb9a",
+        "git_blob": "2ed7e5c3ded5609dc3ba884ac56208c5564002e3",
+        "assertions": 23
+      }
+    ],
+    "expected_tap_assertions": 220
+  },
+  "expected_catalog": {
+    "roles": 12,
+    "schemas": [
+      "app",
+      "app_private"
+    ],
+    "tables": 33,
+    "policies": 49,
+    "security_definer_functions": 39,
+    "rls_enabled": 33,
+    "rls_forced": 33,
+    "auth_binding_fk": "principal_auth_bindings_auth_user_id_fkey",
+    "current_principal_owner": "schoolos_authz_reader"
+  },
+  "data_api": {
+    "required_exposed_schemas": [
+      "public",
+      "graphql_public",
+      "app"
+    ],
+    "forbidden_exposed_schemas": [
+      "app_private"
+    ]
+  },
+  "migration_connection": {
+    "required_class": "supavisor_session_pooler",
+    "port": 5432,
+    "required_cli_flag": "--db-url",
+    "forbidden_transaction_port": 6543
+  },
+  "worker_activation": "deferred",
+  "future_migrations_policy": "report_separately; strict Foundation mode fails until explicitly reviewed"
+}

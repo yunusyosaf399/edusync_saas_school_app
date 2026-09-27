@@ -216,17 +216,7 @@ For a new module, define at minimum:
 
 ## Current next phase
 
-The next engineering phase is **database and backend architecture design**, beginning with:
-
-1. SaaS/control-plane boundaries and project bootstrap
-2. database conventions and migration/version strategy
-3. identity/person/auth mapping
-4. roles, permissions, scopes, assignments
-5. school/campus/academic foundation
-6. generic workflow/approval and audit foundations
-7. then domain tables in dependency order
-
-Do not jump directly to a giant `students` table or create all modules at once.
+The frozen Foundation database architecture and nine migrations have passed local and disposable managed-Supabase validation. The current engineering track is **deployment productization**: reproducible school-project configuration, bootstrap, local CI, and drift safety. Production or staging remote actions require separate authorization. Later domain modules still follow the approved dependency order and must not be implemented merely because Foundation deployment is validated.
 
 ## Storage plans and file purposes
 
