@@ -37,3 +37,9 @@ The intended documentation-only change set is `AGENTS.md`, `docs/security/08_dom
 **Verdict:** DOMAIN PACKAGE D1B4 PASS — D1 IMPLEMENTATION READINESS, QUERY/RETENTION/OFFLINE CONTRACTS, APPROVAL REVIEW AUTHORITY AND EXECUTABLE-TEST MATRIX FROZEN — READY TO RESUME D1C MIGRATION 10 SQL DRAFT — MIGRATION 10 APPLICATION NOT AUTHORIZED
 
 The exact next gate is **D1C1 Migration 10 SQL draft completion**, separately from D1B4. D1C2 runtime testing, Migration 10 application and remote/staging action are not started or authorized here.
+
+## Post-freeze product-owner clarification: bootstrap-manifest prerequisite
+
+After this D1B4 review, the product owner approved the deployment-bootstrap SYSTEM Principal as UUID `3e0e0b72-762c-44e1-b7eb-98dcc449643a`, `system_purpose=deployment-bootstrap`, label `Deployment bootstrap actor`, `kind=SYSTEM` and intended `state=ACTIVE`. The earlier table accurately records that this identity was unresolved *at D1B4 freeze*; the subsequent [Foundation bootstrap manifest](../../supabase/config/foundation_bootstrap_manifest.json) now closes that prerequisite. The future registrar must match both UUID and purpose, with exactly one ACTIVE SYSTEM actor; the exploratory SQL draft's `'bootstrap'` literal remains uncorrected until D1C1B.
+
+This clarification changes none of the D1B4 vocabulary: **97 permissions, 322 scope alternatives and 36 operations** remain. It creates no role grant or client authority and does not authorize Migration 10 execution, D1C2 testing, or a staging action. See the [bootstrap actor gate](FOUNDATION_DEPLOYMENT_BOOTSTRAP_ACTOR_REVIEW.md).

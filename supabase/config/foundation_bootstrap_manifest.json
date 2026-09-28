@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "manifest_id": "schoolos-foundation-bootstrap-v1",
+  "system_principals": [
+    {
+      "id": "3e0e0b72-762c-44e1-b7eb-98dcc449643a",
+      "kind": "SYSTEM",
+      "label": "Deployment bootstrap actor",
+      "system_purpose": "deployment-bootstrap",
+      "state": "ACTIVE"
+    }
+  ]
+}
