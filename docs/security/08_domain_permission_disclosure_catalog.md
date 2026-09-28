@@ -47,8 +47,10 @@ A FAMILY principal is additionally restricted to OWN / D1_FAMILY_CHILD on family
 | academic.capacity_history.view | false | ACS | Read retained capacity revisions. |
 | student.roll_policy.view | false | A | Read current roll policy. |
 | student.roll_policy.change | false | A | Replace/end roll policy revision. |
+| student.roll_policy.approve | false | A | Review a roll-policy change only when its P1 policy requires approval; no role grant is implied. |
 | student.roll_history.view | true | SH | Read retained roll allocations for an authorized Student. No default historical grant. |
 | student.roll.correct | false | ACS | Protected manual roll correction; never client allocation. |
+| student.roll.approve | false | ACS | Review a roll correction in approval mode for the exact affected target. |
 
 ## Student disclosure permissions
 
@@ -73,6 +75,7 @@ ROSTER outputs only display name, Student ID, current placement labels and an ap
 |---|---:|---|---|
 | student.create | false | ACS | Create accepted Student core + initial status under a verified Admissions handoff; destination placement supplies target scope. |
 | student.profile.update | false | ACS | Update allowlisted PROFILE fields only; never restricted/special fields. |
+| student.profile.approve | false | ACS | Review an allowlisted Student PROFILE update in approval mode. |
 | student.identity.correct | false | ACS | Append/close restricted identity snapshot through reviewed correction. |
 | student.identity.approve | false | ACS | Review/apply eligible restricted-identity correction step. |
 | student.special.correct | false | ACS | Append/close special snapshot. |
@@ -86,6 +89,7 @@ ROSTER outputs only display name, Student ID, current placement labels and an ap
 | student.enrollment.approve | false | ACS | Review configured enrollment move/end request. |
 | student.capacity_override | false | ACS | Additional action permission required when either class or section capacity is exceeded; no approval solely for capacity. |
 | student.emergency_contact.change | false | ACS | Add/end/correct Emergency Contact; does not create FAMILY access. |
+| student.emergency_contact.approve | false | ACS | Review an Emergency Contact change in approval mode; no FAMILY review path. |
 | student.photo.submit | false | ACS | Eligibility permission for STUDENT_PROFILE_PHOTO purpose; handler remains separately gated. |
 | student.birth_certificate.submit | false | ACS | Eligibility permission for BIRTH_CERTIFICATE purpose; Student/FAMILY self-upload is not enabled by D1 baseline. |
 
@@ -126,14 +130,19 @@ Employee current PROFILE includes Employee code/current state/photo plus approve
 | employee.designation.manage | false | A | Create/update/archive Designation catalog. |
 | employee.create | false | A | Create Employee + initial employment period. Campus-scoped creation is not inferred before an affiliation exists. |
 | employee.profile.update | false | EA | Update allowlisted Employee core/profile-photo link only. |
+| employee.profile.approve | false | EA | Review an Employee PROFILE update in approval mode. |
 | employee.identity.correct | false | EA | Append/close restricted Employee identity snapshot. |
 | employee.identity.approve | false | EA | Review eligible Employee identity correction. |
 | employee.qualification.change | false | EA | Add/correct/archive qualification lineage. |
+| employee.qualification.approve | false | EA | Review a qualification change in approval mode. |
 | employee.experience.change | false | EA | Add/correct/archive external-experience lineage. |
+| employee.experience.approve | false | EA | Review an external-experience change in approval mode. |
 | employee.state.change | false | EA | Change employment state/spell through protected command. |
 | employee.state.approve | false | EA | Review configured high-risk state transition. |
 | employee.job_assignment.change | false | EA | Add/end/correct Department/Designation assignment. |
+| employee.job_assignment.approve | false | EA | Review a job-assignment change in approval mode. |
 | employee.campus_affiliation.change | false | EA | Add/end/correct campus affiliation; source/destination campus checked where applicable. |
+| employee.campus_affiliation.approve | false | EA | Review a campus-affiliation change in approval mode; source and destination remain checked. |
 | employee.photo.submit | false | EA | Eligibility permission for EMPLOYEE_PROFILE_PHOTO purpose; handler remains separately gated. |
 
 ## Teaching permissions
@@ -143,6 +152,7 @@ Employee current PROFILE includes Employee code/current state/photo plus approve
 | teaching.capability.view | false | EG | Current Teacher capability; Employee self supported. |
 | teaching.capability_history.view | false | TH | Explicit capability history; old capability is not authority. |
 | teaching.capability.change | false | EA | Add/end/correct Teacher capability. |
+| teaching.capability.approve | false | EA | Review a Teacher capability change in approval mode. |
 | teaching.assignment.view | false | TR | Current exact teaching assignments; ASSIGNED uses D1_TEACHING_ANY. |
 | teaching.assignment_history.view | false | TH | Historical assignments for authorized staff or Employee self; no historical ASSIGNED revival. |
 | teaching.class_assignment.change | false | TC | Add/end/correct one exact class-teacher assignment. |
@@ -150,6 +160,8 @@ Employee current PROFILE includes Employee code/current state/photo plus approve
 | teaching.assignment.approve | false | TS | Review configured retroactive/high-risk teaching-assignment change; reviewer target must match affected Section/Subject. |
 
 ## Historical and default-grant rule
+
+The D1 vocabulary contains **97 deployment-owned permission codes** and **322 supported permission-scope alternatives** after the approved D1B4 P1 reviewer refinement. These ten new `.approve` codes are reviewer/action permissions, all `family_safe=false`, and use only the direct scope set shown in their rows. They do not seed a reviewer role, assignment, grant or approval policy. Review requires the exact live review permission and scope as well as configured Foundation workflow-step/role eligibility; requester permission alone never authorizes review. Missing or ambiguous P1 policy denies.
 
 Every permission whose code contains history is independent from the corresponding current read. Current VIEW never implies history. The checked read requires a live permission grant now and evaluates stored target ancestry at the requested historical date. No D1 role template or role-permission grant is seeded, including Parent, Student, Teacher or administrator labels.
 

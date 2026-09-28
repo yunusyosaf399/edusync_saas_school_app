@@ -38,3 +38,9 @@ D1B3B freezes design contracts only. D1C may draft the exact migration-10 SQL, S
 No migration 10, SQL file, executable test, Supabase configuration, remote action, Flutter change, worker activation or production/customer deployment is authorized by this pass.
 
 **Verdict:** DOMAIN PACKAGE D1B3B PASS — PERMISSION/DISCLOSURE, CHECKED READ, PROTECTED COMMAND, APPROVAL/AUDIT/FILE AND RLS/EXECUTION CONTRACTS FROZEN — READY FOR SEPARATE D1C SQL-DRAFT AUTHORIZATION — NO SQL AUTHORIZED.
+
+## D1B4 product-owner refinement (subsequent decision)
+
+The original review above remains the historical D1B3B result. During D1B4 the product owner explicitly approved **ten domain-specific P1 review permissions**: `student.roll_policy.approve`, `student.roll.approve`, `student.profile.approve`, `student.emergency_contact.approve`, `employee.profile.approve`, `employee.qualification.approve`, `employee.experience.approve`, `employee.job_assignment.approve`, `employee.campus_affiliation.approve`, and `teaching.capability.approve`. The deployment-owned D1 permission vocabulary is now **97 codes** with **322 supported scope alternatives**; the **36 operation contracts** are unchanged. The exact mapping is recorded in the corrected [command matrix](../security/09_domain_checked_reads_and_commands.md) and each code's `family_safe=false` direct scope set is in the [permission catalog](../security/08_domain_permission_disclosure_catalog.md).
+
+This refinement removes P1 reviewer-authority ambiguity. It leaves D1B3A storage/resolvers and all disclosure/privacy decisions unchanged. No role, reviewer assignment, grant or school policy is seeded; in approval mode the exact permission, complete live scope grant, configured Foundation workflow step/role eligibility, current target authority and self-approval separation are all required. It authorizes no SQL or runtime deployment.

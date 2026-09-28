@@ -42,6 +42,8 @@ Search, report, export, AI, offline cache and notification composition must cons
 | P1 POLICY_REVIEWED | D1C registration must explicitly select the school-supported direct/approval behavior. Missing registration denies. If approval is required, the direct apply path denies and only an approved typed request may call the fixed domain apply path. |
 | P2 REQUIRED_REVIEW | D1 baseline requires approval workflow before application. Reviewer permission is separate, current and scope-checked. Requester cannot approve the same sensitive request, including through another role. |
 
+For P1, the school-supported operation policy chooses direct or approval mode. A missing or ambiguous policy denies. Approval mode requires the exact domain-specific `review_permission_id` below, a complete live same-chain review grant/scope, configured Foundation reviewer role/step eligibility and current target authority. Requester permission, role name, or a generic administrator permission cannot substitute. Direct apply denies while approval mode is active; the approved fixed apply path rechecks requester/reviewer authority, target/version/state, source and destination, and D1 invariants. The ten added review permissions are deployment-owned, `family_safe=false`, and create no role grants.
+
 Approval does not freeze authorization forever. At application time the domain apply function rechecks target state/versions, source and destination ancestry, required current authority and concurrency invariants. A stale approved request rejects rather than forcing an invalid effect. Foundation workflow rows carry typed target/intent; no generic JSON patch is applied.
 
 ## Protected command matrix
@@ -54,10 +56,10 @@ Approval does not freeze authorization forever. At application time the domain a
 | academic.section.change | academic.section.manage | P0 | Validate parent offering/campus and state. |
 | academic.section_room.change | academic.section_room.change | P0 | Lock offering/section/room, enforce one effective assignment. |
 | academic.capacity.change | academic.capacity.change | P0 | Lock target, update capacity and append capacity revision atomically. |
-| student.roll_policy.change | student.roll_policy.change | P1 | Replace reviewed policy interval; never rewrite prior allocations. |
-| student.roll.correct | student.roll.correct | P1 | Append correction lineage under allocator/Student locks; no MAX()+1. |
+| student.roll_policy.change | student.roll_policy.change; review by student.roll_policy.approve when configured | P1 | Replace reviewed policy interval; never rewrite prior allocations. |
+| student.roll.correct | student.roll.correct; review by student.roll.approve when configured | P1 | Append correction lineage under allocator/Student locks; no MAX()+1. |
 | student.create | student.create + student.enrollment.place | P0 | Consume verified Admissions handoff, allocate Student ID, create Student + initial status + accepted PRIMARY placement + roll in one protected transaction where the reviewed creation flow requires placement completeness. |
-| student.profile.update | student.profile.update | P1 | Allowlist PROFILE fields only; expected row version; no restricted/special column path. |
+| student.profile.update | student.profile.update; review by student.profile.approve when configured | P1 | Allowlist PROFILE fields only; expected row version; no restricted/special column path. |
 | student.identity.correct | student.identity.correct; review by student.identity.approve | P2 | Close effective snapshot and append successor; broad audit carries no raw identity values. |
 | student.special.correct | student.special.correct; review by student.special.approve | P2 | Close/append special snapshot; no raw special values in audit/outbox. |
 | student.status.change | student.status.change; review by student.status.approve when configured | P1 | Enforce approved state machine and projection synchronization. |
@@ -65,7 +67,7 @@ Approval does not freeze authorization forever. At application time the domain a
 | student.enrollment.place | student.enrollment.place | P0 | Destination scope, state, both capacities, unique PRIMARY interval and roll allocation checked atomically. |
 | student.enrollment.move | student.enrollment.move; student.capacity_override only when needed; review by student.enrollment.approve when configured | P1 | Authorize source and destination, end predecessor/create successor, enforce capacity and roll rules. |
 | student.enrollment.end | student.enrollment.end; review by student.enrollment.approve when configured | P1 | End current placement with retained reason; no destructive delete. |
-| student.emergency_contact.change | student.emergency_contact.change | P1 | Add/end/correct contact; never create Family relationship/access or guardian authority. |
+| student.emergency_contact.change | student.emergency_contact.change; review by student.emergency_contact.approve when configured | P1 | Add/end/correct contact; never create Family relationship/access or guardian authority. |
 | family.manage | family.manage | P0 | Create/relabel/archive grouping; archive does not silently revoke established child access. |
 | family.relationship.change | family.relationship.change; review by family.access.approve when configured | P1 | Student+Family locks, retained relationship history, dependent primary/access checks. |
 | family.principal_membership.change | family.principal_membership.change; review by family.access.approve when configured | P1 | Exact FAMILY principal only; never mutates Foundation grants. |
@@ -74,14 +76,14 @@ Approval does not freeze authorization forever. At application time the domain a
 | employee.department.change | employee.department.manage | P0 | Create/update/archive Department catalog only. |
 | employee.designation.change | employee.designation.manage | P0 | Create/update/archive Designation catalog only. |
 | employee.create | employee.create | P0 | Create Employee and initial employment period; no role/grant side effect. |
-| employee.profile.update | employee.profile.update | P1 | Allowlisted core/photo-link change; no identity/qualification/experience path. |
+| employee.profile.update | employee.profile.update; review by employee.profile.approve when configured | P1 | Allowlisted core/photo-link change; no identity/qualification/experience path. |
 | employee.identity.correct | employee.identity.correct; review by employee.identity.approve | P2 | Close/append restricted identity snapshot; no raw value in broad audit/outbox. |
-| employee.qualification.change | employee.qualification.change | P1 | Add/correct/archive stable qualification lineage; specialization grants nothing. |
-| employee.experience.change | employee.experience.change | P1 | Add/correct/archive stable experience lineage. |
+| employee.qualification.change | employee.qualification.change; review by employee.qualification.approve when configured | P1 | Add/correct/archive stable qualification lineage; specialization grants nothing. |
+| employee.experience.change | employee.experience.change; review by employee.experience.approve when configured | P1 | Add/correct/archive stable experience lineage. |
 | employee.state.change | employee.state.change; review by employee.state.approve when configured | P1 | Close prior employment period, append next, synchronize projection, recheck dependent teaching authority. |
-| employee.job_assignment.change | employee.job_assignment.change | P1 | Effective Department/Designation history; never changes authorization roles. |
-| employee.campus_affiliation.change | employee.campus_affiliation.change | P1 | Source/destination campus checked; affiliation grants nothing. |
-| teaching.capability.change | teaching.capability.change | P1 | Effective eligibility history; ending capability invalidates new teaching authority. |
+| employee.job_assignment.change | employee.job_assignment.change; review by employee.job_assignment.approve when configured | P1 | Effective Department/Designation history; never changes authorization roles. |
+| employee.campus_affiliation.change | employee.campus_affiliation.change; review by employee.campus_affiliation.approve when configured | P1 | Source/destination campus checked; affiliation grants nothing. |
+| teaching.capability.change | teaching.capability.change; review by teaching.capability.approve when configured | P1 | Effective eligibility history; ending capability invalidates new teaching authority. |
 | teaching.class_assignment.change | teaching.class_assignment.change; review by teaching.assignment.approve for retroactive correction | P0 current/future, P2 retroactive correction | Validate active employment/capability, exact Section and one class-teacher interval. No self-assignment. |
 | teaching.subject_assignment.change | teaching.subject_assignment.change; review by teaching.assignment.approve for retroactive correction | P0 current/future, P2 retroactive correction | Validate exact Section+Subject, assignment kind and substitute bound; no self-assignment. |
 
