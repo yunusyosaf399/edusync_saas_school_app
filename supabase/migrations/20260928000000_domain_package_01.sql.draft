@@ -1404,15 +1404,18 @@ CREATE FUNCTION app_private.d1_lock_academic_path(p_section_id uuid, p_room_id u
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE
   offering_id uuid;
+  class_id uuid;
   campus_id uuid;
   year_id uuid;
 BEGIN
-  SELECT so.class_offering_id,co.campus_id,co.academic_year_id
-    INTO offering_id,campus_id,year_id
+  SELECT so.class_offering_id,co.class_id,co.campus_id,co.academic_year_id
+    INTO offering_id,class_id,campus_id,year_id
     FROM app_private.section_offerings so
     JOIN app_private.class_offerings co ON co.id=so.class_offering_id
     WHERE so.id=p_section_id;
   IF offering_id IS NULL THEN RAISE EXCEPTION 'D1 academic Section ancestry missing'; END IF;
+  PERFORM 1 FROM app_private.academic_classes cl WHERE cl.id=class_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Academic Class missing'; END IF;
   PERFORM 1 FROM app.campuses c WHERE c.id=campus_id FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'D1 academic Campus missing'; END IF;
   PERFORM 1 FROM app.academic_years ay WHERE ay.id=year_id FOR UPDATE;
@@ -1752,12 +1755,18 @@ BEGIN
     END IF;
     IF campus_id IS DISTINCT FROM NEW.campus_id THEN RAISE EXCEPTION 'D1 Section Campus mismatch'; END IF;
   ELSIF TG_TABLE_NAME='section_room_assignments' THEN
-    -- Academic path and Room were locked by the earlier overlap trigger.
-    SELECT so.campus_id,so.state INTO campus_id,section_state
-      FROM app_private.section_offerings so WHERE so.id=NEW.section_offering_id;
+    -- Academic Class through Room were locked by the earlier overlap trigger.
+    SELECT so.campus_id,so.state,co.state,cl.state
+      INTO campus_id,section_state,offering_state,class_state
+      FROM app_private.section_offerings so
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+      JOIN app_private.academic_classes cl ON cl.id=co.class_id
+      WHERE so.id=NEW.section_offering_id;
     IF NOT EXISTS (SELECT 1 FROM app.rooms r WHERE r.id=NEW.room_id AND r.campus_id=campus_id
         AND (TG_OP='UPDATE' OR r.state='ACTIVE'))
-       OR (TG_OP='INSERT' AND (section_state IS NULL OR section_state NOT IN ('PLANNED','OPEN'))) THEN
+       OR (TG_OP='INSERT' AND (class_state IS DISTINCT FROM 'ACTIVE'
+          OR offering_state IS NULL OR offering_state NOT IN ('PLANNED','OPEN')
+          OR section_state IS NULL OR section_state NOT IN ('PLANNED','OPEN'))) THEN
       RAISE EXCEPTION 'D1 Section Room Campus/state mismatch'; END IF;
   ELSIF TG_TABLE_NAME='roll_allocator_states' THEN
     SELECT * INTO pol FROM app_private.roll_policy_revisions p WHERE p.id=NEW.policy_revision_id;
@@ -1855,6 +1864,15 @@ BEGIN
     IF conflict_found THEN RAISE EXCEPTION 'D1 roll namespace collision'; END IF;
   ELSIF TG_TABLE_NAME='enrollments' THEN
     PERFORM app_private.d1_lock_academic_path(NEW.section_offering_id);
+    IF TG_OP='INSERT' THEN
+      SELECT cl.state INTO class_state FROM app_private.section_offerings so
+        JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+        JOIN app_private.academic_classes cl ON cl.id=co.class_id
+        WHERE so.id=NEW.section_offering_id;
+      IF class_state IS DISTINCT FROM 'ACTIVE' THEN
+        RAISE EXCEPTION 'D1 accepted placement cannot reuse archived Academic Class';
+      END IF;
+    END IF;
     SELECT so.class_offering_id,so.campus_id INTO offering_id,campus_id
       FROM app_private.section_offerings so WHERE so.id=NEW.section_offering_id
         AND (TG_OP='UPDATE' OR so.state='OPEN');
@@ -1912,14 +1930,16 @@ BEGIN
     section_id := NEW.section_offering_id;
     -- Employee and the academic path, including Subject when present, were
     -- locked by the earlier effective-history trigger before its overlap scan.
-    SELECT ay.starts_on,ay.ends_on,ay.state,so.state,co.state,c.state
-      INTO year_start,year_end,year_state,section_state,offering_state,campus_state
+    SELECT ay.starts_on,ay.ends_on,ay.state,so.state,co.state,c.state,cl.state
+      INTO year_start,year_end,year_state,section_state,offering_state,campus_state,class_state
       FROM app_private.section_offerings so
       JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+      JOIN app_private.academic_classes cl ON cl.id=co.class_id
       JOIN app.academic_years ay ON ay.id=co.academic_year_id
       JOIN app.campuses c ON c.id=co.campus_id
       WHERE so.id=section_id;
-    IF TG_OP='INSERT' AND (section_state NOT IN ('PLANNED','OPEN')
+    IF TG_OP='INSERT' AND (class_state IS DISTINCT FROM 'ACTIVE'
+       OR section_state NOT IN ('PLANNED','OPEN')
        OR offering_state NOT IN ('PLANNED','OPEN')
        OR campus_state NOT IN ('PLANNED','ACTIVE')
        OR year_state NOT IN ('PLANNED','ACTIVE')) THEN
