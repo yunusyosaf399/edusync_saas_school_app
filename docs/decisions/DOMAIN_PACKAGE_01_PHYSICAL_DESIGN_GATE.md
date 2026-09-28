@@ -6,14 +6,16 @@
 
 | Gate | Exact issue D1B2 must settle before accepting constraints |
 |---|---|
-| B2-01 | Define which placement states and effective dates count against class/section capacity, whether pending/reserved placements exist, and atomic check of both offering aggregates with override evidence. Both capacities always apply. |
+| B2-01 | D1 Enrollment is accepted PRIMARY placement only. Define which accepted placement states/effective intervals, including future-dated accepted placements, count against class/section capacity; atomically check both aggregates with override evidence under promotion/transfer concurrency. Admissions owns provisional application, waitlist and any later approved seat reservation. |
 | B2-02 | Select cross-command lock order/isolation/retry for Student ID, later Admissions number handoff, roll, active PRIMARY enrollment, both capacity limits and concurrent promotion/transfer. Never `MAX()+1` or read-then-write count. |
 | B2-03 | Define roll namespace/collision rule for academic-context versus persistent-student mode, NULL-context uniqueness in counter, policy change/migration behavior, persistent-origin/correction invariants and exactly one current allocation per active placement. Numeric is authority, display is derived. |
 | B2-04 | Specify no-overlap enforcement for one active PRIMARY placement per Student, its effective intervals and predecessor chain; do not assume a current-row partial unique index alone protects backdated overlaps. |
 | B2-05 | Specify one class teacher per section/time; normally one PRIMARY Subject teacher per Subject+section/time; CO_TEACHER and SUBSTITUTE overlap/coverage, mandatory bounded substitute interval and race-safe end/replacement. |
-| B2-06 | Specify family relationship versus principal-membership/child-access/primary-display interval checks and revocation ordering; a simultaneous read/revoke must not continue to authorize revoked child access. |
+| B2-06 | Specify family relationship versus principal-membership/child-access/primary-display interval checks and revocation ordering; primary context's selected relationship interval must contain its context interval. A simultaneous read/revoke must not continue to authorize revoked child access. Preserve the checked immutable `principal_kind = 'FAMILY'` and composite Foundation FK even for privileged fixture DML. |
 | B2-07 | Make assignment eligibility race-safe against Employee ACTIVE interval, teacher capability interval, section/year bounds and campus ancestry; an ended capability cannot leave current action authority. |
 | B2-08 | Specify D1 ancestry structural validation against frozen `app.campuses` and `app.rooms` without assuming unavailable composite keys or altering Foundation. Include class/year same-school consistency and room/section same-campus proof. |
+| B2-09 | Specify Student restricted-identity and special-detail HE snapshot non-overlap, one-way close, same-Student successor lineage and current/historical resolution. Sensitive values remain only in narrow private snapshots, never broad audit/outbox JSON. |
+| B2-10 | Specify Employee restricted-identity HE snapshot non-overlap/current resolution; qualification and external-experience lineage, correction/archive uniqueness and experience date validity. Keep original joining/rehire derivable from this-school employment periods. |
 
 ## Can be selected in D1B2
 
@@ -27,9 +29,9 @@
 ## Can be deferred to D1B3 security/command design
 
 - Exact action/permission codes, operation contracts, worker/definer ownership, search paths, EXECUTE ceilings, RLS/read projection definitions and direct-client denial tests. All D1 base tables stay `app_private` and no anonymous access is proposed.
-- ROSTER/PROFILE/RESTRICTED IDENTITY/SENSITIVE-SPECIAL projections; sensitive correction history representation must reconstruct meaningful business changes without emitting raw identity/special values into broad audit/outbox content.
+- ROSTER/PROFILE/RESTRICTED IDENTITY/SENSITIVE-SPECIAL projections and narrow Employee HR/OWN identity/history projections. Physical HE snapshot history is now selected; D1B3 must prevent raw identity/special values from entering broad audit/outbox content.
 - Typed approval hooks for sensitive corrections/status/transfer/assignment changes, with capacity override **not** needing approval solely because of fullness. Foundation audit, outbox and receipts remain the shared engines.
-- FAMILY principal kind validation, emergency-contact non-escalation, Employee affiliation/designation non-escalation, historical read policies and self/ASSIGNED scope contracts.
+- FAMILY principal ACTIVE/current-binding/complete-grant/interval runtime checks beyond the structural discriminator, emergency-contact non-escalation, Employee affiliation/designation/qualification non-escalation, historical read policies and self/ASSIGNED scope contracts.
 - File-purpose/entitlement/checked link validation for nullable Student/Employee file references; no D1-22 purpose activation from schema existence.
 
 ## Can be deferred to D1C SQL implementation
@@ -41,8 +43,8 @@
 
 ## Later domain package
 
-Full Admissions application/stages and its number reservation implementation; curriculum composition/versions, elective selections and assessment rules; timetable, attendance, learning, exams/results; Finance, payroll/contracts/leave, medical, transport, hostel/library; custody/court-order/pickup workflows; provider upload-purpose activation; notification delivery, AI/search and full offline protocol. D1 stores only approved identity/history anchors needed by these packages.
+Full Admissions application/stages, provisional decision/waitlist/seat reservation if later approved, and its number reservation implementation; curriculum composition/versions, elective selections and assessment rules; timetable, attendance, learning, exams/results; Finance, employment contracts/contract compensation, salary/payroll/leave, Employee attendance and performance management, general HR documents, medical, transport, hostel/library; custody/court-order/pickup workflows; provider upload-purpose activation; notification delivery, AI/search and full offline protocol. D1 stores only approved identity/history anchors needed by these packages.
 
 ## Pass boundary
 
-The catalog proposes **31 D1 relations**: zero in `app`, 31 in `app_private`. All approved concepts have an explicit physical home, and zero new inter-table FK cycles or late FKs are proposed. The Foundation schema remains untouched. D1B2 may review/replace technical candidates with evidence while preserving product invariants. D1B1 is **not** a release, deployment, SQL or migration authorization.
+The catalog proposes **34 D1 relations**: zero in `app`, 34 in `app_private`. All approved concepts have an explicit physical home, and zero new inter-table FK cycles or late FKs are proposed. The Foundation schema remains untouched. D1B2 may review/replace technical candidates with evidence while preserving product invariants. D1B1 is **not** a release, deployment, SQL or migration authorization.

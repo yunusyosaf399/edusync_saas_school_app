@@ -30,3 +30,11 @@
 D1B may now design physical relations, columns/types, FKs and composite ancestry, uniqueness, effective-time overlap rules, indexes, RLS and field-limited read projections, protected command interfaces, approval/audit/event links, capacity/numbering concurrency mechanisms, dependency order and a positive/negative executable-test **plan**. D1-13–D1-17 remain physical/SQL design choices; D1-18 onward retain later-package boundaries. No product blocker remains from D1-01–D1-12.
 
 D1B may **not** create migration 10, modify frozen Foundation migrations/tests, add executable test 10+, deploy remotely, activate a worker or implement Flutter. Those require separate authorization and review. Existing Foundation objects remain authoritative.
+
+## D1B1 review clarification — approved 2026-09-28
+
+This clarification is approved for the D1 physical-design correction after review of commit `143ae1b22e8684f6406deace3e8ec49871e70c39`. It does not authorize SQL, executable tests or deployment.
+
+**Employee profile in D1.** The Employee business ID belongs on the Employee profile; name remains on the existing Foundation Person. D1 includes an optional photo relationship, restricted National/CNIC/identity information in Employee-private storage, multiple structured qualifications with professional specialization, structured previous/external professional experience, joining and rehire dates through employment-period history, Department and Designation, campus affiliation, teacher capability and teaching assignments. A qualification, specialization, Department or Designation is a profile fact, never an authorization grant. Employee contract and contract workflow, contract documents without later purpose activation, salary, payroll, attendance, leave, performance-management, and general HR document management remain later packages.
+
+**Accepted placement only.** D1 `enrollments` records accepted authoritative PRIMARY placement history. It has no PENDING, RESERVED or WAITLIST state and is not a provisional seat reservation. Applications, provisional decisions, waiting lists or seat reservations if later approved, and pre-admission workflow belong to Admissions. Successful verified handoff precedes D1 Student creation and placement.
