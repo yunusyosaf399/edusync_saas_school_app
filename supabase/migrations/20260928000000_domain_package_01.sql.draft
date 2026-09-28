@@ -217,7 +217,7 @@ CREATE TABLE app_private.roll_allocator_states (
 ALTER TABLE app_private.roll_allocator_states ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_private.roll_allocator_states FORCE ROW LEVEL SECURITY;
 
--- 10 students (M)
+-- 11 students (M)
 CREATE TABLE app_private.students (
   id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
   created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
@@ -236,18 +236,18 @@ CREATE TABLE app_private.students (
   previous_school text,
   profile_photo_file_id uuid,
   current_status text NOT NULL,
-  CONSTRAINT d1_10_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_11_pkey PRIMARY KEY (id),
   CONSTRAINT d1_u09_key UNIQUE (person_id),
   CONSTRAINT d1_u10_key UNIQUE (school_student_id),
   CONSTRAINT d1_u11_key UNIQUE (admission_number),
-  CONSTRAINT d1_10_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_10_fk_01 FOREIGN KEY (person_id) REFERENCES app_private.people(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_10_fk_02 FOREIGN KEY (profile_photo_file_id) REFERENCES app_private.file_objects(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+  CONSTRAINT d1_11_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_11_fk_01 FOREIGN KEY (person_id) REFERENCES app_private.people(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_11_fk_02 FOREIGN KEY (profile_photo_file_id) REFERENCES app_private.file_objects(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ALTER TABLE app_private.students ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_private.students FORCE ROW LEVEL SECURITY;
 
--- 11 student_identity_details (HE)
+-- 12 student_identity_details (HE)
 CREATE TABLE app_private.student_identity_details (
   id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
   created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
@@ -266,17 +266,17 @@ CREATE TABLE app_private.student_identity_details (
   effective_until timestamptz,
   supersedes_id uuid,
   reason text NOT NULL,
-  CONSTRAINT d1_11_pkey PRIMARY KEY (id),
-  CONSTRAINT d1_11_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_11_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_11_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_11_fk_02 FOREIGN KEY (birth_certificate_file_id) REFERENCES app_private.file_objects(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_11_fk_03 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_identity_details(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+  CONSTRAINT d1_12_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_12_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_12_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_12_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_12_fk_02 FOREIGN KEY (birth_certificate_file_id) REFERENCES app_private.file_objects(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_12_fk_03 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_identity_details(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ALTER TABLE app_private.student_identity_details ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_private.student_identity_details FORCE ROW LEVEL SECURITY;
 
--- 12 student_special_details (HE)
+-- 13 student_special_details (HE)
 CREATE TABLE app_private.student_special_details (
   id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
   created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
@@ -291,16 +291,16 @@ CREATE TABLE app_private.student_special_details (
   effective_until timestamptz,
   supersedes_id uuid,
   reason text NOT NULL,
-  CONSTRAINT d1_12_pkey PRIMARY KEY (id),
-  CONSTRAINT d1_12_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_12_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_12_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_12_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_special_details(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+  CONSTRAINT d1_13_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_13_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_13_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_13_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_13_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_special_details(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ALTER TABLE app_private.student_special_details ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_private.student_special_details FORCE ROW LEVEL SECURITY;
 
--- 13 student_status_transitions (H)
+-- 14 student_status_transitions (H)
 CREATE TABLE app_private.student_status_transitions (
   id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
   created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
@@ -313,17 +313,17 @@ CREATE TABLE app_private.student_status_transitions (
   reason text NOT NULL,
   supersedes_id uuid,
   command_receipt_id uuid,
-  CONSTRAINT d1_13_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_14_pkey PRIMARY KEY (id),
   CONSTRAINT d1_u12_key UNIQUE (student_id,sequence_number),
-  CONSTRAINT d1_13_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_13_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_13_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_status_transitions(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_13_fk_03 FOREIGN KEY (command_receipt_id) REFERENCES app_private.command_receipts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+  CONSTRAINT d1_14_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_14_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_14_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_status_transitions(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_14_fk_03 FOREIGN KEY (command_receipt_id) REFERENCES app_private.command_receipts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ALTER TABLE app_private.student_status_transitions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_private.student_status_transitions FORCE ROW LEVEL SECURITY;
 
--- 14 enrollments (HE)
+-- 15 enrollments (HE)
 CREATE TABLE app_private.enrollments (
   id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
   created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
@@ -341,19 +341,19 @@ CREATE TABLE app_private.enrollments (
   reason text NOT NULL,
   end_reason text,
   command_receipt_id uuid,
-  CONSTRAINT d1_14_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_15_pkey PRIMARY KEY (id),
   CONSTRAINT d1_u13_key UNIQUE (id,student_id),
-  CONSTRAINT d1_14_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_14_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_14_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_14_fk_02 FOREIGN KEY (section_offering_id) REFERENCES app_private.section_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_14_fk_03 FOREIGN KEY (predecessor_id) REFERENCES app_private.enrollments(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_14_fk_04 FOREIGN KEY (command_receipt_id) REFERENCES app_private.command_receipts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+  CONSTRAINT d1_15_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_fk_02 FOREIGN KEY (section_offering_id) REFERENCES app_private.section_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_fk_03 FOREIGN KEY (predecessor_id) REFERENCES app_private.enrollments(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_fk_04 FOREIGN KEY (command_receipt_id) REFERENCES app_private.command_receipts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ALTER TABLE app_private.enrollments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_private.enrollments FORCE ROW LEVEL SECURITY;
 
--- 15 roll_allocations (HE)
+-- 10 roll_allocations (HE)
 CREATE TABLE app_private.roll_allocations (
   id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
   created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
@@ -369,14 +369,14 @@ CREATE TABLE app_private.roll_allocations (
   origin_allocation_id uuid,
   supersedes_id uuid,
   correction_reason text,
-  CONSTRAINT d1_15_pkey PRIMARY KEY (id),
-  CONSTRAINT d1_15_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_15_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_15_fk_01 FOREIGN KEY (enrollment_id) REFERENCES app_private.enrollments(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_15_fk_02 FOREIGN KEY (enrollment_id,student_id) REFERENCES app_private.enrollments(id,student_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_15_fk_03 FOREIGN KEY (policy_revision_id) REFERENCES app_private.roll_policy_revisions(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_15_fk_04 FOREIGN KEY (origin_allocation_id) REFERENCES app_private.roll_allocations(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
-  CONSTRAINT d1_15_fk_05 FOREIGN KEY (supersedes_id) REFERENCES app_private.roll_allocations(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+  CONSTRAINT d1_10_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_10_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_10_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_10_fk_01 FOREIGN KEY (enrollment_id) REFERENCES app_private.enrollments(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_10_fk_02 FOREIGN KEY (enrollment_id,student_id) REFERENCES app_private.enrollments(id,student_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_10_fk_03 FOREIGN KEY (policy_revision_id) REFERENCES app_private.roll_policy_revisions(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_10_fk_04 FOREIGN KEY (origin_allocation_id) REFERENCES app_private.roll_allocations(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_10_fk_05 FOREIGN KEY (supersedes_id) REFERENCES app_private.roll_allocations(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ALTER TABLE app_private.roll_allocations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_private.roll_allocations FORCE ROW LEVEL SECURITY;
@@ -1784,6 +1784,7 @@ GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.subject_teache
 -- Private fixed-context evaluator. Permission/scope rows are absent until the
 -- trusted post-bootstrap registrar runs, so every unregistered code denies.
 RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
 SET ROLE schoolos_authz_reader;
 CREATE FUNCTION app_private.d1_authorized(
   wanted_code text, target_kind text, target_id uuid,
@@ -1827,12 +1828,18 @@ BEGIN
      WHERE e.student_id=target_id AND e.placement_kind='PRIMARY'
        AND e.effective_from<=on_date
        AND (e.effective_until IS NULL OR on_date<e.effective_until);
-    IF placement_count<>1 THEN RETURN false; END IF;
-    SELECT e.section_offering_id INTO target_section
-      FROM app_private.enrollments e
-     WHERE e.student_id=target_id AND e.placement_kind='PRIMARY'
-       AND e.effective_from<=on_date
-       AND (e.effective_until IS NULL OR on_date<e.effective_until);
+    IF placement_count>1 THEN RETURN false; END IF;
+    IF placement_count=0 AND wanted_code IN
+       ('student.roster.view', 'student.profile.view') THEN
+      RETURN false;
+    END IF;
+    IF placement_count=1 THEN
+      SELECT e.section_offering_id INTO target_section
+        FROM app_private.enrollments e
+       WHERE e.student_id=target_id AND e.placement_kind='PRIMARY'
+         AND e.effective_from<=on_date
+         AND (e.effective_until IS NULL OR on_date<e.effective_until);
+    END IF;
     student_self := actor_kind='INDIVIDUAL' AND actor_person=target_person;
   ELSIF target_kind = 'EMPLOYEE' THEN
     SELECT e.person_id INTO target_person FROM app_private.employees e WHERE e.id=target_id;
@@ -1931,7 +1938,8 @@ BEGIN
         (actor_kind='FAMILY' AND p.family_safe AND s.scope_kind='OWN'
           AND s.resolver_key='D1_FAMILY_CHILD' AND family_child)
         OR (actor_kind<>'FAMILY' AND (
-          (s.scope_kind='ALL' AND s.resolver_key='DIRECT')
+          (s.scope_kind='ALL' AND s.resolver_key='DIRECT'
+            AND (target_student IS NULL OR placement_count=1))
           OR (s.scope_kind='CAMPUS' AND s.resolver_key='DIRECT'
             AND target_campus IS NOT NULL AND s.campus_id=target_campus)
           OR (s.scope_kind='CAMPUS' AND s.resolver_key='DIRECT'
@@ -1962,6 +1970,7 @@ GRANT EXECUTE ON FUNCTION app_private.d1_authorized(text,text,uuid,uuid,date)
   TO schoolos_read_executor, schoolos_academic_executor, schoolos_student_executor,
      schoolos_family_executor, schoolos_employee_executor, schoolos_teaching_executor;
 RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
 
 -- Trusted post-bootstrap registration; this function is not invoked by the migration.
 SET ROLE schoolos_schema_owner;
@@ -2529,3 +2538,68 @@ CREATE TRIGGER ab_d1_file_purpose BEFORE INSERT OR UPDATE OF profile_photo_file_
   ON app_private.employees FOR EACH ROW
   EXECUTE FUNCTION app_private.d1_guard_file_purpose('EMPLOYEE_PROFILE_PHOTO');
 RESET ROLE;
+
+-- Fixed academic checked reads. The caller supplies only the typed target UUID;
+-- the school/campus/class/section ancestry is read from stored rows. These are
+-- partial D1 read coverage while the remaining frozen surfaces are drafted.
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+CREATE FUNCTION app.d1_read_academic_class(p_class_id uuid)
+RETURNS TABLE (
+  class_id uuid, class_code text, class_label text, display_order integer,
+  stage_label text, class_state text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT c.id,c.code,c.label,c.display_order,c.stage_label,c.state
+    FROM app_private.academic_classes c
+   WHERE c.id=p_class_id
+     AND app_private.d1_authorized('academic.class.view','SCHOOL',c.school_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_academic_class(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_academic_class(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_academic_subject(p_subject_id uuid)
+RETURNS TABLE (
+  subject_id uuid, subject_code text, subject_label text,
+  display_order integer, subject_state text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT s.id,s.code,s.label,s.display_order,s.state
+    FROM app_private.subjects s
+   WHERE s.id=p_subject_id
+     AND app_private.d1_authorized('academic.subject.view','SCHOOL',s.school_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_academic_subject(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_academic_subject(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_class_offering(p_offering_id uuid)
+RETURNS TABLE (
+  offering_id uuid, class_id uuid, campus_id uuid, academic_year_id uuid,
+  capacity integer, offering_state text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT o.id,o.class_id,o.campus_id,o.academic_year_id,o.capacity,o.state
+    FROM app_private.class_offerings o
+   WHERE o.id=p_offering_id
+     AND app_private.d1_authorized('academic.offering.view','CLASS',o.id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_class_offering(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_class_offering(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_section_offering(p_section_id uuid)
+RETURNS TABLE (
+  section_id uuid, class_offering_id uuid, campus_id uuid,
+  section_code text, section_label text, display_order integer,
+  capacity integer, section_state text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT s.id,s.class_offering_id,s.campus_id,s.code,s.label,
+         s.display_order,s.capacity,s.state
+    FROM app_private.section_offerings s
+   WHERE s.id=p_section_id
+     AND app_private.d1_authorized('academic.section.view','SECTION',s.id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_section_offering(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_section_offering(uuid) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
