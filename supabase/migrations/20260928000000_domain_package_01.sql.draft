@@ -1,4 +1,7 @@
--- D1C1 REVIEW DRAFT. NOT AUTHORIZED FOR APPLICATION.
+-- D1C1A STRUCTURAL/INTEGRITY WORKING DRAFT. NOT AN EXECUTABLE MIGRATION.
+-- The D1B3B evaluator, registrar, broad provisional executor policies/grants,
+-- and four academic read RPCs below remain exploratory D1C1B material. They
+-- are not a final authorization/EXECUTE contract and must not be deployed.
 -- Migration-time deployment catalog insertion and SYSTEM principal creation are forbidden.
 CREATE ROLE schoolos_academic_executor NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
 CREATE ROLE schoolos_student_executor NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
@@ -1392,7 +1395,719 @@ CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.clas
 CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.subject_teacher_assignments
   FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
 
--- Default-deny D1 RLS with nonrecursive authorization-reader input policies.
+-- D1C1A: every effective-history writer is serialized on its stable parent
+-- before an overlap/lineage scan. D1C1B commands must prelock the complete
+-- sorted ancestry set; a direct privileged fixture path cannot skip this
+-- defensive check. The parameter lists below are fixed DDL, not caller input.
+CREATE FUNCTION app_private.d1_guard_effective_history() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  parent_id uuid;
+  key_name text;
+  predicate text := 'true';
+  predecessor jsonb;
+  conflict_found boolean;
+  school_id uuid;
+  locked_id uuid;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  parent_id := (pg_catalog.to_jsonb(NEW)->>TG_ARGV[1])::uuid;
+  IF TG_TABLE_NAME IN ('employee_qualifications','employee_experience_entries') THEN
+    SELECT sp.id INTO school_id FROM app_private.school_profiles sp ORDER BY sp.id LIMIT 1 FOR UPDATE;
+    IF school_id IS NULL THEN RAISE EXCEPTION 'D1 school anchor missing'; END IF;
+    IF TG_TABLE_NAME='employee_qualifications' AND EXISTS (
+      SELECT 1 FROM app_private.employee_qualifications x
+      WHERE x.qualification_record_id=NEW.qualification_record_id
+        AND x.employee_id<>NEW.employee_id) THEN
+      RAISE EXCEPTION 'D1 qualification lineage belongs to another Employee';
+    ELSIF TG_TABLE_NAME='employee_experience_entries' AND EXISTS (
+      SELECT 1 FROM app_private.employee_experience_entries x
+      WHERE x.experience_record_id=NEW.experience_record_id
+        AND x.employee_id<>NEW.employee_id) THEN
+      RAISE EXCEPTION 'D1 experience lineage belongs to another Employee';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'roll_allocations' THEN
+    SELECT rp.school_id INTO school_id FROM app_private.roll_policy_revisions rp
+      WHERE rp.id=NEW.policy_revision_id;
+    IF school_id IS NULL THEN RAISE EXCEPTION 'D1 roll policy missing'; END IF;
+    PERFORM 1 FROM app_private.school_profiles sp WHERE sp.id=school_id FOR UPDATE;
+  END IF;
+  EXECUTE pg_catalog.format('SELECT id FROM app_private.%I WHERE id=$1 FOR UPDATE',TG_ARGV[0])
+    INTO locked_id USING parent_id;
+  IF locked_id IS NULL THEN RAISE EXCEPTION 'D1 temporal parent missing: %',TG_TABLE_NAME; END IF;
+  IF TG_TABLE_NAME IN ('family_relationships','family_student_access') THEN
+    PERFORM 1 FROM app_private.families f WHERE f.id=NEW.family_id FOR UPDATE;
+  END IF;
+  IF TG_TABLE_NAME IN ('class_teacher_assignments','subject_teacher_assignments') THEN
+    -- Different Employees can target the same Section. Serialize on the
+    -- Section before checking the cross-Employee overlap/PRIMARY rule.
+    PERFORM 1 FROM app_private.class_offerings co
+      JOIN app_private.section_offerings so ON so.class_offering_id=co.id
+      WHERE so.id=NEW.section_offering_id FOR UPDATE OF co;
+    PERFORM 1 FROM app_private.section_offerings so
+      WHERE so.id=NEW.section_offering_id FOR UPDATE;
+  END IF;
+  FOREACH key_name IN ARRAY pg_catalog.string_to_array(TG_ARGV[2],',') LOOP
+    predicate := predicate || pg_catalog.format(
+      ' AND (pg_catalog.to_jsonb(x)->%L) IS NOT DISTINCT FROM (pg_catalog.to_jsonb($4)->%L)',
+      key_name,key_name);
+  END LOOP;
+  IF TG_TABLE_NAME = 'family_relationships' AND (pg_catalog.to_jsonb(NEW)->>'adult_person_id') IS NULL THEN
+    predicate := predicate ||
+      ' AND pg_catalog.lower(pg_catalog.btrim(x.display_name)) IS NOT DISTINCT FROM pg_catalog.lower(pg_catalog.btrim(pg_catalog.to_jsonb($4)->>''display_name''))'
+      || ' AND pg_catalog.lower(pg_catalog.btrim(x.relationship_contact)) IS NOT DISTINCT FROM pg_catalog.lower(pg_catalog.btrim(pg_catalog.to_jsonb($4)->>''relationship_contact''))';
+  ELSIF TG_TABLE_NAME = 'student_emergency_contacts' AND (pg_catalog.to_jsonb(NEW)->>'person_id') IS NULL THEN
+    predicate := predicate ||
+      ' AND pg_catalog.lower(pg_catalog.btrim(x.contact_name)) IS NOT DISTINCT FROM pg_catalog.lower(pg_catalog.btrim(pg_catalog.to_jsonb($4)->>''contact_name''))'
+      || ' AND x.relationship_label = (pg_catalog.to_jsonb($4)->>''relationship_label'') AND x.contact_phone = (pg_catalog.to_jsonb($4)->>''contact_phone'')';
+  END IF;
+  EXECUTE pg_catalog.format(
+    'SELECT EXISTS (SELECT 1 FROM app_private.%I x WHERE x.id<>$1 AND %s'
+    || ' AND (x.effective_until IS NULL OR x.effective_until>$2)'
+    || ' AND ($3 IS NULL OR x.effective_from<$3))',TG_TABLE_NAME,predicate)
+    INTO conflict_found USING NEW.id,NEW.effective_from,NEW.effective_until,NEW;
+  IF conflict_found THEN RAISE EXCEPTION 'D1 overlapping effective history: %',TG_TABLE_NAME; END IF;
+  IF TG_TABLE_NAME = 'subject_teacher_assignments' AND (pg_catalog.to_jsonb(NEW)->>'assignment_kind')='PRIMARY' THEN
+    SELECT EXISTS (SELECT 1 FROM app_private.subject_teacher_assignments x
+      WHERE x.id<>NEW.id AND x.section_offering_id=NEW.section_offering_id
+        AND x.subject_id=NEW.subject_id AND x.assignment_kind='PRIMARY'
+        AND (x.effective_until IS NULL OR x.effective_until>NEW.effective_from)
+        AND (NEW.effective_until IS NULL OR x.effective_from<NEW.effective_until))
+      INTO conflict_found;
+    IF conflict_found THEN RAISE EXCEPTION 'D1 overlapping PRIMARY subject assignment'; END IF;
+  END IF;
+  IF NEW.supersedes_id IS NOT NULL THEN
+    EXECUTE pg_catalog.format('SELECT pg_catalog.to_jsonb(x) FROM app_private.%I x WHERE x.id=$1',TG_TABLE_NAME)
+      INTO predecessor USING NEW.supersedes_id;
+    IF predecessor IS NULL OR NEW.supersedes_id=NEW.id THEN
+      RAISE EXCEPTION 'D1 invalid supersession target: %',TG_TABLE_NAME;
+    END IF;
+    IF (predecessor->>'created_at')::timestamptz>NEW.created_at THEN
+      RAISE EXCEPTION 'D1 supersession cannot point to a later retained row: %',TG_TABLE_NAME;
+    END IF;
+    FOREACH key_name IN ARRAY pg_catalog.string_to_array(TG_ARGV[3],',') LOOP
+      IF predecessor->key_name IS DISTINCT FROM pg_catalog.to_jsonb(NEW)->key_name THEN
+        RAISE EXCEPTION 'D1 cross-parent supersession: %',TG_TABLE_NAME;
+      END IF;
+    END LOOP;
+    EXECUTE pg_catalog.format(
+      'SELECT EXISTS (SELECT 1 FROM app_private.%I x WHERE x.supersedes_id=$1 AND x.id<>$2)',
+      TG_TABLE_NAME) INTO conflict_found USING NEW.supersedes_id,NEW.id;
+    IF conflict_found THEN RAISE EXCEPTION 'D1 supersession head already consumed: %',TG_TABLE_NAME; END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_guard_effective_history() FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.section_room_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('section_offerings','section_offering_id','section_offering_id','section_offering_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.roll_policy_revisions
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('school_profiles','school_id','school_id','school_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.roll_allocations
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('students','student_id','enrollment_id','student_id,enrollment_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.student_identity_details
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('students','student_id','student_id','student_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.student_special_details
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('students','student_id','student_id','student_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.enrollments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('students','student_id','student_id','student_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.family_relationships
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('students','student_id','family_id,student_id,relationship_kind,adult_person_id','family_id,student_id,relationship_kind,adult_person_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.family_principal_memberships
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('families','family_id','family_id','family_id,principal_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.family_student_access
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('students','student_id','family_id,student_id','family_id,student_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.student_primary_family_contexts
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('students','student_id','student_id','student_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.student_emergency_contacts
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('students','student_id','student_id,person_id','student_id,person_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employment_periods
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id','employee_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_identity_details
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id','employee_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_qualifications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,qualification_record_id','employee_id,qualification_record_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_experience_entries
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,experience_record_id','employee_id,experience_record_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_job_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,department_id,designation_id','employee_id,department_id,designation_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_campus_affiliations
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,campus_id','employee_id,campus_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.teacher_capabilities
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id','employee_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.class_teacher_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','section_offering_id','section_offering_id');
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.subject_teacher_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','section_offering_id,subject_id,employee_id,assignment_kind','section_offering_id,subject_id,assignment_kind');
+
+-- Status sequence belongs to the locked Student stream, never to the caller.
+CREATE FUNCTION app_private.d1_guard_status_stream() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  prior app_private.student_status_transitions%ROWTYPE;
+  prior_max bigint;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  PERFORM 1 FROM app_private.students s WHERE s.id=NEW.student_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Student status parent missing'; END IF;
+  SELECT COALESCE(MAX(x.sequence_number),0) INTO prior_max
+    FROM app_private.student_status_transitions x WHERE x.student_id=NEW.student_id;
+  NEW.sequence_number := prior_max + 1;
+  IF NEW.supersedes_id IS NOT NULL THEN
+    SELECT * INTO prior FROM app_private.student_status_transitions x WHERE x.id=NEW.supersedes_id;
+    IF NOT FOUND OR prior.student_id<>NEW.student_id OR prior.id=NEW.id THEN
+      RAISE EXCEPTION 'D1 status supersession must remain on same Student';
+    END IF;
+    IF EXISTS (SELECT 1 FROM app_private.student_status_transitions x
+       WHERE x.supersedes_id=prior.id) THEN
+      RAISE EXCEPTION 'D1 status supersession head already consumed';
+    END IF;
+  ELSE
+    SELECT x.* INTO prior FROM app_private.student_status_transitions x
+      WHERE x.student_id=NEW.student_id
+        AND NOT EXISTS (SELECT 1 FROM app_private.student_status_transitions y WHERE y.supersedes_id=x.id)
+      ORDER BY x.effective_on DESC,x.sequence_number DESC LIMIT 1;
+    IF FOUND THEN
+      IF NEW.effective_on<prior.effective_on OR NEW.previous_status IS DISTINCT FROM prior.new_status THEN
+        RAISE EXCEPTION 'D1 status chronology or predecessor mismatch';
+      END IF;
+    ELSIF NEW.previous_status IS NOT NULL THEN
+      RAISE EXCEPTION 'D1 first status cannot have a predecessor';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_guard_status_stream() FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER ab_d1_status_stream BEFORE INSERT ON app_private.student_status_transitions
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_status_stream();
+
+-- Typed capacity history is immutable, but a retained successor also needs
+-- the same target and an already retained predecessor under its target lock.
+CREATE FUNCTION app_private.d1_guard_capacity_lineage() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  prior app_private.capacity_revisions%ROWTYPE;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  IF NEW.class_offering_id IS NOT NULL THEN
+    PERFORM 1 FROM app_private.class_offerings co WHERE co.id=NEW.class_offering_id FOR UPDATE;
+  ELSE
+    PERFORM 1 FROM app_private.class_offerings co
+      JOIN app_private.section_offerings so ON so.class_offering_id=co.id
+      WHERE so.id=NEW.section_offering_id FOR UPDATE OF co;
+    PERFORM 1 FROM app_private.section_offerings so WHERE so.id=NEW.section_offering_id FOR UPDATE;
+  END IF;
+  IF NEW.supersedes_id IS NOT NULL THEN
+    SELECT * INTO prior FROM app_private.capacity_revisions r WHERE r.id=NEW.supersedes_id;
+    IF prior.id IS NULL OR prior.id=NEW.id
+       OR prior.class_offering_id IS DISTINCT FROM NEW.class_offering_id
+       OR prior.section_offering_id IS DISTINCT FROM NEW.section_offering_id
+       OR prior.created_at>NEW.created_at
+       OR EXISTS (SELECT 1 FROM app_private.capacity_revisions r
+         WHERE r.supersedes_id=prior.id) THEN
+      RAISE EXCEPTION 'D1 capacity revision successor is not the current same-target head';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_guard_capacity_lineage() FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER ab_d1_capacity_lineage BEFORE INSERT ON app_private.capacity_revisions
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_capacity_lineage();
+
+-- Fixed relation-specific cross-row ancestry and eligibility defenses. These
+-- are deliberately private: the later protected commands still own source /
+-- destination authorization, versions, reasons and approval policy.
+CREATE FUNCTION app_private.d1_guard_crossrow() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  school_id uuid;
+  campus_id uuid;
+  offering_id uuid;
+  section_id uuid;
+  year_start date;
+  year_end date;
+  prior app_private.enrollments%ROWTYPE;
+  pol app_private.roll_policy_revisions%ROWTYPE;
+  enrollment_row app_private.enrollments%ROWTYPE;
+  rel app_private.family_relationships%ROWTYPE;
+  remaining_start date;
+  edge_end date;
+  conflict_found boolean;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  IF TG_TABLE_NAME='class_offerings' THEN
+    SELECT c.school_id INTO school_id FROM app.campuses c WHERE c.id=NEW.campus_id;
+    IF school_id IS DISTINCT FROM NEW.school_id THEN RAISE EXCEPTION 'D1 Offering Campus school mismatch'; END IF;
+  ELSIF TG_TABLE_NAME='section_offerings' THEN
+    SELECT co.campus_id INTO campus_id FROM app_private.class_offerings co WHERE co.id=NEW.class_offering_id;
+    IF campus_id IS DISTINCT FROM NEW.campus_id THEN RAISE EXCEPTION 'D1 Section Campus mismatch'; END IF;
+  ELSIF TG_TABLE_NAME='section_room_assignments' THEN
+    SELECT so.campus_id INTO campus_id FROM app_private.section_offerings so WHERE so.id=NEW.section_offering_id;
+    IF NOT EXISTS (SELECT 1 FROM app.rooms r WHERE r.id=NEW.room_id AND r.campus_id=campus_id
+        AND (TG_OP='UPDATE' OR r.state='ACTIVE')) THEN RAISE EXCEPTION 'D1 Section Room Campus/state mismatch'; END IF;
+  ELSIF TG_TABLE_NAME='roll_allocator_states' THEN
+    SELECT * INTO pol FROM app_private.roll_policy_revisions p WHERE p.id=NEW.policy_revision_id;
+    IF pol.id IS NULL OR (pol.mode='PERSISTENT_STUDENT') IS DISTINCT FROM (NEW.class_offering_id IS NULL) THEN
+      RAISE EXCEPTION 'D1 roll allocator mode/target mismatch';
+    END IF;
+    IF NEW.class_offering_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM app_private.class_offerings co WHERE co.id=NEW.class_offering_id AND co.school_id=pol.school_id)
+    THEN RAISE EXCEPTION 'D1 roll allocator cross-school Offering'; END IF;
+  ELSIF TG_TABLE_NAME='roll_policy_revisions' THEN
+    IF TG_OP='INSERT' AND NEW.revision IS DISTINCT FROM
+      (SELECT COALESCE(MAX(p.revision),0)+1 FROM app_private.roll_policy_revisions p
+        WHERE p.school_id=NEW.school_id) THEN
+      RAISE EXCEPTION 'D1 roll policy revision must follow locked school sequence';
+    END IF;
+  ELSIF TG_TABLE_NAME='roll_allocations' THEN
+    SELECT * INTO enrollment_row FROM app_private.enrollments e WHERE e.id=NEW.enrollment_id;
+    SELECT * INTO pol FROM app_private.roll_policy_revisions p WHERE p.id=NEW.policy_revision_id;
+    IF enrollment_row.id IS NULL OR pol.id IS NULL OR enrollment_row.student_id<>NEW.student_id
+       OR NEW.effective_from<enrollment_row.effective_from
+       OR (enrollment_row.effective_until IS NOT NULL
+           AND (NEW.effective_until IS NULL OR NEW.effective_until>enrollment_row.effective_until)) THEN
+      RAISE EXCEPTION 'D1 roll allocation enrollment/Student/interval mismatch';
+    END IF;
+    SELECT co.id,co.school_id INTO offering_id,school_id
+      FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+      WHERE so.id=enrollment_row.section_offering_id;
+    IF school_id IS DISTINCT FROM pol.school_id OR NEW.effective_from<pol.effective_from
+       OR (pol.effective_until IS NOT NULL AND NEW.effective_from>=pol.effective_until) THEN
+      RAISE EXCEPTION 'D1 roll policy school/effective-start mismatch'; END IF;
+    IF NEW.origin_allocation_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM app_private.roll_allocations x WHERE x.id=NEW.origin_allocation_id
+        AND x.student_id=NEW.student_id AND x.created_at<=NEW.created_at)
+    THEN RAISE EXCEPTION 'D1 roll origin must be earlier same-Student lineage'; END IF;
+    IF pol.mode='PERSISTENT_STUDENT' THEN
+      SELECT EXISTS (SELECT 1 FROM app_private.roll_allocations x
+        JOIN app_private.roll_policy_revisions xp ON xp.id=x.policy_revision_id
+        WHERE x.id<>NEW.id AND xp.school_id=pol.school_id AND xp.mode='PERSISTENT_STUDENT'
+          AND x.numeric_value=NEW.numeric_value AND x.student_id<>NEW.student_id)
+        INTO conflict_found;
+    ELSE
+      SELECT EXISTS (SELECT 1 FROM app_private.roll_allocations x
+        JOIN app_private.enrollments xe ON xe.id=x.enrollment_id
+        JOIN app_private.section_offerings xs ON xs.id=xe.section_offering_id
+        WHERE x.id<>NEW.id AND x.policy_revision_id=NEW.policy_revision_id
+          AND xs.class_offering_id=offering_id AND x.numeric_value=NEW.numeric_value
+          AND x.student_id<>NEW.student_id
+          AND (x.effective_until IS NULL OR x.effective_until>NEW.effective_from)
+          AND (NEW.effective_until IS NULL OR x.effective_from<NEW.effective_until))
+        INTO conflict_found;
+    END IF;
+    IF conflict_found THEN RAISE EXCEPTION 'D1 roll namespace collision'; END IF;
+  ELSIF TG_TABLE_NAME='enrollments' THEN
+    SELECT so.class_offering_id,so.campus_id INTO offering_id,campus_id
+      FROM app_private.section_offerings so WHERE so.id=NEW.section_offering_id
+        AND (TG_OP='UPDATE' OR so.state='OPEN');
+    IF offering_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM app_private.class_offerings co WHERE co.id=offering_id
+        AND co.campus_id=campus_id AND (TG_OP='UPDATE' OR co.state='OPEN'))
+    THEN RAISE EXCEPTION 'D1 accepted placement target unavailable'; END IF;
+    -- Student was locked by the preceding effective-history trigger; capacity
+    -- anchors follow in Class Offering then Section order for the commit scan.
+    PERFORM 1 FROM app_private.class_offerings co WHERE co.id=offering_id FOR UPDATE;
+    PERFORM 1 FROM app_private.section_offerings so WHERE so.id=NEW.section_offering_id FOR UPDATE;
+    IF NEW.predecessor_id IS NOT NULL THEN
+      SELECT * INTO prior FROM app_private.enrollments e WHERE e.id=NEW.predecessor_id;
+      IF prior.id IS NULL OR prior.id=NEW.id OR prior.student_id<>NEW.student_id
+         OR prior.effective_from>=NEW.effective_from
+         OR prior.effective_until IS DISTINCT FROM NEW.effective_from THEN
+        RAISE EXCEPTION 'D1 placement predecessor/chronology mismatch';
+      END IF;
+    END IF;
+  ELSIF TG_TABLE_NAME='family_student_access' THEN
+    remaining_start := NEW.effective_from;
+    FOR rel IN SELECT r.* FROM app_private.family_relationships r
+      WHERE r.family_id=NEW.family_id AND r.student_id=NEW.student_id
+        AND r.effective_from<=COALESCE(NEW.effective_until,'infinity'::date)
+      ORDER BY r.effective_from,r.id LOOP
+      IF rel.effective_from>remaining_start THEN EXIT; END IF;
+      edge_end := COALESCE(rel.effective_until,'infinity'::date);
+      IF edge_end>remaining_start THEN remaining_start:=edge_end; END IF;
+      IF remaining_start>=COALESCE(NEW.effective_until,'infinity'::date) THEN EXIT; END IF;
+    END LOOP;
+    IF remaining_start<COALESCE(NEW.effective_until,'infinity'::date) THEN
+      RAISE EXCEPTION 'D1 Family child access lacks full relationship basis';
+    END IF;
+  ELSIF TG_TABLE_NAME='student_primary_family_contexts' THEN
+    SELECT * INTO rel FROM app_private.family_relationships r WHERE r.id=NEW.family_relationship_id;
+    IF rel.id IS NULL OR rel.student_id<>NEW.student_id
+       OR rel.effective_from>NEW.effective_from
+       OR (rel.effective_until IS NOT NULL
+         AND (NEW.effective_until IS NULL OR NEW.effective_until>rel.effective_until)) THEN
+      RAISE EXCEPTION 'D1 primary Family context escapes selected relationship';
+    END IF;
+  ELSIF TG_TABLE_NAME='employee_job_assignments' THEN
+    IF NOT EXISTS (SELECT 1 FROM app_private.departments d
+      JOIN app_private.designations g ON g.id=NEW.designation_id
+      WHERE d.id=NEW.department_id AND d.school_id=g.school_id
+        AND (TG_OP='UPDATE' OR (d.state='ACTIVE' AND g.state='ACTIVE'))) THEN
+      RAISE EXCEPTION 'D1 Employee job targets invalid'; END IF;
+  ELSIF TG_TABLE_NAME='employee_campus_affiliations' THEN
+    IF NOT EXISTS (SELECT 1 FROM app.campuses c
+      JOIN app_private.school_profiles sp ON sp.id=c.school_id
+      WHERE c.id=NEW.campus_id AND (TG_OP='UPDATE' OR c.state='ACTIVE')) THEN
+      RAISE EXCEPTION 'D1 Employee Campus target invalid'; END IF;
+  ELSIF TG_TABLE_NAME IN ('class_teacher_assignments','subject_teacher_assignments') THEN
+    section_id := NEW.section_offering_id;
+    SELECT so.class_offering_id INTO offering_id FROM app_private.section_offerings so WHERE so.id=section_id;
+    PERFORM 1 FROM app_private.class_offerings co WHERE co.id=offering_id FOR UPDATE;
+    PERFORM 1 FROM app_private.section_offerings so WHERE so.id=section_id FOR UPDATE;
+    IF TG_TABLE_NAME='subject_teacher_assignments' THEN
+      PERFORM 1 FROM app_private.subjects su
+        WHERE su.id=(pg_catalog.to_jsonb(NEW)->>'subject_id')::uuid FOR UPDATE;
+    END IF;
+    SELECT ay.starts_on,ay.ends_on INTO year_start,year_end
+      FROM app_private.section_offerings so
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+      JOIN app.academic_years ay ON ay.id=co.academic_year_id
+      WHERE so.id=section_id AND so.state<>'ARCHIVED' AND co.state<>'ARCHIVED';
+    IF year_start IS NULL OR NEW.effective_from<year_start OR NEW.effective_until IS NULL
+       OR NEW.effective_until>year_end+1 THEN
+      RAISE EXCEPTION 'D1 teaching assignment outside Section/year bounds';
+    END IF;
+    IF TG_OP='INSERT' AND (NOT EXISTS (SELECT 1 FROM app_private.employment_periods ep
+        WHERE ep.employee_id=NEW.employee_id AND ep.state='ACTIVE'
+          AND ep.effective_from<=NEW.effective_from
+          AND (ep.effective_until IS NULL OR ep.effective_until>=NEW.effective_until))
+       OR NOT EXISTS (SELECT 1 FROM app_private.teacher_capabilities tc
+        WHERE tc.employee_id=NEW.employee_id AND tc.effective_from<=NEW.effective_from
+          AND (tc.effective_until IS NULL OR tc.effective_until>=NEW.effective_until))) THEN
+      RAISE EXCEPTION 'D1 teaching assignment lacks full employment/capability eligibility';
+    END IF;
+    IF TG_TABLE_NAME='subject_teacher_assignments' AND NOT EXISTS (
+      SELECT 1 FROM app_private.subjects su
+        JOIN app_private.section_offerings so ON so.id=section_id
+        JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+        WHERE su.id=(pg_catalog.to_jsonb(NEW)->>'subject_id')::uuid AND su.school_id=co.school_id
+          AND (TG_OP='UPDATE' OR su.state='ACTIVE')) THEN
+      RAISE EXCEPTION 'D1 Subject assignment school/state mismatch';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_guard_crossrow() FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.class_offerings
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.section_offerings
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.section_room_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.roll_allocator_states
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.roll_policy_revisions
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.roll_allocations
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.enrollments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.family_student_access
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.student_primary_family_contexts
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.employee_job_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.employee_campus_affiliations
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.class_teacher_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+CREATE TRIGGER ac_d1_ancestry BEFORE INSERT OR UPDATE ON app_private.subject_teacher_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_crossrow();
+
+-- Final same-transaction defenses. These fire at commit after the protected
+-- command has written all members of its aggregate. They do not grant the
+-- command permission, choose an approval route, or replace its earlier locks.
+CREATE FUNCTION app_private.d1_check_student_status_commit() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  sid uuid;
+  projected text;
+  authoritative text;
+  previous_value text;
+  status_row app_private.student_status_transitions%ROWTYPE;
+  first_row boolean := true;
+BEGIN
+  sid := (pg_catalog.to_jsonb(NEW)->>CASE WHEN TG_TABLE_NAME='students' THEN 'id' ELSE 'student_id' END)::uuid;
+  SELECT s.current_status INTO projected FROM app_private.students s WHERE s.id=sid;
+  IF projected IS NULL THEN RAISE EXCEPTION 'D1 Student projection missing'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM app_private.student_status_transitions x
+      WHERE x.student_id=sid AND x.previous_status IS NULL) THEN
+    RAISE EXCEPTION 'D1 initial Student status missing';
+  END IF;
+  FOR status_row IN SELECT x.* FROM app_private.student_status_transitions x
+    WHERE x.student_id=sid
+      AND NOT EXISTS (SELECT 1 FROM app_private.student_status_transitions y WHERE y.supersedes_id=x.id)
+    ORDER BY x.effective_on,x.sequence_number LOOP
+    IF first_row THEN
+      IF status_row.previous_status IS NOT NULL THEN RAISE EXCEPTION 'D1 initial status predecessor invalid'; END IF;
+      first_row:=false;
+    ELSIF status_row.previous_status IS DISTINCT FROM previous_value THEN
+      RAISE EXCEPTION 'D1 retained Student status chain inconsistent';
+    END IF;
+    previous_value:=status_row.new_status;
+  END LOOP;
+  IF first_row THEN RAISE EXCEPTION 'D1 Student has no authoritative status chain'; END IF;
+  SELECT x.new_status INTO authoritative FROM app_private.student_status_transitions x
+    WHERE x.student_id=sid AND x.effective_on<=CURRENT_DATE
+      AND NOT EXISTS (SELECT 1 FROM app_private.student_status_transitions y WHERE y.supersedes_id=x.id)
+    ORDER BY x.effective_on DESC,x.sequence_number DESC LIMIT 1;
+  IF authoritative IS NOT NULL AND projected<>authoritative THEN
+    RAISE EXCEPTION 'D1 Student status projection disagrees with retained stream';
+  END IF;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_check_student_status_commit() FROM PUBLIC,anon,authenticated,service_role;
+CREATE CONSTRAINT TRIGGER d1_student_initial_status_commit AFTER INSERT OR UPDATE ON app_private.students
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_student_status_commit();
+CREATE CONSTRAINT TRIGGER d1_student_status_projection_commit AFTER INSERT ON app_private.student_status_transitions
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_student_status_commit();
+
+CREATE FUNCTION app_private.d1_check_employee_state_commit() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  employee_key uuid;
+  projected text;
+  current_period text;
+BEGIN
+  employee_key := (pg_catalog.to_jsonb(NEW)->>CASE WHEN TG_TABLE_NAME='employees' THEN 'id' ELSE 'employee_id' END)::uuid;
+  SELECT e.current_state INTO projected FROM app_private.employees e WHERE e.id=employee_key;
+  IF projected IS NULL OR NOT EXISTS (SELECT 1 FROM app_private.employment_periods p
+      WHERE p.employee_id=employee_key) THEN
+    RAISE EXCEPTION 'D1 Employee requires initial employment history';
+  END IF;
+  SELECT p.state INTO current_period FROM app_private.employment_periods p
+    WHERE p.employee_id=employee_key AND p.effective_from<=CURRENT_DATE
+      AND (p.effective_until IS NULL OR p.effective_until>CURRENT_DATE)
+    ORDER BY p.effective_from DESC LIMIT 1;
+  IF current_period IS NOT NULL AND projected<>current_period THEN
+    RAISE EXCEPTION 'D1 Employee state projection disagrees with employment history';
+  END IF;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_check_employee_state_commit() FROM PUBLIC,anon,authenticated,service_role;
+CREATE CONSTRAINT TRIGGER d1_employee_initial_period_commit AFTER INSERT OR UPDATE ON app_private.employees
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_employee_state_commit();
+CREATE CONSTRAINT TRIGGER d1_employee_period_projection_commit AFTER INSERT OR UPDATE ON app_private.employment_periods
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_employee_state_commit();
+
+CREATE FUNCTION app_private.d1_check_dependent_intervals_commit() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  access_row app_private.family_student_access%ROWTYPE;
+  context_row app_private.student_primary_family_contexts%ROWTYPE;
+  rel_row app_private.family_relationships%ROWTYPE;
+  remaining_start date;
+  boundary_end date;
+  teacher_row record;
+BEGIN
+  IF TG_TABLE_NAME='family_relationships' THEN
+    FOR access_row IN SELECT a.* FROM app_private.family_student_access a
+      WHERE a.family_id=NEW.family_id AND a.student_id=NEW.student_id LOOP
+      remaining_start:=access_row.effective_from;
+      FOR rel_row IN SELECT r.* FROM app_private.family_relationships r
+        WHERE r.family_id=access_row.family_id AND r.student_id=access_row.student_id
+        ORDER BY r.effective_from,r.id LOOP
+        IF rel_row.effective_from>remaining_start THEN EXIT; END IF;
+        boundary_end:=COALESCE(rel_row.effective_until,'infinity'::date);
+        IF boundary_end>remaining_start THEN remaining_start:=boundary_end; END IF;
+        IF remaining_start>=COALESCE(access_row.effective_until,'infinity'::date) THEN EXIT; END IF;
+      END LOOP;
+      IF remaining_start<COALESCE(access_row.effective_until,'infinity'::date) THEN
+        RAISE EXCEPTION 'D1 relationship end strands Family child access';
+      END IF;
+    END LOOP;
+    FOR context_row IN SELECT c.* FROM app_private.student_primary_family_contexts c
+      WHERE c.family_relationship_id=NEW.id LOOP
+      IF context_row.effective_from<NEW.effective_from
+        OR (NEW.effective_until IS NOT NULL AND
+          (context_row.effective_until IS NULL OR context_row.effective_until>NEW.effective_until)) THEN
+        RAISE EXCEPTION 'D1 relationship end strands primary Family context';
+      END IF;
+    END LOOP;
+  ELSIF TG_TABLE_NAME IN ('employment_periods','teacher_capabilities') THEN
+    FOR teacher_row IN
+      SELECT a.employee_id,a.effective_from,a.effective_until FROM app_private.class_teacher_assignments a
+        WHERE a.employee_id=NEW.employee_id
+      UNION ALL
+      SELECT a.employee_id,a.effective_from,a.effective_until FROM app_private.subject_teacher_assignments a
+        WHERE a.employee_id=NEW.employee_id LOOP
+      IF NOT EXISTS (SELECT 1 FROM app_private.employment_periods ep
+        WHERE ep.employee_id=NEW.employee_id AND ep.state='ACTIVE'
+          AND ep.effective_from<=teacher_row.effective_from
+          AND (ep.effective_until IS NULL OR
+            (teacher_row.effective_until IS NOT NULL AND ep.effective_until>=teacher_row.effective_until)))
+        OR NOT EXISTS (SELECT 1 FROM app_private.teacher_capabilities tc
+        WHERE tc.employee_id=NEW.employee_id AND tc.effective_from<=teacher_row.effective_from
+          AND (tc.effective_until IS NULL OR
+            (teacher_row.effective_until IS NOT NULL AND tc.effective_until>=teacher_row.effective_until))) THEN
+        RAISE EXCEPTION 'D1 eligibility end strands teaching assignment';
+      END IF;
+    END LOOP;
+  END IF;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_check_dependent_intervals_commit() FROM PUBLIC,anon,authenticated,service_role;
+CREATE CONSTRAINT TRIGGER d1_relationship_dependents_commit AFTER INSERT OR UPDATE ON app_private.family_relationships
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_dependent_intervals_commit();
+CREATE CONSTRAINT TRIGGER d1_employment_dependents_commit AFTER INSERT OR UPDATE ON app_private.employment_periods
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_dependent_intervals_commit();
+CREATE CONSTRAINT TRIGGER d1_capability_dependents_commit AFTER INSERT OR UPDATE ON app_private.teacher_capabilities
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_dependent_intervals_commit();
+
+CREATE FUNCTION app_private.d1_check_capacity_revision_commit() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  old_capacity integer;
+  revisions integer;
+BEGIN
+  IF TG_OP='UPDATE' THEN
+    IF OLD.capacity=NEW.capacity THEN RETURN NULL; END IF;
+    old_capacity := OLD.capacity;
+  END IF;
+  IF TG_TABLE_NAME='class_offerings' THEN
+    SELECT count(*) INTO revisions FROM app_private.capacity_revisions r
+      WHERE r.class_offering_id=NEW.id AND r.section_offering_id IS NULL
+        AND r.old_capacity IS NOT DISTINCT FROM old_capacity
+        AND r.new_capacity=NEW.capacity
+        AND r.created_at=pg_catalog.transaction_timestamp();
+  ELSE
+    SELECT count(*) INTO revisions FROM app_private.capacity_revisions r
+      WHERE r.section_offering_id=NEW.id AND r.class_offering_id IS NULL
+        AND r.old_capacity IS NOT DISTINCT FROM old_capacity
+        AND r.new_capacity=NEW.capacity
+        AND r.created_at=pg_catalog.transaction_timestamp();
+  END IF;
+  IF revisions<>1 THEN RAISE EXCEPTION 'D1 capacity projection requires one matching revision'; END IF;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_check_capacity_revision_commit() FROM PUBLIC,anon,authenticated,service_role;
+CREATE CONSTRAINT TRIGGER d1_class_capacity_revision_commit AFTER INSERT OR UPDATE ON app_private.class_offerings
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_capacity_revision_commit();
+CREATE CONSTRAINT TRIGGER d1_section_capacity_revision_commit AFTER INSERT OR UPDATE ON app_private.section_offerings
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_capacity_revision_commit();
+
+CREATE FUNCTION app_private.d1_check_capacity_fact_commit() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  parent_capacity integer;
+  parent_updated timestamptz;
+BEGIN
+  IF NEW.class_offering_id IS NOT NULL THEN
+    SELECT co.capacity,co.updated_at INTO parent_capacity,parent_updated
+      FROM app_private.class_offerings co WHERE co.id=NEW.class_offering_id;
+  ELSE
+    SELECT so.capacity,so.updated_at INTO parent_capacity,parent_updated
+      FROM app_private.section_offerings so WHERE so.id=NEW.section_offering_id;
+  END IF;
+  IF parent_capacity IS DISTINCT FROM NEW.new_capacity
+     OR parent_updated IS DISTINCT FROM pg_catalog.transaction_timestamp() THEN
+    RAISE EXCEPTION 'D1 capacity revision lacks same-transaction parent projection';
+  END IF;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_check_capacity_fact_commit() FROM PUBLIC,anon,authenticated,service_role;
+CREATE CONSTRAINT TRIGGER d1_capacity_fact_commit AFTER INSERT ON app_private.capacity_revisions
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_capacity_fact_commit();
+
+CREATE FUNCTION app_private.d1_check_enrollment_commit() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  eid uuid;
+  placement app_private.enrollments%ROWTYPE;
+  section_row app_private.section_offerings%ROWTYPE;
+  class_row app_private.class_offerings%ROWTYPE;
+  point_on date;
+  roll_count integer;
+  class_count integer;
+  section_count integer;
+  class_peak integer := 0;
+  section_peak integer := 0;
+  override_row app_private.enrollment_capacity_overrides%ROWTYPE;
+  check_capacity boolean;
+BEGIN
+  eid := (pg_catalog.to_jsonb(NEW)->>CASE WHEN TG_TABLE_NAME='enrollments' THEN 'id' ELSE 'enrollment_id' END)::uuid;
+  check_capacity := (TG_TABLE_NAME='enrollments' AND TG_OP='INSERT')
+    OR TG_TABLE_NAME='enrollment_capacity_overrides';
+  SELECT * INTO placement FROM app_private.enrollments e WHERE e.id=eid;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 enrollment aggregate missing'; END IF;
+  IF placement.placement_kind<>'PRIMARY' OR placement.placement_state NOT IN ('ACTIVE','COMPLETED','ENDED') THEN
+    RAISE EXCEPTION 'D1 only accepted PRIMARY enrollment is authoritative';
+  END IF;
+  SELECT * INTO section_row FROM app_private.section_offerings x WHERE x.id=placement.section_offering_id;
+  SELECT * INTO class_row FROM app_private.class_offerings x WHERE x.id=section_row.class_offering_id;
+  IF section_row.id IS NULL OR class_row.id IS NULL OR section_row.campus_id<>class_row.campus_id THEN
+    RAISE EXCEPTION 'D1 enrollment ancestry mismatch';
+  END IF;
+  -- Every interval endpoint partitions the accepted interval into segments on
+  -- which both placement occupancy and roll coverage are constant.
+  FOR point_on IN
+    SELECT DISTINCT b.t FROM (
+      SELECT placement.effective_from AS t
+      UNION ALL SELECT x.effective_from FROM app_private.enrollments x
+        JOIN app_private.section_offerings so ON so.id=x.section_offering_id
+        WHERE so.class_offering_id=class_row.id
+      UNION ALL SELECT x.effective_until FROM app_private.enrollments x
+        JOIN app_private.section_offerings so ON so.id=x.section_offering_id
+        WHERE so.class_offering_id=class_row.id AND x.effective_until IS NOT NULL
+      UNION ALL SELECT r.effective_from FROM app_private.roll_allocations r WHERE r.enrollment_id=eid
+      UNION ALL SELECT r.effective_until FROM app_private.roll_allocations r
+        WHERE r.enrollment_id=eid AND r.effective_until IS NOT NULL
+    ) b WHERE b.t>=placement.effective_from
+      AND (placement.effective_until IS NULL OR b.t<placement.effective_until)
+    ORDER BY b.t
+  LOOP
+    SELECT count(*) INTO roll_count FROM app_private.roll_allocations r
+      WHERE r.enrollment_id=eid AND r.student_id=placement.student_id
+        AND r.effective_from<=point_on
+        AND (r.effective_until IS NULL OR r.effective_until>point_on);
+    IF roll_count<>1 THEN RAISE EXCEPTION 'D1 accepted PRIMARY enrollment lacks exact pointwise roll coverage'; END IF;
+    SELECT count(*) INTO section_count FROM app_private.enrollments x
+      WHERE x.section_offering_id=section_row.id AND x.placement_kind='PRIMARY'
+        AND x.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+        AND x.effective_from<=point_on AND (x.effective_until IS NULL OR x.effective_until>point_on);
+    SELECT count(*) INTO class_count FROM app_private.enrollments x
+      JOIN app_private.section_offerings so ON so.id=x.section_offering_id
+      WHERE so.class_offering_id=class_row.id AND x.placement_kind='PRIMARY'
+        AND x.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+        AND x.effective_from<=point_on AND (x.effective_until IS NULL OR x.effective_until>point_on);
+    class_peak := pg_catalog.greatest(class_peak,class_count);
+    section_peak := pg_catalog.greatest(section_peak,section_count);
+  END LOOP;
+  IF EXISTS (SELECT 1 FROM app_private.roll_allocations r WHERE r.enrollment_id=eid
+      AND (r.student_id<>placement.student_id OR r.effective_from<placement.effective_from
+        OR (placement.effective_until IS NOT NULL
+          AND (r.effective_until IS NULL OR r.effective_until>placement.effective_until)))) THEN
+    RAISE EXCEPTION 'D1 roll interval or Student escapes accepted enrollment';
+  END IF;
+  SELECT * INTO override_row FROM app_private.enrollment_capacity_overrides o WHERE o.enrollment_id=eid;
+  IF check_capacity AND (class_peak>class_row.capacity OR section_peak>section_row.capacity) THEN
+    IF override_row.id IS NULL OR override_row.command_receipt_id IS DISTINCT FROM placement.command_receipt_id
+       OR override_row.created_at IS DISTINCT FROM placement.created_at
+       OR override_row.class_overridden IS DISTINCT FROM (class_peak>class_row.capacity)
+       OR override_row.section_overridden IS DISTINCT FROM (section_peak>section_row.capacity)
+       OR override_row.class_limit_at_decision<>class_row.capacity
+       OR override_row.section_limit_at_decision<>section_row.capacity
+       OR override_row.class_count_at_decision<>class_peak
+       OR override_row.section_count_at_decision<>section_peak THEN
+      RAISE EXCEPTION 'D1 over-cap placement requires exact typed override/receipt evidence';
+    END IF;
+  ELSIF check_capacity AND override_row.id IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 within-cap placement cannot carry override evidence';
+  END IF;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_check_enrollment_commit() FROM PUBLIC,anon,authenticated,service_role;
+CREATE CONSTRAINT TRIGGER d1_enrollment_roll_capacity_commit AFTER INSERT OR UPDATE ON app_private.enrollments
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_enrollment_commit();
+CREATE CONSTRAINT TRIGGER d1_roll_enrollment_commit AFTER INSERT OR UPDATE ON app_private.roll_allocations
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_enrollment_commit();
+CREATE CONSTRAINT TRIGGER d1_override_enrollment_commit AFTER INSERT ON app_private.enrollment_capacity_overrides
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION app_private.d1_check_enrollment_commit();
+
+-- PROVISIONAL D1C1B security material. ENABLE/FORCE above is structural; the
+-- broad executor policies/grants below are not reviewed final RLS/ACL and this
+-- draft must remain .sql.draft until D1C1B replaces or narrows them.
 GRANT USAGE ON SCHEMA app_private TO schoolos_academic_executor, schoolos_student_executor, schoolos_family_executor, schoolos_employee_executor, schoolos_teaching_executor;
 CREATE POLICY d1_01_schema_maintenance ON app_private.academic_classes
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -1972,6 +2687,10 @@ GRANT EXECUTE ON FUNCTION app_private.d1_authorized(text,text,uuid,uuid,date)
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
 
+-- PROVISIONAL D1C1B registrar: this exploratory block still carries the old
+-- 87-permission / 297-alternative manifest and an unapproved 'bootstrap'
+-- system_purpose literal. D1B4 requires 97 / 322 and an approved bootstrap
+-- manifest identity before this can be a candidate. It is not invoked here.
 -- Trusted post-bootstrap registration; this function is not invoked by the migration.
 SET ROLE schoolos_schema_owner;
 CREATE POLICY d1_bootstrap_actor_lookup ON app_private.principals FOR SELECT TO schoolos_bootstrap_executor USING (true);
@@ -2539,6 +3258,8 @@ CREATE TRIGGER ab_d1_file_purpose BEFORE INSERT OR UPDATE OF profile_photo_file_
   EXECUTE FUNCTION app_private.d1_guard_file_purpose('EMPLOYEE_PROFILE_PHOTO');
 RESET ROLE;
 
+-- PROVISIONAL D1C1B read coverage; these four functions are an experiment, not
+-- the frozen 22-family checked-read inventory or final authenticated EXECUTE.
 -- Fixed academic checked reads. The caller supplies only the typed target UUID;
 -- the school/campus/class/section ancestry is read from stored rows. These are
 -- partial D1 read coverage while the remaining frozen surfaces are drafted.

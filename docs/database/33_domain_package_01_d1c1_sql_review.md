@@ -1,5 +1,7 @@
 # D1C1 Migration 10 SQL review — working draft
 
+**Later D1C1A note:** [Review 35](35_domain_package_01_d1c1a_integrity_review.md) records the subsequently drafted structural and integrity kernel. The missing-trigger statements below describe this earlier checkpoint, not the current unexecuted `.sql.draft`; the D1C1B authorization/command and D1C2 runtime gates remain open.
+
 **Status: INCOMPLETE WORKING DRAFT — NOT AUTHORIZED FOR APPLICATION.** This record tracks the local D1C1 translation from approved D1B3B baseline `e71d3be34f55235c18255795f32dfb6f09a2b182`. Commit `146174fa5e14b1728d6ee9e5b3353faed9071cab` is an incomplete D1C1 checkpoint, not a pass. No SQL has been applied, no Supabase project has been contacted, and no D1C2 test has been created. The working file uses the non-executable suffix `supabase/migrations/20260928000000_domain_package_01.sql.draft` so an ordinary CLI migration scan cannot select it.
 
 ## Bootstrap attribution boundary
