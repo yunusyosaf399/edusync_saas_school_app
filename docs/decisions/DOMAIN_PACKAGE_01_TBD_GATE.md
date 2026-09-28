@@ -34,7 +34,7 @@
 | ID | Boundary |
 |---|---|
 | D1-18 | Admissions application, verification/test/interview, applicant identity and fee outcome. Preserve only an idempotent approved handoff; no Finance FK or early student creation. |
-| D1-19 | Class/year curriculum and optional/elective selections if D1-01 selects A or C; assessment components always later. |
+| D1-19 | D1-01 selected stable Subject catalog in D1. Class/year curriculum composition, optional/elective selections, curriculum-version rules and assessment components remain later Academic Operations/Exams work. |
 | D1-20 | Timetable, attendance session/capture, learning, exams/results and action-specific session rules; consume D1 history. |
 | D1-21 | Payroll, salary/contracts, leave, medical, transport, hostel, library and Finance. Employee identity grants no payroll access. |
 | D1-22 | Student photo, identity/birth/admission and employee document purpose activation. Purpose registry, entitlement snapshot, private adapter and handler must be approved together; this document authorizes no upload. |
