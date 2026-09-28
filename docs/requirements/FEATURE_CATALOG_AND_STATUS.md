@@ -16,6 +16,7 @@ Legend: **CORE** = intended core product; **OPTIONAL** = can be enabled/disabled
 | Academic | Configurable levels/classes/sections/rooms/capacity | CORE | Do not hard-code Play Group -> Grade 12 list |
 | Student | Student profile/status | CORE | Preserve important history |
 | Student | Family/shared parent account | CORE | One family login may see multiple linked children |
+| Student | Emergency contact relationship | CORE / APPROVED | Historical contact relationship; does not itself grant parent/family portal or child-record access |
 | Student | Enrollment history | CORE | Year/campus/class/section/roll history is authoritative |
 | Admission | Configurable application workflow | CORE | Verification/test/interview may be skipped |
 | Academic | Curriculum/subjects/electives | CORE | Class/year-specific and student optional subjects |

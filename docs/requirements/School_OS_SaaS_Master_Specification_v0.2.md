@@ -2745,6 +2745,12 @@ This keeps product decisions, code, and database behavior aligned as the platfor
 
 # 80. Changelog
 
+## 2026-09-28 - D1B0 approved domain decisions
+
+- Product owner approved [D1-01 through D1-12](../decisions/DOMAIN_PACKAGE_01_APPROVED_DECISIONS.md) for Academic Structure, Student/Family and Employee/Teaching physical design. This clarifies subject catalog ownership, class identity, numbering, both capacities, primary enrollment, lifecycle, family access, field disclosure, teaching and organizational history without authorizing SQL.
+- Added Emergency Contact as a CORE Student relationship with preservable history and no implied FAMILY portal or child-record authorization; see [feature catalog](FEATURE_CATALOG_AND_STATUS.md). Approved effective-dated Employee Campus Affiliation is distinct from permission campus scope and teaching assignment.
+- Earlier questionnaire and decision-log entries remain historical context; the linked decision record governs these later approvals. No migration or client implementation is authorized by this note.
+
 ## 2026-09-24 - Storage architecture and entitlement amendments
 
 - ADR-003: provider-neutral bytes, PostgreSQL metadata authority, immutable logical location/key, private temporary access and verified 1 MiB/SHA-256.
