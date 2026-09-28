@@ -1,0 +1,2531 @@
+-- D1C1 REVIEW DRAFT. NOT AUTHORIZED FOR APPLICATION.
+-- Migration-time deployment catalog insertion and SYSTEM principal creation are forbidden.
+CREATE ROLE schoolos_academic_executor NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+CREATE ROLE schoolos_student_executor NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+CREATE ROLE schoolos_family_executor NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+CREATE ROLE schoolos_employee_executor NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+CREATE ROLE schoolos_teaching_executor NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+GRANT schoolos_academic_executor, schoolos_student_executor, schoolos_family_executor, schoolos_employee_executor, schoolos_teaching_executor TO postgres;
+SET ROLE schoolos_schema_owner;
+
+-- 01 academic_classes (M)
+CREATE TABLE app_private.academic_classes (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  school_id uuid NOT NULL,
+  code text NOT NULL,
+  label text NOT NULL,
+  display_order integer NOT NULL,
+  stage_label text,
+  state text NOT NULL DEFAULT 'ACTIVE',
+  archived_at timestamptz,
+  archived_by uuid,
+  CONSTRAINT d1_01_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u01_key UNIQUE (school_id,code),
+  CONSTRAINT d1_u02_key UNIQUE (id,school_id),
+  CONSTRAINT d1_01_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_01_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_01_fk_01 FOREIGN KEY (school_id) REFERENCES app_private.school_profiles(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.academic_classes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.academic_classes FORCE ROW LEVEL SECURITY;
+
+-- 02 subjects (M)
+CREATE TABLE app_private.subjects (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  school_id uuid NOT NULL,
+  code text NOT NULL,
+  label text NOT NULL,
+  display_order integer NOT NULL,
+  state text NOT NULL DEFAULT 'ACTIVE',
+  archived_at timestamptz,
+  archived_by uuid,
+  CONSTRAINT d1_02_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u03_key UNIQUE (school_id,code),
+  CONSTRAINT d1_02_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_02_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_02_fk_01 FOREIGN KEY (school_id) REFERENCES app_private.school_profiles(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.subjects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.subjects FORCE ROW LEVEL SECURITY;
+
+-- 03 class_offerings (M)
+CREATE TABLE app_private.class_offerings (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  school_id uuid NOT NULL,
+  class_id uuid NOT NULL,
+  campus_id uuid NOT NULL,
+  academic_year_id uuid NOT NULL,
+  capacity integer NOT NULL,
+  state text NOT NULL DEFAULT 'PLANNED',
+  archived_at timestamptz,
+  archived_by uuid,
+  CONSTRAINT d1_03_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u04_key UNIQUE (campus_id,academic_year_id,class_id),
+  CONSTRAINT d1_u05_key UNIQUE (id,campus_id),
+  CONSTRAINT d1_03_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_03_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_03_fk_01 FOREIGN KEY (school_id) REFERENCES app_private.school_profiles(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_03_fk_02 FOREIGN KEY (class_id,school_id) REFERENCES app_private.academic_classes(id,school_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_03_fk_03 FOREIGN KEY (campus_id) REFERENCES app.campuses(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_03_fk_04 FOREIGN KEY (academic_year_id,school_id) REFERENCES app.academic_years(id,school_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.class_offerings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.class_offerings FORCE ROW LEVEL SECURITY;
+
+-- 04 section_offerings (M)
+CREATE TABLE app_private.section_offerings (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  class_offering_id uuid NOT NULL,
+  campus_id uuid NOT NULL,
+  code text NOT NULL,
+  label text NOT NULL,
+  display_order integer NOT NULL,
+  capacity integer NOT NULL,
+  state text NOT NULL DEFAULT 'PLANNED',
+  archived_at timestamptz,
+  archived_by uuid,
+  CONSTRAINT d1_04_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u06_key UNIQUE (class_offering_id,code),
+  CONSTRAINT d1_04_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_04_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_04_fk_01 FOREIGN KEY (class_offering_id) REFERENCES app_private.class_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_04_fk_02 FOREIGN KEY (class_offering_id,campus_id) REFERENCES app_private.class_offerings(id,campus_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_04_fk_03 FOREIGN KEY (campus_id) REFERENCES app.campuses(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.section_offerings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.section_offerings FORCE ROW LEVEL SECURITY;
+
+-- 05 section_room_assignments (HE)
+CREATE TABLE app_private.section_room_assignments (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  section_offering_id uuid NOT NULL,
+  room_id uuid NOT NULL,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_05_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_05_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_05_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_05_fk_01 FOREIGN KEY (section_offering_id) REFERENCES app_private.section_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_05_fk_02 FOREIGN KEY (room_id) REFERENCES app.rooms(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_05_fk_03 FOREIGN KEY (supersedes_id) REFERENCES app_private.section_room_assignments(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.section_room_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.section_room_assignments FORCE ROW LEVEL SECURITY;
+
+-- 06 capacity_revisions (H)
+CREATE TABLE app_private.capacity_revisions (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  class_offering_id uuid,
+  section_offering_id uuid,
+  old_capacity integer,
+  new_capacity integer NOT NULL,
+  effective_on date NOT NULL,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  command_receipt_id uuid,
+  CONSTRAINT d1_06_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_06_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_06_fk_01 FOREIGN KEY (class_offering_id) REFERENCES app_private.class_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_06_fk_02 FOREIGN KEY (section_offering_id) REFERENCES app_private.section_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_06_fk_03 FOREIGN KEY (supersedes_id) REFERENCES app_private.capacity_revisions(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_06_fk_04 FOREIGN KEY (command_receipt_id) REFERENCES app_private.command_receipts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.capacity_revisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.capacity_revisions FORCE ROW LEVEL SECURITY;
+
+-- 07 student_id_allocator_states (M)
+CREATE TABLE app_private.student_id_allocator_states (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  school_id uuid NOT NULL,
+  next_value bigint NOT NULL,
+  CONSTRAINT d1_07_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u07_key UNIQUE (school_id),
+  CONSTRAINT d1_07_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_07_fk_01 FOREIGN KEY (school_id) REFERENCES app_private.school_profiles(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.student_id_allocator_states ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.student_id_allocator_states FORCE ROW LEVEL SECURITY;
+
+-- 08 roll_policy_revisions (HE)
+CREATE TABLE app_private.roll_policy_revisions (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  school_id uuid NOT NULL,
+  revision integer NOT NULL,
+  mode text NOT NULL,
+  start_value bigint NOT NULL DEFAULT 10000,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_08_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u08_key UNIQUE (school_id,revision),
+  CONSTRAINT d1_08_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_08_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_08_fk_01 FOREIGN KEY (school_id) REFERENCES app_private.school_profiles(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_08_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.roll_policy_revisions(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.roll_policy_revisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.roll_policy_revisions FORCE ROW LEVEL SECURITY;
+
+-- 09 roll_allocator_states (M)
+CREATE TABLE app_private.roll_allocator_states (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  policy_revision_id uuid NOT NULL,
+  class_offering_id uuid,
+  next_value bigint NOT NULL,
+  CONSTRAINT d1_09_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_09_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_09_fk_01 FOREIGN KEY (policy_revision_id) REFERENCES app_private.roll_policy_revisions(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_09_fk_02 FOREIGN KEY (class_offering_id) REFERENCES app_private.class_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.roll_allocator_states ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.roll_allocator_states FORCE ROW LEVEL SECURITY;
+
+-- 10 students (M)
+CREATE TABLE app_private.students (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  person_id uuid NOT NULL,
+  school_student_id text NOT NULL,
+  admission_number text NOT NULL,
+  admission_serial bigint NOT NULL,
+  admitted_on date NOT NULL,
+  date_of_birth date,
+  gender_code text,
+  nationality_code text,
+  general_contact text,
+  previous_school text,
+  profile_photo_file_id uuid,
+  current_status text NOT NULL,
+  CONSTRAINT d1_10_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u09_key UNIQUE (person_id),
+  CONSTRAINT d1_u10_key UNIQUE (school_student_id),
+  CONSTRAINT d1_u11_key UNIQUE (admission_number),
+  CONSTRAINT d1_10_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_10_fk_01 FOREIGN KEY (person_id) REFERENCES app_private.people(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_10_fk_02 FOREIGN KEY (profile_photo_file_id) REFERENCES app_private.file_objects(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.students ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.students FORCE ROW LEVEL SECURITY;
+
+-- 11 student_identity_details (HE)
+CREATE TABLE app_private.student_identity_details (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  student_id uuid NOT NULL,
+  national_id text,
+  birth_certificate_number text,
+  birth_certificate_file_id uuid,
+  private_address text,
+  city text,
+  guardian_identity_text text,
+  guardian_contact text,
+  effective_from timestamptz NOT NULL,
+  effective_until timestamptz,
+  supersedes_id uuid,
+  reason text NOT NULL,
+  CONSTRAINT d1_11_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_11_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_11_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_11_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_11_fk_02 FOREIGN KEY (birth_certificate_file_id) REFERENCES app_private.file_objects(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_11_fk_03 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_identity_details(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.student_identity_details ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.student_identity_details FORCE ROW LEVEL SECURITY;
+
+-- 12 student_special_details (HE)
+CREATE TABLE app_private.student_special_details (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  student_id uuid NOT NULL,
+  disability_indicator boolean,
+  orphan_indicator boolean,
+  blood_group_code text,
+  effective_from timestamptz NOT NULL,
+  effective_until timestamptz,
+  supersedes_id uuid,
+  reason text NOT NULL,
+  CONSTRAINT d1_12_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_12_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_12_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_12_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_12_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_special_details(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.student_special_details ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.student_special_details FORCE ROW LEVEL SECURITY;
+
+-- 13 student_status_transitions (H)
+CREATE TABLE app_private.student_status_transitions (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  student_id uuid NOT NULL,
+  previous_status text,
+  new_status text NOT NULL,
+  effective_on date NOT NULL,
+  sequence_number bigint NOT NULL,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  command_receipt_id uuid,
+  CONSTRAINT d1_13_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u12_key UNIQUE (student_id,sequence_number),
+  CONSTRAINT d1_13_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_13_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_13_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_status_transitions(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_13_fk_03 FOREIGN KEY (command_receipt_id) REFERENCES app_private.command_receipts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.student_status_transitions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.student_status_transitions FORCE ROW LEVEL SECURITY;
+
+-- 14 enrollments (HE)
+CREATE TABLE app_private.enrollments (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  student_id uuid NOT NULL,
+  section_offering_id uuid NOT NULL,
+  placement_kind text NOT NULL DEFAULT 'PRIMARY',
+  entry_kind text NOT NULL,
+  placement_state text NOT NULL DEFAULT 'ACTIVE',
+  effective_from date NOT NULL,
+  effective_until date,
+  predecessor_id uuid,
+  reason text NOT NULL,
+  end_reason text,
+  command_receipt_id uuid,
+  CONSTRAINT d1_14_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u13_key UNIQUE (id,student_id),
+  CONSTRAINT d1_14_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_14_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_14_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_14_fk_02 FOREIGN KEY (section_offering_id) REFERENCES app_private.section_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_14_fk_03 FOREIGN KEY (predecessor_id) REFERENCES app_private.enrollments(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_14_fk_04 FOREIGN KEY (command_receipt_id) REFERENCES app_private.command_receipts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.enrollments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.enrollments FORCE ROW LEVEL SECURITY;
+
+-- 15 roll_allocations (HE)
+CREATE TABLE app_private.roll_allocations (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  enrollment_id uuid NOT NULL,
+  student_id uuid NOT NULL,
+  policy_revision_id uuid NOT NULL,
+  numeric_value bigint NOT NULL,
+  effective_from date NOT NULL,
+  effective_until date,
+  origin_allocation_id uuid,
+  supersedes_id uuid,
+  correction_reason text,
+  CONSTRAINT d1_15_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_15_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_fk_01 FOREIGN KEY (enrollment_id) REFERENCES app_private.enrollments(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_fk_02 FOREIGN KEY (enrollment_id,student_id) REFERENCES app_private.enrollments(id,student_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_fk_03 FOREIGN KEY (policy_revision_id) REFERENCES app_private.roll_policy_revisions(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_fk_04 FOREIGN KEY (origin_allocation_id) REFERENCES app_private.roll_allocations(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_15_fk_05 FOREIGN KEY (supersedes_id) REFERENCES app_private.roll_allocations(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.roll_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.roll_allocations FORCE ROW LEVEL SECURITY;
+
+-- 16 enrollment_capacity_overrides (H)
+CREATE TABLE app_private.enrollment_capacity_overrides (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  enrollment_id uuid NOT NULL,
+  class_overridden boolean NOT NULL DEFAULT false,
+  section_overridden boolean NOT NULL DEFAULT false,
+  class_limit_at_decision integer NOT NULL,
+  section_limit_at_decision integer NOT NULL,
+  class_count_at_decision integer NOT NULL,
+  section_count_at_decision integer NOT NULL,
+  reason text NOT NULL,
+  command_receipt_id uuid NOT NULL,
+  CONSTRAINT d1_16_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u14_key UNIQUE (enrollment_id),
+  CONSTRAINT d1_u15_key UNIQUE (command_receipt_id),
+  CONSTRAINT d1_16_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_16_fk_01 FOREIGN KEY (enrollment_id) REFERENCES app_private.enrollments(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_16_fk_02 FOREIGN KEY (command_receipt_id) REFERENCES app_private.command_receipts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.enrollment_capacity_overrides ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.enrollment_capacity_overrides FORCE ROW LEVEL SECURITY;
+
+-- 17 families (M)
+CREATE TABLE app_private.families (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  school_id uuid NOT NULL,
+  code text NOT NULL,
+  display_label text NOT NULL,
+  state text NOT NULL DEFAULT 'ACTIVE',
+  archived_at timestamptz,
+  archived_by uuid,
+  CONSTRAINT d1_17_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u16_key UNIQUE (school_id,code),
+  CONSTRAINT d1_17_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_17_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_17_fk_01 FOREIGN KEY (school_id) REFERENCES app_private.school_profiles(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.families ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.families FORCE ROW LEVEL SECURITY;
+
+-- 18 family_relationships (HE)
+CREATE TABLE app_private.family_relationships (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  family_id uuid NOT NULL,
+  student_id uuid NOT NULL,
+  adult_person_id uuid,
+  relationship_kind text NOT NULL,
+  display_name text,
+  relationship_contact text,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_18_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u17_key UNIQUE (id,student_id),
+  CONSTRAINT d1_18_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_18_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_18_fk_01 FOREIGN KEY (family_id) REFERENCES app_private.families(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_18_fk_02 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_18_fk_03 FOREIGN KEY (adult_person_id) REFERENCES app_private.people(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_18_fk_04 FOREIGN KEY (supersedes_id) REFERENCES app_private.family_relationships(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.family_relationships ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.family_relationships FORCE ROW LEVEL SECURITY;
+
+-- 19 family_principal_memberships (HE)
+CREATE TABLE app_private.family_principal_memberships (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  family_id uuid NOT NULL,
+  principal_id uuid NOT NULL,
+  principal_kind text NOT NULL DEFAULT 'FAMILY',
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_19_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_19_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_19_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_19_fk_01 FOREIGN KEY (family_id) REFERENCES app_private.families(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_19_fk_02 FOREIGN KEY (principal_id) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_19_fk_03 FOREIGN KEY (principal_id,principal_kind) REFERENCES app_private.principals(id,kind) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_19_fk_04 FOREIGN KEY (supersedes_id) REFERENCES app_private.family_principal_memberships(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.family_principal_memberships ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.family_principal_memberships FORCE ROW LEVEL SECURITY;
+
+-- 20 family_student_access (HE)
+CREATE TABLE app_private.family_student_access (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  family_id uuid NOT NULL,
+  student_id uuid NOT NULL,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_20_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_20_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_20_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_20_fk_01 FOREIGN KEY (family_id) REFERENCES app_private.families(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_20_fk_02 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_20_fk_03 FOREIGN KEY (supersedes_id) REFERENCES app_private.family_student_access(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.family_student_access ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.family_student_access FORCE ROW LEVEL SECURITY;
+
+-- 21 student_primary_family_contexts (HE)
+CREATE TABLE app_private.student_primary_family_contexts (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  student_id uuid NOT NULL,
+  family_relationship_id uuid NOT NULL,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_21_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_21_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_21_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_21_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_21_fk_02 FOREIGN KEY (family_relationship_id,student_id) REFERENCES app_private.family_relationships(id,student_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_21_fk_03 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_primary_family_contexts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.student_primary_family_contexts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.student_primary_family_contexts FORCE ROW LEVEL SECURITY;
+
+-- 22 student_emergency_contacts (HE)
+CREATE TABLE app_private.student_emergency_contacts (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  student_id uuid NOT NULL,
+  person_id uuid,
+  contact_name text,
+  relationship_label text NOT NULL,
+  contact_phone text NOT NULL,
+  contact_email text,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_22_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_22_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_22_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_22_fk_01 FOREIGN KEY (student_id) REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_22_fk_02 FOREIGN KEY (person_id) REFERENCES app_private.people(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_22_fk_03 FOREIGN KEY (supersedes_id) REFERENCES app_private.student_emergency_contacts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.student_emergency_contacts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.student_emergency_contacts FORCE ROW LEVEL SECURITY;
+
+-- 23 departments (M)
+CREATE TABLE app_private.departments (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  school_id uuid NOT NULL,
+  code text NOT NULL,
+  label text NOT NULL,
+  state text NOT NULL DEFAULT 'ACTIVE',
+  archived_at timestamptz,
+  archived_by uuid,
+  CONSTRAINT d1_23_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u18_key UNIQUE (school_id,code),
+  CONSTRAINT d1_23_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_23_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_23_fk_01 FOREIGN KEY (school_id) REFERENCES app_private.school_profiles(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.departments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.departments FORCE ROW LEVEL SECURITY;
+
+-- 24 designations (M)
+CREATE TABLE app_private.designations (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  school_id uuid NOT NULL,
+  code text NOT NULL,
+  label text NOT NULL,
+  state text NOT NULL DEFAULT 'ACTIVE',
+  archived_at timestamptz,
+  archived_by uuid,
+  CONSTRAINT d1_24_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u19_key UNIQUE (school_id,code),
+  CONSTRAINT d1_24_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_24_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_24_fk_01 FOREIGN KEY (school_id) REFERENCES app_private.school_profiles(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.designations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.designations FORCE ROW LEVEL SECURITY;
+
+-- 25 employees (M)
+CREATE TABLE app_private.employees (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  row_version bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  person_id uuid NOT NULL,
+  employee_code text NOT NULL,
+  current_state text NOT NULL,
+  profile_photo_file_id uuid,
+  CONSTRAINT d1_25_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_u20_key UNIQUE (person_id),
+  CONSTRAINT d1_u21_key UNIQUE (employee_code),
+  CONSTRAINT d1_25_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_25_fk_01 FOREIGN KEY (person_id) REFERENCES app_private.people(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_25_fk_02 FOREIGN KEY (profile_photo_file_id) REFERENCES app_private.file_objects(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.employees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.employees FORCE ROW LEVEL SECURITY;
+
+-- 26 employment_periods (HE)
+CREATE TABLE app_private.employment_periods (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  employee_id uuid NOT NULL,
+  state text NOT NULL,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_26_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_26_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_26_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_26_fk_01 FOREIGN KEY (employee_id) REFERENCES app_private.employees(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_26_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.employment_periods(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.employment_periods ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.employment_periods FORCE ROW LEVEL SECURITY;
+
+-- 27 employee_identity_details (HE)
+CREATE TABLE app_private.employee_identity_details (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  employee_id uuid NOT NULL,
+  identity_type_code text,
+  national_identity_number text,
+  effective_from timestamptz NOT NULL,
+  effective_until timestamptz,
+  supersedes_id uuid,
+  reason text NOT NULL,
+  CONSTRAINT d1_27_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_27_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_27_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_27_fk_01 FOREIGN KEY (employee_id) REFERENCES app_private.employees(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_27_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.employee_identity_details(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.employee_identity_details ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.employee_identity_details FORCE ROW LEVEL SECURITY;
+
+-- 28 employee_qualifications (HE)
+CREATE TABLE app_private.employee_qualifications (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  employee_id uuid NOT NULL,
+  qualification_record_id uuid NOT NULL,
+  qualification_type text NOT NULL,
+  title text NOT NULL,
+  institution text,
+  specialization text,
+  awarded_on date,
+  effective_from timestamptz NOT NULL,
+  effective_until timestamptz,
+  supersedes_id uuid,
+  reason text NOT NULL,
+  CONSTRAINT d1_28_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_28_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_28_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_28_fk_01 FOREIGN KEY (employee_id) REFERENCES app_private.employees(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_28_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.employee_qualifications(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.employee_qualifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.employee_qualifications FORCE ROW LEVEL SECURITY;
+
+-- 29 employee_experience_entries (HE)
+CREATE TABLE app_private.employee_experience_entries (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  employee_id uuid NOT NULL,
+  experience_record_id uuid NOT NULL,
+  organization_name text NOT NULL,
+  role_title text NOT NULL,
+  starts_on date NOT NULL,
+  ends_on date,
+  summary text,
+  effective_from timestamptz NOT NULL,
+  effective_until timestamptz,
+  supersedes_id uuid,
+  reason text NOT NULL,
+  CONSTRAINT d1_29_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_29_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_29_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_29_fk_01 FOREIGN KEY (employee_id) REFERENCES app_private.employees(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_29_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.employee_experience_entries(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.employee_experience_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.employee_experience_entries FORCE ROW LEVEL SECURITY;
+
+-- 30 employee_job_assignments (HE)
+CREATE TABLE app_private.employee_job_assignments (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  employee_id uuid NOT NULL,
+  department_id uuid NOT NULL,
+  designation_id uuid NOT NULL,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_30_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_30_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_30_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_30_fk_01 FOREIGN KEY (employee_id) REFERENCES app_private.employees(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_30_fk_02 FOREIGN KEY (department_id) REFERENCES app_private.departments(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_30_fk_03 FOREIGN KEY (designation_id) REFERENCES app_private.designations(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_30_fk_04 FOREIGN KEY (supersedes_id) REFERENCES app_private.employee_job_assignments(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.employee_job_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.employee_job_assignments FORCE ROW LEVEL SECURITY;
+
+-- 31 employee_campus_affiliations (HE)
+CREATE TABLE app_private.employee_campus_affiliations (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  employee_id uuid NOT NULL,
+  campus_id uuid NOT NULL,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_31_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_31_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_31_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_31_fk_01 FOREIGN KEY (employee_id) REFERENCES app_private.employees(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_31_fk_02 FOREIGN KEY (campus_id) REFERENCES app.campuses(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_31_fk_03 FOREIGN KEY (supersedes_id) REFERENCES app_private.employee_campus_affiliations(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.employee_campus_affiliations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.employee_campus_affiliations FORCE ROW LEVEL SECURITY;
+
+-- 32 teacher_capabilities (HE)
+CREATE TABLE app_private.teacher_capabilities (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  employee_id uuid NOT NULL,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_32_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_32_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_32_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_32_fk_01 FOREIGN KEY (employee_id) REFERENCES app_private.employees(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_32_fk_02 FOREIGN KEY (supersedes_id) REFERENCES app_private.teacher_capabilities(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.teacher_capabilities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.teacher_capabilities FORCE ROW LEVEL SECURITY;
+
+-- 33 class_teacher_assignments (HE)
+CREATE TABLE app_private.class_teacher_assignments (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  section_offering_id uuid NOT NULL,
+  employee_id uuid NOT NULL,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_33_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_33_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_33_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_33_fk_01 FOREIGN KEY (section_offering_id) REFERENCES app_private.section_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_33_fk_02 FOREIGN KEY (employee_id) REFERENCES app_private.employees(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_33_fk_03 FOREIGN KEY (supersedes_id) REFERENCES app_private.class_teacher_assignments(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.class_teacher_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.class_teacher_assignments FORCE ROW LEVEL SECURITY;
+
+-- 34 subject_teacher_assignments (HE)
+CREATE TABLE app_private.subject_teacher_assignments (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  created_by uuid NOT NULL,
+  ended_at timestamptz,
+  ended_by uuid,
+  section_offering_id uuid NOT NULL,
+  subject_id uuid NOT NULL,
+  employee_id uuid NOT NULL,
+  assignment_kind text NOT NULL,
+  effective_from date NOT NULL,
+  effective_until date,
+  reason text NOT NULL,
+  supersedes_id uuid,
+  CONSTRAINT d1_34_pkey PRIMARY KEY (id),
+  CONSTRAINT d1_34_created_by_fkey FOREIGN KEY (created_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_34_ended_by_fkey FOREIGN KEY (ended_by) REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_34_fk_01 FOREIGN KEY (section_offering_id) REFERENCES app_private.section_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_34_fk_02 FOREIGN KEY (subject_id) REFERENCES app_private.subjects(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_34_fk_03 FOREIGN KEY (employee_id) REFERENCES app_private.employees(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT d1_34_fk_04 FOREIGN KEY (supersedes_id) REFERENCES app_private.subject_teacher_assignments(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+ALTER TABLE app_private.subject_teacher_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.subject_teacher_assignments FORCE ROW LEVEL SECURITY;
+
+CREATE UNIQUE INDEX d1_pu01_idx ON app_private.roll_allocator_states (policy_revision_id) WHERE class_offering_id IS NULL;
+CREATE UNIQUE INDEX d1_pu02_idx ON app_private.roll_allocator_states (policy_revision_id,class_offering_id) WHERE class_offering_id IS NOT NULL;
+CREATE UNIQUE INDEX d1_pu03_idx ON app_private.student_status_transitions (student_id,command_receipt_id) WHERE command_receipt_id IS NOT NULL;
+CREATE INDEX d1_i01_idx ON app_private.academic_classes (school_id,state,display_order,code);
+CREATE INDEX d1_i02_idx ON app_private.subjects (school_id,state,display_order,code);
+CREATE INDEX d1_i03_idx ON app_private.class_offerings (academic_year_id,campus_id,state);
+CREATE INDEX d1_i04_idx ON app_private.class_offerings (class_id,academic_year_id);
+CREATE INDEX d1_i05_idx ON app_private.section_offerings (class_offering_id,state,display_order,code);
+CREATE INDEX d1_i06_idx ON app_private.section_room_assignments (section_offering_id,effective_from DESC);
+CREATE INDEX d1_i07_idx ON app_private.section_room_assignments (room_id,effective_from DESC);
+CREATE INDEX d1_i08_idx ON app_private.capacity_revisions (class_offering_id,effective_on DESC);
+CREATE INDEX d1_i09_idx ON app_private.capacity_revisions (section_offering_id,effective_on DESC);
+CREATE INDEX d1_i10_idx ON app_private.roll_policy_revisions (school_id,effective_from DESC);
+CREATE INDEX d1_i11_idx ON app_private.roll_allocator_states (class_offering_id);
+CREATE INDEX d1_i12_idx ON app_private.roll_allocations (enrollment_id,effective_from DESC);
+CREATE INDEX d1_i13_idx ON app_private.roll_allocations (student_id,effective_from DESC);
+CREATE INDEX d1_i14_idx ON app_private.roll_allocations (policy_revision_id,numeric_value,effective_from DESC);
+CREATE INDEX d1_i15_idx ON app_private.students (current_status,id);
+CREATE INDEX d1_i16_idx ON app_private.student_identity_details (student_id,effective_from DESC);
+CREATE INDEX d1_i17_idx ON app_private.student_special_details (student_id,effective_from DESC);
+CREATE INDEX d1_i18_idx ON app_private.student_status_transitions (student_id,effective_on DESC,sequence_number DESC);
+CREATE INDEX d1_i19_idx ON app_private.enrollments (student_id,effective_from DESC);
+CREATE INDEX d1_i20_idx ON app_private.enrollments (section_offering_id,effective_from,effective_until);
+CREATE INDEX d1_i21_idx ON app_private.enrollments (predecessor_id);
+CREATE INDEX d1_i22_idx ON app_private.family_relationships (student_id,effective_from DESC);
+CREATE INDEX d1_i23_idx ON app_private.family_relationships (family_id,student_id,effective_from DESC);
+CREATE INDEX d1_i24_idx ON app_private.family_relationships (adult_person_id,effective_from DESC);
+CREATE INDEX d1_i25_idx ON app_private.family_principal_memberships (principal_id,effective_from DESC);
+CREATE INDEX d1_i26_idx ON app_private.family_principal_memberships (family_id,effective_from DESC);
+CREATE INDEX d1_i27_idx ON app_private.family_student_access (family_id,student_id,effective_from DESC);
+CREATE INDEX d1_i28_idx ON app_private.family_student_access (student_id,effective_from DESC);
+CREATE INDEX d1_i29_idx ON app_private.student_primary_family_contexts (student_id,effective_from DESC);
+CREATE INDEX d1_i30_idx ON app_private.student_primary_family_contexts (family_relationship_id);
+CREATE INDEX d1_i31_idx ON app_private.student_emergency_contacts (student_id,effective_from DESC);
+CREATE INDEX d1_i32_idx ON app_private.employment_periods (employee_id,effective_from DESC);
+CREATE INDEX d1_i33_idx ON app_private.employee_identity_details (employee_id,effective_from DESC);
+CREATE INDEX d1_i34_idx ON app_private.employee_qualifications (employee_id,qualification_record_id,effective_from DESC);
+CREATE INDEX d1_i35_idx ON app_private.employee_experience_entries (employee_id,experience_record_id,effective_from DESC);
+CREATE INDEX d1_i36_idx ON app_private.employee_job_assignments (employee_id,effective_from DESC);
+CREATE INDEX d1_i37_idx ON app_private.employee_job_assignments (department_id,designation_id,effective_from DESC);
+CREATE INDEX d1_i38_idx ON app_private.employee_campus_affiliations (employee_id,campus_id,effective_from DESC);
+CREATE INDEX d1_i39_idx ON app_private.employee_campus_affiliations (campus_id,effective_from DESC);
+CREATE INDEX d1_i40_idx ON app_private.teacher_capabilities (employee_id,effective_from DESC);
+CREATE INDEX d1_i41_idx ON app_private.class_teacher_assignments (section_offering_id,effective_from DESC);
+CREATE INDEX d1_i42_idx ON app_private.class_teacher_assignments (employee_id,effective_from DESC);
+CREATE INDEX d1_i43_idx ON app_private.subject_teacher_assignments (section_offering_id,subject_id,effective_from DESC);
+CREATE INDEX d1_i44_idx ON app_private.subject_teacher_assignments (employee_id,effective_from DESC);
+CREATE INDEX d1_i45_idx ON app_private.employee_qualifications (qualification_record_id);
+CREATE INDEX d1_i46_idx ON app_private.employee_experience_entries (experience_record_id);
+CREATE INDEX d1_i47_idx ON app_private.employee_job_assignments (designation_id,effective_from DESC);
+
+-- Exact D1B2 row-local CHECK bundles (one per relation).
+ALTER TABLE app_private.academic_classes ADD CONSTRAINT d1_01_ck CHECK (
+  (length(btrim(code)) > 0)
+  AND (length(btrim(label)) > 0)
+  AND (display_order >= 0)
+  AND ((stage_label IS NULL OR length(btrim(stage_label)) > 0))
+  AND (((state = 'ACTIVE' AND archived_at IS NULL AND archived_by IS NULL) OR (state = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL)))
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.subjects ADD CONSTRAINT d1_02_ck CHECK (
+  (length(btrim(code)) > 0)
+  AND (length(btrim(label)) > 0)
+  AND (display_order >= 0)
+  AND (((state = 'ACTIVE' AND archived_at IS NULL AND archived_by IS NULL) OR (state = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL)))
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.class_offerings ADD CONSTRAINT d1_03_ck CHECK (
+  (capacity >= 0)
+  AND (((state IN ('PLANNED','OPEN','CLOSED') AND archived_at IS NULL AND archived_by IS NULL) OR (state = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL)))
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.section_offerings ADD CONSTRAINT d1_04_ck CHECK (
+  (length(btrim(code)) > 0)
+  AND (length(btrim(label)) > 0)
+  AND (display_order >= 0)
+  AND (capacity >= 0)
+  AND (((state IN ('PLANNED','OPEN','CLOSED') AND archived_at IS NULL AND archived_by IS NULL) OR (state = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL)))
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.section_room_assignments ADD CONSTRAINT d1_05_ck CHECK (
+  (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.capacity_revisions ADD CONSTRAINT d1_06_ck CHECK (
+  ((class_offering_id IS NULL) <> (section_offering_id IS NULL))
+  AND (old_capacity IS NULL OR old_capacity >= 0)
+  AND (new_capacity >= 0)
+  AND (length(btrim(reason)) > 0)
+);
+ALTER TABLE app_private.student_id_allocator_states ADD CONSTRAINT d1_07_ck CHECK (
+  (next_value > 0)
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.roll_policy_revisions ADD CONSTRAINT d1_08_ck CHECK (
+  (revision > 0)
+  AND (mode IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT'))
+  AND (start_value >= 0)
+  AND (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.roll_allocator_states ADD CONSTRAINT d1_09_ck CHECK (
+  (next_value >= 0)
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.roll_allocations ADD CONSTRAINT d1_10_ck CHECK (
+  (numeric_value >= 0)
+  AND (supersedes_id IS NULL OR length(btrim(coalesce(correction_reason, ''))) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.students ADD CONSTRAINT d1_11_ck CHECK (
+  (length(btrim(school_student_id)) > 0)
+  AND (length(btrim(admission_number)) > 0)
+  AND (admission_serial >= 0)
+  AND (current_status IN ('ACTIVE','SUSPENDED','WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED','ALUMNI'))
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.student_identity_details ADD CONSTRAINT d1_12_ck CHECK (
+  ((national_id IS NULL OR length(btrim(national_id)) > 0))
+  AND ((birth_certificate_number IS NULL OR length(btrim(birth_certificate_number)) > 0))
+  AND ((private_address IS NULL OR length(btrim(private_address)) > 0))
+  AND ((city IS NULL OR length(btrim(city)) > 0))
+  AND ((guardian_identity_text IS NULL OR length(btrim(guardian_identity_text)) > 0))
+  AND ((guardian_contact IS NULL OR length(btrim(guardian_contact)) > 0))
+  AND (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.student_special_details ADD CONSTRAINT d1_13_ck CHECK (
+  (blood_group_code IS NULL OR blood_group_code IN ('A_POS','A_NEG','B_POS','B_NEG','AB_POS','AB_NEG','O_POS','O_NEG'))
+  AND (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.student_status_transitions ADD CONSTRAINT d1_14_ck CHECK (
+  (sequence_number > 0)
+  AND ((previous_status IS NULL OR previous_status IN ('ACTIVE','SUSPENDED','WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED','ALUMNI')))
+  AND (new_status IN ('ACTIVE','SUSPENDED','WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED','ALUMNI'))
+  AND (length(btrim(reason)) > 0)
+);
+ALTER TABLE app_private.enrollments ADD CONSTRAINT d1_15_ck CHECK (
+  (placement_kind = 'PRIMARY')
+  AND (entry_kind IN ('INITIAL','PROMOTION','REPEAT','CLASS_CHANGE','SECTION_CHANGE','CAMPUS_TRANSFER','REENROLLMENT'))
+  AND (((placement_state = 'ACTIVE' AND effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL AND end_reason IS NULL) OR (placement_state IN ('COMPLETED','ENDED') AND effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from AND length(btrim(coalesce(end_reason, ''))) > 0)))
+  AND (length(btrim(reason)) > 0)
+);
+ALTER TABLE app_private.enrollment_capacity_overrides ADD CONSTRAINT d1_16_ck CHECK (
+  (class_overridden OR section_overridden)
+  AND (class_limit_at_decision >= 0)
+  AND (section_limit_at_decision >= 0)
+  AND (class_count_at_decision >= 0)
+  AND (section_count_at_decision >= 0)
+  AND (length(btrim(reason)) > 0)
+);
+ALTER TABLE app_private.families ADD CONSTRAINT d1_17_ck CHECK (
+  (length(btrim(code)) > 0)
+  AND (length(btrim(display_label)) > 0)
+  AND (((state = 'ACTIVE' AND archived_at IS NULL AND archived_by IS NULL) OR (state = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL)))
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.family_relationships ADD CONSTRAINT d1_18_ck CHECK (
+  (relationship_kind IN ('FATHER','MOTHER','GUARDIAN'))
+  AND ((adult_person_id IS NOT NULL OR length(btrim(coalesce(display_name, ''))) > 0))
+  AND ((display_name IS NULL OR length(btrim(coalesce(display_name, ''))) > 0))
+  AND ((relationship_contact IS NULL OR length(btrim(relationship_contact)) > 0))
+  AND (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.family_principal_memberships ADD CONSTRAINT d1_19_ck CHECK (
+  (principal_kind = 'FAMILY')
+  AND (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.family_student_access ADD CONSTRAINT d1_20_ck CHECK (
+  (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.student_primary_family_contexts ADD CONSTRAINT d1_21_ck CHECK (
+  (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.student_emergency_contacts ADD CONSTRAINT d1_22_ck CHECK (
+  (length(btrim(relationship_label)) > 0)
+  AND (length(btrim(contact_phone)) > 0)
+  AND ((person_id IS NOT NULL OR length(btrim(coalesce(contact_name, ''))) > 0))
+  AND ((contact_name IS NULL OR length(btrim(coalesce(contact_name, ''))) > 0))
+  AND ((contact_email IS NULL OR length(btrim(contact_email)) > 0))
+  AND (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.departments ADD CONSTRAINT d1_23_ck CHECK (
+  (length(btrim(code)) > 0)
+  AND (length(btrim(label)) > 0)
+  AND (((state = 'ACTIVE' AND archived_at IS NULL AND archived_by IS NULL) OR (state = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL)))
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.designations ADD CONSTRAINT d1_24_ck CHECK (
+  (length(btrim(code)) > 0)
+  AND (length(btrim(label)) > 0)
+  AND (((state = 'ACTIVE' AND archived_at IS NULL AND archived_by IS NULL) OR (state = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL)))
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.employees ADD CONSTRAINT d1_25_ck CHECK (
+  (length(btrim(employee_code)) > 0)
+  AND (current_state IN ('ACTIVE','INACTIVE','ENDED'))
+  AND (row_version > 0)
+);
+ALTER TABLE app_private.employment_periods ADD CONSTRAINT d1_26_ck CHECK (
+  (state IN ('ACTIVE','INACTIVE','ENDED'))
+  AND (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.employee_identity_details ADD CONSTRAINT d1_27_ck CHECK (
+  (((identity_type_code IS NULL AND national_identity_number IS NULL) OR (length(btrim(coalesce(identity_type_code, ''))) > 0 AND length(btrim(coalesce(national_identity_number, ''))) > 0)))
+  AND (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.employee_qualifications ADD CONSTRAINT d1_28_ck CHECK (
+  (length(btrim(qualification_type)) > 0)
+  AND (length(btrim(title)) > 0)
+  AND ((institution IS NULL OR length(btrim(institution)) > 0))
+  AND ((specialization IS NULL OR length(btrim(specialization)) > 0))
+  AND (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.employee_experience_entries ADD CONSTRAINT d1_29_ck CHECK (
+  (length(btrim(organization_name)) > 0)
+  AND (length(btrim(role_title)) > 0)
+  AND ((summary IS NULL OR length(btrim(summary)) > 0))
+  AND (ends_on IS NULL OR ends_on >= starts_on)
+  AND (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.employee_job_assignments ADD CONSTRAINT d1_30_ck CHECK (
+  (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.employee_campus_affiliations ADD CONSTRAINT d1_31_ck CHECK (
+  (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.teacher_capabilities ADD CONSTRAINT d1_32_ck CHECK (
+  (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.class_teacher_assignments ADD CONSTRAINT d1_33_ck CHECK (
+  (length(btrim(reason)) > 0)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+ALTER TABLE app_private.subject_teacher_assignments ADD CONSTRAINT d1_34_ck CHECK (
+  (assignment_kind IN ('PRIMARY','CO_TEACHER','SUBSTITUTE'))
+  AND (length(btrim(reason)) > 0)
+  AND (assignment_kind <> 'SUBSTITUTE' OR effective_until IS NOT NULL)
+  AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL) OR (effective_until IS NOT NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND effective_until > effective_from)))
+);
+
+-- D1B3A: additive, typed extension of the frozen Foundation scope store.
+ALTER TABLE app_private.assignment_permission_scopes
+  ADD COLUMN class_offering_id uuid,
+  ADD COLUMN section_offering_id uuid,
+  ADD COLUMN subject_id uuid;
+ALTER TABLE app_private.assignment_permission_scopes
+  ADD CONSTRAINT d1_aps_class_offering_fkey FOREIGN KEY (class_offering_id)
+    REFERENCES app_private.class_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  ADD CONSTRAINT d1_aps_section_offering_fkey FOREIGN KEY (section_offering_id)
+    REFERENCES app_private.section_offerings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  ADD CONSTRAINT d1_aps_subject_fkey FOREIGN KEY (subject_id)
+    REFERENCES app_private.subjects(id) ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE app_private.permission_scope_contracts
+  DROP CONSTRAINT permission_scope_contracts_ck_01,
+  DROP CONSTRAINT permission_scope_contracts_ck_04,
+  ADD CONSTRAINT d1_psc_scope_kind_ck CHECK
+    (scope_kind IN ('ALL','CAMPUS','CLASS','SECTION','SUBJECT','OWN','ASSIGNED')),
+  ADD CONSTRAINT d1_psc_resolver_class_ck CHECK
+    ((scope_kind IN ('ALL','CAMPUS','CLASS','SECTION','SUBJECT')) = (resolver_key = 'DIRECT'));
+ALTER TABLE app_private.assignment_permission_scopes
+  DROP CONSTRAINT assignment_permission_scopes_ck_01,
+  DROP CONSTRAINT assignment_permission_scopes_ck_02,
+  ADD CONSTRAINT d1_aps_target_shape_ck CHECK (
+    (scope_kind = 'ALL' AND resolver_key = 'DIRECT' AND campus_id IS NULL
+      AND class_offering_id IS NULL AND section_offering_id IS NULL AND subject_id IS NULL)
+    OR (scope_kind = 'CAMPUS' AND resolver_key = 'DIRECT' AND campus_id IS NOT NULL
+      AND class_offering_id IS NULL AND section_offering_id IS NULL AND subject_id IS NULL)
+    OR (scope_kind = 'CLASS' AND resolver_key = 'DIRECT' AND campus_id IS NULL
+      AND class_offering_id IS NOT NULL AND section_offering_id IS NULL AND subject_id IS NULL)
+    OR (scope_kind = 'SECTION' AND resolver_key = 'DIRECT' AND campus_id IS NULL
+      AND class_offering_id IS NULL AND section_offering_id IS NOT NULL AND subject_id IS NULL)
+    OR (scope_kind = 'SUBJECT' AND resolver_key = 'DIRECT' AND campus_id IS NULL
+      AND class_offering_id IS NULL AND section_offering_id IS NOT NULL AND subject_id IS NOT NULL)
+    OR (scope_kind IN ('OWN','ASSIGNED') AND resolver_key <> 'DIRECT' AND campus_id IS NULL
+      AND class_offering_id IS NULL AND section_offering_id IS NULL AND subject_id IS NULL)
+  );
+CREATE INDEX d1_aps_class_target_idx ON app_private.assignment_permission_scopes(class_offering_id)
+  WHERE class_offering_id IS NOT NULL;
+CREATE INDEX d1_aps_section_subject_target_idx ON app_private.assignment_permission_scopes(section_offering_id,subject_id)
+  WHERE section_offering_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION app_private.guard_assignment_permission_scopes() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.revoked_at IS NOT NULL THEN RAISE EXCEPTION 'new scope cannot start revoked'; END IF;
+    RETURN NEW;
+  END IF;
+  IF OLD.assignment_id IS DISTINCT FROM NEW.assignment_id
+     OR OLD.grant_id IS DISTINCT FROM NEW.grant_id
+     OR OLD.role_id IS DISTINCT FROM NEW.role_id
+     OR OLD.permission_id IS DISTINCT FROM NEW.permission_id
+     OR OLD.scope_contract_id IS DISTINCT FROM NEW.scope_contract_id
+     OR OLD.scope_kind IS DISTINCT FROM NEW.scope_kind
+     OR OLD.resolver_key IS DISTINCT FROM NEW.resolver_key
+     OR OLD.campus_id IS DISTINCT FROM NEW.campus_id
+     OR OLD.class_offering_id IS DISTINCT FROM NEW.class_offering_id
+     OR OLD.section_offering_id IS DISTINCT FROM NEW.section_offering_id
+     OR OLD.subject_id IS DISTINCT FROM NEW.subject_id
+     OR OLD.valid_from IS DISTINCT FROM NEW.valid_from
+     OR OLD.valid_until IS DISTINCT FROM NEW.valid_until
+     OR OLD.created_at IS DISTINCT FROM NEW.created_at
+     OR OLD.created_by IS DISTINCT FROM NEW.created_by
+     OR OLD.id IS DISTINCT FROM NEW.id THEN
+    RAISE EXCEPTION 'assignment_permission_scopes: immutable field changed';
+  END IF;
+  IF OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at THEN
+    RAISE EXCEPTION 'assignment scope revocation time cannot change or clear';
+  END IF;
+  RETURN NEW;
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.guard_scope_interval() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE end_at timestamptz;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock(71001, 1);
+  end_at := LEAST(COALESCE(NEW.valid_until, 'infinity'::timestamptz),
+                  COALESCE(NEW.revoked_at, 'infinity'::timestamptz));
+  IF end_at <= NEW.valid_from THEN RETURN NEW; END IF;
+  IF EXISTS (SELECT 1 FROM app_private.assignment_permission_scopes x
+      WHERE x.id <> NEW.id AND x.assignment_id = NEW.assignment_id
+        AND x.grant_id = NEW.grant_id
+        AND x.scope_contract_id = NEW.scope_contract_id
+        AND x.campus_id IS NOT DISTINCT FROM NEW.campus_id
+        AND x.class_offering_id IS NOT DISTINCT FROM NEW.class_offering_id
+        AND x.section_offering_id IS NOT DISTINCT FROM NEW.section_offering_id
+        AND x.subject_id IS NOT DISTINCT FROM NEW.subject_id
+        AND x.valid_from < end_at
+        AND LEAST(COALESCE(x.valid_until,'infinity'::timestamptz),
+                  COALESCE(x.revoked_at,'infinity'::timestamptz)) > NEW.valid_from)
+  THEN RAISE EXCEPTION 'overlapping permission scope'; END IF;
+  RETURN NEW;
+END $body$;
+
+CREATE FUNCTION app_private.d1_guard_scope_target() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock(71001,1);
+  IF NEW.scope_kind='CLASS' THEN
+    IF NOT EXISTS (SELECT 1 FROM app_private.class_offerings co
+                    WHERE co.id=NEW.class_offering_id AND co.state<>'ARCHIVED') THEN
+      RAISE EXCEPTION 'invalid D1 CLASS scope target';
+    END IF;
+  ELSIF NEW.scope_kind IN ('SECTION','SUBJECT') THEN
+    IF NOT EXISTS (SELECT 1 FROM app_private.section_offerings so
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+      WHERE so.id=NEW.section_offering_id AND so.state<>'ARCHIVED'
+        AND co.state<>'ARCHIVED' AND so.campus_id=co.campus_id
+        AND (NEW.scope_kind='SECTION' OR EXISTS (
+          SELECT 1 FROM app_private.subjects su
+           WHERE su.id=NEW.subject_id AND su.school_id=co.school_id
+             AND su.state='ACTIVE')))
+    THEN RAISE EXCEPTION 'invalid D1 SECTION/SUBJECT scope target'; END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_guard_scope_target() FROM PUBLIC, anon, authenticated, service_role;
+CREATE TRIGGER ab_d1_scope_target BEFORE INSERT ON app_private.assignment_permission_scopes
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_scope_target();
+
+-- Defensive provenance/history guards. Entry-point authorization is separate;
+-- these guards also reject unsupported privileged fixture writes.
+RESET ROLE;
+SET ROLE schoolos_authz_reader;
+GRANT EXECUTE ON FUNCTION app_private.current_principal_id() TO schoolos_schema_owner;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+
+CREATE FUNCTION app_private.d1_guard_record() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  actor uuid;
+  i integer;
+  old_json jsonb;
+  new_json jsonb;
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'D1 history and catalog rows cannot be deleted'; END IF;
+  actor := app_private.current_principal_id();
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1 mutation requires a verified current principal'; END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF TG_ARGV[0] = 'M' AND pg_catalog.to_jsonb(NEW) ? 'archived_at'
+       AND ((pg_catalog.to_jsonb(NEW) ->> 'state') = 'ARCHIVED'
+         OR (pg_catalog.to_jsonb(NEW) ->> 'archived_at') IS NOT NULL
+         OR (pg_catalog.to_jsonb(NEW) ->> 'archived_by') IS NOT NULL) THEN
+      RAISE EXCEPTION 'D1 catalog row cannot start archived';
+    END IF;
+    NEW.created_by := actor;
+    NEW.created_at := pg_catalog.transaction_timestamp();
+    IF TG_ARGV[0] = 'M' THEN
+      NEW.row_version := 1;
+      NEW.updated_at := NEW.created_at;
+    ELSIF TG_ARGV[0] = 'HE' AND NEW.effective_until IS NOT NULL THEN
+      NEW.ended_at := NEW.created_at;
+      NEW.ended_by := actor;
+    END IF;
+    RETURN NEW;
+  END IF;
+  old_json := pg_catalog.to_jsonb(OLD);
+  new_json := pg_catalog.to_jsonb(NEW);
+  IF TG_ARGV[0] = 'H' THEN RAISE EXCEPTION 'D1 retained event is immutable'; END IF;
+  IF TG_ARGV[0] = 'HE' THEN
+    IF OLD.effective_until IS NOT NULL OR NEW.effective_until IS NULL THEN
+      RAISE EXCEPTION 'D1 effective history may be ended exactly once';
+    END IF;
+    NEW.ended_at := pg_catalog.transaction_timestamp();
+    NEW.ended_by := actor;
+    IF TG_TABLE_NAME = 'enrollments' THEN
+      IF (old_json ->> 'placement_state') <> 'ACTIVE'
+         OR (pg_catalog.to_jsonb(NEW) ->> 'placement_state') NOT IN ('COMPLETED','ENDED') THEN
+        RAISE EXCEPTION 'D1 enrollment may only complete from ACTIVE';
+      END IF;
+      old_json := old_json - 'placement_state' - 'end_reason';
+      new_json := pg_catalog.to_jsonb(NEW) - 'placement_state' - 'end_reason';
+    ELSE
+      new_json := pg_catalog.to_jsonb(NEW);
+    END IF;
+    IF (old_json - 'effective_until' - 'ended_at' - 'ended_by')
+       IS DISTINCT FROM (new_json - 'effective_until' - 'ended_at' - 'ended_by') THEN
+      RAISE EXCEPTION 'D1 effective history fields are immutable';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_ARGV[0] <> 'M' THEN RAISE EXCEPTION 'unknown D1 record guard class'; END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.created_at IS DISTINCT FROM OLD.created_at
+     OR NEW.created_by IS DISTINCT FROM OLD.created_by
+     OR NEW.row_version IS DISTINCT FROM OLD.row_version
+     OR NEW.updated_at IS DISTINCT FROM OLD.updated_at THEN
+    RAISE EXCEPTION 'D1 mutable record has a server-owned field change';
+  END IF;
+  FOR i IN 1..TG_NARGS-1 LOOP
+    IF old_json -> TG_ARGV[i] IS DISTINCT FROM new_json -> TG_ARGV[i] THEN
+      RAISE EXCEPTION 'D1 immutable field changed: %', TG_ARGV[i];
+    END IF;
+  END LOOP;
+  IF old_json ? 'archived_at' THEN
+    IF (old_json ->> 'archived_at') IS NOT NULL
+       AND ((old_json -> 'archived_at') IS DISTINCT FROM (new_json -> 'archived_at')
+         OR (old_json -> 'archived_by') IS DISTINCT FROM (new_json -> 'archived_by')) THEN
+      RAISE EXCEPTION 'D1 archive evidence cannot be changed or cleared';
+    END IF;
+    IF (old_json ->> 'archived_at') IS NULL AND (new_json ->> 'archived_at') IS NOT NULL THEN
+      NEW.archived_at := pg_catalog.transaction_timestamp();
+      NEW.archived_by := actor;
+    END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_guard_record() FROM PUBLIC, anon, authenticated, service_role;
+
+-- Install defensive field/history and server row-version triggers on all D1 relations.
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.academic_classes
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'school_id', 'code');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.academic_classes
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.subjects
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'school_id', 'code');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.subjects
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.class_offerings
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'school_id', 'class_id', 'campus_id', 'academic_year_id');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.class_offerings
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.section_offerings
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'class_offering_id', 'campus_id', 'code');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.section_offerings
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.section_room_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.capacity_revisions
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('H');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.student_id_allocator_states
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'school_id');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.student_id_allocator_states
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.roll_policy_revisions
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.roll_allocator_states
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'policy_revision_id', 'class_offering_id');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.roll_allocator_states
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.roll_allocations
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.students
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'person_id', 'school_student_id', 'admission_number', 'admission_serial', 'admitted_on');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.students
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.student_identity_details
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.student_special_details
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.student_status_transitions
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('H');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.enrollments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.enrollment_capacity_overrides
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('H');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.families
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'school_id', 'code');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.families
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.family_relationships
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.family_principal_memberships
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.family_student_access
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.student_primary_family_contexts
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.student_emergency_contacts
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.departments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'school_id', 'code');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.departments
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.designations
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'school_id', 'code');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.designations
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.employees
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('M', 'person_id', 'employee_code');
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.employees
+  FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.employment_periods
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.employee_identity_details
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.employee_qualifications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.employee_experience_entries
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.employee_job_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.employee_campus_affiliations
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.teacher_capabilities
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.class_teacher_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+CREATE TRIGGER aa_d1_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.subject_teacher_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_record('HE');
+
+-- Default-deny D1 RLS with nonrecursive authorization-reader input policies.
+GRANT USAGE ON SCHEMA app_private TO schoolos_academic_executor, schoolos_student_executor, schoolos_family_executor, schoolos_employee_executor, schoolos_teaching_executor;
+CREATE POLICY d1_01_schema_maintenance ON app_private.academic_classes
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_01_authz_input ON app_private.academic_classes
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, school_id, state) ON app_private.academic_classes TO schoolos_authz_reader;
+CREATE POLICY d1_01_checked_read ON app_private.academic_classes
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, school_id, code, label, display_order, stage_label, state, archived_at, archived_by) ON app_private.academic_classes TO schoolos_read_executor;
+CREATE POLICY d1_01_executor_read ON app_private.academic_classes FOR SELECT TO schoolos_academic_executor USING (true);
+CREATE POLICY d1_01_executor_insert ON app_private.academic_classes FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
+CREATE POLICY d1_01_executor_update ON app_private.academic_classes FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.academic_classes TO schoolos_academic_executor;
+GRANT UPDATE (label, display_order, stage_label, state, archived_at, archived_by) ON app_private.academic_classes TO schoolos_academic_executor;
+CREATE POLICY d1_02_schema_maintenance ON app_private.subjects
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_02_authz_input ON app_private.subjects
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, school_id, state) ON app_private.subjects TO schoolos_authz_reader;
+CREATE POLICY d1_02_checked_read ON app_private.subjects
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, school_id, code, label, display_order, state, archived_at, archived_by) ON app_private.subjects TO schoolos_read_executor;
+CREATE POLICY d1_02_executor_read ON app_private.subjects FOR SELECT TO schoolos_academic_executor USING (true);
+CREATE POLICY d1_02_executor_insert ON app_private.subjects FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
+CREATE POLICY d1_02_executor_update ON app_private.subjects FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.subjects TO schoolos_academic_executor;
+GRANT UPDATE (label, display_order, state, archived_at, archived_by) ON app_private.subjects TO schoolos_academic_executor;
+CREATE POLICY d1_03_schema_maintenance ON app_private.class_offerings
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_03_authz_input ON app_private.class_offerings
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, school_id, class_id, campus_id, academic_year_id, state) ON app_private.class_offerings TO schoolos_authz_reader;
+CREATE POLICY d1_03_checked_read ON app_private.class_offerings
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, school_id, class_id, campus_id, academic_year_id, capacity, state, archived_at, archived_by) ON app_private.class_offerings TO schoolos_read_executor;
+CREATE POLICY d1_03_executor_read ON app_private.class_offerings FOR SELECT TO schoolos_academic_executor USING (true);
+CREATE POLICY d1_03_executor_insert ON app_private.class_offerings FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
+CREATE POLICY d1_03_executor_update ON app_private.class_offerings FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.class_offerings TO schoolos_academic_executor;
+GRANT UPDATE (capacity, state, archived_at, archived_by) ON app_private.class_offerings TO schoolos_academic_executor;
+CREATE POLICY d1_04_schema_maintenance ON app_private.section_offerings
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_04_authz_input ON app_private.section_offerings
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, class_offering_id, campus_id, state) ON app_private.section_offerings TO schoolos_authz_reader;
+CREATE POLICY d1_04_checked_read ON app_private.section_offerings
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, class_offering_id, campus_id, code, label, display_order, capacity, state, archived_at, archived_by) ON app_private.section_offerings TO schoolos_read_executor;
+CREATE POLICY d1_04_executor_read ON app_private.section_offerings FOR SELECT TO schoolos_academic_executor USING (true);
+CREATE POLICY d1_04_executor_insert ON app_private.section_offerings FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
+CREATE POLICY d1_04_executor_update ON app_private.section_offerings FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.section_offerings TO schoolos_academic_executor;
+GRANT UPDATE (label, display_order, capacity, state, archived_at, archived_by) ON app_private.section_offerings TO schoolos_academic_executor;
+CREATE POLICY d1_05_schema_maintenance ON app_private.section_room_assignments
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_05_checked_read ON app_private.section_room_assignments
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, section_offering_id, room_id, effective_from, effective_until, reason, supersedes_id) ON app_private.section_room_assignments TO schoolos_read_executor;
+CREATE POLICY d1_05_executor_read ON app_private.section_room_assignments FOR SELECT TO schoolos_academic_executor USING (true);
+CREATE POLICY d1_05_executor_insert ON app_private.section_room_assignments FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
+CREATE POLICY d1_05_executor_update ON app_private.section_room_assignments FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.section_room_assignments TO schoolos_academic_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.section_room_assignments TO schoolos_academic_executor;
+CREATE POLICY d1_06_schema_maintenance ON app_private.capacity_revisions
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_06_checked_read ON app_private.capacity_revisions
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, class_offering_id, section_offering_id, old_capacity, new_capacity, effective_on, reason, supersedes_id, command_receipt_id) ON app_private.capacity_revisions TO schoolos_read_executor;
+CREATE POLICY d1_06_executor_read ON app_private.capacity_revisions FOR SELECT TO schoolos_academic_executor USING (true);
+CREATE POLICY d1_06_executor_insert ON app_private.capacity_revisions FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
+CREATE POLICY d1_06_executor_update ON app_private.capacity_revisions FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.capacity_revisions TO schoolos_academic_executor;
+CREATE POLICY d1_07_schema_maintenance ON app_private.student_id_allocator_states
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_07_checked_read ON app_private.student_id_allocator_states
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, school_id, next_value) ON app_private.student_id_allocator_states TO schoolos_read_executor;
+CREATE POLICY d1_07_executor_read ON app_private.student_id_allocator_states FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_07_executor_insert ON app_private.student_id_allocator_states FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_07_executor_update ON app_private.student_id_allocator_states FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.student_id_allocator_states TO schoolos_student_executor;
+GRANT UPDATE (next_value) ON app_private.student_id_allocator_states TO schoolos_student_executor;
+CREATE POLICY d1_08_schema_maintenance ON app_private.roll_policy_revisions
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_08_checked_read ON app_private.roll_policy_revisions
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, school_id, revision, mode, start_value, effective_from, effective_until, reason, supersedes_id) ON app_private.roll_policy_revisions TO schoolos_read_executor;
+CREATE POLICY d1_08_executor_read ON app_private.roll_policy_revisions FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_08_executor_insert ON app_private.roll_policy_revisions FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_08_executor_update ON app_private.roll_policy_revisions FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.roll_policy_revisions TO schoolos_student_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.roll_policy_revisions TO schoolos_student_executor;
+CREATE POLICY d1_09_schema_maintenance ON app_private.roll_allocator_states
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_09_checked_read ON app_private.roll_allocator_states
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, policy_revision_id, class_offering_id, next_value) ON app_private.roll_allocator_states TO schoolos_read_executor;
+CREATE POLICY d1_09_executor_read ON app_private.roll_allocator_states FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_09_executor_insert ON app_private.roll_allocator_states FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_09_executor_update ON app_private.roll_allocator_states FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.roll_allocator_states TO schoolos_student_executor;
+GRANT UPDATE (next_value) ON app_private.roll_allocator_states TO schoolos_student_executor;
+CREATE POLICY d1_10_schema_maintenance ON app_private.roll_allocations
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_10_checked_read ON app_private.roll_allocations
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, enrollment_id, student_id, policy_revision_id, numeric_value, effective_from, effective_until, origin_allocation_id, supersedes_id, correction_reason) ON app_private.roll_allocations TO schoolos_read_executor;
+CREATE POLICY d1_10_executor_read ON app_private.roll_allocations FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_10_executor_insert ON app_private.roll_allocations FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_10_executor_update ON app_private.roll_allocations FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.roll_allocations TO schoolos_student_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.roll_allocations TO schoolos_student_executor;
+CREATE POLICY d1_11_schema_maintenance ON app_private.students
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_11_authz_input ON app_private.students
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, person_id, current_status) ON app_private.students TO schoolos_authz_reader;
+CREATE POLICY d1_11_checked_read ON app_private.students
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, person_id, school_student_id, admission_number, admission_serial, admitted_on, date_of_birth, gender_code, nationality_code, general_contact, previous_school, profile_photo_file_id, current_status) ON app_private.students TO schoolos_read_executor;
+CREATE POLICY d1_11_executor_read ON app_private.students FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_11_executor_insert ON app_private.students FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_11_executor_update ON app_private.students FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.students TO schoolos_student_executor;
+GRANT UPDATE (date_of_birth, gender_code, nationality_code, general_contact, previous_school, profile_photo_file_id, current_status) ON app_private.students TO schoolos_student_executor;
+CREATE POLICY d1_12_schema_maintenance ON app_private.student_identity_details
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_12_checked_read ON app_private.student_identity_details
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, student_id, national_id, birth_certificate_number, birth_certificate_file_id, private_address, city, guardian_identity_text, guardian_contact, effective_from, effective_until, supersedes_id, reason) ON app_private.student_identity_details TO schoolos_read_executor;
+CREATE POLICY d1_12_executor_read ON app_private.student_identity_details FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_12_executor_insert ON app_private.student_identity_details FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_12_executor_update ON app_private.student_identity_details FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.student_identity_details TO schoolos_student_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.student_identity_details TO schoolos_student_executor;
+CREATE POLICY d1_13_schema_maintenance ON app_private.student_special_details
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_13_checked_read ON app_private.student_special_details
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, student_id, disability_indicator, orphan_indicator, blood_group_code, effective_from, effective_until, supersedes_id, reason) ON app_private.student_special_details TO schoolos_read_executor;
+CREATE POLICY d1_13_executor_read ON app_private.student_special_details FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_13_executor_insert ON app_private.student_special_details FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_13_executor_update ON app_private.student_special_details FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.student_special_details TO schoolos_student_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.student_special_details TO schoolos_student_executor;
+CREATE POLICY d1_14_schema_maintenance ON app_private.student_status_transitions
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_14_checked_read ON app_private.student_status_transitions
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, student_id, previous_status, new_status, effective_on, sequence_number, reason, supersedes_id, command_receipt_id) ON app_private.student_status_transitions TO schoolos_read_executor;
+CREATE POLICY d1_14_executor_read ON app_private.student_status_transitions FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_14_executor_insert ON app_private.student_status_transitions FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_14_executor_update ON app_private.student_status_transitions FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.student_status_transitions TO schoolos_student_executor;
+CREATE POLICY d1_15_schema_maintenance ON app_private.enrollments
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_15_authz_input ON app_private.enrollments
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, student_id, section_offering_id, placement_kind, placement_state, effective_from, effective_until) ON app_private.enrollments TO schoolos_authz_reader;
+CREATE POLICY d1_15_checked_read ON app_private.enrollments
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, student_id, section_offering_id, placement_kind, entry_kind, placement_state, effective_from, effective_until, predecessor_id, reason, end_reason, command_receipt_id) ON app_private.enrollments TO schoolos_read_executor;
+CREATE POLICY d1_15_executor_read ON app_private.enrollments FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_15_executor_insert ON app_private.enrollments FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_15_executor_update ON app_private.enrollments FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.enrollments TO schoolos_student_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by, placement_state, end_reason) ON app_private.enrollments TO schoolos_student_executor;
+CREATE POLICY d1_16_schema_maintenance ON app_private.enrollment_capacity_overrides
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_16_checked_read ON app_private.enrollment_capacity_overrides
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, enrollment_id, class_overridden, section_overridden, class_limit_at_decision, section_limit_at_decision, class_count_at_decision, section_count_at_decision, reason, command_receipt_id) ON app_private.enrollment_capacity_overrides TO schoolos_read_executor;
+CREATE POLICY d1_16_executor_read ON app_private.enrollment_capacity_overrides FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_16_executor_insert ON app_private.enrollment_capacity_overrides FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_16_executor_update ON app_private.enrollment_capacity_overrides FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.enrollment_capacity_overrides TO schoolos_student_executor;
+CREATE POLICY d1_17_schema_maintenance ON app_private.families
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_17_authz_input ON app_private.families
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, state) ON app_private.families TO schoolos_authz_reader;
+CREATE POLICY d1_17_checked_read ON app_private.families
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, school_id, code, display_label, state, archived_at, archived_by) ON app_private.families TO schoolos_read_executor;
+CREATE POLICY d1_17_executor_read ON app_private.families FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_17_executor_insert ON app_private.families FOR INSERT TO schoolos_family_executor WITH CHECK (true);
+CREATE POLICY d1_17_executor_update ON app_private.families FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.families TO schoolos_family_executor;
+GRANT UPDATE (display_label, state, archived_at, archived_by) ON app_private.families TO schoolos_family_executor;
+CREATE POLICY d1_18_schema_maintenance ON app_private.family_relationships
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_18_authz_input ON app_private.family_relationships
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, family_id, student_id, relationship_kind, effective_from, effective_until) ON app_private.family_relationships TO schoolos_authz_reader;
+CREATE POLICY d1_18_checked_read ON app_private.family_relationships
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, family_id, student_id, adult_person_id, relationship_kind, display_name, relationship_contact, effective_from, effective_until, reason, supersedes_id) ON app_private.family_relationships TO schoolos_read_executor;
+CREATE POLICY d1_18_executor_read ON app_private.family_relationships FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_18_executor_insert ON app_private.family_relationships FOR INSERT TO schoolos_family_executor WITH CHECK (true);
+CREATE POLICY d1_18_executor_update ON app_private.family_relationships FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.family_relationships TO schoolos_family_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.family_relationships TO schoolos_family_executor;
+CREATE POLICY d1_19_schema_maintenance ON app_private.family_principal_memberships
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_19_authz_input ON app_private.family_principal_memberships
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (family_id, principal_id, principal_kind, effective_from, effective_until) ON app_private.family_principal_memberships TO schoolos_authz_reader;
+CREATE POLICY d1_19_checked_read ON app_private.family_principal_memberships
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, family_id, principal_id, principal_kind, effective_from, effective_until, reason, supersedes_id) ON app_private.family_principal_memberships TO schoolos_read_executor;
+CREATE POLICY d1_19_executor_read ON app_private.family_principal_memberships FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_19_executor_insert ON app_private.family_principal_memberships FOR INSERT TO schoolos_family_executor WITH CHECK (true);
+CREATE POLICY d1_19_executor_update ON app_private.family_principal_memberships FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.family_principal_memberships TO schoolos_family_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.family_principal_memberships TO schoolos_family_executor;
+CREATE POLICY d1_20_schema_maintenance ON app_private.family_student_access
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_20_authz_input ON app_private.family_student_access
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (family_id, student_id, effective_from, effective_until) ON app_private.family_student_access TO schoolos_authz_reader;
+CREATE POLICY d1_20_checked_read ON app_private.family_student_access
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, family_id, student_id, effective_from, effective_until, reason, supersedes_id) ON app_private.family_student_access TO schoolos_read_executor;
+CREATE POLICY d1_20_executor_read ON app_private.family_student_access FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_20_executor_insert ON app_private.family_student_access FOR INSERT TO schoolos_family_executor WITH CHECK (true);
+CREATE POLICY d1_20_executor_update ON app_private.family_student_access FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.family_student_access TO schoolos_family_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.family_student_access TO schoolos_family_executor;
+CREATE POLICY d1_21_schema_maintenance ON app_private.student_primary_family_contexts
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_21_checked_read ON app_private.student_primary_family_contexts
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, student_id, family_relationship_id, effective_from, effective_until, reason, supersedes_id) ON app_private.student_primary_family_contexts TO schoolos_read_executor;
+CREATE POLICY d1_21_executor_read ON app_private.student_primary_family_contexts FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_21_executor_insert ON app_private.student_primary_family_contexts FOR INSERT TO schoolos_family_executor WITH CHECK (true);
+CREATE POLICY d1_21_executor_update ON app_private.student_primary_family_contexts FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.student_primary_family_contexts TO schoolos_family_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.student_primary_family_contexts TO schoolos_family_executor;
+CREATE POLICY d1_22_schema_maintenance ON app_private.student_emergency_contacts
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_22_checked_read ON app_private.student_emergency_contacts
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, student_id, person_id, contact_name, relationship_label, contact_phone, contact_email, effective_from, effective_until, reason, supersedes_id) ON app_private.student_emergency_contacts TO schoolos_read_executor;
+CREATE POLICY d1_22_executor_read ON app_private.student_emergency_contacts FOR SELECT TO schoolos_student_executor USING (true);
+CREATE POLICY d1_22_executor_insert ON app_private.student_emergency_contacts FOR INSERT TO schoolos_student_executor WITH CHECK (true);
+CREATE POLICY d1_22_executor_update ON app_private.student_emergency_contacts FOR UPDATE TO schoolos_student_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.student_emergency_contacts TO schoolos_student_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.student_emergency_contacts TO schoolos_student_executor;
+CREATE POLICY d1_23_schema_maintenance ON app_private.departments
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_23_checked_read ON app_private.departments
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, school_id, code, label, state, archived_at, archived_by) ON app_private.departments TO schoolos_read_executor;
+CREATE POLICY d1_23_executor_read ON app_private.departments FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_23_executor_insert ON app_private.departments FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
+CREATE POLICY d1_23_executor_update ON app_private.departments FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.departments TO schoolos_employee_executor;
+GRANT UPDATE (label, state, archived_at, archived_by) ON app_private.departments TO schoolos_employee_executor;
+CREATE POLICY d1_24_schema_maintenance ON app_private.designations
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_24_checked_read ON app_private.designations
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, school_id, code, label, state, archived_at, archived_by) ON app_private.designations TO schoolos_read_executor;
+CREATE POLICY d1_24_executor_read ON app_private.designations FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_24_executor_insert ON app_private.designations FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
+CREATE POLICY d1_24_executor_update ON app_private.designations FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.designations TO schoolos_employee_executor;
+GRANT UPDATE (label, state, archived_at, archived_by) ON app_private.designations TO schoolos_employee_executor;
+CREATE POLICY d1_25_schema_maintenance ON app_private.employees
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_25_authz_input ON app_private.employees
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, person_id, current_state) ON app_private.employees TO schoolos_authz_reader;
+CREATE POLICY d1_25_checked_read ON app_private.employees
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, person_id, employee_code, current_state, profile_photo_file_id) ON app_private.employees TO schoolos_read_executor;
+CREATE POLICY d1_25_executor_read ON app_private.employees FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_25_executor_insert ON app_private.employees FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
+CREATE POLICY d1_25_executor_update ON app_private.employees FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.employees TO schoolos_employee_executor;
+GRANT UPDATE (current_state, profile_photo_file_id) ON app_private.employees TO schoolos_employee_executor;
+CREATE POLICY d1_26_schema_maintenance ON app_private.employment_periods
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_26_authz_input ON app_private.employment_periods
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (employee_id, state, effective_from, effective_until) ON app_private.employment_periods TO schoolos_authz_reader;
+CREATE POLICY d1_26_checked_read ON app_private.employment_periods
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, employee_id, state, effective_from, effective_until, reason, supersedes_id) ON app_private.employment_periods TO schoolos_read_executor;
+CREATE POLICY d1_26_executor_read ON app_private.employment_periods FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_26_executor_insert ON app_private.employment_periods FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
+CREATE POLICY d1_26_executor_update ON app_private.employment_periods FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.employment_periods TO schoolos_employee_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.employment_periods TO schoolos_employee_executor;
+CREATE POLICY d1_27_schema_maintenance ON app_private.employee_identity_details
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_27_checked_read ON app_private.employee_identity_details
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, employee_id, identity_type_code, national_identity_number, effective_from, effective_until, supersedes_id, reason) ON app_private.employee_identity_details TO schoolos_read_executor;
+CREATE POLICY d1_27_executor_read ON app_private.employee_identity_details FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_27_executor_insert ON app_private.employee_identity_details FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
+CREATE POLICY d1_27_executor_update ON app_private.employee_identity_details FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.employee_identity_details TO schoolos_employee_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.employee_identity_details TO schoolos_employee_executor;
+CREATE POLICY d1_28_schema_maintenance ON app_private.employee_qualifications
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_28_checked_read ON app_private.employee_qualifications
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, employee_id, qualification_record_id, qualification_type, title, institution, specialization, awarded_on, effective_from, effective_until, supersedes_id, reason) ON app_private.employee_qualifications TO schoolos_read_executor;
+CREATE POLICY d1_28_executor_read ON app_private.employee_qualifications FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_28_executor_insert ON app_private.employee_qualifications FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
+CREATE POLICY d1_28_executor_update ON app_private.employee_qualifications FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.employee_qualifications TO schoolos_employee_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.employee_qualifications TO schoolos_employee_executor;
+CREATE POLICY d1_29_schema_maintenance ON app_private.employee_experience_entries
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_29_checked_read ON app_private.employee_experience_entries
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, employee_id, experience_record_id, organization_name, role_title, starts_on, ends_on, summary, effective_from, effective_until, supersedes_id, reason) ON app_private.employee_experience_entries TO schoolos_read_executor;
+CREATE POLICY d1_29_executor_read ON app_private.employee_experience_entries FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_29_executor_insert ON app_private.employee_experience_entries FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
+CREATE POLICY d1_29_executor_update ON app_private.employee_experience_entries FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.employee_experience_entries TO schoolos_employee_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.employee_experience_entries TO schoolos_employee_executor;
+CREATE POLICY d1_30_schema_maintenance ON app_private.employee_job_assignments
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_30_checked_read ON app_private.employee_job_assignments
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, employee_id, department_id, designation_id, effective_from, effective_until, reason, supersedes_id) ON app_private.employee_job_assignments TO schoolos_read_executor;
+CREATE POLICY d1_30_executor_read ON app_private.employee_job_assignments FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_30_executor_insert ON app_private.employee_job_assignments FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
+CREATE POLICY d1_30_executor_update ON app_private.employee_job_assignments FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.employee_job_assignments TO schoolos_employee_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.employee_job_assignments TO schoolos_employee_executor;
+CREATE POLICY d1_31_schema_maintenance ON app_private.employee_campus_affiliations
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_31_authz_input ON app_private.employee_campus_affiliations
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (employee_id, campus_id, effective_from, effective_until) ON app_private.employee_campus_affiliations TO schoolos_authz_reader;
+CREATE POLICY d1_31_checked_read ON app_private.employee_campus_affiliations
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, employee_id, campus_id, effective_from, effective_until, reason, supersedes_id) ON app_private.employee_campus_affiliations TO schoolos_read_executor;
+CREATE POLICY d1_31_executor_read ON app_private.employee_campus_affiliations FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_31_executor_insert ON app_private.employee_campus_affiliations FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
+CREATE POLICY d1_31_executor_update ON app_private.employee_campus_affiliations FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.employee_campus_affiliations TO schoolos_employee_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.employee_campus_affiliations TO schoolos_employee_executor;
+CREATE POLICY d1_32_schema_maintenance ON app_private.teacher_capabilities
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_32_authz_input ON app_private.teacher_capabilities
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (employee_id, effective_from, effective_until) ON app_private.teacher_capabilities TO schoolos_authz_reader;
+CREATE POLICY d1_32_checked_read ON app_private.teacher_capabilities
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, employee_id, effective_from, effective_until, reason, supersedes_id) ON app_private.teacher_capabilities TO schoolos_read_executor;
+CREATE POLICY d1_32_executor_read ON app_private.teacher_capabilities FOR SELECT TO schoolos_teaching_executor USING (true);
+CREATE POLICY d1_32_executor_insert ON app_private.teacher_capabilities FOR INSERT TO schoolos_teaching_executor WITH CHECK (true);
+CREATE POLICY d1_32_executor_update ON app_private.teacher_capabilities FOR UPDATE TO schoolos_teaching_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.teacher_capabilities TO schoolos_teaching_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.teacher_capabilities TO schoolos_teaching_executor;
+CREATE POLICY d1_33_schema_maintenance ON app_private.class_teacher_assignments
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_33_authz_input ON app_private.class_teacher_assignments
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (section_offering_id, employee_id, effective_from, effective_until) ON app_private.class_teacher_assignments TO schoolos_authz_reader;
+CREATE POLICY d1_33_checked_read ON app_private.class_teacher_assignments
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, section_offering_id, employee_id, effective_from, effective_until, reason, supersedes_id) ON app_private.class_teacher_assignments TO schoolos_read_executor;
+CREATE POLICY d1_33_executor_read ON app_private.class_teacher_assignments FOR SELECT TO schoolos_teaching_executor USING (true);
+CREATE POLICY d1_33_executor_insert ON app_private.class_teacher_assignments FOR INSERT TO schoolos_teaching_executor WITH CHECK (true);
+CREATE POLICY d1_33_executor_update ON app_private.class_teacher_assignments FOR UPDATE TO schoolos_teaching_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.class_teacher_assignments TO schoolos_teaching_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.class_teacher_assignments TO schoolos_teaching_executor;
+CREATE POLICY d1_34_schema_maintenance ON app_private.subject_teacher_assignments
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY d1_34_authz_input ON app_private.subject_teacher_assignments
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (section_offering_id, subject_id, employee_id, assignment_kind, effective_from, effective_until) ON app_private.subject_teacher_assignments TO schoolos_authz_reader;
+CREATE POLICY d1_34_checked_read ON app_private.subject_teacher_assignments
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, section_offering_id, subject_id, employee_id, assignment_kind, effective_from, effective_until, reason, supersedes_id) ON app_private.subject_teacher_assignments TO schoolos_read_executor;
+CREATE POLICY d1_34_executor_read ON app_private.subject_teacher_assignments FOR SELECT TO schoolos_teaching_executor USING (true);
+CREATE POLICY d1_34_executor_insert ON app_private.subject_teacher_assignments FOR INSERT TO schoolos_teaching_executor WITH CHECK (true);
+CREATE POLICY d1_34_executor_update ON app_private.subject_teacher_assignments FOR UPDATE TO schoolos_teaching_executor USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT ON app_private.subject_teacher_assignments TO schoolos_teaching_executor;
+GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.subject_teacher_assignments TO schoolos_teaching_executor;
+-- No anon/authenticated/service_role direct D1 table privileges or DML policies are installed.
+
+-- Private fixed-context evaluator. Permission/scope rows are absent until the
+-- trusted post-bootstrap registrar runs, so every unregistered code denies.
+RESET ROLE;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_authorized(
+  wanted_code text, target_kind text, target_id uuid,
+  target_subject_id uuid DEFAULT NULL, business_on date DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  actor uuid;
+  actor_kind text;
+  actor_person uuid;
+  at_time timestamptz := pg_catalog.statement_timestamp();
+  on_date date;
+  target_person uuid;
+  target_employee uuid;
+  target_student uuid;
+  target_section uuid;
+  target_class uuid;
+  target_campus uuid;
+  target_school uuid;
+  placement_count integer;
+  class_teacher boolean := false;
+  subject_teacher boolean := false;
+  family_child boolean := false;
+  employee_self boolean := false;
+  student_self boolean := false;
+  teacher_eligible boolean := false;
+BEGIN
+  actor := app_private.current_principal_id();
+  IF actor IS NULL OR target_id IS NULL THEN RETURN false; END IF;
+  on_date := COALESCE(business_on, at_time::date);
+  SELECT p.kind,p.person_id INTO actor_kind,actor_person
+    FROM app_private.principals p WHERE p.id=actor AND p.state='ACTIVE';
+  IF actor_kind IS NULL THEN RETURN false; END IF;
+
+  IF target_kind = 'STUDENT' THEN
+    SELECT s.person_id INTO target_person FROM app_private.students s WHERE s.id=target_id;
+    IF target_person IS NULL THEN RETURN false; END IF;
+    target_student := target_id;
+    SELECT count(*) INTO placement_count
+      FROM app_private.enrollments e
+     WHERE e.student_id=target_id AND e.placement_kind='PRIMARY'
+       AND e.effective_from<=on_date
+       AND (e.effective_until IS NULL OR on_date<e.effective_until);
+    IF placement_count<>1 THEN RETURN false; END IF;
+    SELECT e.section_offering_id INTO target_section
+      FROM app_private.enrollments e
+     WHERE e.student_id=target_id AND e.placement_kind='PRIMARY'
+       AND e.effective_from<=on_date
+       AND (e.effective_until IS NULL OR on_date<e.effective_until);
+    student_self := actor_kind='INDIVIDUAL' AND actor_person=target_person;
+  ELSIF target_kind = 'EMPLOYEE' THEN
+    SELECT e.person_id INTO target_person FROM app_private.employees e WHERE e.id=target_id;
+    IF target_person IS NULL THEN RETURN false; END IF;
+    target_employee := target_id;
+    employee_self := actor_kind='INDIVIDUAL' AND actor_person=target_person;
+  ELSIF target_kind = 'CLASS' THEN
+    target_class := target_id;
+  ELSIF target_kind = 'SECTION' OR target_kind = 'SUBJECT' THEN
+    target_section := target_id;
+    IF target_kind='SUBJECT' AND target_subject_id IS NULL THEN RETURN false; END IF;
+  ELSIF target_kind = 'SCHOOL' THEN
+    SELECT id INTO target_school FROM app_private.school_profiles WHERE id=target_id;
+    IF target_school IS NULL THEN RETURN false; END IF;
+  ELSE
+    RETURN false;
+  END IF;
+
+  IF target_section IS NOT NULL THEN
+    SELECT so.class_offering_id, co.campus_id, co.school_id
+      INTO target_class,target_campus,target_school
+      FROM app_private.section_offerings so
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE so.id=target_section AND so.campus_id=co.campus_id;
+    IF target_class IS NULL THEN RETURN false; END IF;
+  ELSIF target_class IS NOT NULL THEN
+    SELECT co.campus_id,co.school_id INTO target_campus,target_school
+      FROM app_private.class_offerings co WHERE co.id=target_class;
+    IF target_campus IS NULL THEN RETURN false; END IF;
+  END IF;
+  IF target_kind='SUBJECT' AND NOT EXISTS (
+    SELECT 1 FROM app_private.subjects s
+     WHERE s.id=target_subject_id AND s.school_id=target_school AND s.state='ACTIVE'
+  ) THEN RETURN false; END IF;
+
+  IF target_student IS NOT NULL AND actor_kind='FAMILY' THEN
+    family_child := EXISTS (
+      SELECT 1 FROM app_private.family_principal_memberships m
+      JOIN app_private.family_student_access a ON a.family_id=m.family_id
+      JOIN app_private.family_relationships r ON r.family_id=m.family_id AND r.student_id=a.student_id
+     WHERE m.principal_id=actor AND m.principal_kind='FAMILY'
+       AND a.student_id=target_student
+       AND m.effective_from<=at_time::date AND (m.effective_until IS NULL OR at_time::date<m.effective_until)
+       AND a.effective_from<=at_time::date AND (a.effective_until IS NULL OR at_time::date<a.effective_until)
+       AND r.effective_from<=at_time::date AND (r.effective_until IS NULL OR at_time::date<r.effective_until)
+    );
+  END IF;
+  IF actor_kind='INDIVIDUAL' AND target_section IS NOT NULL THEN
+    SELECT e.id INTO target_employee FROM app_private.employees e
+      WHERE e.person_id=actor_person AND e.current_state='ACTIVE';
+    IF target_employee IS NOT NULL THEN
+      teacher_eligible := EXISTS (
+        SELECT 1 FROM app_private.employment_periods ep
+        JOIN app_private.teacher_capabilities tc ON tc.employee_id=ep.employee_id
+       WHERE ep.employee_id=target_employee AND ep.state='ACTIVE'
+         AND ep.effective_from<=at_time::date AND (ep.effective_until IS NULL OR at_time::date<ep.effective_until)
+         AND tc.effective_from<=at_time::date AND (tc.effective_until IS NULL OR at_time::date<tc.effective_until)
+      );
+      IF teacher_eligible THEN
+        class_teacher := EXISTS (
+          SELECT 1 FROM app_private.class_teacher_assignments ca
+           WHERE ca.employee_id=target_employee AND ca.section_offering_id=target_section
+             AND ca.effective_from<=at_time::date
+             AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until)
+        );
+        subject_teacher := EXISTS (
+          SELECT 1 FROM app_private.subject_teacher_assignments sa
+           WHERE sa.employee_id=target_employee AND sa.section_offering_id=target_section
+             AND (target_subject_id IS NULL OR sa.subject_id=target_subject_id)
+             AND sa.effective_from<=at_time::date
+             AND (sa.effective_until IS NULL OR at_time::date<sa.effective_until)
+        );
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes s
+    JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+    JOIN app_private.permissions p ON p.id=s.permission_id
+    JOIN app_private.roles r ON r.id=s.role_id
+    WHERE a.principal_id=actor AND a.role_id=s.role_id
+      AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+      AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+      AND c.resolver_key=s.resolver_key AND c.enabled
+      AND p.code=wanted_code AND p.state='ENABLED' AND r.state='ACTIVE'
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+      AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until)
+      AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+      AND (
+        (actor_kind='FAMILY' AND p.family_safe AND s.scope_kind='OWN'
+          AND s.resolver_key='D1_FAMILY_CHILD' AND family_child)
+        OR (actor_kind<>'FAMILY' AND (
+          (s.scope_kind='ALL' AND s.resolver_key='DIRECT')
+          OR (s.scope_kind='CAMPUS' AND s.resolver_key='DIRECT'
+            AND target_campus IS NOT NULL AND s.campus_id=target_campus)
+          OR (s.scope_kind='CAMPUS' AND s.resolver_key='DIRECT'
+            AND target_kind='EMPLOYEE' AND target_employee IS NOT NULL AND EXISTS (
+              SELECT 1 FROM app_private.employee_campus_affiliations ca
+               WHERE ca.employee_id=target_employee AND ca.campus_id=s.campus_id
+                 AND ca.effective_from<=on_date AND (ca.effective_until IS NULL OR on_date<ca.effective_until)))
+          OR (s.scope_kind='CLASS' AND s.resolver_key='DIRECT'
+            AND target_class IS NOT NULL AND s.class_offering_id=target_class)
+          OR (s.scope_kind='SECTION' AND s.resolver_key='DIRECT'
+            AND target_section IS NOT NULL AND s.section_offering_id=target_section)
+          OR (s.scope_kind='SUBJECT' AND s.resolver_key='DIRECT'
+            AND target_subject_id IS NOT NULL AND s.section_offering_id=target_section
+            AND s.subject_id=target_subject_id)
+          OR (s.scope_kind='OWN' AND s.resolver_key='D1_STUDENT_SELF' AND student_self)
+          OR (s.scope_kind='OWN' AND s.resolver_key='D1_EMPLOYEE_SELF' AND employee_self)
+          OR (s.scope_kind='ASSIGNED' AND s.resolver_key='D1_CLASS_TEACHER' AND class_teacher)
+          OR (s.scope_kind='ASSIGNED' AND s.resolver_key='D1_SUBJECT_TEACHER' AND subject_teacher)
+          OR (s.scope_kind='ASSIGNED' AND s.resolver_key='D1_TEACHING_ANY'
+            AND (class_teacher OR subject_teacher))
+        ))
+      )
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_authorized(text,text,uuid,uuid,date)
+  FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_authorized(text,text,uuid,uuid,date)
+  TO schoolos_read_executor, schoolos_academic_executor, schoolos_student_executor,
+     schoolos_family_executor, schoolos_employee_executor, schoolos_teaching_executor;
+RESET ROLE;
+
+-- Trusted post-bootstrap registration; this function is not invoked by the migration.
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_bootstrap_actor_lookup ON app_private.principals FOR SELECT TO schoolos_bootstrap_executor USING (true);
+CREATE POLICY d1_bootstrap_permission_lookup ON app_private.permissions FOR SELECT TO schoolos_bootstrap_executor USING (true);
+CREATE POLICY d1_bootstrap_permission_insert ON app_private.permissions FOR INSERT TO schoolos_bootstrap_executor WITH CHECK (true);
+CREATE POLICY d1_bootstrap_scope_lookup ON app_private.permission_scope_contracts FOR SELECT TO schoolos_bootstrap_executor USING (true);
+CREATE POLICY d1_bootstrap_scope_insert ON app_private.permission_scope_contracts FOR INSERT TO schoolos_bootstrap_executor WITH CHECK (true);
+CREATE POLICY d1_bootstrap_operation_lookup ON app_private.operation_contracts FOR SELECT TO schoolos_bootstrap_executor USING (true);
+CREATE POLICY d1_bootstrap_operation_insert ON app_private.operation_contracts FOR INSERT TO schoolos_bootstrap_executor WITH CHECK (true);
+GRANT SELECT ON app_private.principals, app_private.permissions, app_private.permission_scope_contracts, app_private.operation_contracts TO schoolos_bootstrap_executor;
+GRANT INSERT ON app_private.permissions, app_private.permission_scope_contracts, app_private.operation_contracts TO schoolos_bootstrap_executor;
+GRANT CREATE ON SCHEMA app_private TO schoolos_bootstrap_executor;
+RESET ROLE;
+SET ROLE schoolos_bootstrap_executor;
+CREATE FUNCTION app_private.d1_register_catalog_v1() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE actor uuid; n bigint; item record; found_row record; pid uuid; rid uuid;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock(71001,1);
+  SELECT count(*) INTO n FROM app_private.principals WHERE kind='SYSTEM' AND system_purpose='bootstrap' AND state='ACTIVE';
+  IF n<>1 THEN RAISE EXCEPTION 'D1 catalog requires exactly one ACTIVE bootstrap SYSTEM actor'; END IF;
+  SELECT id INTO actor FROM app_private.principals WHERE kind='SYSTEM' AND system_purpose='bootstrap' AND state='ACTIVE';
+  FOR item IN SELECT * FROM (VALUES
+      ('03182d5e-0c4f-4b6a-86e4-395c91f99b86', 'academic.class.view', false, 'A'),
+      ('b7aee669-e205-49c9-81fa-69705844e09f', 'academic.class.manage', false, 'A'),
+      ('2ff62e29-8ef3-4a12-9469-049ab42e6974', 'academic.subject.view', false, 'A'),
+      ('4b9a03f3-b379-4f18-bd9e-71ea6412fa48', 'academic.subject.manage', false, 'A'),
+      ('10c1cfb2-1fb5-4999-9b6a-0344a8e2cf1f', 'academic.offering.view', false, 'AC'),
+      ('4d18e65a-c4d5-44bd-baaf-175293095354', 'academic.offering.manage', false, 'AC'),
+      ('b9f11f08-4223-4c1c-85ad-eec3a5665fdd', 'academic.section.view', false, 'ACS'),
+      ('54338737-f8a1-4d54-8953-0fbaed62bdca', 'academic.section.manage', false, 'ACS'),
+      ('ca9948d1-fd65-4223-8d78-f73b8497151a', 'academic.section_room.view', false, 'ACS'),
+      ('92e45e09-e77d-4c0f-8801-b359400d6617', 'academic.section_room.change', false, 'ACS'),
+      ('b6e623d1-8b06-4fb2-8d68-3e0b18695183', 'academic.capacity.view', false, 'ACS'),
+      ('d173088c-b502-4a8d-9ee8-e59cc6cf6121', 'academic.capacity.change', false, 'ACS'),
+      ('6e954282-5a56-42da-bb1b-2bdc9ea4adc1', 'academic.capacity_history.view', false, 'ACS'),
+      ('37ed4b19-70a2-48f6-bfb8-428b71ebb448', 'student.roll_policy.view', false, 'A'),
+      ('1e13e302-8871-4af7-9623-e7fa639869df', 'student.roll_policy.change', false, 'A'),
+      ('2b51b954-204c-476c-8bbc-429f0edd4efc', 'student.roll_history.view', true, 'SH'),
+      ('926a6126-9b0a-4769-9e59-02417da5b156', 'student.roll.correct', false, 'ACS'),
+      ('b85e53a9-913e-4728-8fb3-28bad13cbc6a', 'student.roster.view', true, 'SR'),
+      ('8ab54648-7d09-4f6d-ad01-47aca23f8489', 'student.profile.view', true, 'SP'),
+      ('7a50747b-91bc-418c-9104-75266f941f8e', 'student.restricted_identity.view', false, 'SE'),
+      ('cc57fb17-9d16-4fc8-8f25-a97d53308002', 'student.restricted_identity_history.view', false, 'SE'),
+      ('922bddf6-bf86-4bfb-a8e4-0bf0ba73b71e', 'student.special.view', false, 'SE'),
+      ('4879ecbe-d1d4-4e82-921d-a716d82c1da7', 'student.special_history.view', false, 'SE'),
+      ('ddfeb627-82f5-4fa6-8c4e-3a1cc90687af', 'student.emergency_contact.view', true, 'SF'),
+      ('8df30c25-87d3-4c72-b745-736dbfd216d3', 'student.emergency_contact_history.view', false, 'SE'),
+      ('b137e725-b19e-43ba-bc6f-5be88718d024', 'student.status_history.view', true, 'SH'),
+      ('6bf795cc-8cac-4728-a9cd-a906148a8dd5', 'student.placement_history.view', true, 'SH'),
+      ('829bd173-674b-4207-a195-c95909d84d9f', 'student.create', false, 'ACS'),
+      ('8f3b62e4-3e61-4f79-a856-3f241ceb3ec7', 'student.profile.update', false, 'ACS'),
+      ('7153aabb-212b-4bdf-baba-60e6abdf41a8', 'student.identity.correct', false, 'ACS'),
+      ('f1c1538c-5a42-43a6-906a-1a2a3749389a', 'student.identity.approve', false, 'ACS'),
+      ('0af17e43-cee8-4320-aea5-53219884a2e0', 'student.special.correct', false, 'ACS'),
+      ('4429cbf1-ca42-41bd-b2c2-ff31405d7354', 'student.special.approve', false, 'ACS'),
+      ('c7a29c99-4401-425a-8ee7-08a15e3b746a', 'student.status.change', false, 'ACS'),
+      ('07f69183-595c-4e29-a1fa-141cd0847675', 'student.status.correct', false, 'ACS'),
+      ('a5a6e882-3c99-4233-b741-1c59a20bb4c4', 'student.status.approve', false, 'ACS'),
+      ('8c168914-ee0d-495a-a3b6-81f5c9974840', 'student.enrollment.place', false, 'ACS'),
+      ('3baf6192-b7ab-4a83-967b-db27b70d3705', 'student.enrollment.move', false, 'ACS'),
+      ('2062078b-c43f-406d-8fea-9e273a4f9116', 'student.enrollment.end', false, 'ACS'),
+      ('f840b1bf-f34c-44fa-895c-133206654df3', 'student.enrollment.approve', false, 'ACS'),
+      ('a105ce73-3142-45aa-9db1-2dc8bd429090', 'student.capacity_override', false, 'ACS'),
+      ('b84136ef-09ad-4292-af9a-54378b5a1fa6', 'student.emergency_contact.change', false, 'ACS'),
+      ('2c98950f-349f-43e5-a0e6-6a258d22353a', 'student.photo.submit', false, 'ACS'),
+      ('3735ff12-d122-4bcf-93a3-308f913eea0e', 'student.birth_certificate.submit', false, 'ACS'),
+      ('e0568098-ec79-4616-a29f-7d9b79fe188a', 'family.summary.view', true, 'SF'),
+      ('b0eb92e0-186b-40b1-b09d-b07adc4724ac', 'family.relationship.view', true, 'SF'),
+      ('f6596a38-9d8a-428d-b81e-617f6d4098e9', 'family.relationship_history.view', true, 'SF'),
+      ('4fc73509-f5ea-4b61-a042-c23b685f6f9e', 'family.history.view', false, 'SE'),
+      ('6446775d-5196-472c-8870-b7c91fceb3fb', 'family.membership_history.view', false, 'A'),
+      ('bb6b821e-533b-4677-acde-4c6e839bc1e1', 'family.manage', false, 'A'),
+      ('712be87d-cdba-4ac6-bb59-e97cdc8267f7', 'family.relationship.change', false, 'ACS'),
+      ('906003b0-ae70-4c9d-ad95-058c1457820f', 'family.principal_membership.change', false, 'A'),
+      ('5d167029-be94-454a-af9d-5fbd9ab703d2', 'family.child_access.change', false, 'ACS'),
+      ('d582b988-2733-490c-aa89-d62e88e45a75', 'family.access.approve', false, 'ACS'),
+      ('4fafe72f-09bc-4b06-ae89-9196b932996d', 'family.primary_context.change', false, 'ACS'),
+      ('a8071995-20a3-4baa-872c-a16608fe636d', 'employee.roster.view', false, 'EA'),
+      ('4ad8211c-5625-45fc-a318-89d441189bd0', 'employee.profile.view', false, 'EG'),
+      ('03c54233-eae4-4d8c-b639-36d208f8622b', 'employee.restricted_identity.view', false, 'EG'),
+      ('188946f4-a4f2-486e-aee4-e7a39dd90cb3', 'employee.restricted_identity_history.view', false, 'EG'),
+      ('c4841989-b026-4447-8b5a-eb4c1a8a75ff', 'employee.qualification.view', false, 'EG'),
+      ('d4681769-e740-45c9-a8f6-fa52e75f5fe2', 'employee.qualification_history.view', false, 'EG'),
+      ('82d1503b-9edd-4489-bb81-dbc90a8bf557', 'employee.experience.view', false, 'EG'),
+      ('31b59791-d5ab-4256-8bce-cec2487f727f', 'employee.experience_history.view', false, 'EG'),
+      ('41f299e7-f64c-4684-bddc-acb0d226f515', 'employee.employment_history.view', false, 'EG'),
+      ('7b4cf12d-aee3-4efd-b9a8-1d55b6b4cbb3', 'employee.organization_history.view', false, 'EG'),
+      ('e30a28d2-775f-4529-91d7-a790146467f8', 'employee.organization_catalog.view', false, 'A'),
+      ('4130d75e-67ff-474e-bc8c-9dc9ce1d79a1', 'employee.department.manage', false, 'A'),
+      ('fffbf9bc-3716-4099-abc8-f48c93cfa3b8', 'employee.designation.manage', false, 'A'),
+      ('dac943a2-b824-4380-84f4-c6f34a8f205d', 'employee.create', false, 'A'),
+      ('e3a49e6b-2b9a-4c10-832a-16b4b7923882', 'employee.profile.update', false, 'EA'),
+      ('6b6804d7-7611-438e-bed7-ee844a003af2', 'employee.identity.correct', false, 'EA'),
+      ('8904c532-8514-414d-a3f4-99e7a2049fd0', 'employee.identity.approve', false, 'EA'),
+      ('c2441c8d-9f9c-489b-9093-0c7082f194bc', 'employee.qualification.change', false, 'EA'),
+      ('24b3a5b0-117f-48f0-a080-020b94aa208c', 'employee.experience.change', false, 'EA'),
+      ('625d82bb-7570-4dad-9a79-bac260f55f91', 'employee.state.change', false, 'EA'),
+      ('0b74ca90-68de-470d-95b6-a99ad85dfe58', 'employee.state.approve', false, 'EA'),
+      ('27c37c2f-fae8-4c3e-8e28-7838df921ba1', 'employee.job_assignment.change', false, 'EA'),
+      ('995862c6-5ede-4ee8-8492-c7be80a8ed45', 'employee.campus_affiliation.change', false, 'EA'),
+      ('ec6984d2-a27c-48e9-9a79-7b1c6aebdb1d', 'employee.photo.submit', false, 'EA'),
+      ('2877e881-2cbe-4a6a-9e63-f5e4aba39164', 'teaching.capability.view', false, 'EG'),
+      ('9174121c-e9b7-48a8-9225-be27dbc4a130', 'teaching.capability_history.view', false, 'TH'),
+      ('04d6da5b-07dd-485f-90a2-aefd3ae19d7b', 'teaching.capability.change', false, 'EA'),
+      ('b0517cc8-412c-4f18-853e-023c3cd29e24', 'teaching.assignment.view', false, 'TR'),
+      ('5a771b4b-7586-435e-a361-ba4ac8e02c84', 'teaching.assignment_history.view', false, 'TH'),
+      ('1523a58c-66b9-46dd-8ac7-241cf38a79d4', 'teaching.class_assignment.change', false, 'TC'),
+      ('e3bc9e50-6e5d-468e-ba2a-4ac6452d89a0', 'teaching.subject_assignment.change', false, 'TS'),
+      ('ab0b4af5-6abb-4f95-b912-35a07d24adaf', 'teaching.assignment.approve', false, 'TS')
+  ) AS v(id,code,family_safe,scope_set) LOOP
+    SELECT id,family_safe INTO found_row FROM app_private.permissions WHERE code=item.code;
+    IF NOT FOUND THEN
+      IF EXISTS(SELECT 1 FROM app_private.permissions WHERE id=item.id::uuid) THEN RAISE EXCEPTION 'D1 permission UUID collision: %',item.code; END IF;
+      INSERT INTO app_private.permissions(id,code,family_safe,state,created_by) VALUES(item.id::uuid,item.code,item.family_safe,'DISABLED',actor);
+    ELSIF found_row.id<>item.id::uuid OR found_row.family_safe<>item.family_safe THEN
+      RAISE EXCEPTION 'D1 permission definition mismatch: %',item.code;
+    END IF;
+  END LOOP;
+  FOR item IN SELECT * FROM (VALUES
+      ('757eb376-a3dc-4dc3-99bd-b128c7d637be', 'academic.class.view', 'ALL', 'DIRECT'),
+      ('f037e93a-7cee-49c6-a0aa-9616d3b7dfe9', 'academic.class.manage', 'ALL', 'DIRECT'),
+      ('1599cfbe-99b4-4dd6-a91d-08580e8f472c', 'academic.subject.view', 'ALL', 'DIRECT'),
+      ('7fe582e8-7863-47a6-9229-28cf81200ed3', 'academic.subject.manage', 'ALL', 'DIRECT'),
+      ('d0aab7af-9c99-4d24-946f-bd58113e5526', 'academic.offering.view', 'ALL', 'DIRECT'),
+      ('64bbe990-31e1-4451-ace9-3f550fa71f7e', 'academic.offering.view', 'CAMPUS', 'DIRECT'),
+      ('b0fc141a-56b3-4288-ab1f-315b299883a0', 'academic.offering.view', 'CLASS', 'DIRECT'),
+      ('077398d1-058f-4bec-9751-c943f03245f3', 'academic.offering.manage', 'ALL', 'DIRECT'),
+      ('ee5eee97-40f7-4aa2-9cba-cf217aba40ee', 'academic.offering.manage', 'CAMPUS', 'DIRECT'),
+      ('7fec8f1b-4b92-4f0b-a0ec-75dea56c956e', 'academic.offering.manage', 'CLASS', 'DIRECT'),
+      ('613ca74d-21a6-48e1-8b0c-f1319ce62a30', 'academic.section.view', 'ALL', 'DIRECT'),
+      ('1c749905-2eec-42d7-a315-18b59ad1dfe2', 'academic.section.view', 'CAMPUS', 'DIRECT'),
+      ('1488e57a-ce97-4f05-8cb3-225e0cac73c8', 'academic.section.view', 'CLASS', 'DIRECT'),
+      ('49cacb7a-88ec-4268-8d99-9afa62fcf6b0', 'academic.section.view', 'SECTION', 'DIRECT'),
+      ('b4d64be4-4572-40cb-b0d4-ec75f49b02d8', 'academic.section.manage', 'ALL', 'DIRECT'),
+      ('c806fe90-dfa0-493e-b4e2-6753c8d70905', 'academic.section.manage', 'CAMPUS', 'DIRECT'),
+      ('919ecbbe-79ae-4bbc-ae22-be37dd77dac3', 'academic.section.manage', 'CLASS', 'DIRECT'),
+      ('051960b3-664f-4f13-9464-14779a7030ec', 'academic.section.manage', 'SECTION', 'DIRECT'),
+      ('b5f65ae1-f488-4293-98d8-4feda80d96e6', 'academic.section_room.view', 'ALL', 'DIRECT'),
+      ('2c591754-784f-45de-ae45-aefc2f8c59d9', 'academic.section_room.view', 'CAMPUS', 'DIRECT'),
+      ('7879e02e-d30b-424e-9276-a84f6381728f', 'academic.section_room.view', 'CLASS', 'DIRECT'),
+      ('994ae536-c829-46ff-b9b6-ff5ca267ac6e', 'academic.section_room.view', 'SECTION', 'DIRECT'),
+      ('297e6f64-e690-48ff-bcfc-a330b973149e', 'academic.section_room.change', 'ALL', 'DIRECT'),
+      ('34705492-79db-447c-bc85-83ac701ce6db', 'academic.section_room.change', 'CAMPUS', 'DIRECT'),
+      ('af77f173-bcfc-4eeb-8537-534203465da4', 'academic.section_room.change', 'CLASS', 'DIRECT'),
+      ('cbb751ca-fc1e-48c9-adff-72ffa2061860', 'academic.section_room.change', 'SECTION', 'DIRECT'),
+      ('06ffa614-749e-4484-ab2c-412045a9ff0d', 'academic.capacity.view', 'ALL', 'DIRECT'),
+      ('b3c1b2ee-f4cc-4636-9489-0333eb8a2153', 'academic.capacity.view', 'CAMPUS', 'DIRECT'),
+      ('3126da90-6ac0-4341-9aa1-f56afd18d3d0', 'academic.capacity.view', 'CLASS', 'DIRECT'),
+      ('5b4036f8-6929-43e6-9a40-055a46c8b02a', 'academic.capacity.view', 'SECTION', 'DIRECT'),
+      ('a5073312-468a-4877-b636-fc7c56799520', 'academic.capacity.change', 'ALL', 'DIRECT'),
+      ('3651a6bb-223b-4104-ba23-a67c09751ee4', 'academic.capacity.change', 'CAMPUS', 'DIRECT'),
+      ('6a754be4-ea6d-4f3c-ac45-4435ffaea8aa', 'academic.capacity.change', 'CLASS', 'DIRECT'),
+      ('f98c883f-c812-490f-a530-61e17a7ef6ce', 'academic.capacity.change', 'SECTION', 'DIRECT'),
+      ('2d9191c7-275e-4214-8a46-f83689379a73', 'academic.capacity_history.view', 'ALL', 'DIRECT'),
+      ('0c6f51be-d2e7-4856-ad52-73a4a1645f5c', 'academic.capacity_history.view', 'CAMPUS', 'DIRECT'),
+      ('ddf88290-0abc-4347-ba15-6a5b98486e1d', 'academic.capacity_history.view', 'CLASS', 'DIRECT'),
+      ('9d026bea-31d7-4e3e-91e7-5fa91daebc64', 'academic.capacity_history.view', 'SECTION', 'DIRECT'),
+      ('22f6f8f3-2dbd-48ee-92d5-153cc9e2a930', 'student.roll_policy.view', 'ALL', 'DIRECT'),
+      ('7eac4a6c-5154-425a-b9e5-5809133411f5', 'student.roll_policy.change', 'ALL', 'DIRECT'),
+      ('e4def11e-ec76-4f07-bf64-a698b8a1fe2b', 'student.roll_history.view', 'ALL', 'DIRECT'),
+      ('c2ebdb2a-c8e9-498f-ab4e-605e30adb1a6', 'student.roll_history.view', 'CAMPUS', 'DIRECT'),
+      ('fdd68571-7861-4216-8b48-ab6da6547c06', 'student.roll_history.view', 'CLASS', 'DIRECT'),
+      ('33c5efbc-54ef-49c1-b01d-ab1880ad5d70', 'student.roll_history.view', 'SECTION', 'DIRECT'),
+      ('9e234fbe-e57e-4f76-b909-aefd3ba3a84f', 'student.roll_history.view', 'OWN', 'D1_STUDENT_SELF'),
+      ('1d2ce13b-da87-4d3d-8e3a-af7af9ae9779', 'student.roll_history.view', 'OWN', 'D1_FAMILY_CHILD'),
+      ('b0786216-dbb4-4673-b8fa-1f0257ad7ffe', 'student.roll.correct', 'ALL', 'DIRECT'),
+      ('b4ebaacf-cb03-4e6f-89f8-848e8a8264e4', 'student.roll.correct', 'CAMPUS', 'DIRECT'),
+      ('dbcc9c25-5e23-46cc-a8b6-e3e38f1c6972', 'student.roll.correct', 'CLASS', 'DIRECT'),
+      ('1e4c7bd0-8e3e-4953-85f6-aa3a55e98733', 'student.roll.correct', 'SECTION', 'DIRECT'),
+      ('846980d3-24bd-47e4-bf5d-dfce1132e9b4', 'student.roster.view', 'ALL', 'DIRECT'),
+      ('4762ef87-b0d0-4eaf-8594-733ae6109364', 'student.roster.view', 'CAMPUS', 'DIRECT'),
+      ('b240461b-dd5c-4b1b-823b-7c2f34a80f36', 'student.roster.view', 'CLASS', 'DIRECT'),
+      ('6802bb6a-889a-4f8f-b4a1-3d2ab7d198f6', 'student.roster.view', 'SECTION', 'DIRECT'),
+      ('9aba4ffc-5da7-468b-a5f2-7d81edb67234', 'student.roster.view', 'OWN', 'D1_STUDENT_SELF'),
+      ('6d71ba61-edf8-4e0e-968b-c64f1df824e2', 'student.roster.view', 'OWN', 'D1_FAMILY_CHILD'),
+      ('315f4f17-e66f-43f7-8e91-673f801b42e3', 'student.roster.view', 'ASSIGNED', 'D1_TEACHING_ANY'),
+      ('c756ee84-e5e5-43fc-8c92-cafc30f045a1', 'student.profile.view', 'ALL', 'DIRECT'),
+      ('23533f19-97b9-4e38-9c7b-f6c6fac3a223', 'student.profile.view', 'CAMPUS', 'DIRECT'),
+      ('1aa57516-caff-4d8d-8b71-fb39b8b32124', 'student.profile.view', 'CLASS', 'DIRECT'),
+      ('cef573ba-fea3-448c-bf4f-3b762a09f1e7', 'student.profile.view', 'SECTION', 'DIRECT'),
+      ('c9c0e417-4f76-44cd-adec-584549d743f9', 'student.profile.view', 'OWN', 'D1_STUDENT_SELF'),
+      ('6160254f-1132-40b8-a539-bb2bd5ac67d4', 'student.profile.view', 'OWN', 'D1_FAMILY_CHILD'),
+      ('fb86543e-72c4-40af-b3e0-4410863016a7', 'student.profile.view', 'ASSIGNED', 'D1_CLASS_TEACHER'),
+      ('6c87a676-ef26-4136-96be-69c9931445f9', 'student.restricted_identity.view', 'ALL', 'DIRECT'),
+      ('8f2b56da-5d44-408c-ad85-4885950cd0a1', 'student.restricted_identity.view', 'CAMPUS', 'DIRECT'),
+      ('baf59f56-4146-45a3-84c7-5d739ee06452', 'student.restricted_identity.view', 'CLASS', 'DIRECT'),
+      ('429da393-824a-43aa-94e9-d8ae90f3e2d8', 'student.restricted_identity.view', 'SECTION', 'DIRECT'),
+      ('d93c1083-febf-496b-99a2-eccdaf57cbc4', 'student.restricted_identity_history.view', 'ALL', 'DIRECT'),
+      ('7fda64ba-e413-4c2f-b399-f0507c9083f4', 'student.restricted_identity_history.view', 'CAMPUS', 'DIRECT'),
+      ('d0952c9e-2857-4f31-9167-8f4b961fc9f4', 'student.restricted_identity_history.view', 'CLASS', 'DIRECT'),
+      ('14144aba-9695-4f5d-b50c-c234c49d2224', 'student.restricted_identity_history.view', 'SECTION', 'DIRECT'),
+      ('b76a6015-aba4-4448-95d6-a8c2acb66df0', 'student.special.view', 'ALL', 'DIRECT'),
+      ('d1f441c5-a6e2-421f-ac1a-eefc153bdd33', 'student.special.view', 'CAMPUS', 'DIRECT'),
+      ('b8781800-5857-4a40-ad67-31327e713023', 'student.special.view', 'CLASS', 'DIRECT'),
+      ('8d52bef1-1888-404f-a8d0-3844b5bfa28d', 'student.special.view', 'SECTION', 'DIRECT'),
+      ('6d048091-4b42-40d8-a56a-61c44dc166bd', 'student.special_history.view', 'ALL', 'DIRECT'),
+      ('4a8cae6e-e3fd-407c-b173-cdf07faa5e28', 'student.special_history.view', 'CAMPUS', 'DIRECT'),
+      ('f763a4bf-1f57-4468-9b1a-6e7125b8bee9', 'student.special_history.view', 'CLASS', 'DIRECT'),
+      ('51496c90-6e8d-4781-bd49-8a34b23bb4ae', 'student.special_history.view', 'SECTION', 'DIRECT'),
+      ('55e1c23f-eb74-40b0-b4ad-fcd5f5271e2d', 'student.emergency_contact.view', 'ALL', 'DIRECT'),
+      ('77d705b6-fb18-4caa-8593-f00724eca825', 'student.emergency_contact.view', 'CAMPUS', 'DIRECT'),
+      ('6a8952b0-fb10-4975-be7e-247f2c0d8f3e', 'student.emergency_contact.view', 'CLASS', 'DIRECT'),
+      ('4510a5bd-425f-44cc-aeb4-fe448e2da134', 'student.emergency_contact.view', 'SECTION', 'DIRECT'),
+      ('798a3f1a-ba6c-4f79-bdcb-6349a2e237ca', 'student.emergency_contact.view', 'OWN', 'D1_FAMILY_CHILD'),
+      ('7705b108-424c-40fc-8fcc-f5bc38f1c8f8', 'student.emergency_contact_history.view', 'ALL', 'DIRECT'),
+      ('0f6dfea1-4feb-452a-8e32-527be50da42a', 'student.emergency_contact_history.view', 'CAMPUS', 'DIRECT'),
+      ('a1b39b6f-f059-4589-beb5-71918125e77f', 'student.emergency_contact_history.view', 'CLASS', 'DIRECT'),
+      ('39a38cb4-a27c-41cb-9111-6774d4a10532', 'student.emergency_contact_history.view', 'SECTION', 'DIRECT'),
+      ('d505cf8d-ff95-42fa-a139-a7c3e9849e8c', 'student.status_history.view', 'ALL', 'DIRECT'),
+      ('50df8ee0-98a7-498e-816e-6335729dd7e3', 'student.status_history.view', 'CAMPUS', 'DIRECT'),
+      ('d18259dc-fcc1-45cb-83b6-aae4396398c7', 'student.status_history.view', 'CLASS', 'DIRECT'),
+      ('e7ec5735-d087-4a86-b8ce-e6a42e4d53b4', 'student.status_history.view', 'SECTION', 'DIRECT'),
+      ('dbfb646a-d0f3-469e-b6f6-00885389e5b0', 'student.status_history.view', 'OWN', 'D1_STUDENT_SELF'),
+      ('bbe11181-58e0-44d4-9887-2c2a20b9a3a6', 'student.status_history.view', 'OWN', 'D1_FAMILY_CHILD'),
+      ('581b06cd-81f3-4d9d-9e0e-691f8e2faafe', 'student.placement_history.view', 'ALL', 'DIRECT'),
+      ('aaeae4f7-6719-4497-bcfd-aef24273b01b', 'student.placement_history.view', 'CAMPUS', 'DIRECT'),
+      ('08e97e2d-cffa-47f7-8b74-bbf92a1e9de3', 'student.placement_history.view', 'CLASS', 'DIRECT'),
+      ('53b08683-5726-44f2-bf6a-9b07b563edd4', 'student.placement_history.view', 'SECTION', 'DIRECT'),
+      ('6d20c248-263c-4c58-9326-e180e34b1863', 'student.placement_history.view', 'OWN', 'D1_STUDENT_SELF'),
+      ('9adea01e-46da-42d2-ad59-7d3ddd4dbea7', 'student.placement_history.view', 'OWN', 'D1_FAMILY_CHILD'),
+      ('d10fb30a-5620-4f4c-a5fc-b89ee974a68f', 'student.create', 'ALL', 'DIRECT'),
+      ('3537e74d-acc8-4f1e-83df-8b2acf40e3ea', 'student.create', 'CAMPUS', 'DIRECT'),
+      ('3494e070-4bc8-4470-98fe-98e06bd13e77', 'student.create', 'CLASS', 'DIRECT'),
+      ('0dc35189-7a2a-4000-8e7f-6ab7d4eb9f29', 'student.create', 'SECTION', 'DIRECT'),
+      ('e1b155ec-44ac-4525-abb3-60fdd2306a0a', 'student.profile.update', 'ALL', 'DIRECT'),
+      ('b5ed8ec6-42a6-47ba-a45f-b44405cc1282', 'student.profile.update', 'CAMPUS', 'DIRECT'),
+      ('3675d5b5-5c5b-4f42-b65e-d484c5984899', 'student.profile.update', 'CLASS', 'DIRECT'),
+      ('b30b4b02-2f0a-4243-a40f-5b48c6954716', 'student.profile.update', 'SECTION', 'DIRECT'),
+      ('1b3f8ba1-6fee-4ed7-8297-16065ac3c786', 'student.identity.correct', 'ALL', 'DIRECT'),
+      ('c387155d-7b9a-4226-a3bd-ae4a67e4f78b', 'student.identity.correct', 'CAMPUS', 'DIRECT'),
+      ('a3639846-7b56-4ba7-8dcf-d77df624c891', 'student.identity.correct', 'CLASS', 'DIRECT'),
+      ('993161dd-27e0-46ca-a3d9-5317f1481756', 'student.identity.correct', 'SECTION', 'DIRECT'),
+      ('bf169bb2-b57d-40be-9efb-7a1961d9d7aa', 'student.identity.approve', 'ALL', 'DIRECT'),
+      ('cc8c3ebc-a879-4352-9c18-028b8845e8a3', 'student.identity.approve', 'CAMPUS', 'DIRECT'),
+      ('6975e311-202e-43d9-94fe-3900490b294b', 'student.identity.approve', 'CLASS', 'DIRECT'),
+      ('67925141-4c0e-44ca-985e-54a44c285fc2', 'student.identity.approve', 'SECTION', 'DIRECT'),
+      ('4260e881-a78a-4db8-bc9c-761f67751039', 'student.special.correct', 'ALL', 'DIRECT'),
+      ('f2b9bed8-d586-49df-af5e-ad56cd51c6cb', 'student.special.correct', 'CAMPUS', 'DIRECT'),
+      ('e6ead11b-b84d-4211-8daa-dafa69f6e360', 'student.special.correct', 'CLASS', 'DIRECT'),
+      ('05c448c3-f367-4ea6-baee-4a579244fd07', 'student.special.correct', 'SECTION', 'DIRECT'),
+      ('47ff420d-8587-48a3-aa6c-abb48fd0a861', 'student.special.approve', 'ALL', 'DIRECT'),
+      ('811c5558-7c97-4911-8081-a60387a2c295', 'student.special.approve', 'CAMPUS', 'DIRECT'),
+      ('55e32e63-6711-45f4-a711-30a89289a746', 'student.special.approve', 'CLASS', 'DIRECT'),
+      ('2c42a41f-899f-4bb3-824d-eb51a0fc8997', 'student.special.approve', 'SECTION', 'DIRECT'),
+      ('66e379f5-7fd2-4ae8-aa4f-c87211c2d39a', 'student.status.change', 'ALL', 'DIRECT'),
+      ('b98e137d-4a65-4063-9e06-1b156b5f1dc0', 'student.status.change', 'CAMPUS', 'DIRECT'),
+      ('ce7cef67-205b-4cb8-a0d4-27ee3f6d6f59', 'student.status.change', 'CLASS', 'DIRECT'),
+      ('57b01036-2286-4562-b6a4-960fd96b9b92', 'student.status.change', 'SECTION', 'DIRECT'),
+      ('475e6f86-b633-4e65-a3cf-aa5bdcd472c9', 'student.status.correct', 'ALL', 'DIRECT'),
+      ('f257700f-6796-4d2f-a81e-687efa64c25d', 'student.status.correct', 'CAMPUS', 'DIRECT'),
+      ('b44a826a-1f78-449a-aeb4-24401ee8ff55', 'student.status.correct', 'CLASS', 'DIRECT'),
+      ('fa36fb3e-688d-4413-826d-c122f4644f4b', 'student.status.correct', 'SECTION', 'DIRECT'),
+      ('a237c7d1-b6d3-4c67-bd3b-e932983027aa', 'student.status.approve', 'ALL', 'DIRECT'),
+      ('5c89856f-93b3-4f3e-a990-b0ab0c2bf3f6', 'student.status.approve', 'CAMPUS', 'DIRECT'),
+      ('77d20fb7-b912-4a89-a3ae-f0989e7c753a', 'student.status.approve', 'CLASS', 'DIRECT'),
+      ('c1453607-acce-4406-a597-d624430bb057', 'student.status.approve', 'SECTION', 'DIRECT'),
+      ('bdd313fd-939f-479c-827b-c62fe54886ad', 'student.enrollment.place', 'ALL', 'DIRECT'),
+      ('a66f5ece-ed8f-4919-89ae-e2dcc17c1474', 'student.enrollment.place', 'CAMPUS', 'DIRECT'),
+      ('1993be5b-7992-4fc5-8318-6261c781a217', 'student.enrollment.place', 'CLASS', 'DIRECT'),
+      ('1315ac59-dec1-448b-bc77-5b8bf7615fcb', 'student.enrollment.place', 'SECTION', 'DIRECT'),
+      ('6e667918-5294-4817-816b-583f7370898a', 'student.enrollment.move', 'ALL', 'DIRECT'),
+      ('f51bfa23-be95-4c26-8946-dee1f38e9d85', 'student.enrollment.move', 'CAMPUS', 'DIRECT'),
+      ('ab0dcb49-7fda-4b29-a9d9-88801697f002', 'student.enrollment.move', 'CLASS', 'DIRECT'),
+      ('b428d44f-b7eb-4c18-b371-c9299c7a021f', 'student.enrollment.move', 'SECTION', 'DIRECT'),
+      ('2883c474-9e92-47c9-b141-14cac59bb66d', 'student.enrollment.end', 'ALL', 'DIRECT'),
+      ('f0ee66e3-8e76-49c6-a523-cdbfc4e86785', 'student.enrollment.end', 'CAMPUS', 'DIRECT'),
+      ('2ceb05fd-1f86-4861-912a-668c0037f69d', 'student.enrollment.end', 'CLASS', 'DIRECT'),
+      ('25a8eb48-a52e-480b-b23d-116f6dacfa2e', 'student.enrollment.end', 'SECTION', 'DIRECT'),
+      ('d29db068-9b8d-4ae9-948e-2e1f850cd2f3', 'student.enrollment.approve', 'ALL', 'DIRECT'),
+      ('78b67fa6-aacd-4311-99ac-1cd8217ff19b', 'student.enrollment.approve', 'CAMPUS', 'DIRECT'),
+      ('ad6835e8-c9ff-4be9-840f-aa9bb31e9f58', 'student.enrollment.approve', 'CLASS', 'DIRECT'),
+      ('1f447a74-0c4e-4bf2-bb21-a28a5be54e8d', 'student.enrollment.approve', 'SECTION', 'DIRECT'),
+      ('e33c4bbc-3ab3-4245-875b-6a2b1a186d41', 'student.capacity_override', 'ALL', 'DIRECT'),
+      ('a53b49ea-4de0-4568-8b4f-425fa387fb0c', 'student.capacity_override', 'CAMPUS', 'DIRECT'),
+      ('2cd968b9-1ff2-4433-9caa-ba94a6998a8a', 'student.capacity_override', 'CLASS', 'DIRECT'),
+      ('e6cc5c54-2e2a-4d29-bfb6-f19378446177', 'student.capacity_override', 'SECTION', 'DIRECT'),
+      ('35760a44-dc48-4335-ac80-8895f36b7088', 'student.emergency_contact.change', 'ALL', 'DIRECT'),
+      ('fd2be08c-415a-4ce9-afac-08c87b515cbe', 'student.emergency_contact.change', 'CAMPUS', 'DIRECT'),
+      ('0ab55ed0-b818-4b82-94a0-7629af4a09b4', 'student.emergency_contact.change', 'CLASS', 'DIRECT'),
+      ('b997f36f-3fc7-4f3d-bbad-2324f44e9fa8', 'student.emergency_contact.change', 'SECTION', 'DIRECT'),
+      ('fa0da817-fc46-4a6c-9a83-d4293131a516', 'student.photo.submit', 'ALL', 'DIRECT'),
+      ('01ad2798-523a-499e-b2a6-a71da85b4a25', 'student.photo.submit', 'CAMPUS', 'DIRECT'),
+      ('6077b8e8-e195-4739-80d9-74fa61b808ec', 'student.photo.submit', 'CLASS', 'DIRECT'),
+      ('9f02fb27-1a76-4e7e-a1b7-afd98656b411', 'student.photo.submit', 'SECTION', 'DIRECT'),
+      ('720b55e3-c7fe-4559-8f18-e1e706e098c3', 'student.birth_certificate.submit', 'ALL', 'DIRECT'),
+      ('38b5616e-22d7-4bc0-8614-2493a1d81725', 'student.birth_certificate.submit', 'CAMPUS', 'DIRECT'),
+      ('37550252-a8e6-4b3e-9657-b8902144d1a5', 'student.birth_certificate.submit', 'CLASS', 'DIRECT'),
+      ('7731253f-2379-452f-a13b-3827837df014', 'student.birth_certificate.submit', 'SECTION', 'DIRECT'),
+      ('0c5bcb81-0667-47a5-8e8f-b0fa7f8eb50d', 'family.summary.view', 'ALL', 'DIRECT'),
+      ('95b134cb-910d-4098-8215-d188fc9f1352', 'family.summary.view', 'CAMPUS', 'DIRECT'),
+      ('b0ff0972-e588-4b32-b86d-1ce1ad782a2d', 'family.summary.view', 'CLASS', 'DIRECT'),
+      ('94ddafbb-1060-4764-a540-91e785c10539', 'family.summary.view', 'SECTION', 'DIRECT'),
+      ('4bd01de9-202b-446f-9bdc-d1bfc0850219', 'family.summary.view', 'OWN', 'D1_FAMILY_CHILD'),
+      ('671a97f5-2058-478e-8358-c93bd8fa2293', 'family.relationship.view', 'ALL', 'DIRECT'),
+      ('22be2266-90b7-4b4f-b805-7e8e8b1093b0', 'family.relationship.view', 'CAMPUS', 'DIRECT'),
+      ('cfbd8aec-2f9c-465e-9d6b-76f29286e9d2', 'family.relationship.view', 'CLASS', 'DIRECT'),
+      ('bdd86be0-4ae0-4d79-ba2b-47619f3b4426', 'family.relationship.view', 'SECTION', 'DIRECT'),
+      ('1c5f1257-0031-4bc4-9e8e-bd6d9f607800', 'family.relationship.view', 'OWN', 'D1_FAMILY_CHILD'),
+      ('43f940ac-a14d-4735-bc38-654648572c3d', 'family.relationship_history.view', 'ALL', 'DIRECT'),
+      ('6e5ed4f2-1ff7-40b0-a081-c3ac3efb5cbe', 'family.relationship_history.view', 'CAMPUS', 'DIRECT'),
+      ('631cb5a0-410b-486a-b5e2-620efba1d873', 'family.relationship_history.view', 'CLASS', 'DIRECT'),
+      ('36705991-cd60-411c-b93b-d017c5ddac9c', 'family.relationship_history.view', 'SECTION', 'DIRECT'),
+      ('01a22a80-df0a-4c4c-916d-6fd53126a8c5', 'family.relationship_history.view', 'OWN', 'D1_FAMILY_CHILD'),
+      ('dfe74d38-2679-4683-a428-3a7f62e11189', 'family.history.view', 'ALL', 'DIRECT'),
+      ('bef62616-eec0-4b21-8f70-4adcec889114', 'family.history.view', 'CAMPUS', 'DIRECT'),
+      ('1ed747bb-6b35-42d1-b5ec-d5f1247c64ca', 'family.history.view', 'CLASS', 'DIRECT'),
+      ('f421cfd7-3031-405b-b3ca-b94e12410745', 'family.history.view', 'SECTION', 'DIRECT'),
+      ('0487aeae-00e9-4b1d-8bc7-234c1195c1d7', 'family.membership_history.view', 'ALL', 'DIRECT'),
+      ('b2188b04-0636-4c90-ab2a-bc36010681b3', 'family.manage', 'ALL', 'DIRECT'),
+      ('1aaf7e15-4d66-451f-bffa-d06674d16566', 'family.relationship.change', 'ALL', 'DIRECT'),
+      ('5e139868-ce8c-4535-a78e-e2d770d73581', 'family.relationship.change', 'CAMPUS', 'DIRECT'),
+      ('03b9cb59-e152-48cf-b032-d14786961b8a', 'family.relationship.change', 'CLASS', 'DIRECT'),
+      ('4f002dde-7a83-4ddc-afcc-e75ec383f429', 'family.relationship.change', 'SECTION', 'DIRECT'),
+      ('b5a2f0f5-4d56-4b55-b734-27d4325f9255', 'family.principal_membership.change', 'ALL', 'DIRECT'),
+      ('b7acec07-e7c3-4dd7-931d-1f13c014727e', 'family.child_access.change', 'ALL', 'DIRECT'),
+      ('2e6773ec-ef53-4e23-884e-35730ed40332', 'family.child_access.change', 'CAMPUS', 'DIRECT'),
+      ('174a27b7-430e-427f-aaea-b366133dcf78', 'family.child_access.change', 'CLASS', 'DIRECT'),
+      ('87ba4548-f331-4945-ac83-1509a17fb8fe', 'family.child_access.change', 'SECTION', 'DIRECT'),
+      ('212f6a7d-2b4b-4b64-9196-ebf9cf22215e', 'family.access.approve', 'ALL', 'DIRECT'),
+      ('485706b6-4c27-453e-aa38-97838ee6d5ff', 'family.access.approve', 'CAMPUS', 'DIRECT'),
+      ('5b9adaa2-9340-49a5-99bb-2ebd15564d37', 'family.access.approve', 'CLASS', 'DIRECT'),
+      ('1052dab5-ddf0-499e-a518-31bf9827ee36', 'family.access.approve', 'SECTION', 'DIRECT'),
+      ('c20fb7e1-0b6e-4ddb-9009-2330fec26711', 'family.primary_context.change', 'ALL', 'DIRECT'),
+      ('3bd6bcff-6701-493c-ae6f-f3d88415d36a', 'family.primary_context.change', 'CAMPUS', 'DIRECT'),
+      ('e7769085-44d8-40d3-bb18-9077c774ae1c', 'family.primary_context.change', 'CLASS', 'DIRECT'),
+      ('d3997f05-ef65-41d6-821d-513d3af220b9', 'family.primary_context.change', 'SECTION', 'DIRECT'),
+      ('e1f97428-d3d2-4c97-ae58-508fb2323a44', 'employee.roster.view', 'ALL', 'DIRECT'),
+      ('523233df-64dd-4a83-b1dd-fe32c5dfec40', 'employee.roster.view', 'CAMPUS', 'DIRECT'),
+      ('ca5cabb3-9e21-4883-9e8b-882cb23dae7a', 'employee.profile.view', 'ALL', 'DIRECT'),
+      ('f546b1e3-c4df-45a0-986b-8abdad19735e', 'employee.profile.view', 'CAMPUS', 'DIRECT'),
+      ('19c075b5-c7ec-4208-9459-ef65424f93f0', 'employee.profile.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('1739c0d6-d29c-45af-bb15-d4b0d5abfb70', 'employee.restricted_identity.view', 'ALL', 'DIRECT'),
+      ('310c85a1-c0b0-4f82-9547-9bfa7deff6cb', 'employee.restricted_identity.view', 'CAMPUS', 'DIRECT'),
+      ('5655dbb6-fc10-4513-866d-a7172a2d860d', 'employee.restricted_identity.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('f91391c1-b2f9-402f-ab6c-87de4e8312be', 'employee.restricted_identity_history.view', 'ALL', 'DIRECT'),
+      ('ebaccb86-d293-4e61-a35b-239b89a97908', 'employee.restricted_identity_history.view', 'CAMPUS', 'DIRECT'),
+      ('a130587a-b3d7-4fac-a582-4a05f5064886', 'employee.restricted_identity_history.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('fd825b31-b24b-4386-a121-0afcac44b73b', 'employee.qualification.view', 'ALL', 'DIRECT'),
+      ('7ebc23d8-56b2-4002-94ba-2712d76f892d', 'employee.qualification.view', 'CAMPUS', 'DIRECT'),
+      ('8ed73368-73ef-46a2-a67d-225a0dd3052b', 'employee.qualification.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('f59247bf-ae4f-482d-9861-48a605ff36ab', 'employee.qualification_history.view', 'ALL', 'DIRECT'),
+      ('6847d848-db6e-4821-821c-fdff1ffb4671', 'employee.qualification_history.view', 'CAMPUS', 'DIRECT'),
+      ('84745ecb-a2b1-44e1-a026-c125e43f3f94', 'employee.qualification_history.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('ff519566-bf13-4092-abcb-01f9a1ce5cd2', 'employee.experience.view', 'ALL', 'DIRECT'),
+      ('7d1794e7-feb1-4af7-ba9e-b7243cc0ac4c', 'employee.experience.view', 'CAMPUS', 'DIRECT'),
+      ('9f1c9763-ac96-4785-b024-1b4444d39284', 'employee.experience.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('3caef7ea-8bf3-4ede-b3c2-5852ca921b68', 'employee.experience_history.view', 'ALL', 'DIRECT'),
+      ('37b40fe0-8353-4b4f-9cce-2f7fbb814684', 'employee.experience_history.view', 'CAMPUS', 'DIRECT'),
+      ('f7823e54-5497-46ac-8359-815a7f3ed73d', 'employee.experience_history.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('448dc6b5-f27f-4f3d-b612-d223804b9460', 'employee.employment_history.view', 'ALL', 'DIRECT'),
+      ('8c68a9bf-af59-4674-91d1-635a87ca648f', 'employee.employment_history.view', 'CAMPUS', 'DIRECT'),
+      ('6c8e07ed-1147-465f-98fc-2b405e89bfa4', 'employee.employment_history.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('f8a6fa7f-1cb0-478c-9b13-646e9e31c9aa', 'employee.organization_history.view', 'ALL', 'DIRECT'),
+      ('996e61a6-30cd-41a6-aa75-d350476487bf', 'employee.organization_history.view', 'CAMPUS', 'DIRECT'),
+      ('e90acb09-fe49-4166-9fb3-e36a84656950', 'employee.organization_history.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('2db13f19-a4cf-4be3-a302-ad3f40b8e96c', 'employee.organization_catalog.view', 'ALL', 'DIRECT'),
+      ('ecbc1e02-33a8-438d-ab50-c8b5f019610c', 'employee.department.manage', 'ALL', 'DIRECT'),
+      ('ce07ab6a-82ea-4ed0-a83c-1fc0c41ede4e', 'employee.designation.manage', 'ALL', 'DIRECT'),
+      ('3421f38f-b27b-42ee-b814-0bd53547e197', 'employee.create', 'ALL', 'DIRECT'),
+      ('019e1830-7595-4238-94f9-c8ce85be366e', 'employee.profile.update', 'ALL', 'DIRECT'),
+      ('2575550d-ed4b-437b-8c53-e482659d2651', 'employee.profile.update', 'CAMPUS', 'DIRECT'),
+      ('e2b10900-15b7-40f9-845b-46446f44ff30', 'employee.identity.correct', 'ALL', 'DIRECT'),
+      ('d679524e-f404-427c-9041-a4e74806fab5', 'employee.identity.correct', 'CAMPUS', 'DIRECT'),
+      ('41ffbb87-8ee1-42d0-ac99-118342ab6c46', 'employee.identity.approve', 'ALL', 'DIRECT'),
+      ('c72ecf50-9b13-4b11-b005-f4d2bbdeb2ab', 'employee.identity.approve', 'CAMPUS', 'DIRECT'),
+      ('beae0c3d-b63a-4607-9ff4-2c11c94de108', 'employee.qualification.change', 'ALL', 'DIRECT'),
+      ('06390391-deef-4087-926f-95a4394ca514', 'employee.qualification.change', 'CAMPUS', 'DIRECT'),
+      ('97eb4c05-3b71-4b16-b112-afb1ff45a904', 'employee.experience.change', 'ALL', 'DIRECT'),
+      ('984a79f4-4072-432b-9dbf-269bb4e6f78b', 'employee.experience.change', 'CAMPUS', 'DIRECT'),
+      ('b58be0dc-cb91-4570-8449-daebb9c5d38b', 'employee.state.change', 'ALL', 'DIRECT'),
+      ('96a6692a-9ec8-4a81-a55b-572af0f73d92', 'employee.state.change', 'CAMPUS', 'DIRECT'),
+      ('66de9b2d-a15d-4a3e-a515-b6b3d77836dc', 'employee.state.approve', 'ALL', 'DIRECT'),
+      ('7699bb3b-bb61-4137-ae85-9cbd2fdb796d', 'employee.state.approve', 'CAMPUS', 'DIRECT'),
+      ('4d311463-6ca0-4993-8352-4dd5ee0531d2', 'employee.job_assignment.change', 'ALL', 'DIRECT'),
+      ('92ec697e-e343-4148-b59b-e6b0089813b8', 'employee.job_assignment.change', 'CAMPUS', 'DIRECT'),
+      ('840165c0-200b-4c22-b142-15128f34aa08', 'employee.campus_affiliation.change', 'ALL', 'DIRECT'),
+      ('e43750af-d098-44fd-8177-19215ac41da8', 'employee.campus_affiliation.change', 'CAMPUS', 'DIRECT'),
+      ('a61089d0-1803-476c-9815-ac3d016542ab', 'employee.photo.submit', 'ALL', 'DIRECT'),
+      ('d5f9a3a5-6e26-473d-9325-0f40bfc39d32', 'employee.photo.submit', 'CAMPUS', 'DIRECT'),
+      ('a2482ce5-b0de-4b0a-9d43-9eea268b5a0e', 'teaching.capability.view', 'ALL', 'DIRECT'),
+      ('24dd3c58-b8d9-4fd2-adba-03ff037116ce', 'teaching.capability.view', 'CAMPUS', 'DIRECT'),
+      ('21cc20b9-1ccf-4626-ba0d-908c99d78348', 'teaching.capability.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('e3c8b77e-8823-4e85-9b71-973f819347ae', 'teaching.capability_history.view', 'ALL', 'DIRECT'),
+      ('8b0f4c51-56c5-4f76-8b17-99ecc71d34e6', 'teaching.capability_history.view', 'CAMPUS', 'DIRECT'),
+      ('4200ac13-b37b-496a-9eaa-4805d0e06e1d', 'teaching.capability_history.view', 'CLASS', 'DIRECT'),
+      ('a5410520-1d37-43e0-8a00-929a4f75f1f5', 'teaching.capability_history.view', 'SECTION', 'DIRECT'),
+      ('a036b293-01ce-42fa-875f-6395e935eda5', 'teaching.capability_history.view', 'SUBJECT', 'DIRECT'),
+      ('f4fbed9b-fa6b-412f-9fc7-b045f586fec3', 'teaching.capability_history.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('7872aacd-402e-4f9d-9d3f-2ede38f8c1f2', 'teaching.capability.change', 'ALL', 'DIRECT'),
+      ('f6ff7825-005a-4398-bad9-e18c089733fc', 'teaching.capability.change', 'CAMPUS', 'DIRECT'),
+      ('db656097-6d61-4348-a633-495aa266ce6d', 'teaching.assignment.view', 'ALL', 'DIRECT'),
+      ('8fc186c7-9ca2-4cbe-b478-37d7e0765848', 'teaching.assignment.view', 'CAMPUS', 'DIRECT'),
+      ('24945ecd-0a39-4a1a-b7fc-2db0a7484df2', 'teaching.assignment.view', 'CLASS', 'DIRECT'),
+      ('ed7b241d-5b8b-4fe3-b71c-b5d731b7019a', 'teaching.assignment.view', 'SECTION', 'DIRECT'),
+      ('4792ccf2-90a7-4926-a11e-6a83f30aaf7b', 'teaching.assignment.view', 'SUBJECT', 'DIRECT'),
+      ('b7a401b7-c5fb-48e5-a6a0-73168132b346', 'teaching.assignment.view', 'ASSIGNED', 'D1_TEACHING_ANY'),
+      ('065ac4dc-250d-4460-9406-42f60802c5bf', 'teaching.assignment_history.view', 'ALL', 'DIRECT'),
+      ('df7b12f5-8fc1-4acb-8491-fa821efd3cc5', 'teaching.assignment_history.view', 'CAMPUS', 'DIRECT'),
+      ('e119d8f2-4800-4636-8ffc-bf1cc4177029', 'teaching.assignment_history.view', 'CLASS', 'DIRECT'),
+      ('c863acec-7388-44b4-ba61-d6dc02d1c67e', 'teaching.assignment_history.view', 'SECTION', 'DIRECT'),
+      ('6b9a4ae6-67d6-48d9-a9d4-0f75a5567995', 'teaching.assignment_history.view', 'SUBJECT', 'DIRECT'),
+      ('669e0ae3-5523-4cd4-8101-0e205dc132e6', 'teaching.assignment_history.view', 'OWN', 'D1_EMPLOYEE_SELF'),
+      ('30c4f0aa-decc-4d74-b990-9eaa6a98bbaf', 'teaching.class_assignment.change', 'ALL', 'DIRECT'),
+      ('f0ab25a5-fce4-406d-bf73-b0a575f1a327', 'teaching.class_assignment.change', 'CAMPUS', 'DIRECT'),
+      ('a7e93d62-c7bd-4105-80c5-d8aaafaa56d5', 'teaching.class_assignment.change', 'CLASS', 'DIRECT'),
+      ('d9be8b1b-9a0c-4097-8ebb-43ce78a09885', 'teaching.class_assignment.change', 'SECTION', 'DIRECT'),
+      ('e754d86c-4969-4645-9170-0aa05e01cbfe', 'teaching.subject_assignment.change', 'ALL', 'DIRECT'),
+      ('c4819db4-bf35-465d-88d4-9c0a4f9835fe', 'teaching.subject_assignment.change', 'CAMPUS', 'DIRECT'),
+      ('e6ced584-1b69-4b31-a6db-cc8e6265af56', 'teaching.subject_assignment.change', 'CLASS', 'DIRECT'),
+      ('5c31f213-87a0-4a3e-a071-e44a930d0cce', 'teaching.subject_assignment.change', 'SECTION', 'DIRECT'),
+      ('fc55f215-d916-4fe1-a07d-933bcde73d31', 'teaching.subject_assignment.change', 'SUBJECT', 'DIRECT'),
+      ('f3f00eae-bba2-447e-a530-a35f4e22b4ff', 'teaching.assignment.approve', 'ALL', 'DIRECT'),
+      ('ccc503e0-31c0-4188-af89-e60212d5ff45', 'teaching.assignment.approve', 'CAMPUS', 'DIRECT'),
+      ('a4685843-2041-4213-9c54-2d31c1f3e75c', 'teaching.assignment.approve', 'CLASS', 'DIRECT'),
+      ('78b889d3-7354-4f1a-98f0-5ae1cc64bfc0', 'teaching.assignment.approve', 'SECTION', 'DIRECT'),
+      ('79d9ad10-98a2-4efb-91a1-010c21e79103', 'teaching.assignment.approve', 'SUBJECT', 'DIRECT')
+  ) AS v(id,permission_code,scope_kind,resolver_key) LOOP
+    SELECT id INTO pid FROM app_private.permissions WHERE code=item.permission_code;
+    IF pid IS NULL THEN RAISE EXCEPTION 'D1 missing permission: %',item.permission_code; END IF;
+    SELECT id INTO found_row FROM app_private.permission_scope_contracts
+      WHERE permission_id=pid AND scope_kind=item.scope_kind AND resolver_key=item.resolver_key AND contract_version=1;
+    IF NOT FOUND THEN
+      IF EXISTS(SELECT 1 FROM app_private.permission_scope_contracts WHERE id=item.id::uuid) THEN RAISE EXCEPTION 'D1 scope UUID collision: %',item.permission_code; END IF;
+      INSERT INTO app_private.permission_scope_contracts(id,permission_id,scope_kind,resolver_key,contract_version,enabled,created_by)
+        VALUES(item.id::uuid,pid,item.scope_kind,item.resolver_key,1,false,actor);
+    ELSIF found_row.id<>item.id::uuid THEN
+      RAISE EXCEPTION 'D1 scope definition mismatch: %',item.permission_code;
+    END IF;
+  END LOOP;
+  FOR item IN SELECT * FROM (VALUES
+      ('e7872b13-7987-43d8-b89a-9e7f4aec073f', 'academic.class.change', 'academic.class.manage', NULL, false),
+      ('837e58fd-dc37-4963-9499-bc8c5963fd0e', 'academic.subject.change', 'academic.subject.manage', NULL, false),
+      ('34acab4f-596e-428d-a75f-4d87b875f6c2', 'academic.offering.change', 'academic.offering.manage', NULL, false),
+      ('7bf20571-ea73-473c-ab39-9e361f67eb0c', 'academic.section.change', 'academic.section.manage', NULL, false),
+      ('115696fa-01c3-48b5-8e6c-3b1ace5e4170', 'academic.section_room.change', 'academic.section_room.change', NULL, false),
+      ('10cdeb24-1e0f-40e2-b55f-d1991c40d137', 'academic.capacity.change', 'academic.capacity.change', NULL, false),
+      ('8af65f2a-a5cc-454d-80e2-d1c9168d7c1e', 'student.roll_policy.change', 'student.roll_policy.change', NULL, false),
+      ('22e4c10e-23c6-4b15-94e7-08893731e8f6', 'student.roll.correct', 'student.roll.correct', NULL, false),
+      ('bcebcc41-e303-4336-8eb6-15caba6c9255', 'student.create', 'student.create', NULL, false),
+      ('65f84926-8be0-40be-a6df-96271aa4dd02', 'student.profile.update', 'student.profile.update', NULL, false),
+      ('c8c2de83-630f-489e-8719-7cc783bd0463', 'student.identity.correct', 'student.identity.correct', 'student.identity.approve', true),
+      ('209f83d3-58f7-4145-8f47-7de56bc0b501', 'student.special.correct', 'student.special.correct', 'student.special.approve', true),
+      ('4e8c5b74-32d4-4354-aff7-ffcbd4e7063f', 'student.status.change', 'student.status.change', 'student.status.approve', false),
+      ('06305b6d-9f9f-4437-bd90-305b6f38e3b1', 'student.status.correct', 'student.status.correct', 'student.status.approve', true),
+      ('33b94093-4813-4709-9d1a-478326e9d3ed', 'student.enrollment.place', 'student.enrollment.place', NULL, false),
+      ('15ee679f-4750-4e83-af38-16cf627aa33e', 'student.enrollment.move', 'student.enrollment.move', 'student.enrollment.approve', false),
+      ('d4b31095-ed5f-49f3-91f1-27bfdc842460', 'student.enrollment.end', 'student.enrollment.end', 'student.enrollment.approve', false),
+      ('d1095aec-d063-45b3-b44c-88f40c9d7a68', 'student.emergency_contact.change', 'student.emergency_contact.change', NULL, false),
+      ('951d8378-4017-438d-88e2-728a77f4adf7', 'family.manage', 'family.manage', NULL, false),
+      ('c3c20b95-13fd-4908-9287-315adc5d18f8', 'family.relationship.change', 'family.relationship.change', 'family.access.approve', false),
+      ('4701ac82-f9a7-4d7c-9676-1b252a1d3ecc', 'family.principal_membership.change', 'family.principal_membership.change', 'family.access.approve', false),
+      ('49b4e651-1a9d-4b57-ba68-7ccb6789ca9d', 'family.child_access.change', 'family.child_access.change', 'family.access.approve', false),
+      ('959c7db8-dce4-4261-b830-d9d24a705ad8', 'family.primary_context.change', 'family.primary_context.change', NULL, false),
+      ('95b0754a-16fe-4ee9-8f0b-ad48504026c2', 'employee.department.change', 'employee.department.manage', NULL, false),
+      ('e9e1deff-36fb-463f-83b2-510d2578a4a7', 'employee.designation.change', 'employee.designation.manage', NULL, false),
+      ('9b20dbf8-4f3e-4729-89e9-8cae65be4d14', 'employee.create', 'employee.create', NULL, false),
+      ('84cecaa4-fb7a-4f42-bd10-d1c01582e15a', 'employee.profile.update', 'employee.profile.update', NULL, false),
+      ('13a4d87d-cb38-4b95-a6f8-9230f4c2a11e', 'employee.identity.correct', 'employee.identity.correct', 'employee.identity.approve', true),
+      ('40f541ab-53e5-48e3-9fa3-b6801bb1fcd1', 'employee.qualification.change', 'employee.qualification.change', NULL, false),
+      ('c880066a-c5e0-42dd-b20e-f8fd33acc374', 'employee.experience.change', 'employee.experience.change', NULL, false),
+      ('a775a2a6-3d0c-47cb-9ae0-eb0337855842', 'employee.state.change', 'employee.state.change', 'employee.state.approve', false),
+      ('97b2a306-572d-4f8f-a435-1cf7661a38cd', 'employee.job_assignment.change', 'employee.job_assignment.change', NULL, false),
+      ('3738831c-3c45-4fd4-a96e-1778abdc2db5', 'employee.campus_affiliation.change', 'employee.campus_affiliation.change', NULL, false),
+      ('5b2aff6a-7680-453e-80c3-1e7dfcc93e34', 'teaching.capability.change', 'teaching.capability.change', NULL, false),
+      ('301dc160-10ec-4829-955b-fc2066bf86f5', 'teaching.class_assignment.change', 'teaching.class_assignment.change', 'teaching.assignment.approve', false),
+      ('361a7634-f0da-46c3-8e34-cecd7ef4b5b6', 'teaching.subject_assignment.change', 'teaching.subject_assignment.change', 'teaching.assignment.approve', false)
+  ) AS v(id,code,request_code,review_code,requires_approval) LOOP
+    SELECT id INTO pid FROM app_private.permissions WHERE code=item.request_code;
+    rid:=NULL;
+    IF item.review_code IS NOT NULL THEN SELECT id INTO rid FROM app_private.permissions WHERE code=item.review_code; END IF;
+    IF pid IS NULL OR (item.review_code IS NOT NULL AND rid IS NULL) THEN RAISE EXCEPTION 'D1 operation permission missing: %',item.code; END IF;
+    SELECT id,handler_key,request_permission_id,review_permission_id,payload_schema_version,requires_approval INTO found_row
+      FROM app_private.operation_contracts WHERE code=item.code AND contract_version=1;
+    IF NOT FOUND THEN
+      IF EXISTS(SELECT 1 FROM app_private.operation_contracts WHERE id=item.id::uuid) THEN RAISE EXCEPTION 'D1 operation UUID collision: %',item.code; END IF;
+      INSERT INTO app_private.operation_contracts(id,code,contract_version,handler_key,request_permission_id,review_permission_id,payload_schema_version,requires_approval,enabled,created_by)
+        VALUES(item.id::uuid,item.code,1,item.code,pid,rid,1,item.requires_approval,false,actor);
+    ELSIF found_row.id<>item.id::uuid OR found_row.handler_key<>item.code OR found_row.request_permission_id<>pid
+       OR found_row.review_permission_id IS DISTINCT FROM rid OR found_row.payload_schema_version<>1
+       OR found_row.requires_approval<>item.requires_approval THEN
+      RAISE EXCEPTION 'D1 operation definition mismatch: %',item.code;
+    END IF;
+  END LOOP;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_register_catalog_v1() FROM PUBLIC, anon, authenticated, service_role;
+
+-- Frozen D1 event vocabulary. Foundation has no event-registry table; this is
+-- a private code manifest, not worker activation or an outbox write.
+CREATE FUNCTION app_private.d1_event_manifest_v1() RETURNS TABLE(event_type text, schema_version integer)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT v.event_type, 1 FROM (VALUES
+    ('academic.class_changed'),
+    ('academic.subject_changed'),
+    ('academic.offering_changed'),
+    ('academic.section_changed'),
+    ('academic.section_room_changed'),
+    ('academic.capacity_changed'),
+    ('student.created'),
+    ('student.profile_changed'),
+    ('student.identity_corrected'),
+    ('student.special_corrected'),
+    ('student.status_changed'),
+    ('student.emergency_contact_changed'),
+    ('enrollment.created'),
+    ('enrollment.moved'),
+    ('enrollment.ended'),
+    ('enrollment.capacity_overridden'),
+    ('enrollment.roll_corrected'),
+    ('family.changed'),
+    ('family.relationship_changed'),
+    ('family.principal_link_changed'),
+    ('family.child_access_changed'),
+    ('family.primary_context_changed'),
+    ('employee.created'),
+    ('employee.state_changed'),
+    ('employee.identity_corrected'),
+    ('employee.qualification_changed'),
+    ('employee.experience_changed'),
+    ('employee.job_changed'),
+    ('employee.campus_affiliation_changed'),
+    ('teaching.capability_changed'),
+    ('teaching.class_assignment_changed'),
+    ('teaching.subject_assignment_changed')
+  ) AS v(event_type)
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_event_manifest_v1() FROM PUBLIC, anon, authenticated, service_role;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_bootstrap_executor;
+-- Deployment-only invocation: SET ROLE schoolos_bootstrap_executor; SELECT app_private.d1_register_catalog_v1();
+-- All new rows are disabled; registration does not activate role grants or clients.
+
+-- A file FK alone cannot establish the domain-purpose binding. These narrow
+-- guards reject a mismatched purpose while leaving upload/download authorization
+-- with the existing server-controlled file service.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_guard_file_purpose() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE linked_file uuid; actual_purpose text; file_state text;
+BEGIN
+  IF TG_TABLE_NAME='students' OR TG_TABLE_NAME='employees' THEN
+    linked_file:=NEW.profile_photo_file_id;
+  ELSIF TG_TABLE_NAME='student_identity_details' THEN
+    linked_file:=NEW.birth_certificate_file_id;
+  ELSE
+    RAISE EXCEPTION 'unsupported D1 file relationship';
+  END IF;
+  IF linked_file IS NULL THEN RETURN NEW; END IF;
+  SELECT f.purpose_code,f.state INTO actual_purpose,file_state
+    FROM app_private.file_objects f WHERE f.id=linked_file;
+  IF actual_purpose IS DISTINCT FROM TG_ARGV[0] OR file_state IS DISTINCT FROM 'AVAILABLE' THEN
+    RAISE EXCEPTION 'D1 file purpose or availability mismatch';
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_guard_file_purpose() FROM PUBLIC, anon, authenticated, service_role;
+CREATE TRIGGER ab_d1_file_purpose BEFORE INSERT OR UPDATE OF profile_photo_file_id
+  ON app_private.students FOR EACH ROW
+  EXECUTE FUNCTION app_private.d1_guard_file_purpose('STUDENT_PROFILE_PHOTO');
+CREATE TRIGGER ab_d1_file_purpose BEFORE INSERT OR UPDATE OF birth_certificate_file_id
+  ON app_private.student_identity_details FOR EACH ROW
+  EXECUTE FUNCTION app_private.d1_guard_file_purpose('BIRTH_CERTIFICATE');
+CREATE TRIGGER ab_d1_file_purpose BEFORE INSERT OR UPDATE OF profile_photo_file_id
+  ON app_private.employees FOR EACH ROW
+  EXECUTE FUNCTION app_private.d1_guard_file_purpose('EMPLOYEE_PROFILE_PHOTO');
+RESET ROLE;

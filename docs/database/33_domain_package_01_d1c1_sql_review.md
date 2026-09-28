@@ -1,0 +1,38 @@
+# D1C1 Migration 10 SQL review — working draft
+
+**Status: INCOMPLETE WORKING DRAFT — NOT AUTHORIZED FOR APPLICATION.** This record tracks the local D1C1 translation from clean starting HEAD `e71d3be34f55235c18255795f32dfb6f09a2b182`. No SQL has been applied, no Supabase project has been contacted, and no D1C2 test has been created. The uncommitted working file uses the non-executable suffix `supabase/migrations/20260928000000_domain_package_01.sql.draft` so an ordinary CLI migration scan cannot select it.
+
+## Bootstrap attribution boundary
+
+Migration-time D1 catalog insertion was rejected because the Foundation permission, scope-contract and operation-contract rows require a trusted `created_by` Principal. The Foundation bootstrap SYSTEM actor is created after structural migrations on a fresh school project. The approved sequence is Foundation migrations 1–9, structural Migration 10, Foundation bootstrap, trusted D1 registration, D1 non-owner tests, then separately approved activation. Migration 10 must not create a SYSTEM Principal or call its registrar. The working draft defines a private `d1_register_catalog_v1()` owned by `schoolos_bootstrap_executor`: it requires exactly one ACTIVE SYSTEM Principal with bootstrap purpose, takes authorization lock `(71001,1)` exclusively, and uses preassigned manifest UUIDs. New permission, scope and operation rows start disabled; exact replay is a no-op and incompatible code/UUID/classification/contract collisions raise an error. It does not create grants or assignments. This is a structural definition only, not execution evidence.
+
+## Drafted objects and static counts
+
+The file currently describes 34 new private D1 relations in the reviewed dependency order; 34 UUID PKs, 21 full candidate unique keys, 3 partial unique indexes, 34 row-local CHECK bundles, 47 D1 secondary indexes, 34 FORCE RLS tables, five NOLOGIN D1 executor roles, and the three typed authorization target columns/FKs on `assignment_permission_scopes`. It extends the Foundation scope-kind checks and typed target shape, immutability and overlap guards without changing `has_complete_grant(text,text,uuid)`. It also contains an initial private D1 evaluator, defensive record and file-purpose triggers, role-specific internal policies/grants, the private post-bootstrap manifest (87 permissions, 297 scope alternatives, 36 operation codes), and a private 32-code event vocabulary function. None of these counts is a live PostgreSQL count or evidence of correct execution.
+
+The current draft has **not** implemented the complete approved D1B2/D1B3 runtime contract and must not be renamed to `.sql`, applied, reviewed as ready, or committed as a completed D1C1 migration yet. Specifically:
+
+1. Cross-row temporal overlap, same-parent supersession, sorted lock order, ancestry/eligibility, capacity breakpoint counts and persistent roll namespace checks remain to be implemented and independently reviewed. The row-local CHECKs and FKs alone cannot enforce them.
+2. Deferred same-transaction Student status, enrollment-roll, capacity-revision and override completeness checks are absent.
+3. The current private evaluator needs full target-state, historical and resolver-path review. Its presence is not proof that every allowed and denied D1B3B path is implemented.
+4. Fixed typed checked-read surfaces and all 36 protected command families are absent. No command receipts, approval apply path, redacted audit/outbox writes or command-level reauthorization are installed.
+5. The file-purpose trigger checks the three approved purpose codes and AVAILABLE state on a new link, but typed ownership, current entitlement and upload/download authorization remain separately gated by the reviewed file service.
+6. Foundation has no generic event-registry table. The draft's event vocabulary is a private function, not a worker registration or permission to publish events. This needs explicit review with the eventual evidence writer.
+7. The Foundation bootstrap plan names a purpose-bound bootstrap actor, while current executable Foundation migrations do not seed an exact bootstrap `system_purpose` string. The registrar's `'bootstrap'` lookup must be checked against the actual bootstrap manifest before activation; absence or ambiguity fails closed.
+8. Foundation `operation_contracts.requires_approval` is a Boolean. The P1 school-configurable choice and retroactive teaching P0/P2 split must be enforced by fixed policy/apply code before any operation is enabled. The manifest deliberately leaves every D1 operation disabled.
+9. `student.create` depends on a verified final Admissions handoff from a later package. It must remain unavailable until that handoff exists; Migration 10 must not fabricate an Admissions allocator.
+
+## Local evidence and next work
+
+### Focused static review findings
+
+- The draft contains no D1 protected command function, command-key lock, `pg_advisory_xact_lock_shared(71001,1)`, command-receipt write, approval apply call, audit write or outbox write. Its five D1 executor roles instead have direct private-table INSERT and selected UPDATE grants with `USING (true)` / `WITH CHECK (true)` policies. The provenance trigger verifies a principal and immutable fields, but does not verify the permission, target, approval, expected version or transaction protocol. These grants must not be treated as an acceptable protected-command implementation.
+- There is no cross-row D1 trigger or deferred constraint trigger. For example, the draft has no parent-locked primary-enrollment overlap/capacity check, no same-transaction initial Student status requirement, and no roll-allocation coverage check. The row-local CHECK bundles and partial unique indexes do not close these gaps.
+- `d1_authorized()` requires exactly one effective PRIMARY enrollment before it can authorize *any* `STUDENT` target. That is not yet a proven match for each reviewed Student/FAMILY read, including historical and pre-placement cases. The routine also lacks permission-specific target-state rules; it must be checked against every fixed resolver and read projection before it can be relied on.
+- The post-bootstrap registrar is only a structural proposal. It has not been parsed or run, and its exact bootstrap actor purpose string is not established by executable Foundation bootstrap code. Its disabled catalog rows do not authorize calling the absent commands.
+
+These are design and implementation blockers, not failed PostgreSQL assertions. The draft must remain outside the executable migration set until they are corrected and independently reviewed.
+
+`python tools/supabase/foundation_guard.py --future report` reported `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests`, `FUTURE_MIGRATIONS_PRESENT`, and `LOCAL_CONFIG_PASS` while the file had a `.sql` suffix. After moving the incomplete file to `.sql.draft`, the default `python tools/supabase/foundation_guard.py` reported `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests` and `LOCAL_CONFIG_PASS`. This validates only the frozen source/config boundary. The working draft has not been SQL-parsed by PostgreSQL, applied locally or remotely, linted, or tested under non-owner roles. Foundation migrations and database tests 01–09 remain untouched.
+
+Finish and statically review the SQL against all D1B2/D1B3 contracts before creating the final Migration 10 `.sql`, then update this record with the actual object inventory and validation. D1C2 later covers clean install and upgrade sequencing, registrar exact/no-op/collision behavior, runtime non-owner security and regressions. No D1C1 commit has been made from this working draft.
