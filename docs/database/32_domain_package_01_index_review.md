@@ -4,7 +4,7 @@
 
 ## Integrity-backed indexes — KEEP
 
-Each comma list is exact ordered key columns; all entries are unique. These **20 full U** and **3 partial PU** are counted separately from **47 selected nonunique secondary indexes** below. `id` alone is already covered by PK and is never duplicated. A composite key beginning with `id` is retained only because the corresponding composite FK requires it, not for faster `id` lookup.
+Each comma list is exact ordered key columns; all entries are unique. These **21 full U** and **3 partial PU** are counted separately from **47 selected nonunique secondary indexes** below. `id` alone is already covered by PK and is never duplicated. A composite key beginning with `id` is retained only because the corresponding composite FK requires it, not for faster `id` lookup.
 
 | ID | Relation | Exact ordered key / predicate | Purpose and expected lookup; coverage |
 |---|---|---|---|
@@ -21,16 +21,17 @@ Each comma list is exact ordered key columns; all entries are unique. These **20
 | U09 | students | `(person_id)` | One Student per Person. |
 | U10 | students | `(school_student_id)` | Permanent Student ID exact lookup and non-reuse. |
 | U11 | students | `(admission_number)` | Accepted Admissions number exact lookup/non-reuse. |
+| U12 | student_status_transitions | `(student_id,sequence_number)` | Server-assigned immutable per-Student positive sequence; allocation serialized by Student row lock. |
 | PU03 | student_status_transitions | `(student_id,command_receipt_id)` WHERE `command_receipt_id IS NOT NULL` | One transition per Student/receipt when supplied; NULL receipt rows are not collapsed. |
-| U12 | enrollments | `(id,student_id)` | Roll composite FK target; `id` covered by PK. |
-| U13 | enrollment_capacity_overrides | `(enrollment_id)` | At most one actual override per placement. |
-| U14 | enrollment_capacity_overrides | `(command_receipt_id)` | One override evidence per receipt. |
-| U15 | families | `(school_id,code)` | School Family code. |
-| U16 | family_relationships | `(id,student_id)` | Primary-context composite FK; `id` covered by PK. |
-| U17 | departments | `(school_id,code)` | School Department code. |
-| U18 | designations | `(school_id,code)` | School Designation code. |
-| U19 | employees | `(person_id)` | One Employee per Person. |
-| U20 | employees | `(employee_code)` | Permanent Employee business-ID lookup. |
+| U13 | enrollments | `(id,student_id)` | Roll composite FK target; `id` covered by PK. |
+| U14 | enrollment_capacity_overrides | `(enrollment_id)` | At most one actual override per placement. |
+| U15 | enrollment_capacity_overrides | `(command_receipt_id)` | One override evidence per receipt. |
+| U16 | families | `(school_id,code)` | School Family code. |
+| U17 | family_relationships | `(id,student_id)` | Primary-context composite FK; `id` covered by PK. |
+| U18 | departments | `(school_id,code)` | School Department code. |
+| U19 | designations | `(school_id,code)` | School Designation code. |
+| U20 | employees | `(person_id)` | One Employee per Person. |
+| U21 | employees | `(employee_code)` | Permanent Employee business-ID lookup. |
 
 No partial UNIQUE on an open interval (`effective_until IS NULL`) is claimed to prove **historical** non-overlap; serialized scans cover past, current and future intervals. Persistent roll numeric uniqueness across policy revisions is also a locked school-wide check, because the present relation stores `policy_revision_id`, not a separate physical school lineage key. A trigger and protected command must reject an incompatible privileged fixture insert; a simple unique index on `(policy_revision_id,numeric_value)` would be too narrow and would incorrectly reject legitimate history in other contexts.
 
@@ -57,7 +58,7 @@ No partial UNIQUE on an open interval (`effective_until IS NULL`) is claimed to 
 | I15 | students | `(current_status,id)` | Status-filtered Student administration list; U keys do not start status. |
 | I16 | student_identity_details | `(student_id,effective_from DESC)` | Narrow current/historical restricted snapshot. |
 | I17 | student_special_details | `(student_id,effective_from DESC)` | Narrow current/historical special snapshot. |
-| I18 | student_status_transitions | `(student_id,effective_on DESC,created_at DESC)` | Status-history reconstruction; PU03 is receipt-specific. |
+| I18 | student_status_transitions | `(student_id,effective_on DESC,sequence_number DESC)` | As-of authoritative status selection after supersession; `created_at` remains recording time only. |
 | I19 | enrollments | `(student_id,effective_from DESC)` | PRIMARY history and locked overlap scan; U12 starts id. |
 | I20 | enrollments | `(section_offering_id,effective_from,effective_until)` | Section roster/capacity interval scan including future dates. |
 | I21 | enrollments | `(predecessor_id)` | Placement lineage and move-review lookup; id PK does not serve child-side FK. |
@@ -88,7 +89,7 @@ No partial UNIQUE on an open interval (`effective_until IS NULL`) is claimed to 
 | I46 | employee_experience_entries | `(experience_record_id)` | School-serialized global lineage UUID ownership lookup; I35 begins Employee. |
 | I47 | employee_job_assignments | `(designation_id,effective_from DESC)` | Designation-only staff list; I37 begins Department and cannot serve this filter. |
 
-**Class-level capacity count** joins Section Offering → Class Offering and uses `I20` per section after the class row lock; `U06`/`I05` find sections by class offering. For a large class with many sections, D1C must verify the query plan and may propose an additional class-ancestry materialization only under a new review; D1B2 does not add contradictory class IDs to Enrollment. Exact Student ID and Admission Number lookups use U10/U11; Employee ID/Person uses U20/U19; Student Person uses U09. Family child lookup uses I27. Department+Designation staff listing uses I37; designation-only listing uses I47.
+**Class-level capacity count** joins Section Offering → Class Offering and uses `I20` per section after the class row lock; `U06`/`I05` find sections by class offering. For a large class with many sections, D1C must verify the query plan and may propose an additional class-ancestry materialization only under a new review; D1B2 does not add contradictory class IDs to Enrollment. Exact Student ID and Admission Number lookups use U10/U11; Employee ID/Person uses U21/U20; Student Person uses U09. Family child lookup uses I27. Department+Designation staff listing uses I37; designation-only listing uses I47.
 
 ## REMOVE or DEFER decisions
 
@@ -106,4 +107,4 @@ No partial UNIQUE on an open interval (`effective_until IS NULL`) is claimed to 
 | Broad JSONB GIN or extension-backed range index | REJECT | D1 has no generic JSON facts; serialized B-tree-supported overlap checks require no new extension. |
 | Additional Subject-teacher `(subject_id,...)` standalone index | DEFER | Primary operation query is Section+Subject (I43); add only after measured cross-section Subject lookup need. |
 
-The 47 selected nonunique indexes, 20 full unique keys, 3 partial unique indexes and 34 PK indexes are **design counts**, not empirical deployed catalog counts. D1C must reproduce the exact selected set or return for reviewed revision; no schema object was created here.
+The 47 selected nonunique indexes, 21 full unique keys, 3 partial unique indexes and 34 PK indexes are **design counts** (71 non-PK candidates), not empirical deployed catalog counts. D1C must reproduce the exact selected set or return for reviewed revision; no schema object was created here.
