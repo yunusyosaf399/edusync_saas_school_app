@@ -2878,10 +2878,9 @@ GRANT EXECUTE ON FUNCTION app_private.d1_authorized(text,text,uuid,uuid,date)
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
 
--- PROVISIONAL D1C1B registrar: this exploratory block still carries the old
--- 87-permission / 297-alternative manifest and an unapproved 'bootstrap'
--- system_purpose literal. D1B4 requires 97 / 322 and an approved bootstrap
--- manifest identity before this can be a candidate. It is not invoked here.
+-- D1C1B catalog manifest: 97 permissions, 322 supported alternatives and
+-- 36 operation contracts. The trusted bootstrap actor is verified by both
+-- frozen UUID and purpose. This function is never invoked by Migration 10.
 -- Trusted post-bootstrap registration; this function is not invoked by the migration.
 SET ROLE schoolos_schema_owner;
 CREATE POLICY d1_bootstrap_actor_lookup ON app_private.principals FOR SELECT TO schoolos_bootstrap_executor USING (true);
@@ -2901,9 +2900,13 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body
 DECLARE actor uuid; n bigint; item record; found_row record; pid uuid; rid uuid;
 BEGIN
   PERFORM pg_catalog.pg_advisory_xact_lock(71001,1);
-  SELECT count(*) INTO n FROM app_private.principals WHERE kind='SYSTEM' AND system_purpose='bootstrap' AND state='ACTIVE';
-  IF n<>1 THEN RAISE EXCEPTION 'D1 catalog requires exactly one ACTIVE bootstrap SYSTEM actor'; END IF;
-  SELECT id INTO actor FROM app_private.principals WHERE kind='SYSTEM' AND system_purpose='bootstrap' AND state='ACTIVE';
+  SELECT count(*) INTO n FROM app_private.principals
+    WHERE system_purpose='deployment-bootstrap';
+  IF n<>1 THEN RAISE EXCEPTION 'D1 catalog requires exactly one deployment-bootstrap purpose claimant'; END IF;
+  SELECT id INTO actor FROM app_private.principals
+    WHERE id='3e0e0b72-762c-44e1-b7eb-98dcc449643a'::uuid
+      AND kind='SYSTEM' AND system_purpose='deployment-bootstrap' AND state='ACTIVE';
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1 catalog deployment-bootstrap actor identity mismatch'; END IF;
   FOR item IN SELECT * FROM (VALUES
       ('03182d5e-0c4f-4b6a-86e4-395c91f99b86', 'academic.class.view', false, 'A'),
       ('b7aee669-e205-49c9-81fa-69705844e09f', 'academic.class.manage', false, 'A'),
@@ -2991,7 +2994,17 @@ BEGIN
       ('5a771b4b-7586-435e-a361-ba4ac8e02c84', 'teaching.assignment_history.view', false, 'TH'),
       ('1523a58c-66b9-46dd-8ac7-241cf38a79d4', 'teaching.class_assignment.change', false, 'TC'),
       ('e3bc9e50-6e5d-468e-ba2a-4ac6452d89a0', 'teaching.subject_assignment.change', false, 'TS'),
-      ('ab0b4af5-6abb-4f95-b912-35a07d24adaf', 'teaching.assignment.approve', false, 'TS')
+      ('ab0b4af5-6abb-4f95-b912-35a07d24adaf', 'teaching.assignment.approve', false, 'TS'),
+      ('94828a44-9a30-46a3-a889-a8b9211c0cfa', 'student.roll_policy.approve', false, 'A'),
+      ('6a4c1255-f03f-4d4b-bda5-20f17d8f9f11', 'student.roll.approve', false, 'ACS'),
+      ('f652edb3-2df9-478b-aff7-7a3babb0eb3b', 'student.profile.approve', false, 'ACS'),
+      ('e412d3ec-a80f-4526-bbbc-7f76525ec840', 'student.emergency_contact.approve', false, 'ACS'),
+      ('c1f7f67e-62f5-4a58-a85d-bee22b85269c', 'employee.profile.approve', false, 'EA'),
+      ('8dc2420a-6b9f-40cb-b1fb-708a51fad189', 'employee.qualification.approve', false, 'EA'),
+      ('6e7d0c38-e5a4-4cbb-ab53-416e947405da', 'employee.experience.approve', false, 'EA'),
+      ('c5d2790f-115f-4185-adad-876f61b312f8', 'employee.job_assignment.approve', false, 'EA'),
+      ('09633ac3-a35c-42e2-828c-b13109ae4599', 'employee.campus_affiliation.approve', false, 'EA'),
+      ('67c9cda3-ee6b-4cd6-8471-1ce83f4a1686', 'teaching.capability.approve', false, 'EA')
   ) AS v(id,code,family_safe,scope_set) LOOP
     SELECT id,family_safe INTO found_row FROM app_private.permissions WHERE code=item.code;
     IF NOT FOUND THEN
@@ -3298,7 +3311,32 @@ BEGIN
       ('ccc503e0-31c0-4188-af89-e60212d5ff45', 'teaching.assignment.approve', 'CAMPUS', 'DIRECT'),
       ('a4685843-2041-4213-9c54-2d31c1f3e75c', 'teaching.assignment.approve', 'CLASS', 'DIRECT'),
       ('78b889d3-7354-4f1a-98f0-5ae1cc64bfc0', 'teaching.assignment.approve', 'SECTION', 'DIRECT'),
-      ('79d9ad10-98a2-4efb-91a1-010c21e79103', 'teaching.assignment.approve', 'SUBJECT', 'DIRECT')
+      ('79d9ad10-98a2-4efb-91a1-010c21e79103', 'teaching.assignment.approve', 'SUBJECT', 'DIRECT'),
+      ('7fe46c10-a679-47fe-874b-b366d250344b', 'employee.campus_affiliation.approve', 'ALL', 'DIRECT'),
+      ('5ffffe29-9236-44ba-94ee-eb8fbe70d248', 'employee.campus_affiliation.approve', 'CAMPUS', 'DIRECT'),
+      ('4e2f6e3e-e292-4922-8055-2f8acf5c559a', 'employee.experience.approve', 'ALL', 'DIRECT'),
+      ('6c88f9d4-faaf-4946-881a-4d422662968b', 'employee.experience.approve', 'CAMPUS', 'DIRECT'),
+      ('8e466fe0-6f3d-4e78-a859-0f036d349258', 'employee.job_assignment.approve', 'ALL', 'DIRECT'),
+      ('4786e8c4-d4dd-4ed6-b1c4-a5720a63c3d4', 'employee.job_assignment.approve', 'CAMPUS', 'DIRECT'),
+      ('5610778e-d321-48fc-862d-bb8fb2fa18c2', 'employee.profile.approve', 'ALL', 'DIRECT'),
+      ('8476df55-b59c-4620-ac54-e11f646bdb0b', 'employee.profile.approve', 'CAMPUS', 'DIRECT'),
+      ('1c7e9f1c-3c82-4d92-8fe5-a0e2cb1c4ec1', 'employee.qualification.approve', 'ALL', 'DIRECT'),
+      ('e9e4d41c-d30b-410f-9ddf-2d8bcc89433e', 'employee.qualification.approve', 'CAMPUS', 'DIRECT'),
+      ('342c55ea-2157-4162-8a66-bf21dc250651', 'student.emergency_contact.approve', 'ALL', 'DIRECT'),
+      ('e621b9db-de51-4498-9f79-da0fe9100856', 'student.emergency_contact.approve', 'CAMPUS', 'DIRECT'),
+      ('474fcfeb-ab64-435d-9f81-24f43753a215', 'student.emergency_contact.approve', 'CLASS', 'DIRECT'),
+      ('e127ba91-e76b-4124-838e-447342a461c9', 'student.emergency_contact.approve', 'SECTION', 'DIRECT'),
+      ('235d3403-c300-4546-bd75-40bf0a2e6c78', 'student.profile.approve', 'ALL', 'DIRECT'),
+      ('f51a8626-6eb4-4bb4-9fbd-70a23b1e1467', 'student.profile.approve', 'CAMPUS', 'DIRECT'),
+      ('bf2e8152-5c5c-4680-b776-d09d83abcf9f', 'student.profile.approve', 'CLASS', 'DIRECT'),
+      ('f3ebcc8b-6d98-4872-a70b-1ccbf8274132', 'student.profile.approve', 'SECTION', 'DIRECT'),
+      ('4be995b2-54f5-4f34-8969-995622d2a8d7', 'student.roll.approve', 'ALL', 'DIRECT'),
+      ('54baa98a-7e1a-40c6-9b81-2d844825160a', 'student.roll.approve', 'CAMPUS', 'DIRECT'),
+      ('890fd49b-0fc2-4b20-aab8-395d0376325c', 'student.roll.approve', 'CLASS', 'DIRECT'),
+      ('82ddc9e3-798c-4b32-b8c6-db29f909cb0b', 'student.roll.approve', 'SECTION', 'DIRECT'),
+      ('a7c2e5c5-50d5-456d-b1a4-369aaed4abfd', 'student.roll_policy.approve', 'ALL', 'DIRECT'),
+      ('bd6b4482-4e24-480b-91a9-e8c13cf3f112', 'teaching.capability.approve', 'ALL', 'DIRECT'),
+      ('0301e1bc-99f4-4614-9dc4-efd569ce4845', 'teaching.capability.approve', 'CAMPUS', 'DIRECT')
   ) AS v(id,permission_code,scope_kind,resolver_key) LOOP
     SELECT id INTO pid FROM app_private.permissions WHERE code=item.permission_code;
     IF pid IS NULL THEN RAISE EXCEPTION 'D1 missing permission: %',item.permission_code; END IF;
@@ -3319,10 +3357,10 @@ BEGIN
       ('7bf20571-ea73-473c-ab39-9e361f67eb0c', 'academic.section.change', 'academic.section.manage', NULL, false),
       ('115696fa-01c3-48b5-8e6c-3b1ace5e4170', 'academic.section_room.change', 'academic.section_room.change', NULL, false),
       ('10cdeb24-1e0f-40e2-b55f-d1991c40d137', 'academic.capacity.change', 'academic.capacity.change', NULL, false),
-      ('8af65f2a-a5cc-454d-80e2-d1c9168d7c1e', 'student.roll_policy.change', 'student.roll_policy.change', NULL, false),
-      ('22e4c10e-23c6-4b15-94e7-08893731e8f6', 'student.roll.correct', 'student.roll.correct', NULL, false),
+      ('8af65f2a-a5cc-454d-80e2-d1c9168d7c1e', 'student.roll_policy.change', 'student.roll_policy.change', 'student.roll_policy.approve', false),
+      ('22e4c10e-23c6-4b15-94e7-08893731e8f6', 'student.roll.correct', 'student.roll.correct', 'student.roll.approve', false),
       ('bcebcc41-e303-4336-8eb6-15caba6c9255', 'student.create', 'student.create', NULL, false),
-      ('65f84926-8be0-40be-a6df-96271aa4dd02', 'student.profile.update', 'student.profile.update', NULL, false),
+      ('65f84926-8be0-40be-a6df-96271aa4dd02', 'student.profile.update', 'student.profile.update', 'student.profile.approve', false),
       ('c8c2de83-630f-489e-8719-7cc783bd0463', 'student.identity.correct', 'student.identity.correct', 'student.identity.approve', true),
       ('209f83d3-58f7-4145-8f47-7de56bc0b501', 'student.special.correct', 'student.special.correct', 'student.special.approve', true),
       ('4e8c5b74-32d4-4354-aff7-ffcbd4e7063f', 'student.status.change', 'student.status.change', 'student.status.approve', false),
@@ -3330,7 +3368,7 @@ BEGIN
       ('33b94093-4813-4709-9d1a-478326e9d3ed', 'student.enrollment.place', 'student.enrollment.place', NULL, false),
       ('15ee679f-4750-4e83-af38-16cf627aa33e', 'student.enrollment.move', 'student.enrollment.move', 'student.enrollment.approve', false),
       ('d4b31095-ed5f-49f3-91f1-27bfdc842460', 'student.enrollment.end', 'student.enrollment.end', 'student.enrollment.approve', false),
-      ('d1095aec-d063-45b3-b44c-88f40c9d7a68', 'student.emergency_contact.change', 'student.emergency_contact.change', NULL, false),
+      ('d1095aec-d063-45b3-b44c-88f40c9d7a68', 'student.emergency_contact.change', 'student.emergency_contact.change', 'student.emergency_contact.approve', false),
       ('951d8378-4017-438d-88e2-728a77f4adf7', 'family.manage', 'family.manage', NULL, false),
       ('c3c20b95-13fd-4908-9287-315adc5d18f8', 'family.relationship.change', 'family.relationship.change', 'family.access.approve', false),
       ('4701ac82-f9a7-4d7c-9676-1b252a1d3ecc', 'family.principal_membership.change', 'family.principal_membership.change', 'family.access.approve', false),
@@ -3339,14 +3377,14 @@ BEGIN
       ('95b0754a-16fe-4ee9-8f0b-ad48504026c2', 'employee.department.change', 'employee.department.manage', NULL, false),
       ('e9e1deff-36fb-463f-83b2-510d2578a4a7', 'employee.designation.change', 'employee.designation.manage', NULL, false),
       ('9b20dbf8-4f3e-4729-89e9-8cae65be4d14', 'employee.create', 'employee.create', NULL, false),
-      ('84cecaa4-fb7a-4f42-bd10-d1c01582e15a', 'employee.profile.update', 'employee.profile.update', NULL, false),
+      ('84cecaa4-fb7a-4f42-bd10-d1c01582e15a', 'employee.profile.update', 'employee.profile.update', 'employee.profile.approve', false),
       ('13a4d87d-cb38-4b95-a6f8-9230f4c2a11e', 'employee.identity.correct', 'employee.identity.correct', 'employee.identity.approve', true),
-      ('40f541ab-53e5-48e3-9fa3-b6801bb1fcd1', 'employee.qualification.change', 'employee.qualification.change', NULL, false),
-      ('c880066a-c5e0-42dd-b20e-f8fd33acc374', 'employee.experience.change', 'employee.experience.change', NULL, false),
+      ('40f541ab-53e5-48e3-9fa3-b6801bb1fcd1', 'employee.qualification.change', 'employee.qualification.change', 'employee.qualification.approve', false),
+      ('c880066a-c5e0-42dd-b20e-f8fd33acc374', 'employee.experience.change', 'employee.experience.change', 'employee.experience.approve', false),
       ('a775a2a6-3d0c-47cb-9ae0-eb0337855842', 'employee.state.change', 'employee.state.change', 'employee.state.approve', false),
-      ('97b2a306-572d-4f8f-a435-1cf7661a38cd', 'employee.job_assignment.change', 'employee.job_assignment.change', NULL, false),
-      ('3738831c-3c45-4fd4-a96e-1778abdc2db5', 'employee.campus_affiliation.change', 'employee.campus_affiliation.change', NULL, false),
-      ('5b2aff6a-7680-453e-80c3-1e7dfcc93e34', 'teaching.capability.change', 'teaching.capability.change', NULL, false),
+      ('97b2a306-572d-4f8f-a435-1cf7661a38cd', 'employee.job_assignment.change', 'employee.job_assignment.change', 'employee.job_assignment.approve', false),
+      ('3738831c-3c45-4fd4-a96e-1778abdc2db5', 'employee.campus_affiliation.change', 'employee.campus_affiliation.change', 'employee.campus_affiliation.approve', false),
+      ('5b2aff6a-7680-453e-80c3-1e7dfcc93e34', 'teaching.capability.change', 'teaching.capability.change', 'teaching.capability.approve', false),
       ('301dc160-10ec-4829-955b-fc2066bf86f5', 'teaching.class_assignment.change', 'teaching.class_assignment.change', 'teaching.assignment.approve', false),
       ('361a7634-f0da-46c3-8e34-cecd7ef4b5b6', 'teaching.subject_assignment.change', 'teaching.subject_assignment.change', 'teaching.assignment.approve', false)
   ) AS v(id,code,request_code,review_code,requires_approval) LOOP
