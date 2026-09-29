@@ -2299,6 +2299,122 @@ CREATE CONSTRAINT TRIGGER d1_override_enrollment_commit AFTER INSERT ON app_priv
 -- PROVISIONAL D1C1B security material. ENABLE/FORCE above is structural; the
 -- broad executor policies/grants below are not reviewed final RLS/ACL and this
 -- draft must remain .sql.draft until D1C1B replaces or narrows them.
+-- Product-owner D1C1B decision: a P1 route is explicit policy data, never
+-- inferred from reviewer permission presence or a zero-step template. NULL
+-- preserves preexisting Foundation policy rows; D1 P1 execution denies NULL.
+ALTER TABLE app_private.approval_policy_versions
+  ADD COLUMN d1_route_mode text;
+ALTER TABLE app_private.approval_policy_versions
+  ADD CONSTRAINT d1_approval_policy_route_mode_ck
+  CHECK (d1_route_mode IS NULL OR d1_route_mode IN ('DIRECT','APPROVAL'));
+CREATE FUNCTION app_private.d1_guard_approval_policy_route_mode() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  operation_code text;
+  mandatory_approval boolean;
+  step_count bigint;
+  invalid_steps bigint;
+  first_step integer;
+  last_step integer;
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.state <> 'DRAFT'
+       AND OLD.d1_route_mode IS DISTINCT FROM NEW.d1_route_mode THEN
+      RAISE EXCEPTION 'D1 approval route is frozen after activation';
+    END IF;
+  END IF;
+  SELECT o.code, o.requires_approval
+    INTO operation_code, mandatory_approval
+    FROM app_private.operation_contracts o WHERE o.id = NEW.operation_id;
+  -- The two teaching assignment contracts are P0 only for current/future
+  -- actions and P2 for retroactive correction. Their P2 branch must never
+  -- inherit a policy DIRECT choice either.
+  IF (mandatory_approval OR operation_code IN (
+        'teaching.class_assignment.change',
+        'teaching.subject_assignment.change'))
+     AND NEW.d1_route_mode = 'DIRECT' THEN
+    RAISE EXCEPTION 'mandatory-approval operation cannot select D1 DIRECT route';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.state = 'DRAFT' AND NEW.state = 'ACTIVE'
+       AND operation_code IN (
+       'student.roll_policy.change', 'student.roll.correct',
+       'student.profile.update', 'student.status.change',
+       'student.enrollment.move', 'student.enrollment.end',
+       'student.emergency_contact.change', 'family.relationship.change',
+       'family.principal_membership.change', 'family.child_access.change',
+       'employee.profile.update', 'employee.qualification.change',
+       'employee.experience.change', 'employee.state.change',
+       'employee.job_assignment.change', 'employee.campus_affiliation.change',
+       'teaching.capability.change'
+       ) THEN
+      IF NEW.d1_route_mode IS NULL THEN
+        RAISE EXCEPTION 'D1 P1 policy activation requires explicit route mode';
+      END IF;
+      IF NEW.d1_route_mode = 'APPROVAL' THEN
+        SELECT count(*),
+               count(*) FILTER (WHERE r.id IS NULL OR r.state <> 'ACTIVE'
+                 OR t.required_reviews <> 1
+                 OR pg_catalog.length(pg_catalog.btrim(t.selection_resolver_key)) = 0),
+               min(t.step_number), max(t.step_number)
+          INTO step_count, invalid_steps, first_step, last_step
+          FROM app_private.approval_step_templates t
+          LEFT JOIN app_private.roles r ON r.id = t.reviewer_role_id
+         WHERE t.policy_id = NEW.id;
+        IF step_count = 0 OR invalid_steps <> 0 OR first_step <> 1
+           OR last_step::bigint <> step_count THEN
+          RAISE EXCEPTION 'D1 P1 approval route requires valid sequential steps';
+        END IF;
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_guard_approval_policy_route_mode()
+  FROM PUBLIC, anon, authenticated, service_role;
+CREATE TRIGGER ab_d1_approval_policy_route_mode
+  BEFORE INSERT OR UPDATE ON app_private.approval_policy_versions
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_approval_policy_route_mode();
+CREATE POLICY d1_approval_policy_route_input ON app_private.approval_policy_versions
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, operation_id, campus_id, state, effective_from,
+  effective_until, d1_route_mode)
+  ON app_private.approval_policy_versions TO schoolos_authz_reader;
+CREATE POLICY d1_approval_steps_route_input ON app_private.approval_step_templates
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (policy_id, step_number, reviewer_role_id, required_reviews,
+  selection_resolver_key)
+  ON app_private.approval_step_templates TO schoolos_authz_reader;
+CREATE POLICY d1_operation_route_input ON app_private.operation_contracts
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, code, enabled, requires_approval)
+  ON app_private.operation_contracts TO schoolos_authz_reader;
+-- Person display names are needed by fixed checked projections. This role is
+-- NOLOGIN; the grant does not expose the private People table to clients.
+CREATE POLICY d1_people_checked_display ON app_private.people
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, display_name) ON app_private.people TO schoolos_read_executor;
+CREATE POLICY d1_rooms_checked_display ON app.rooms
+  FOR SELECT TO schoolos_read_executor USING (true);
+GRANT SELECT (id, campus_id, code, name) ON app.rooms TO schoolos_read_executor;
+CREATE POLICY d1_academic_school_lock_input ON app_private.school_profiles
+  FOR SELECT TO schoolos_academic_executor USING (true);
+GRANT SELECT (id) ON app_private.school_profiles TO schoolos_academic_executor;
+CREATE POLICY d1_academic_receipt_insert ON app_private.command_receipts
+  FOR INSERT TO schoolos_academic_executor
+  WITH CHECK (principal_id=app_private.current_principal_id()
+    AND created_by=principal_id AND state='SUCCEEDED');
+GRANT INSERT ON app_private.command_receipts TO schoolos_academic_executor;
+CREATE POLICY d1_academic_audit_insert ON app_private.audit_events
+  FOR INSERT TO schoolos_academic_executor
+  WITH CHECK (actor_id=app_private.current_principal_id()
+    AND created_by=actor_id AND actor_kind='INDIVIDUAL'
+    AND source_kind='API');
+GRANT INSERT ON app_private.audit_events TO schoolos_academic_executor;
+CREATE POLICY d1_academic_outbox_insert ON app_private.outbox_events
+  FOR INSERT TO schoolos_academic_executor
+  WITH CHECK (created_by=app_private.current_principal_id());
+GRANT INSERT ON app_private.outbox_events TO schoolos_academic_executor;
 GRANT USAGE ON SCHEMA app_private TO schoolos_academic_executor, schoolos_student_executor, schoolos_family_executor, schoolos_employee_executor, schoolos_teaching_executor;
 CREATE POLICY d1_01_schema_maintenance ON app_private.academic_classes
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -2692,11 +2808,15 @@ GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.subject_teache
 RESET ROLE;
 GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
 SET ROLE schoolos_authz_reader;
+GRANT EXECUTE ON FUNCTION app_private.current_principal_id()
+  TO schoolos_academic_executor, schoolos_student_executor,
+     schoolos_family_executor, schoolos_employee_executor,
+     schoolos_teaching_executor;
 CREATE FUNCTION app_private.d1_authorized(
   wanted_code text, target_kind text, target_id uuid,
   target_subject_id uuid DEFAULT NULL, business_on date DEFAULT NULL
 ) RETURNS boolean
-LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE
   actor uuid;
   actor_kind text;
@@ -2723,7 +2843,7 @@ BEGIN
   on_date := COALESCE(business_on, at_time::date);
   SELECT p.kind,p.person_id INTO actor_kind,actor_person
     FROM app_private.principals p WHERE p.id=actor AND p.state='ACTIVE';
-  IF actor_kind IS NULL THEN RETURN false; END IF;
+  IF actor_kind NOT IN ('INDIVIDUAL','FAMILY') OR actor_kind IS NULL THEN RETURN false; END IF;
 
   IF target_kind = 'STUDENT' THEN
     SELECT s.person_id INTO target_person FROM app_private.students s WHERE s.id=target_id;
@@ -2752,6 +2872,22 @@ BEGIN
     IF target_person IS NULL THEN RETURN false; END IF;
     target_employee := target_id;
     employee_self := actor_kind='INDIVIDUAL' AND actor_person=target_person;
+  ELSIF target_kind = 'EMPLOYEE_CAMPUS' THEN
+    -- The second UUID identifies a stored affiliation target, not a caller
+    -- assertion of scope. This row-specific mode prevents a CAMPUS grant for
+    -- one affiliation from disclosing a concurrent affiliation elsewhere.
+    IF target_subject_id IS NULL THEN RETURN false; END IF;
+    SELECT e.person_id INTO target_person FROM app_private.employees e WHERE e.id=target_id;
+    IF target_person IS NULL THEN RETURN false; END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM app_private.employee_campus_affiliations ca
+       WHERE ca.employee_id=target_id AND ca.campus_id=target_subject_id
+         AND ca.effective_from<=on_date
+         AND (ca.effective_until IS NULL OR on_date<ca.effective_until)
+    ) THEN RETURN false; END IF;
+    target_employee := target_id;
+    target_campus := target_subject_id;
+    employee_self := actor_kind='INDIVIDUAL' AND actor_person=target_person;
   ELSIF target_kind = 'CLASS' THEN
     target_class := target_id;
   ELSIF target_kind = 'SECTION' OR target_kind = 'SUBJECT' THEN
@@ -2778,7 +2914,9 @@ BEGIN
   END IF;
   IF target_kind='SUBJECT' AND NOT EXISTS (
     SELECT 1 FROM app_private.subjects s
-     WHERE s.id=target_subject_id AND s.school_id=target_school AND s.state='ACTIVE'
+     WHERE s.id=target_subject_id AND s.school_id=target_school
+       AND (s.state='ACTIVE' OR
+            (wanted_code='teaching.assignment_history.view' AND s.state='ARCHIVED'))
   ) THEN RETURN false; END IF;
 
   IF target_student IS NOT NULL AND actor_kind='FAMILY' THEN
@@ -2863,7 +3001,8 @@ BEGIN
           OR (s.scope_kind='OWN' AND s.resolver_key='D1_STUDENT_SELF' AND student_self)
           OR (s.scope_kind='OWN' AND s.resolver_key='D1_EMPLOYEE_SELF' AND employee_self)
           OR (s.scope_kind='ASSIGNED' AND s.resolver_key='D1_CLASS_TEACHER' AND class_teacher)
-          OR (s.scope_kind='ASSIGNED' AND s.resolver_key='D1_SUBJECT_TEACHER' AND subject_teacher)
+          OR (s.scope_kind='ASSIGNED' AND s.resolver_key='D1_SUBJECT_TEACHER'
+            AND target_subject_id IS NOT NULL AND subject_teacher)
           OR (s.scope_kind='ASSIGNED' AND s.resolver_key='D1_TEACHING_ANY'
             AND (class_teacher OR subject_teacher))
         ))
@@ -2875,8 +3014,168 @@ REVOKE ALL ON FUNCTION app_private.d1_authorized(text,text,uuid,uuid,date)
 GRANT EXECUTE ON FUNCTION app_private.d1_authorized(text,text,uuid,uuid,date)
   TO schoolos_read_executor, schoolos_academic_executor, schoolos_student_executor,
      schoolos_family_executor, schoolos_employee_executor, schoolos_teaching_executor;
+
+-- This private selector recognizes only the frozen P1 operation set. An
+-- explicit ACTIVE policy row is required. Both zero/multiple matching policies
+-- and an invalid APPROVAL step fail closed; absence is never DIRECT. DIRECT
+-- never derives from the step count and does not require any step.
+CREATE FUNCTION app_private.d1_p1_route(p_operation_code text, p_campus_id uuid)
+RETURNS text
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  at_time timestamptz := pg_catalog.statement_timestamp();
+  matches bigint;
+  policy_id uuid;
+  selected_route text;
+  step_count bigint;
+  invalid_steps bigint;
+  first_step integer;
+  last_step integer;
+BEGIN
+  IF p_operation_code NOT IN (
+    'student.roll_policy.change', 'student.roll.correct',
+    'student.profile.update', 'student.status.change',
+    'student.enrollment.move', 'student.enrollment.end',
+    'student.emergency_contact.change', 'family.relationship.change',
+    'family.principal_membership.change', 'family.child_access.change',
+    'employee.profile.update', 'employee.qualification.change',
+    'employee.experience.change', 'employee.state.change',
+    'employee.job_assignment.change', 'employee.campus_affiliation.change',
+    'teaching.capability.change'
+  ) THEN RETURN NULL; END IF;
+
+  SELECT count(*), min(p.id::text)::uuid, min(p.d1_route_mode)
+    INTO matches, policy_id, selected_route
+    FROM app_private.operation_contracts o
+    JOIN app_private.approval_policy_versions p ON p.operation_id = o.id
+   WHERE o.code = p_operation_code AND o.enabled AND NOT o.requires_approval
+     AND p.state = 'ACTIVE' AND p.effective_from <= at_time
+     AND (p.effective_until IS NULL OR at_time < p.effective_until)
+     AND (p.campus_id IS NULL OR p.campus_id = p_campus_id);
+  IF matches <> 1 OR selected_route IS NULL THEN RETURN NULL; END IF;
+  IF selected_route = 'DIRECT' THEN RETURN 'DIRECT'; END IF;
+  IF selected_route = 'APPROVAL' THEN
+    SELECT count(*),
+           count(*) FILTER (WHERE r.id IS NULL OR r.state <> 'ACTIVE'
+             OR t.required_reviews <> 1
+             OR pg_catalog.length(pg_catalog.btrim(t.selection_resolver_key)) = 0),
+           min(t.step_number), max(t.step_number)
+      INTO step_count, invalid_steps, first_step, last_step
+      FROM app_private.approval_step_templates t
+      LEFT JOIN app_private.roles r ON r.id = t.reviewer_role_id
+     WHERE t.policy_id = policy_id;
+    IF step_count > 0 AND invalid_steps = 0 AND first_step = 1
+       AND last_step::bigint = step_count THEN RETURN 'APPROVAL'; END IF;
+  END IF;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_p1_route(text,uuid)
+  FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_p1_route(text,uuid)
+  TO schoolos_student_executor, schoolos_family_executor,
+     schoolos_employee_executor, schoolos_teaching_executor;
+
+-- File-service domain gate only. It does not inspect the object/provider,
+-- entitlement, stored owner relation, private classification or issue access;
+-- the server-controlled file service must perform those independent checks.
+CREATE FUNCTION app_private.d1_file_domain_permission(
+  p_purpose text, p_action text, p_owner_id uuid
+) RETURNS boolean
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT CASE
+    WHEN p_action='UPLOAD' AND p_purpose='STUDENT_PROFILE_PHOTO'
+      THEN app_private.d1_authorized('student.photo.submit','STUDENT',p_owner_id)
+    WHEN p_action='UPLOAD' AND p_purpose='BIRTH_CERTIFICATE'
+      THEN app_private.d1_authorized('student.birth_certificate.submit','STUDENT',p_owner_id)
+    WHEN p_action='UPLOAD' AND p_purpose='EMPLOYEE_PROFILE_PHOTO'
+      THEN app_private.d1_authorized('employee.photo.submit','EMPLOYEE',p_owner_id)
+    WHEN p_action='DOWNLOAD' AND p_purpose='STUDENT_PROFILE_PHOTO'
+      THEN app_private.d1_authorized('student.roster.view','STUDENT',p_owner_id)
+    WHEN p_action='DOWNLOAD' AND p_purpose='BIRTH_CERTIFICATE'
+      THEN app_private.d1_authorized('student.restricted_identity.view','STUDENT',p_owner_id)
+    WHEN p_action='DOWNLOAD' AND p_purpose='EMPLOYEE_PROFILE_PHOTO'
+      THEN app_private.d1_authorized('employee.roster.view','EMPLOYEE',p_owner_id)
+        OR app_private.d1_authorized('employee.profile.view','EMPLOYEE',p_owner_id)
+    ELSE false
+  END;
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_file_domain_permission(text,text,uuid)
+  FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_file_domain_permission(text,text,uuid)
+  TO schoolos_platform_executor;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+-- Internal first phase for a fixed typed command. It never applies domain
+-- state or returns a replay to a client; the calling fixed command must still
+-- reauthorize its exact target before returning an existing terminal result.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_command_receipt_lookup(
+  p_operation_code text, p_idempotency_key text, p_intent_hash bytea
+) RETURNS TABLE (
+  actor_id uuid, operation_id uuid, receipt_id uuid,
+  result_ref uuid, result_summary jsonb, receipt_state text
+)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  v_actor uuid;
+  v_operation uuid;
+  v_digest bytea;
+  v_resource bigint;
+  v_receipt app_private.command_receipts%ROWTYPE;
+BEGIN
+  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'D1 command requires READ COMMITTED';
+  END IF;
+  IF p_idempotency_key IS NULL OR pg_catalog.char_length(p_idempotency_key) NOT BETWEEN 1 AND 200
+     OR p_intent_hash IS NULL OR pg_catalog.octet_length(p_intent_hash) <> 32 THEN
+    RAISE EXCEPTION 'D1 command idempotency input invalid';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor := app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code = p_operation_code AND o.contract_version = 1
+     AND o.handler_key = p_operation_code AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 operation is not enabled'; END IF;
+
+  -- SHA-256 of the complete tuple supplies a stable signed int32 advisory
+  -- resource. Collisions serialize unrelated keys; the full receipt tuple and
+  -- canonical intent hash are still compared after the lock.
+  v_digest := pg_catalog.sha256(pg_catalog.convert_to(
+    v_actor::text || '|' || v_operation::text || '|' || p_idempotency_key, 'UTF8'));
+  v_resource := pg_catalog.get_byte(v_digest,0)::bigint * 16777216
+              + pg_catalog.get_byte(v_digest,1)::bigint * 65536
+              + pg_catalog.get_byte(v_digest,2)::bigint * 256
+              + pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource > 2147483647 THEN v_resource := v_resource - 4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+  PERFORM 1 FROM app_private.principals p WHERE p.id=v_actor FOR UPDATE;
+  IF app_private.current_principal_id() IS DISTINCT FROM v_actor THEN
+    RAISE EXCEPTION 'D1 actor changed after command lock';
+  END IF;
+
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation
+     AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonical_payload_hash IS DISTINCT FROM p_intent_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_operation_code THEN
+      RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
+    END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,
+                        v_receipt.result_summary,v_receipt.state;
+  ELSE
+    RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,NULL::text;
+  END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_command_receipt_lookup(text,text,bytea)
+  FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_command_receipt_lookup(text,text,bytea)
+  TO schoolos_academic_executor, schoolos_student_executor,
+     schoolos_family_executor, schoolos_employee_executor,
+     schoolos_teaching_executor;
+RESET ROLE;
 
 -- D1C1B catalog manifest: 97 permissions, 322 supported alternatives and
 -- 36 operation contracts. The trusted bootstrap actor is verified by both
@@ -3487,11 +3786,10 @@ CREATE TRIGGER ab_d1_file_purpose BEFORE INSERT OR UPDATE OF profile_photo_file_
   EXECUTE FUNCTION app_private.d1_guard_file_purpose('EMPLOYEE_PROFILE_PHOTO');
 RESET ROLE;
 
--- PROVISIONAL D1C1B read coverage; these four functions are an experiment, not
--- the frozen 22-family checked-read inventory or final authenticated EXECUTE.
--- Fixed academic checked reads. The caller supplies only the typed target UUID;
--- the school/campus/class/section ancestry is read from stored rows. These are
--- partial D1 read coverage while the remaining frozen surfaces are drafted.
+-- Candidate fixed checked reads for the frozen 22 logical read families.
+-- Each entry remains subject to independent field-by-field and non-owner
+-- security review. The first four are Academic catalog reads; caller inputs
+-- are typed target UUIDs and ancestry is resolved from stored rows.
 GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
 SET ROLE schoolos_read_executor;
 CREATE FUNCTION app.d1_read_academic_class(p_class_id uuid)
@@ -3551,5 +3849,915 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $b
 $body$;
 REVOKE ALL ON FUNCTION app.d1_read_section_offering(uuid) FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION app.d1_read_section_offering(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_section_room(p_section_id uuid)
+RETURNS TABLE (
+  room_id uuid, room_code text, room_name text,
+  effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT r.id, r.code, r.name, a.effective_from, a.effective_until
+    FROM app_private.section_room_assignments a
+    JOIN app.rooms r ON r.id = a.room_id
+    JOIN app_private.section_offerings s ON s.id = a.section_offering_id
+   WHERE a.section_offering_id = p_section_id AND r.campus_id = s.campus_id
+     AND a.effective_from <= CURRENT_DATE
+     AND (a.effective_until IS NULL OR CURRENT_DATE < a.effective_until)
+     AND app_private.d1_authorized('academic.section_room.view','SECTION',s.id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_section_room(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_section_room(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_class_capacity(p_offering_id uuid)
+RETURNS TABLE (offering_id uuid, capacity integer)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT o.id, o.capacity FROM app_private.class_offerings o
+   WHERE o.id = p_offering_id
+     AND app_private.d1_authorized('academic.capacity.view','CLASS',o.id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_class_capacity(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_class_capacity(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_section_capacity(p_section_id uuid)
+RETURNS TABLE (section_id uuid, capacity integer)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT s.id, s.capacity FROM app_private.section_offerings s
+   WHERE s.id = p_section_id
+     AND app_private.d1_authorized('academic.capacity.view','SECTION',s.id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_section_capacity(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_section_capacity(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_class_capacity_history(p_offering_id uuid)
+RETURNS TABLE (
+  revision_id uuid, old_capacity integer, new_capacity integer, effective_on date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT r.id, r.old_capacity, r.new_capacity, r.effective_on
+    FROM app_private.capacity_revisions r
+   WHERE r.class_offering_id = p_offering_id
+     AND app_private.d1_authorized('academic.capacity_history.view','CLASS',p_offering_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_class_capacity_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_class_capacity_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_section_capacity_history(p_section_id uuid)
+RETURNS TABLE (
+  revision_id uuid, old_capacity integer, new_capacity integer, effective_on date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT r.id, r.old_capacity, r.new_capacity, r.effective_on
+    FROM app_private.capacity_revisions r
+   WHERE r.section_offering_id = p_section_id
+     AND app_private.d1_authorized('academic.capacity_history.view','SECTION',p_section_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_section_capacity_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_section_capacity_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_roll_policy(p_school_id uuid)
+RETURNS TABLE (policy_id uuid, mode text, start_value bigint, effective_from date)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT p.id, p.mode, p.start_value, p.effective_from
+    FROM app_private.roll_policy_revisions p
+   WHERE p.school_id = p_school_id
+     AND p.effective_from <= CURRENT_DATE
+     AND (p.effective_until IS NULL OR CURRENT_DATE < p.effective_until)
+     AND app_private.d1_authorized('student.roll_policy.view','SCHOOL',p.school_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_roll_policy(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_roll_policy(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_student_roll_history(p_student_id uuid)
+RETURNS TABLE (
+  allocation_id uuid, enrollment_id uuid, numeric_value bigint,
+  effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT r.id, r.enrollment_id, r.numeric_value, r.effective_from, r.effective_until
+    FROM app_private.roll_allocations r
+   WHERE r.student_id = p_student_id
+     AND app_private.d1_authorized(
+       'student.roll_history.view','STUDENT',r.student_id,NULL,r.effective_from);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_roll_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_roll_history(uuid) TO authenticated;
+
+-- Current Student disclosure classes are separate. A PROFILE grant does not
+-- turn the ROSTER endpoint into a history or Restricted Identity endpoint.
+CREATE FUNCTION app.d1_read_student_roster(p_student_id uuid)
+RETURNS TABLE (
+  student_id uuid, display_name text, school_student_id text,
+  section_offering_id uuid, roll_number bigint, profile_photo_file_id uuid
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT s.id, pe.display_name, s.school_student_id,
+         e.section_offering_id, ra.numeric_value, s.profile_photo_file_id
+    FROM app_private.students s
+    JOIN app_private.people pe ON pe.id = s.person_id
+    JOIN app_private.enrollments e
+      ON e.student_id = s.id AND e.placement_kind = 'PRIMARY'
+     AND e.placement_state = 'ACTIVE'
+     AND e.effective_from <= CURRENT_DATE
+     AND (e.effective_until IS NULL OR CURRENT_DATE < e.effective_until)
+    LEFT JOIN app_private.roll_allocations ra
+      ON ra.enrollment_id = e.id AND ra.student_id = s.id
+     AND ra.effective_from <= CURRENT_DATE
+     AND (ra.effective_until IS NULL OR CURRENT_DATE < ra.effective_until)
+   WHERE s.id = p_student_id
+     AND app_private.d1_authorized('student.roster.view','STUDENT',s.id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_roster(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_roster(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_student_profile(p_student_id uuid)
+RETURNS TABLE (
+  student_id uuid, display_name text, school_student_id text,
+  section_offering_id uuid, roll_number bigint, profile_photo_file_id uuid,
+  date_of_birth date, gender_code text, nationality_code text,
+  general_contact text, previous_school text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT s.id, pe.display_name, s.school_student_id,
+         e.section_offering_id, ra.numeric_value,
+         s.profile_photo_file_id, s.date_of_birth, s.gender_code,
+         s.nationality_code, s.general_contact, s.previous_school
+    FROM app_private.students s
+    JOIN app_private.people pe ON pe.id = s.person_id
+    JOIN app_private.enrollments e
+      ON e.student_id = s.id AND e.placement_kind = 'PRIMARY'
+     AND e.placement_state = 'ACTIVE'
+     AND e.effective_from <= CURRENT_DATE
+     AND (e.effective_until IS NULL OR CURRENT_DATE < e.effective_until)
+    LEFT JOIN app_private.roll_allocations ra
+      ON ra.enrollment_id = e.id AND ra.student_id = s.id
+     AND ra.effective_from <= CURRENT_DATE
+     AND (ra.effective_until IS NULL OR CURRENT_DATE < ra.effective_until)
+   WHERE s.id = p_student_id
+     AND app_private.d1_authorized('student.profile.view','STUDENT',s.id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_profile(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_profile(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_student_restricted_identity(p_student_id uuid)
+RETURNS TABLE (
+  national_id text, birth_certificate_number text,
+  birth_certificate_file_id uuid, private_address text, city text,
+  guardian_identity_text text, guardian_contact text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT i.national_id, i.birth_certificate_number,
+         i.birth_certificate_file_id, i.private_address, i.city,
+         i.guardian_identity_text, i.guardian_contact
+    FROM app_private.student_identity_details i
+   WHERE i.student_id = p_student_id
+     AND i.effective_from <= pg_catalog.statement_timestamp()
+     AND (i.effective_until IS NULL OR pg_catalog.statement_timestamp() < i.effective_until)
+     AND app_private.d1_authorized('student.restricted_identity.view','STUDENT',i.student_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_restricted_identity(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_restricted_identity(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_student_restricted_identity_history(p_student_id uuid)
+RETURNS TABLE (
+  effective_from timestamptz, effective_until timestamptz, national_id text,
+  birth_certificate_number text, birth_certificate_file_id uuid,
+  private_address text, city text, guardian_identity_text text,
+  guardian_contact text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT i.effective_from, i.effective_until, i.national_id,
+         i.birth_certificate_number, i.birth_certificate_file_id,
+         i.private_address, i.city, i.guardian_identity_text,
+         i.guardian_contact
+    FROM app_private.student_identity_details i
+   WHERE i.student_id = p_student_id
+     AND app_private.d1_authorized('student.restricted_identity_history.view',
+                                   'STUDENT',i.student_id,NULL,i.effective_from::date);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_restricted_identity_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_restricted_identity_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_student_special(p_student_id uuid)
+RETURNS TABLE (
+  disability_indicator boolean, orphan_indicator boolean, blood_group_code text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT d.disability_indicator, d.orphan_indicator, d.blood_group_code
+    FROM app_private.student_special_details d
+   WHERE d.student_id = p_student_id
+     AND d.effective_from <= pg_catalog.statement_timestamp()
+     AND (d.effective_until IS NULL OR pg_catalog.statement_timestamp() < d.effective_until)
+     AND app_private.d1_authorized('student.special.view','STUDENT',d.student_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_special(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_special(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_student_special_history(p_student_id uuid)
+RETURNS TABLE (
+  effective_from timestamptz, effective_until timestamptz, disability_indicator boolean,
+  orphan_indicator boolean, blood_group_code text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT d.effective_from, d.effective_until, d.disability_indicator,
+         d.orphan_indicator, d.blood_group_code
+    FROM app_private.student_special_details d
+   WHERE d.student_id = p_student_id
+     AND app_private.d1_authorized('student.special_history.view',
+                                   'STUDENT',d.student_id,NULL,d.effective_from::date);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_special_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_special_history(uuid) TO authenticated;
+
+-- FAMILY current contact projection contains exactly the four approved fields.
+-- The contact row and Person IDs are used internally and never returned.
+CREATE FUNCTION app.d1_read_student_emergency_contacts(p_student_id uuid)
+RETURNS TABLE (
+  display_name text, relationship text, phone text, email text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT COALESCE(ec.contact_name, pe.display_name), ec.relationship_label,
+         ec.contact_phone, ec.contact_email
+    FROM app_private.student_emergency_contacts ec
+    LEFT JOIN app_private.people pe ON pe.id = ec.person_id
+   WHERE ec.student_id = p_student_id
+     AND ec.effective_from <= CURRENT_DATE
+     AND (ec.effective_until IS NULL OR CURRENT_DATE < ec.effective_until)
+     AND app_private.d1_authorized('student.emergency_contact.view','STUDENT',ec.student_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_emergency_contacts(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_emergency_contacts(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_student_emergency_contact_history(p_student_id uuid)
+RETURNS TABLE (
+  effective_from date, effective_until date, display_name text,
+  relationship text, phone text, email text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT ec.effective_from, ec.effective_until,
+         COALESCE(ec.contact_name, pe.display_name), ec.relationship_label,
+         ec.contact_phone, ec.contact_email
+    FROM app_private.student_emergency_contacts ec
+    LEFT JOIN app_private.people pe ON pe.id = ec.person_id
+   WHERE ec.student_id = p_student_id
+     AND app_private.d1_authorized('student.emergency_contact_history.view',
+                                   'STUDENT',ec.student_id,NULL,ec.effective_from);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_emergency_contact_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_emergency_contact_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_student_status_history(p_student_id uuid)
+RETURNS TABLE (
+  sequence_number bigint, previous_status text, new_status text,
+  effective_on date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT st.sequence_number, st.previous_status, st.new_status, st.effective_on
+    FROM app_private.student_status_transitions st
+   WHERE st.student_id = p_student_id
+     AND app_private.d1_authorized('student.status_history.view',
+                                   'STUDENT',st.student_id,NULL,st.effective_on);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_status_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_status_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_student_placement_history(p_student_id uuid)
+RETURNS TABLE (
+  enrollment_id uuid, section_offering_id uuid,
+  placement_state text, effective_from date, effective_until date,
+  roll_number bigint
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT e.id, e.section_offering_id, e.placement_state,
+         e.effective_from, e.effective_until, ra.numeric_value
+    FROM app_private.enrollments e
+    LEFT JOIN app_private.roll_allocations ra
+      ON ra.enrollment_id = e.id AND ra.student_id = e.student_id
+     AND ra.effective_from <= e.effective_from
+     AND (ra.effective_until IS NULL OR e.effective_from < ra.effective_until)
+   WHERE e.student_id = p_student_id AND e.placement_kind = 'PRIMARY'
+     AND app_private.d1_authorized('student.placement_history.view',
+                                   'STUDENT',e.student_id,NULL,e.effective_from);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_placement_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_placement_history(uuid) TO authenticated;
+
+-- A FAMILY grant for one child never discloses the other Family records linked
+-- to that child. Staff still need the separate complete direct scope chain.
+CREATE FUNCTION app.d1_read_family_summary_for_student(p_student_id uuid)
+RETURNS TABLE (
+  family_id uuid, family_label text, student_id uuid, student_display_name text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT DISTINCT f.id, f.display_label, s.id, pe.display_name
+    FROM app_private.students s
+    JOIN app_private.people pe ON pe.id = s.person_id
+    JOIN app_private.family_student_access fa ON fa.student_id = s.id
+    JOIN app_private.families f ON f.id = fa.family_id
+    JOIN app_private.family_relationships fr
+      ON fr.family_id = f.id AND fr.student_id = s.id
+   WHERE s.id = p_student_id
+     AND fa.effective_from <= CURRENT_DATE
+     AND (fa.effective_until IS NULL OR CURRENT_DATE < fa.effective_until)
+     AND fr.effective_from <= CURRENT_DATE
+     AND (fr.effective_until IS NULL OR CURRENT_DATE < fr.effective_until)
+     AND app_private.d1_authorized('family.summary.view','STUDENT',s.id)
+     AND EXISTS (
+       SELECT 1 FROM app_private.principals actor
+        WHERE actor.id = app_private.current_principal_id()
+          AND (actor.kind = 'INDIVIDUAL' OR
+               (actor.kind = 'FAMILY' AND EXISTS (
+                 SELECT 1 FROM app_private.family_principal_memberships fm
+                  WHERE fm.principal_id = actor.id AND fm.family_id = f.id
+                    AND fm.effective_from <= CURRENT_DATE
+                    AND (fm.effective_until IS NULL OR CURRENT_DATE < fm.effective_until)
+               )))
+     );
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_family_summary_for_student(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_summary_for_student(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_family_relationships_for_student(p_student_id uuid)
+RETURNS TABLE (
+  family_label text, relationship_kind text, adult_display_name text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT f.display_label, fr.relationship_kind,
+         COALESCE(fr.display_name, pe.display_name)
+    FROM app_private.family_relationships fr
+    JOIN app_private.families f ON f.id = fr.family_id
+    LEFT JOIN app_private.people pe ON pe.id = fr.adult_person_id
+   WHERE fr.student_id = p_student_id
+     AND fr.effective_from <= CURRENT_DATE
+     AND (fr.effective_until IS NULL OR CURRENT_DATE < fr.effective_until)
+     AND app_private.d1_authorized('family.relationship.view','STUDENT',fr.student_id)
+     AND EXISTS (
+       SELECT 1 FROM app_private.principals actor
+        WHERE actor.id = app_private.current_principal_id()
+          AND (actor.kind = 'INDIVIDUAL' OR
+               (actor.kind = 'FAMILY' AND EXISTS (
+                 SELECT 1 FROM app_private.family_principal_memberships fm
+                  WHERE fm.principal_id = actor.id AND fm.family_id = f.id
+                    AND fm.effective_from <= CURRENT_DATE
+                    AND (fm.effective_until IS NULL OR CURRENT_DATE < fm.effective_until)
+                    AND EXISTS (
+                      SELECT 1 FROM app_private.family_student_access fa
+                       WHERE fa.family_id=f.id AND fa.student_id=fr.student_id
+                         AND fa.effective_from<=CURRENT_DATE
+                         AND (fa.effective_until IS NULL OR CURRENT_DATE<fa.effective_until)
+                    )
+               )))
+     );
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_family_relationships_for_student(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_relationships_for_student(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_family_relationship_history(p_student_id uuid)
+RETURNS TABLE (
+  family_label text, relationship_kind text, adult_display_name text,
+  effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT f.display_label, fr.relationship_kind,
+         COALESCE(fr.display_name, pe.display_name),
+         fr.effective_from, fr.effective_until
+    FROM app_private.family_relationships fr
+    JOIN app_private.families f ON f.id = fr.family_id
+    LEFT JOIN app_private.people pe ON pe.id = fr.adult_person_id
+   WHERE fr.student_id = p_student_id
+     AND app_private.d1_authorized('family.relationship_history.view',
+                                   'STUDENT',fr.student_id,NULL,fr.effective_from)
+     AND EXISTS (
+       SELECT 1 FROM app_private.principals actor
+        WHERE actor.id = app_private.current_principal_id()
+          AND (actor.kind = 'INDIVIDUAL' OR
+               (actor.kind = 'FAMILY' AND EXISTS (
+                 SELECT 1 FROM app_private.family_principal_memberships fm
+                  WHERE fm.principal_id = actor.id AND fm.family_id = f.id
+                    AND fm.effective_from <= CURRENT_DATE
+                    AND (fm.effective_until IS NULL OR CURRENT_DATE < fm.effective_until)
+                    AND EXISTS (
+                      SELECT 1 FROM app_private.family_student_access fa
+                       WHERE fa.family_id=f.id AND fa.student_id=fr.student_id
+                         AND fa.effective_from<=CURRENT_DATE
+                         AND (fa.effective_until IS NULL OR CURRENT_DATE<fa.effective_until)
+                    )
+                    AND EXISTS (
+                      SELECT 1 FROM app_private.family_relationships current_basis
+                       WHERE current_basis.family_id=f.id
+                         AND current_basis.student_id=fr.student_id
+                         AND current_basis.effective_from<=CURRENT_DATE
+                         AND (current_basis.effective_until IS NULL OR CURRENT_DATE<current_basis.effective_until)
+                    )
+               )))
+     );
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_family_relationship_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_relationship_history(uuid) TO authenticated;
+
+-- Staff-only family administration history is separate from the FAMILY-safe
+-- relationship display. It returns stable typed facts, never contact fields.
+CREATE FUNCTION app.d1_read_family_admin_relationship_history(p_student_id uuid)
+RETURNS TABLE (
+  family_id uuid, relationship_kind text,
+  effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT r.family_id, r.relationship_kind, r.effective_from, r.effective_until
+    FROM app_private.family_relationships r
+   WHERE r.student_id = p_student_id
+     AND app_private.d1_authorized('family.history.view',
+                                   'STUDENT',r.student_id,NULL,r.effective_from);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_family_admin_relationship_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_admin_relationship_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_family_access_history(p_student_id uuid)
+RETURNS TABLE (
+  family_id uuid, effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT a.family_id, a.effective_from, a.effective_until
+    FROM app_private.family_student_access a
+   WHERE a.student_id = p_student_id
+     AND app_private.d1_authorized('family.history.view',
+                                   'STUDENT',a.student_id,NULL,a.effective_from);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_family_access_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_access_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_family_primary_context_history(p_student_id uuid)
+RETURNS TABLE (
+  family_relationship_id uuid, effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT c.family_relationship_id, c.effective_from, c.effective_until
+    FROM app_private.student_primary_family_contexts c
+   WHERE c.student_id = p_student_id
+     AND app_private.d1_authorized('family.history.view',
+                                   'STUDENT',c.student_id,NULL,c.effective_from);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_family_primary_context_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_primary_context_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_family_membership_history(p_family_id uuid)
+RETURNS TABLE (
+  principal_id uuid, effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT m.principal_id, m.effective_from, m.effective_until
+    FROM app_private.family_principal_memberships m
+    JOIN app_private.families f ON f.id = m.family_id
+   WHERE m.family_id = p_family_id
+     AND app_private.d1_authorized('family.membership_history.view','SCHOOL',f.school_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_family_membership_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_membership_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_roster(p_employee_id uuid)
+RETURNS TABLE (
+  employee_id uuid, display_name text, employee_code text,
+  current_state text, department_label text, designation_label text,
+  profile_photo_file_id uuid
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT e.id, pe.display_name, e.employee_code, e.current_state,
+         d.label, des.label, e.profile_photo_file_id
+    FROM app_private.employees e
+    JOIN app_private.people pe ON pe.id = e.person_id
+    LEFT JOIN app_private.employee_job_assignments ja
+      ON ja.employee_id = e.id AND ja.effective_from <= CURRENT_DATE
+     AND (ja.effective_until IS NULL OR CURRENT_DATE < ja.effective_until)
+    LEFT JOIN app_private.departments d ON d.id = ja.department_id
+    LEFT JOIN app_private.designations des ON des.id = ja.designation_id
+   WHERE e.id = p_employee_id
+     AND app_private.d1_authorized('employee.roster.view','EMPLOYEE',e.id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_roster(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_roster(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_profile(p_employee_id uuid)
+RETURNS TABLE (
+  employee_id uuid, display_name text, employee_code text,
+  current_state text, department_label text, designation_label text,
+  profile_photo_file_id uuid, employment_effective_from date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT e.id, pe.display_name, e.employee_code, e.current_state,
+         d.label, des.label, e.profile_photo_file_id, ep.effective_from
+    FROM app_private.employees e
+    JOIN app_private.people pe ON pe.id = e.person_id
+    LEFT JOIN app_private.employee_job_assignments ja
+      ON ja.employee_id = e.id AND ja.effective_from <= CURRENT_DATE
+     AND (ja.effective_until IS NULL OR CURRENT_DATE < ja.effective_until)
+    LEFT JOIN app_private.departments d ON d.id = ja.department_id
+    LEFT JOIN app_private.designations des ON des.id = ja.designation_id
+    LEFT JOIN app_private.employment_periods ep
+      ON ep.employee_id = e.id AND ep.effective_from <= CURRENT_DATE
+     AND (ep.effective_until IS NULL OR CURRENT_DATE < ep.effective_until)
+   WHERE e.id = p_employee_id
+     AND app_private.d1_authorized('employee.profile.view','EMPLOYEE',e.id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_profile(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_profile(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_restricted_identity(p_employee_id uuid)
+RETURNS TABLE (identity_type_code text, national_identity_number text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT i.identity_type_code, i.national_identity_number
+    FROM app_private.employee_identity_details i
+   WHERE i.employee_id = p_employee_id
+     AND i.effective_from <= pg_catalog.statement_timestamp()
+     AND (i.effective_until IS NULL OR pg_catalog.statement_timestamp() < i.effective_until)
+     AND app_private.d1_authorized('employee.restricted_identity.view','EMPLOYEE',i.employee_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_restricted_identity(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_restricted_identity(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_restricted_identity_history(p_employee_id uuid)
+RETURNS TABLE (
+  effective_from timestamptz, effective_until timestamptz,
+  identity_type_code text, national_identity_number text
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT i.effective_from, i.effective_until,
+         i.identity_type_code, i.national_identity_number
+    FROM app_private.employee_identity_details i
+   WHERE i.employee_id = p_employee_id
+     AND app_private.d1_authorized('employee.restricted_identity_history.view',
+                                   'EMPLOYEE',i.employee_id,NULL,i.effective_from::date);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_restricted_identity_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_restricted_identity_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_qualifications(p_employee_id uuid)
+RETURNS TABLE (
+  qualification_record_id uuid, qualification_type text, title text,
+  institution text, specialization text, awarded_on date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT q.qualification_record_id, q.qualification_type, q.title,
+         q.institution, q.specialization, q.awarded_on
+    FROM app_private.employee_qualifications q
+   WHERE q.employee_id = p_employee_id
+     AND q.effective_from <= pg_catalog.statement_timestamp()
+     AND (q.effective_until IS NULL OR pg_catalog.statement_timestamp() < q.effective_until)
+     AND app_private.d1_authorized('employee.qualification.view','EMPLOYEE',q.employee_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_qualifications(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_qualifications(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_qualification_history(p_employee_id uuid)
+RETURNS TABLE (
+  qualification_record_id uuid, effective_from timestamptz,
+  effective_until timestamptz, qualification_type text, title text,
+  institution text, specialization text, awarded_on date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT q.qualification_record_id, q.effective_from, q.effective_until,
+         q.qualification_type, q.title, q.institution, q.specialization, q.awarded_on
+    FROM app_private.employee_qualifications q
+   WHERE q.employee_id = p_employee_id
+     AND app_private.d1_authorized('employee.qualification_history.view',
+                                   'EMPLOYEE',q.employee_id,NULL,q.effective_from::date);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_qualification_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_qualification_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_experience(p_employee_id uuid)
+RETURNS TABLE (
+  experience_record_id uuid, organization_name text,
+  role_title text, starts_on date, ends_on date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT x.experience_record_id, x.organization_name,
+         x.role_title, x.starts_on, x.ends_on
+    FROM app_private.employee_experience_entries x
+   WHERE x.employee_id = p_employee_id
+     AND x.effective_from <= pg_catalog.statement_timestamp()
+     AND (x.effective_until IS NULL OR pg_catalog.statement_timestamp() < x.effective_until)
+     AND app_private.d1_authorized('employee.experience.view','EMPLOYEE',x.employee_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_experience(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_experience(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_experience_history(p_employee_id uuid)
+RETURNS TABLE (
+  experience_record_id uuid, effective_from timestamptz,
+  effective_until timestamptz, organization_name text,
+  role_title text, starts_on date, ends_on date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT x.experience_record_id, x.effective_from, x.effective_until,
+         x.organization_name, x.role_title, x.starts_on, x.ends_on
+    FROM app_private.employee_experience_entries x
+   WHERE x.employee_id = p_employee_id
+     AND app_private.d1_authorized('employee.experience_history.view',
+                                   'EMPLOYEE',x.employee_id,NULL,x.effective_from::date);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_experience_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_experience_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_employment_history(p_employee_id uuid)
+RETURNS TABLE (state text, effective_from date, effective_until date)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT ep.state, ep.effective_from, ep.effective_until
+    FROM app_private.employment_periods ep
+   WHERE ep.employee_id = p_employee_id
+     AND app_private.d1_authorized('employee.employment_history.view',
+                                   'EMPLOYEE',ep.employee_id,NULL,ep.effective_from);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_employment_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_employment_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_job_history(p_employee_id uuid)
+RETURNS TABLE (
+  department_id uuid, designation_id uuid,
+  effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT ja.department_id, ja.designation_id, ja.effective_from, ja.effective_until
+    FROM app_private.employee_job_assignments ja
+   WHERE ja.employee_id = p_employee_id
+     AND app_private.d1_authorized('employee.organization_history.view',
+                                   'EMPLOYEE',ja.employee_id,NULL,ja.effective_from);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_job_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_job_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_employee_campus_history(p_employee_id uuid)
+RETURNS TABLE (campus_id uuid, effective_from date, effective_until date)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT ca.campus_id, ca.effective_from, ca.effective_until
+    FROM app_private.employee_campus_affiliations ca
+   WHERE ca.employee_id = p_employee_id
+     AND app_private.d1_authorized('employee.organization_history.view',
+                                   'EMPLOYEE_CAMPUS',ca.employee_id,ca.campus_id,ca.effective_from);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_campus_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_campus_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_departments(p_school_id uuid)
+RETURNS TABLE (department_id uuid, code text, label text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT d.id, d.code, d.label FROM app_private.departments d
+   WHERE d.school_id = p_school_id
+     AND app_private.d1_authorized('employee.organization_catalog.view','SCHOOL',d.school_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_departments(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_departments(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_designations(p_school_id uuid)
+RETURNS TABLE (designation_id uuid, code text, label text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT d.id, d.code, d.label FROM app_private.designations d
+   WHERE d.school_id = p_school_id
+     AND app_private.d1_authorized('employee.organization_catalog.view','SCHOOL',d.school_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_designations(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_designations(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_teacher_capability(p_employee_id uuid)
+RETURNS TABLE (effective_from date, effective_until date)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT tc.effective_from, tc.effective_until
+    FROM app_private.teacher_capabilities tc
+   WHERE tc.employee_id = p_employee_id
+     AND tc.effective_from <= CURRENT_DATE
+     AND (tc.effective_until IS NULL OR CURRENT_DATE < tc.effective_until)
+     AND app_private.d1_authorized('teaching.capability.view','EMPLOYEE',tc.employee_id);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_teacher_capability(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_teacher_capability(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_teacher_capability_history(p_employee_id uuid)
+RETURNS TABLE (effective_from date, effective_until date)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT tc.effective_from, tc.effective_until
+    FROM app_private.teacher_capabilities tc
+   WHERE tc.employee_id = p_employee_id
+     AND app_private.d1_authorized('teaching.capability_history.view',
+                                   'EMPLOYEE',tc.employee_id,NULL,tc.effective_from);
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_teacher_capability_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_teacher_capability_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_class_teacher_assignments(p_section_id uuid)
+RETURNS TABLE (employee_id uuid, effective_from date, effective_until date)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT ca.employee_id, ca.effective_from, ca.effective_until
+    FROM app_private.class_teacher_assignments ca
+   WHERE ca.section_offering_id = p_section_id
+     AND ca.effective_from <= CURRENT_DATE
+     AND (ca.effective_until IS NULL OR CURRENT_DATE < ca.effective_until)
+     AND app_private.d1_authorized('teaching.assignment.view','SECTION',ca.section_offering_id)
+     AND (EXISTS (
+       SELECT 1 FROM app_private.principals actor
+       JOIN app_private.employees own_e ON own_e.person_id = actor.person_id
+        WHERE actor.id = app_private.current_principal_id()
+          AND actor.kind = 'INDIVIDUAL' AND own_e.id = ca.employee_id
+     ) OR app_private.d1_authorized('teaching.assignment.view','EMPLOYEE',ca.employee_id));
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_class_teacher_assignments(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_class_teacher_assignments(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_subject_teacher_assignments(p_section_id uuid, p_subject_id uuid)
+RETURNS TABLE (
+  employee_id uuid, assignment_kind text,
+  effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT sa.employee_id, sa.assignment_kind, sa.effective_from, sa.effective_until
+    FROM app_private.subject_teacher_assignments sa
+   WHERE sa.section_offering_id = p_section_id AND sa.subject_id = p_subject_id
+     AND sa.effective_from <= CURRENT_DATE
+     AND (sa.effective_until IS NULL OR CURRENT_DATE < sa.effective_until)
+     AND app_private.d1_authorized('teaching.assignment.view','SUBJECT',sa.section_offering_id,sa.subject_id)
+     AND (EXISTS (
+       SELECT 1 FROM app_private.principals actor
+       JOIN app_private.employees own_e ON own_e.person_id = actor.person_id
+        WHERE actor.id = app_private.current_principal_id()
+          AND actor.kind = 'INDIVIDUAL' AND own_e.id = sa.employee_id
+     ) OR app_private.d1_authorized('teaching.assignment.view','EMPLOYEE',sa.employee_id));
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_subject_teacher_assignments(uuid,uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_subject_teacher_assignments(uuid,uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_class_teacher_assignment_history(p_employee_id uuid)
+RETURNS TABLE (
+  section_offering_id uuid, effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT ca.section_offering_id, ca.effective_from, ca.effective_until
+    FROM app_private.class_teacher_assignments ca
+   WHERE ca.employee_id = p_employee_id
+     AND (
+       app_private.d1_authorized('teaching.assignment_history.view',
+                                 'SECTION',ca.section_offering_id,NULL,ca.effective_from)
+       OR (EXISTS (
+         SELECT 1 FROM app_private.principals actor
+         JOIN app_private.employees own_e ON own_e.person_id = actor.person_id
+          WHERE actor.id = app_private.current_principal_id()
+            AND actor.kind = 'INDIVIDUAL' AND own_e.id = ca.employee_id
+       ) AND app_private.d1_authorized('teaching.assignment_history.view',
+                                       'EMPLOYEE',ca.employee_id,NULL,ca.effective_from))
+     );
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_class_teacher_assignment_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_class_teacher_assignment_history(uuid) TO authenticated;
+
+CREATE FUNCTION app.d1_read_subject_teacher_assignment_history(p_employee_id uuid)
+RETURNS TABLE (
+  section_offering_id uuid, subject_id uuid, assignment_kind text,
+  effective_from date, effective_until date
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT sa.section_offering_id, sa.subject_id, sa.assignment_kind,
+         sa.effective_from, sa.effective_until
+    FROM app_private.subject_teacher_assignments sa
+   WHERE sa.employee_id = p_employee_id
+     AND (
+       app_private.d1_authorized('teaching.assignment_history.view',
+                                 'SUBJECT',sa.section_offering_id,sa.subject_id,sa.effective_from)
+       OR (EXISTS (
+         SELECT 1 FROM app_private.principals actor
+         JOIN app_private.employees own_e ON own_e.person_id = actor.person_id
+          WHERE actor.id = app_private.current_principal_id()
+            AND actor.kind = 'INDIVIDUAL' AND own_e.id = sa.employee_id
+       ) AND app_private.d1_authorized('teaching.assignment_history.view',
+                                       'EMPLOYEE',sa.employee_id,NULL,sa.effective_from))
+     );
+$body$;
+REVOKE ALL ON FUNCTION app.d1_read_subject_teacher_assignment_history(uuid) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_subject_teacher_assignment_history(uuid) TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
+
+-- First fixed P0 command pattern. The remaining operation families are still
+-- absent; this does not make the migration or D1C1B execution-ready.
+GRANT USAGE, CREATE ON SCHEMA app TO schoolos_academic_executor;
+SET ROLE schoolos_academic_executor;
+CREATE FUNCTION app.d1_change_academic_class(
+  p_action text, p_class_id uuid, p_school_id uuid, p_code text,
+  p_label text, p_display_order integer, p_stage_label text,
+  p_expected_version bigint, p_idempotency_key text
+) RETURNS TABLE (class_id uuid, row_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  v_hash bytea;
+  v_context record;
+  v_old app_private.academic_classes%ROWTYPE;
+  v_id uuid;
+  v_version bigint;
+  v_state text;
+  v_receipt_id uuid := pg_catalog.gen_random_uuid();
+  v_correlation_id uuid := pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_action NOT IN ('CREATE','UPDATE','ARCHIVE') OR p_school_id IS NULL
+     OR p_code IS NULL OR pg_catalog.length(pg_catalog.btrim(p_code))=0 THEN
+    RAISE EXCEPTION 'D1 academic Class intent invalid';
+  END IF;
+  IF (p_action='CREATE' AND (p_class_id IS NOT NULL OR p_expected_version IS NOT NULL))
+     OR (p_action<>'CREATE' AND (p_class_id IS NULL OR p_expected_version IS NULL
+                                 OR p_expected_version<1)) THEN
+    RAISE EXCEPTION 'D1 academic Class expected target/version invalid';
+  END IF;
+  IF p_action='ARCHIVE' AND (p_label IS NOT NULL OR p_display_order IS NOT NULL
+                             OR p_stage_label IS NOT NULL) THEN
+    RAISE EXCEPTION 'D1 academic Class archive has unexpected profile fields';
+  END IF;
+  IF p_action<>'ARCHIVE' AND (p_label IS NULL OR p_display_order IS NULL) THEN
+    RAISE EXCEPTION 'D1 academic Class label/order required';
+  END IF;
+  v_hash := pg_catalog.sha256(pg_catalog.convert_to(
+    pg_catalog.jsonb_build_array(1,'academic.class.change',p_action,p_class_id,
+      p_school_id,p_code,p_label,p_display_order,p_stage_label,p_expected_version)::text,
+    'UTF8'));
+  SELECT * INTO v_context FROM app_private.d1_command_receipt_lookup(
+    'academic.class.change',p_idempotency_key,v_hash);
+
+  PERFORM 1 FROM app_private.school_profiles s WHERE s.id=p_school_id FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 school target missing'; END IF;
+  IF p_action<>'CREATE' THEN
+    SELECT c.* INTO v_old FROM app_private.academic_classes c
+     WHERE c.id=p_class_id FOR UPDATE;
+    IF NOT FOUND OR v_old.school_id IS DISTINCT FROM p_school_id
+       OR v_old.code IS DISTINCT FROM p_code THEN
+      RAISE EXCEPTION 'D1 academic Class target/ancestry changed';
+    END IF;
+  END IF;
+  -- Fresh statement after the row-lock wait: never reuse prelock authority.
+  IF NOT app_private.d1_authorized('academic.class.manage','SCHOOL',p_school_id) THEN
+    RAISE EXCEPTION 'D1 academic Class authority denied';
+  END IF;
+  IF v_context.receipt_id IS NOT NULL THEN
+    IF v_context.receipt_state<>'SUCCEEDED' OR v_context.result_ref IS NULL THEN
+      RAISE EXCEPTION 'D1 prior terminal Class command was not successful';
+    END IF;
+    RETURN QUERY SELECT v_context.result_ref,
+                        (v_context.result_summary->>'row_version')::bigint;
+    RETURN;
+  END IF;
+
+  IF p_action='CREATE' THEN
+    v_id := pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.academic_classes
+      (id, school_id, code, label, display_order, stage_label, created_by)
+    VALUES (v_id,p_school_id,p_code,p_label,p_display_order,p_stage_label,v_context.actor_id);
+    v_version := 1;
+    v_state := 'ACTIVE';
+  ELSE
+    IF v_old.row_version<>p_expected_version OR v_old.state<>'ACTIVE' THEN
+      RAISE EXCEPTION 'D1 academic Class stale version/state';
+    END IF;
+    v_id := v_old.id;
+    IF p_action='UPDATE' THEN
+      UPDATE app_private.academic_classes c
+         SET label=p_label, display_order=p_display_order, stage_label=p_stage_label
+       WHERE c.id=v_id RETURNING c.row_version INTO v_version;
+      v_state := 'ACTIVE';
+    ELSE
+      IF EXISTS (SELECT 1 FROM app_private.class_offerings o
+                  WHERE o.class_id=v_id AND o.state<>'ARCHIVED') THEN
+        RAISE EXCEPTION 'D1 academic Class has active offerings';
+      END IF;
+      UPDATE app_private.academic_classes c
+         SET state='ARCHIVED', archived_at=pg_catalog.statement_timestamp(),
+             archived_by=v_context.actor_id
+       WHERE c.id=v_id RETURNING c.row_version INTO v_version;
+      v_state := 'ARCHIVED';
+    END IF;
+  END IF;
+
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,
+     canonical_payload_hash,canonicalization_version,expected_target_version,
+     state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES (v_receipt_id,v_context.actor_id,v_context.operation_id,
+          'academic.class.change',p_idempotency_key,v_hash,1,p_expected_version,
+          'SUCCEEDED','D1_CLASS',v_id,
+          pg_catalog.jsonb_build_object('row_version',v_version,'state',v_state),
+          pg_catalog.transaction_timestamp(),v_context.actor_id);
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,
+     event_type,target_kind,target_ref,command_receipt_id,source_kind,
+     correlation_id,details,created_by)
+  VALUES (v_context.actor_id,'INDIVIDUAL','SUCCEEDED',
+          pg_catalog.jsonb_build_object('permission','academic.class.manage'),
+          v_version,'academic.class.change','CLASS',v_id,v_receipt_id,'API',
+          v_correlation_id,pg_catalog.jsonb_build_object('state',v_state),
+          v_context.actor_id);
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,
+     command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('academic.class_changed','ACADEMIC_CLASS',v_id,v_version,
+          v_receipt_id,1,v_correlation_id,
+          pg_catalog.jsonb_build_object('class_id',v_id,'state',v_state),
+          v_context.actor_id);
+  RETURN QUERY SELECT v_id,v_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_academic_class(text,uuid,uuid,text,text,integer,text,bigint,text)
+  FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_academic_class(text,uuid,uuid,text,text,integer,text,bigint,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_academic_executor;

@@ -1,8 +1,27 @@
 # D1C1 Migration 10 SQL review — working draft
 
+**2026-09-29 continuation status:** D1C1A's structural/integrity kernel and
+the separately reviewed bootstrap-manifest gate remain PASS. Commit
+`ee7d9adf8718e5a9f2afb0c2c426337fd7eea5a5` is the accepted partial
+D1C1B catalog checkpoint: exact bootstrap actor validation, 97 permissions,
+322 scope alternatives, 36 operation contracts, and ten approved P1 reviewer
+mappings. The current continuation adds static evaluator/read, explicit P1
+route, private receipt-lock and one fixed P0 Academic Class command drafts,
+recorded in [D1C1B security review](../security/11_domain_package_01_d1c1b_security_review.md),
+including the product-owner-approved SQL-translation clarification that P1
+route mode is an explicit `DIRECT`/`APPROVAL` field, never inferred from
+approval-step count. Missing policy or mode denies, `APPROVAL` requires a valid
+step, and P2 cannot select `DIRECT`. The remaining protected commands and
+final RLS/ACL remain incomplete. **D1C1B is not
+passed.** Migration 10 remains non-executable `.sql.draft`; D1C1C is separate
+and D1C2 execution/runtime testing is not authorized. The historical
+checkpoint observations below are retained to explain earlier gaps; their
+older manifest counts and bootstrap mismatch do not describe the current
+working draft.
+
 **Later D1C1A note:** [Review 35](35_domain_package_01_d1c1a_integrity_review.md) records the subsequently drafted structural and integrity kernel. The missing-trigger statements below describe this earlier checkpoint, not the current unexecuted `.sql.draft`; the D1C1B authorization/command and D1C2 runtime gates remain open.
 
-**Later bootstrap-manifest clarification:** The product owner subsequently froze the deployment-bootstrap actor in the [versioned manifest](../../supabase/config/foundation_bootstrap_manifest.json): UUID `3e0e0b72-762c-44e1-b7eb-98dcc449643a`, `kind=SYSTEM`, `system_purpose=deployment-bootstrap`, `state=ACTIVE`. Future D1 registrar implementation must require exactly one ACTIVE SYSTEM Principal matching **both** that UUID and purpose. The current SQL draft still uses `system_purpose='bootstrap'`; correcting and independently reviewing that code belongs to resumed D1C1B, not this documentation gate.
+**Later bootstrap-manifest clarification:** The product owner subsequently froze the deployment-bootstrap actor in the [versioned manifest](../../supabase/config/foundation_bootstrap_manifest.json): UUID `3e0e0b72-762c-44e1-b7eb-98dcc449643a`, `kind=SYSTEM`, `system_purpose=deployment-bootstrap`, `state=ACTIVE`. The earlier draft used `system_purpose='bootstrap'`; the accepted `ee7d9ad...` checkpoint corrected the lookup to require both exact UUID and purpose. The current D1C1B continuation preserves that correction.
 
 **Status: INCOMPLETE WORKING DRAFT — NOT AUTHORIZED FOR APPLICATION.** This record tracks the local D1C1 translation from approved D1B3B baseline `e71d3be34f55235c18255795f32dfb6f09a2b182`. Commit `146174fa5e14b1728d6ee9e5b3353faed9071cab` is an incomplete D1C1 checkpoint, not a pass. No SQL has been applied, no Supabase project has been contacted, and no D1C2 test has been created. The working file uses the non-executable suffix `supabase/migrations/20260928000000_domain_package_01.sql.draft` so an ordinary CLI migration scan cannot select it.
 
@@ -12,7 +31,7 @@ Migration-time D1 catalog insertion was rejected because the Foundation permissi
 
 ## Drafted objects and static counts
 
-The file currently describes 34 new private D1 relations in the reviewed dependency order; 34 UUID PKs, 21 full candidate unique keys, 3 partial unique indexes, 34 row-local CHECK bundles, 47 D1 secondary indexes, 34 FORCE RLS tables, five NOLOGIN D1 executor roles, and the three typed authorization target columns/FKs on `assignment_permission_scopes`. It extends the Foundation scope-kind checks and typed target shape, immutability and overlap guards without changing `has_complete_grant(text,text,uuid)`. It also contains an initial private D1 evaluator, defensive record and file-purpose triggers, role-specific internal policies/grants, the private post-bootstrap manifest (87 permissions, 297 scope alternatives, 36 operation codes), and a private 32-code event vocabulary function. None of these counts is a live PostgreSQL count or evidence of correct execution.
+At that earlier checkpoint, the file described 34 new private D1 relations in the reviewed dependency order; 34 UUID PKs, 21 full candidate unique keys, 3 partial unique indexes, 34 row-local CHECK bundles, 47 D1 secondary indexes, 34 FORCE RLS tables, five NOLOGIN D1 executor roles, and the three typed authorization target columns/FKs on `assignment_permission_scopes`. It extended the Foundation scope-kind checks and typed target shape, immutability and overlap guards without changing `has_complete_grant(text,text,uuid)`. It also contained an initial private D1 evaluator, defensive record and file-purpose triggers, role-specific internal policies/grants, the then-current private post-bootstrap manifest (87 permissions, 297 scope alternatives, 36 operation codes), and a private 32-code event vocabulary function. Those historical counts are not the current manifest baseline. None is a live PostgreSQL count or evidence of correct execution.
 
 The current draft has **not** implemented the complete approved D1B2/D1B3 runtime contract and must not be renamed to `.sql`, applied, reviewed as ready, or committed as a completed D1C1 migration yet. Specifically:
 
@@ -22,7 +41,7 @@ The current draft has **not** implemented the complete approved D1B2/D1B3 runtim
 4. Four fixed academic checked-read surfaces are now present in the working draft, but the remaining reviewed read families and all 36 protected command families are absent. No command receipts, approval apply path, redacted audit/outbox writes or command-level reauthorization are installed.
 5. The file-purpose trigger checks the three approved purpose codes and AVAILABLE state on a new link, but typed ownership, current entitlement and upload/download authorization remain separately gated by the reviewed file service.
 6. Foundation has no generic event-registry table. The draft's event vocabulary is a private function, not a worker registration or permission to publish events. This needs explicit review with the eventual evidence writer.
-7. **Subsequently resolved as a manifest prerequisite, not yet implemented in this draft:** The approved bootstrap identity is UUID `3e0e0b72-762c-44e1-b7eb-98dcc449643a` with `system_purpose='deployment-bootstrap'`. The current registrar still looks up `'bootstrap'` by purpose alone. D1C1B must correct it to require exact UUID **and** purpose, exactly one ACTIVE SYSTEM Principal, and fail closed on absence, mismatch or ambiguity. Foundation migrations do not seed the actor; trusted bootstrap creates it after structural migrations.
+7. **Subsequently resolved by the manifest and `ee7d9ad...` checkpoint:** The approved bootstrap identity is UUID `3e0e0b72-762c-44e1-b7eb-98dcc449643a` with `system_purpose='deployment-bootstrap'`. The registrar now requires exact UUID **and** purpose, exactly one ACTIVE SYSTEM Principal, and fails closed on absence, mismatch or ambiguity. Foundation migrations do not seed the actor; trusted bootstrap creates it after structural migrations.
 8. Foundation `operation_contracts.requires_approval` is a Boolean. The P1 school-configurable choice and retroactive teaching P0/P2 split must be enforced by fixed policy/apply code before any operation is enabled. The manifest deliberately leaves every D1 operation disabled.
 9. `student.create` depends on a verified final Admissions handoff from a later package. Pending a product-owner clarification, the conservative D1C1 working assumption is that this entry point remains unavailable until the handoff exists; Migration 10 must not fabricate an Admissions allocator or label a denial-only placeholder as a completed command.
 
@@ -30,7 +49,7 @@ The current draft has **not** implemented the complete approved D1B2/D1B3 runtim
 
 ### Focused static review findings
 
-- The draft contains no D1 protected command function, command-key lock, `pg_advisory_xact_lock_shared(71001,1)`, command-receipt write, approval apply call, audit write or outbox write. Its five D1 executor roles instead have direct private-table INSERT and selected UPDATE grants with `USING (true)` / `WITH CHECK (true)` policies. The provenance trigger verifies a principal and immutable fields, but does not verify the permission, target, approval, expected version or transaction protocol. These grants must not be treated as an acceptable protected-command implementation.
+- The earlier checkpoint contained no D1 protected command function, command-key lock, `pg_advisory_xact_lock_shared(71001,1)`, command-receipt write, approval apply call, audit write or outbox write. The current continuation adds a private receipt lookup and one fixed Academic Class command, but the remaining command/workflow paths are absent. The five D1 executor roles still have provisional direct private-table INSERT and selected UPDATE grants with `USING (true)` / `WITH CHECK (true)` policies. These grants are not an acceptable final protected-command boundary.
 - There is no cross-row D1 trigger or deferred constraint trigger. For example, the draft has no parent-locked primary-enrollment overlap/capacity check, no same-transaction initial Student status requirement, and no roll-allocation coverage check. The row-local CHECK bundles and partial unique indexes do not close these gaps.
 - The checkpoint version of `d1_authorized()` required exactly one effective PRIMARY enrollment before it could authorize *any* `STUDENT` target. The working correction allows Student-self or current FAMILY-child resolution without placement where the permission can apply to retained facts, while current ROSTER/PROFILE and direct staff scopes still require a placement; more than one effective PRIMARY placement denies. This is a static correction only. Other permission-specific target-state rules, historical placement interpretation and every fixed resolver/read projection still require full review.
 - The post-bootstrap registrar is only a structural proposal. It has not been parsed or run. The subsequently approved manifest now establishes the stable bootstrap actor UUID and `deployment-bootstrap` purpose, but the SQL draft has not yet been corrected to match both. Its disabled catalog rows do not authorize calling the absent commands.
