@@ -65,6 +65,9 @@ private, post-bootstrap, disabled by default, and uninvoked by the migration.
   affiliation facts determine the supported target scope. Same Principal and
   same proven Person as the requester are excluded; FAMILY, SYSTEM, missing,
   inactive, detached, and unproved requester identity produce no candidate.
+  In the Profile workflow, an Employee CAMPUS reviewer grant must match the
+  request's pinned campus; a grant for another current affiliation cannot be
+  mixed into that request. A campus-free Employee request requires ALL scope.
   No administrator or role-label fallback exists. An empty candidate result
   must block the later step-open command, never approve or select DIRECT.
 - The companion private `d1_current_reviewer_eligible(request_id,step_id)`
@@ -75,7 +78,9 @@ private, post-bootstrap, disabled by default, and uninvoked by the migration.
   assignment, closed step, or lost target context deny on recheck. Both helpers
   revoke PUBLIC/anon/authenticated/service-role EXECUTE and grant only the
   existing NOLOGIN `schoolos_workflow_executor`. They return safe Principal IDs
-  or a Boolean, not sensitive request payloads.
+  or a Boolean, not sensitive request payloads. The new profile workflow grants
+  their EXECUTE to the NOLOGIN schema owner only for its fixed server-side
+  orchestration; they remain non-executable by authenticated clients.
 - The resolver deliberately returns no candidate for move/reassignment,
   Family two-sided, roll lineage, restricted-identity/Special lineage, Emergency
   Contact lineage, Employee qualification/experience lineage,
@@ -86,9 +91,9 @@ private, post-bootstrap, disabled by default, and uninvoked by the migration.
   workflow code must persist eligible IDs to `approval_step_reviewers` with
   safe `D1_REVIEWER_ROLE_SCOPE` assignment reason, fail closed on zero eligible
   reviewers, recheck before APPROVE/REJECT and again before apply, and enforce
-  expected versions. This gate adds no candidate assignment or review/apply
-  command. No D1 approval route is ready for activation merely from these
-  helper definitions.
+  expected versions. The narrow Student/Employee Profile continuation below
+  implements those actions only for its two typed operations; other routes
+  still have no workflow command.
 - Fixed, typed checked-read functions have been added for the approved
   Academic, Student, Family, Employee, and Teaching current/history disclosure
   families. Current FAMILY Emergency Contact returns only display name,
@@ -110,20 +115,76 @@ private, post-bootstrap, disabled by default, and uninvoked by the migration.
   selected outbox event. This single command has not been SQL-executed or
   generalized to the other operation contracts.
 
+## Student and Employee Profile P1 workflow continuation
+
+From parent `14292465063a33bc975f69aed0466c2b98f0563d`, the draft adds
+fixed typed `app.d1_change_student_profile`,
+`app.d1_submit_student_profile_update`, `app.d1_change_employee_profile`,
+`app.d1_submit_employee_profile_update`, and
+`app.d1_review_profile_request`. The Student payload is an exact full
+replacement of DOB, gender code, nationality code, general contact, previous
+school, and profile-photo reference. Employee Profile changes only its
+approved core-row photo reference; restricted identity, employment state,
+qualification, experience, jobs, and affiliations have no update path through
+these entry points. Private payload validation rejects extra keys and wrong
+JSON types. Existing file-purpose/AVAILABLE triggers protect the two photo
+links; FK or profile permission does not grant upload or download authority.
+
+Each direct/submission call uses the Foundation `(71001,1)` SHARED
+authorization lock, the existing principal/operation/idempotency receipt-key
+lock, a pinned active policy and target aggregate lock, then a fresh exact
+INDIVIDUAL grant/scope and target-state/version check. Absent/ambiguous policy
+denies. `DIRECT` executes only the fixed allowlisted mutation; `APPROVAL`
+blocks direct mutation and requires typed request submission. The canonical
+intent hash includes route, typed values, target and expected version. An
+exact successful receipt replay returns its stored result; changed intent
+under the same key conflicts. Failed transactions leave no successful receipt.
+The live Profile authority helper, reviewer candidate evaluator and reused
+P1 selector evaluate their validity windows from a fresh clock instant after
+lock waits; the earlier outer-statement timestamp cannot extend a grant past
+revocation or expiry.
+
+Submission creates a private Foundation request with typed old/new PROFILE
+snapshots, advances DRAFT → SUBMITTED → PENDING, snapshots every sequential
+policy template as a WAITING step, opens step 1, and materializes current
+`D1_REVIEWER_ROLE_SCOPE` candidates into `approval_step_reviewers`. Zero
+candidates raises an error and rolls back the entire submission, including
+its receipt. The review entry point accepts only these two operation codes.
+It locks the request, open step and current reviewer assignment, checks the
+expected request version, and invokes the frozen live eligibility predicate
+before recording an immutable `approval_reviews` decision. A rejection
+terminates the path and cancels waiting steps. Approval opens only the next
+sequential step, materializing fresh candidates; zero candidates rolls back
+that review. The final approval checks every prior immutable approval and
+current reviewer role/grant/scope/assignment, as well as current requester
+authority, target context, state and expected version. Stale authority or
+target returns INVALIDATED without profile mutation. A valid result passes
+through APPROVED to EXECUTED and records `approval_applications` atomically.
+
+The direct and applied Student mutation emits only the selected
+`student.profile_changed` outbox event. Employee Profile emits no D1 outbox
+event. Receipts and broad audit/outbox payloads contain identifiers, route,
+state, version and correlation evidence, never raw profile values or reason
+text. The requested/old values and reviewer reason remain in the private
+Foundation workflow records. The two profile effects update only the fixed
+columns, with existing D1 row-version and file-purpose triggers still in force.
+All new private helpers revoke PUBLIC, anon, authenticated and service-role
+EXECUTE. The five exact public entry points grant only `authenticated`
+EXECUTE. No authenticated base-table DML is added. This is static SQL only;
+PostgreSQL parsing, function ownership, non-owner RLS and concurrency behavior
+remain unproven until separately authorized execution testing.
+
 ## Open completion gates
 
 1. The complete 36-operation ledger is not implemented. In particular,
    `student.create` remains unavailable pending the approved Admissions
-   handoff; 34 of the other 35 supported effects still need fixed typed
+   handoff; 33 of the other 35 supported effects still need fixed typed
    commands or reviewed private workflow apply paths. The first Academic Class
    command also needs independent static and later runtime review.
-2. Foundation receipt/idempotency, P0/P1/P2 application, reviewer-step
-   eligibility, source/destination lock and reauthorization, safe audit/outbox,
-   and capacity-override command evidence remain unimplemented.
-   The reviewed `D1_REVIEWER_ROLE_SCOPE` value and private candidate/recheck
-   predicates now exist, but source/destination interpretation, candidate-row
-   insertion, zero-candidate transition evidence, actual review decisions and
-   domain apply commands still need their fixed workflow implementation.
+2. The two Profile operations above are the only drafted P1 workflow core.
+   Other P1/P2 source/destination interpretation, candidate materialization,
+   review, apply, receipt and evidence paths remain unimplemented. The
+   capacity-override and Admissions handoff commands remain separate gates.
 3. The provisional broad executor `USING (true)`/`WITH CHECK (true)` policies
    and DML grants still require final narrowing, along with the function
    EXECUTE allowlist and file-service authorization boundary.
@@ -139,9 +200,10 @@ independent review approval.
 An independent lexical recount of the registrar VALUE lists in this working
 draft found **97/97 unique permission IDs/codes**, **322/322 unique scope IDs**
 for the approved 97 permission codes, and **36/36 unique operation IDs/codes**.
-The current draft has 47 public `app.d1_read_*` functions, one public D1
-business command, 73 `SECURITY DEFINER` function declarations, 205 policy
-declarations, 34 D1 `FORCE ROW LEVEL SECURITY` statements, and the five named
+After the Profile continuation, the draft has 47 public `app.d1_read_*`
+functions, six public D1 command/workflow functions (the prior Academic Class
+command and five Profile functions), 86 `SECURITY DEFINER` declarations,
+205 policy declarations, 34 D1 `FORCE ROW LEVEL SECURITY` statements, and the five named
 D1 executor-role declarations. These are text counts, not PostgreSQL catalog
 counts or proof that the SQL parses and runs.
 
@@ -163,3 +225,18 @@ whitespace errors. Registrar text still contains 97 unique permission rows,
 322 unique scope-alternative IDs, and 36 unique operation rows. No Migration
 10 SQL was executed and no Supabase project was contacted. These source checks
 do not establish D1 runtime or PostgreSQL parse correctness.
+
+At the `14292465063a33bc975f69aed0466c2b98f0563d` Profile workflow
+starting point, `git status --short` was clean. After drafting the two fixed
+effects, static registrar extraction again found **97/97 distinct permission
+IDs**, **322/322 distinct scope-alternative IDs**, and **36/36 distinct
+operation IDs**. A source-level ACL inventory found eight new private
+SECURITY DEFINER helpers, each with an explicit PUBLIC/anon/authenticated/
+service-role EXECUTE revoke, and five exact public Profile entry points with
+authenticated EXECUTE. No other public D1 operation effect was added.
+`python tools/supabase/foundation_guard.py --future report` returned
+`FOUNDATION_SOURCE_PASS 9 migrations + 9 tests` and `LOCAL_CONFIG_PASS`;
+`python tools/supabase/foundation_staging.py validate` returned
+`STAGING_VALIDATE_PASS`; `git diff --check` found no whitespace errors.
+Those checks do not parse or execute Migration 10 and do not prove runtime
+security. No local or managed Supabase database was contacted.

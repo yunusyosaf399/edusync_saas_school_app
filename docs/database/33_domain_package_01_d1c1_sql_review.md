@@ -16,9 +16,10 @@ step, and P2 cannot select `DIRECT`. The product owner subsequently approved
 validates that exact key on P1 APPROVAL/P2 policy activation and provides
 private request/step-bound candidate and live reviewer-recheck predicates;
 ambiguous source/destination targets fail closed pending typed workflow
-commands. The reviewer-selection key ambiguity is resolved, while candidate
-insertion, review decisions, apply paths, and the remaining protected commands and
-final RLS/ACL remain incomplete. **D1C1B is not
+commands. The latest narrow continuation adds fixed P1 direct and approval
+request/review/apply paths only for `student.profile.update` and
+`employee.profile.update`. The reviewer-selection key ambiguity is resolved;
+all other protected commands and final RLS/ACL remain incomplete. **D1C1B is not
 passed.** Migration 10 remains non-executable `.sql.draft`; D1C1C is separate
 and D1C2 execution/runtime testing is not authorized. The historical
 checkpoint observations below are retained to explain earlier gaps; their
@@ -30,6 +31,55 @@ working draft.
 **Later bootstrap-manifest clarification:** The product owner subsequently froze the deployment-bootstrap actor in the [versioned manifest](../../supabase/config/foundation_bootstrap_manifest.json): UUID `3e0e0b72-762c-44e1-b7eb-98dcc449643a`, `kind=SYSTEM`, `system_purpose=deployment-bootstrap`, `state=ACTIVE`. The earlier draft used `system_purpose='bootstrap'`; the accepted `ee7d9ad...` checkpoint corrected the lookup to require both exact UUID and purpose. The current D1C1B continuation preserves that correction.
 
 **Status: INCOMPLETE WORKING DRAFT — NOT AUTHORIZED FOR APPLICATION.** This record tracks the local D1C1 translation from approved D1B3B baseline `e71d3be34f55235c18255795f32dfb6f09a2b182`. Commit `146174fa5e14b1728d6ee9e5b3353faed9071cab` is an incomplete D1C1 checkpoint, not a pass. No SQL has been applied, no Supabase project has been contacted, and no D1C2 test has been created. The working file uses the non-executable suffix `supabase/migrations/20260928000000_domain_package_01.sql.draft` so an ordinary CLI migration scan cannot select it.
+
+## Profile workflow implementation gate (static only)
+
+The continuation from `14292465063a33bc975f69aed0466c2b98f0563d`
+implements the reusable P1 workflow pattern for exactly two fixed operations.
+The public command inventory added by this gate is
+`app.d1_change_student_profile`, `app.d1_submit_student_profile_update`,
+`app.d1_change_employee_profile`, `app.d1_submit_employee_profile_update`,
+and `app.d1_review_profile_request`. No other business effect is added.
+Private helpers perform fixed profile-payload validation, exact live
+requester/reviewer grant and scope checks, active policy selection, direct
+mutation, request submission, retained review-evidence checks, and final
+apply. They are not executable by `authenticated` or `service_role`.
+
+Direct calls require the reviewed explicit `DIRECT` policy, complete current
+request authority, an expected ACTIVE target/version and the existing
+Foundation receipt-key lock after the SHARED authorization lock. Approval
+submission requires the explicit `APPROVAL` route and creates DRAFT,
+SUBMITTED and PENDING Foundation states, immutable transition evidence,
+snapshotted sequential steps, an OPEN first step, and exact
+`D1_REVIEWER_ROLE_SCOPE` candidate rows. A zero-candidate first or subsequent
+step raises an error and rolls back that whole action. Review locks the
+current assignment and step, rechecks current eligibility and request
+version, records the fixed APPROVE/REJECT decision, then progresses one step
+or terminates. Final approval rechecks every reviewer, the requester and
+target after locks; stale state or authority invalidates the request without
+mutation. A valid final step records APPROVED to EXECUTED and an application
+row in the same transaction.
+
+Only the reviewed Student PROFILE columns and Employee core-row photo link
+are updated. Existing profile-photo purpose/AVAILABLE triggers still run;
+upload/download authorization remains with the file service. The direct and
+approved Student effect alone emits `student.profile_changed`. Employee
+Profile writes safe audit evidence without inventing an outbox event.
+Foundation receipts bind exact principal/operation/key to a typed canonical
+intent; changed intent conflicts and successful replay returns the stored
+result. Broad audit/outbox data contains only identifiers, route, decision,
+state, version and correlation. Private request snapshots and review reasons
+are not copied into broad evidence. All of this remains unexecuted draft SQL;
+neither PostgreSQL parse correctness nor non-owner runtime behavior is
+established by source checks. Static registrar extraction at this gate found
+97 distinct permission IDs, 322 distinct scope-alternative IDs and 36
+distinct operation IDs. Source inventory found five new public Profile
+functions, eight new private helpers, 86 total SECURITY DEFINER declarations,
+205 policy declarations and 34 D1 FORCE RLS statements. The Foundation guard
+returned `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests` and
+`LOCAL_CONFIG_PASS`; staging validation returned `STAGING_VALIDATE_PASS`;
+`git diff --check` reported no whitespace errors. The draft was not
+executed and no Supabase project was contacted.
 
 ## Bootstrap attribution boundary
 

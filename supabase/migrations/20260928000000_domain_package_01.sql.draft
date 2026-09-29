@@ -3059,7 +3059,7 @@ CREATE FUNCTION app_private.d1_p1_route(p_operation_code text, p_campus_id uuid)
 RETURNS text
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE
-  at_time timestamptz := pg_catalog.statement_timestamp();
+  at_time timestamptz := pg_catalog.clock_timestamp();
   matches bigint;
   policy_id uuid;
   selected_route text;
@@ -3121,7 +3121,7 @@ CREATE FUNCTION app_private.d1_review_candidates(
 ) RETURNS TABLE (candidate_principal_id uuid)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE
-  at_time timestamptz := pg_catalog.statement_timestamp();
+  at_time timestamptz := pg_catalog.clock_timestamp();
   ctx record;
   target_kind text;
   target_id uuid;
@@ -3196,7 +3196,9 @@ BEGIN
     'student.profile.update', 'student.status.change'
   ) THEN
     SELECT st.id INTO target_id FROM app_private.students st
-     WHERE st.id = ctx.target_ref;
+     WHERE st.id = ctx.target_ref
+       AND (ctx.operation_code <> 'student.profile.update'
+            OR st.current_status = 'ACTIVE');
     target_kind := 'STUDENT';
     SELECT count(*) INTO placement_count
       FROM app_private.enrollments e
@@ -3222,7 +3224,7 @@ BEGIN
     'employee.profile.update'
   ) THEN
     SELECT emp.id INTO target_id FROM app_private.employees emp
-     WHERE emp.id = ctx.target_ref;
+     WHERE emp.id = ctx.target_ref AND emp.current_state = 'ACTIVE';
     target_kind := 'EMPLOYEE';
     IF ctx.campus_id IS NOT NULL AND NOT EXISTS (
       SELECT 1 FROM app_private.employee_campus_affiliations ca
@@ -3298,7 +3300,8 @@ BEGIN
             (scope.scope_kind = 'ALL' AND scope.campus_id IS NULL)
             OR (scope.scope_kind = 'CAMPUS' AND (
               (target_kind = 'STUDENT' AND scope.campus_id = target_campus)
-              OR (target_kind = 'EMPLOYEE' AND EXISTS (
+              OR (target_kind = 'EMPLOYEE' AND ctx.campus_id IS NOT NULL
+                AND scope.campus_id = ctx.campus_id AND EXISTS (
                 SELECT 1 FROM app_private.employee_campus_affiliations ca
                  WHERE ca.employee_id = target_id
                    AND ca.campus_id = scope.campus_id
@@ -5030,3 +5033,927 @@ GRANT EXECUTE ON FUNCTION app.d1_change_academic_class(text,uuid,uuid,text,text,
   TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_academic_executor;
+
+-- D1C1B profile-only workflow core. No registrar row, other operation effect,
+-- or executable migration is introduced by these fixed entry points.
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_profile_authorized(
+  p_principal_id uuid, p_permission_code text, p_target_kind text,
+  p_target_id uuid, p_campus_id uuid, p_reviewer_role_id uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  at_time timestamptz := pg_catalog.clock_timestamp();
+  actual_campus uuid;
+  actual_class uuid;
+  actual_section uuid;
+  placements bigint;
+BEGIN
+  IF p_principal_id IS NULL OR p_target_id IS NULL
+     OR NOT ((p_target_kind='STUDENT' AND p_permission_code IN
+       ('student.profile.update','student.profile.approve'))
+       OR (p_target_kind='EMPLOYEE' AND p_permission_code IN
+       ('employee.profile.update','employee.profile.approve'))) THEN
+    RETURN false;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM app_private.principals p
+    JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+   WHERE p.id=p_principal_id AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+     AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL
+  ) THEN RETURN false; END IF;
+  IF p_reviewer_role_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+   WHERE a.principal_id=p_principal_id AND a.role_id=p_reviewer_role_id
+     AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+     AND r.state='ACTIVE' AND NOT r.family_only
+     AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+     AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+  ) THEN RETURN false; END IF;
+  IF p_target_kind='STUDENT' THEN
+    IF NOT EXISTS (SELECT 1 FROM app_private.students s
+                    WHERE s.id=p_target_id AND s.current_status='ACTIVE') THEN
+      RETURN false;
+    END IF;
+    SELECT count(*) INTO placements FROM app_private.enrollments e
+     WHERE e.student_id=p_target_id AND e.placement_kind='PRIMARY'
+       AND e.placement_state='ACTIVE' AND e.effective_from<=at_time::date
+       AND (e.effective_until IS NULL OR at_time::date<e.effective_until);
+    IF placements<>1 THEN RETURN false; END IF;
+    SELECT so.id,co.id,co.campus_id
+      INTO actual_section,actual_class,actual_campus
+      FROM app_private.enrollments e
+      JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.student_id=p_target_id AND e.placement_kind='PRIMARY'
+       AND e.placement_state='ACTIVE' AND e.effective_from<=at_time::date
+       AND (e.effective_until IS NULL OR at_time::date<e.effective_until)
+       AND so.campus_id=co.campus_id AND so.state='ACTIVE' AND co.state='ACTIVE';
+    IF actual_section IS NULL OR (p_campus_id IS NOT NULL
+       AND p_campus_id<>actual_campus) THEN RETURN false; END IF;
+  ELSE
+    IF NOT EXISTS (SELECT 1 FROM app_private.employees e
+                    WHERE e.id=p_target_id AND e.current_state='ACTIVE') THEN
+      RETURN false;
+    END IF;
+    IF p_campus_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM app_private.employee_campus_affiliations ca
+       WHERE ca.employee_id=p_target_id AND ca.campus_id=p_campus_id
+         AND ca.effective_from<=at_time::date
+         AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until)
+    ) THEN RETURN false; END IF;
+  END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes s
+    JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+    JOIN app_private.permissions p ON p.id=s.permission_id
+    JOIN app_private.roles r ON r.id=s.role_id
+   WHERE a.principal_id=p_principal_id
+     AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+     AND a.role_id=s.role_id AND g.role_id=s.role_id
+     AND g.permission_id=s.permission_id AND c.permission_id=s.permission_id
+     AND c.scope_kind=s.scope_kind AND c.resolver_key=s.resolver_key
+     AND c.enabled AND p.code=p_permission_code AND p.state='ENABLED'
+     AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+     AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+     AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+     AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+     AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+     AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until)
+     AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+     AND s.resolver_key='DIRECT' AND (
+       (s.scope_kind='ALL' AND s.campus_id IS NULL)
+       OR (p_target_kind='STUDENT' AND
+         ((s.scope_kind='CAMPUS' AND s.campus_id=actual_campus)
+           OR (s.scope_kind='CLASS' AND s.class_offering_id=actual_class)
+           OR (s.scope_kind='SECTION' AND s.section_offering_id=actual_section)))
+       OR (p_target_kind='EMPLOYEE' AND s.scope_kind='CAMPUS'
+           AND p_campus_id IS NOT NULL AND s.campus_id=p_campus_id
+           AND EXISTS (SELECT 1 FROM app_private.employee_campus_affiliations ca
+             WHERE ca.employee_id=p_target_id AND ca.campus_id=s.campus_id
+               AND ca.effective_from<=at_time::date
+               AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until)))
+     )
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_profile_authorized(uuid,text,text,uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_profile_authorized(uuid,text,text,uuid,uuid,uuid)
+  TO schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION app_private.d1_review_candidates(uuid,uuid),
+  app_private.d1_current_reviewer_eligible(uuid,uuid) TO schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION app_private.d1_p1_route(text,uuid) TO schoolos_schema_owner;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_profile_payload_valid(p_kind text,p_payload jsonb)
+RETURNS boolean
+LANGUAGE sql IMMUTABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT CASE WHEN pg_catalog.jsonb_typeof(p_payload)<>'object' THEN false
+    WHEN p_kind='STUDENT' THEN
+      p_payload ?& ARRAY['date_of_birth','gender_code','nationality_code',
+        'general_contact','previous_school','profile_photo_file_id']
+      AND (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_payload))=6
+      AND pg_catalog.jsonb_typeof(p_payload->'date_of_birth') IN ('string','null')
+      AND pg_catalog.jsonb_typeof(p_payload->'gender_code') IN ('string','null')
+      AND pg_catalog.jsonb_typeof(p_payload->'nationality_code') IN ('string','null')
+      AND pg_catalog.jsonb_typeof(p_payload->'general_contact') IN ('string','null')
+      AND pg_catalog.jsonb_typeof(p_payload->'previous_school') IN ('string','null')
+      AND pg_catalog.jsonb_typeof(p_payload->'profile_photo_file_id') IN ('string','null')
+      AND (p_payload->>'date_of_birth' IS NULL OR
+           (p_payload->>'date_of_birth') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+      AND (p_payload->>'profile_photo_file_id' IS NULL OR
+           (p_payload->>'profile_photo_file_id') ~
+             '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
+    WHEN p_kind='EMPLOYEE' THEN
+      p_payload ? 'profile_photo_file_id'
+      AND (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_payload))=1
+      AND pg_catalog.jsonb_typeof(p_payload->'profile_photo_file_id') IN ('string','null')
+      AND (p_payload->>'profile_photo_file_id' IS NULL OR
+           (p_payload->>'profile_photo_file_id') ~
+             '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
+    ELSE false END;
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_profile_payload_valid(text,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE FUNCTION app_private.d1_profile_policy(
+  p_operation_code text,p_campus_id uuid
+) RETURNS TABLE(policy_id uuid,route_mode text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE selected_id uuid; selected_mode text; seen bigint:=0; pol record;
+BEGIN
+  IF p_operation_code NOT IN ('student.profile.update','employee.profile.update')
+     OR app_private.d1_p1_route(p_operation_code,p_campus_id) IS NULL THEN
+    RETURN;
+  END IF;
+  FOR pol IN
+    SELECT p.id,p.d1_route_mode FROM app_private.approval_policy_versions p
+    JOIN app_private.operation_contracts o ON o.id=p.operation_id
+    WHERE o.code=p_operation_code AND o.contract_version=1
+      AND o.enabled AND NOT o.requires_approval AND p.state='ACTIVE'
+      AND p.effective_from<=pg_catalog.clock_timestamp()
+      AND (p.effective_until IS NULL OR
+           pg_catalog.clock_timestamp()<p.effective_until)
+      AND (p.campus_id IS NULL OR p.campus_id=p_campus_id)
+    ORDER BY p.id FOR SHARE OF p
+  LOOP
+    seen:=seen+1; selected_id:=pol.id; selected_mode:=pol.d1_route_mode;
+  END LOOP;
+  IF seen<>1 OR selected_mode IS DISTINCT FROM
+      app_private.d1_p1_route(p_operation_code,p_campus_id) THEN RETURN; END IF;
+  RETURN QUERY SELECT selected_id,selected_mode;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_profile_policy(text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+
+-- These are fixed, typed writes. A private JSON snapshot is never used as a
+-- dynamic column selector; the public wrappers construct its exact shape.
+CREATE FUNCTION app_private.d1_profile_effect(
+  p_kind text,p_target_id uuid,p_expected_version bigint,p_payload jsonb
+) RETURNS bigint
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE result_version bigint;
+BEGIN
+  IF p_expected_version IS NULL OR p_expected_version<1 OR
+     app_private.d1_profile_payload_valid(p_kind,p_payload) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 profile effect intent invalid';
+  END IF;
+  IF p_kind='STUDENT' THEN
+    UPDATE app_private.students s SET
+      date_of_birth=(p_payload->>'date_of_birth')::date,
+      gender_code=p_payload->>'gender_code',
+      nationality_code=p_payload->>'nationality_code',
+      general_contact=p_payload->>'general_contact',
+      previous_school=p_payload->>'previous_school',
+      profile_photo_file_id=(p_payload->>'profile_photo_file_id')::uuid
+    WHERE s.id=p_target_id AND s.current_status='ACTIVE'
+      AND s.row_version=p_expected_version
+    RETURNING s.row_version INTO result_version;
+  ELSIF p_kind='EMPLOYEE' THEN
+    UPDATE app_private.employees e SET
+      profile_photo_file_id=(p_payload->>'profile_photo_file_id')::uuid
+    WHERE e.id=p_target_id AND e.current_state='ACTIVE'
+      AND e.row_version=p_expected_version
+    RETURNING e.row_version INTO result_version;
+  ELSE
+    RAISE EXCEPTION 'D1 profile target kind invalid';
+  END IF;
+  IF result_version IS NULL THEN
+    RAISE EXCEPTION 'D1 profile target version/state changed';
+  END IF;
+  RETURN result_version;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_profile_effect(text,uuid,bigint,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE FUNCTION app_private.d1_profile_direct(
+  p_kind text,p_target_id uuid,p_campus_id uuid,p_expected_version bigint,
+  p_payload jsonb,p_idempotency_key text
+) RETURNS TABLE (target_id uuid,row_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  op_code text;
+  target_campus uuid;
+  policy_row record;
+  receipt_row record;
+  intent_hash bytea;
+  new_version bigint;
+  new_receipt uuid := pg_catalog.gen_random_uuid();
+  correlation uuid := pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_kind NOT IN ('STUDENT','EMPLOYEE') OR p_target_id IS NULL
+     OR p_expected_version IS NULL OR p_expected_version<1
+     OR app_private.d1_profile_payload_valid(p_kind,p_payload) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 direct profile intent invalid';
+  END IF;
+  op_code := CASE p_kind WHEN 'STUDENT' THEN 'student.profile.update'
+             ELSE 'employee.profile.update' END;
+  intent_hash := pg_catalog.sha256(pg_catalog.convert_to(
+    pg_catalog.jsonb_build_array(1,op_code,'DIRECT',p_target_id,p_campus_id,
+      p_expected_version,p_payload)::text,'UTF8'));
+  SELECT * INTO receipt_row FROM app_private.d1_command_receipt_lookup(
+    op_code,p_idempotency_key,intent_hash);
+  IF p_kind='STUDENT' THEN
+    SELECT co.campus_id INTO target_campus
+      FROM app_private.enrollments e
+      JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.student_id=p_target_id AND e.placement_kind='PRIMARY'
+       AND e.placement_state='ACTIVE'
+       AND e.effective_from<=pg_catalog.statement_timestamp()::date
+       AND (e.effective_until IS NULL OR
+            pg_catalog.statement_timestamp()::date<e.effective_until)
+       AND so.campus_id=co.campus_id;
+    IF target_campus IS NULL OR (p_campus_id IS NOT NULL
+       AND p_campus_id<>target_campus) THEN
+      RAISE EXCEPTION 'D1 Student profile placement unavailable';
+    END IF;
+  ELSE
+    target_campus:=p_campus_id;
+  END IF;
+  IF receipt_row.receipt_id IS NULL THEN
+    SELECT * INTO policy_row FROM app_private.d1_profile_policy(op_code,target_campus);
+    IF policy_row.policy_id IS NULL THEN
+      RAISE EXCEPTION 'D1 profile policy unavailable';
+    END IF;
+  END IF;
+  IF p_kind='STUDENT' THEN
+    PERFORM 1 FROM app_private.students s WHERE s.id=p_target_id FOR UPDATE;
+  ELSE
+    PERFORM 1 FROM app_private.employees e WHERE e.id=p_target_id FOR UPDATE;
+  END IF;
+  IF NOT FOUND OR NOT app_private.d1_profile_authorized(
+    receipt_row.actor_id,op_code,p_kind,p_target_id,target_campus,NULL) THEN
+    RAISE EXCEPTION 'D1 profile target or current authority unavailable';
+  END IF;
+  IF receipt_row.receipt_id IS NOT NULL THEN
+    IF receipt_row.receipt_state<>'SUCCEEDED'
+       OR receipt_row.result_ref IS DISTINCT FROM p_target_id THEN
+      RAISE EXCEPTION 'D1 direct profile receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT p_target_id,
+      (receipt_row.result_summary->>'row_version')::bigint;
+    RETURN;
+  END IF;
+  IF policy_row.route_mode IS DISTINCT FROM 'DIRECT' THEN
+    RAISE EXCEPTION 'D1 profile requires approval request';
+  END IF;
+  IF app_private.d1_p1_route(op_code,target_campus) IS DISTINCT FROM 'DIRECT' THEN
+    RAISE EXCEPTION 'D1 direct profile policy changed after lock wait';
+  END IF;
+  new_version:=app_private.d1_profile_effect(
+    p_kind,p_target_id,p_expected_version,p_payload);
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,
+     canonical_payload_hash,canonicalization_version,expected_target_version,
+     state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES (new_receipt,receipt_row.actor_id,receipt_row.operation_id,op_code,
+    p_idempotency_key,intent_hash,1,p_expected_version,'SUCCEEDED',
+    'D1_'||p_kind||'_PROFILE',p_target_id,
+    pg_catalog.jsonb_build_object('row_version',new_version,'route','DIRECT'),
+    pg_catalog.transaction_timestamp(),receipt_row.actor_id);
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
+     target_kind,target_ref,campus_id,command_receipt_id,source_kind,
+     correlation_id,details,created_by)
+  VALUES (receipt_row.actor_id,'INDIVIDUAL','SUCCEEDED',
+    pg_catalog.jsonb_build_object('permission',op_code,'route','DIRECT'),
+    new_version,op_code,p_kind,p_target_id,target_campus,new_receipt,'API',
+    correlation,pg_catalog.jsonb_build_object('row_version',new_version),
+    receipt_row.actor_id);
+  IF p_kind='STUDENT' THEN
+    INSERT INTO app_private.outbox_events
+      (event_type,aggregate_kind,aggregate_ref,aggregate_version,
+       command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+    VALUES ('student.profile_changed','STUDENT',p_target_id,new_version,
+      new_receipt,1,correlation,
+      pg_catalog.jsonb_build_object('student_id',p_target_id,
+        'row_version',new_version),receipt_row.actor_id);
+  END IF;
+  RETURN QUERY SELECT p_target_id,new_version;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_profile_direct(text,uuid,uuid,bigint,jsonb,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE FUNCTION app_private.d1_profile_submit(
+  p_kind text,p_target_id uuid,p_campus_id uuid,p_expected_version bigint,
+  p_payload jsonb,p_reason text,p_idempotency_key text
+) RETURNS TABLE (request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  op_code text;
+  target_campus uuid;
+  policy_row record;
+  receipt_row record;
+  student_row app_private.students%ROWTYPE;
+  employee_row app_private.employees%ROWTYPE;
+  old_values jsonb;
+  intent_hash bytea;
+  new_request uuid:=pg_catalog.gen_random_uuid();
+  new_receipt uuid:=pg_catalog.gen_random_uuid();
+  first_step uuid;
+  template_row record;
+  candidate_count bigint;
+  final_version bigint;
+BEGIN
+  IF p_kind NOT IN ('STUDENT','EMPLOYEE') OR p_target_id IS NULL
+     OR p_expected_version IS NULL OR p_expected_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR app_private.d1_profile_payload_valid(p_kind,p_payload) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 profile request intent invalid';
+  END IF;
+  op_code:=CASE p_kind WHEN 'STUDENT' THEN 'student.profile.update'
+            ELSE 'employee.profile.update' END;
+  intent_hash:=pg_catalog.sha256(pg_catalog.convert_to(
+    pg_catalog.jsonb_build_array(1,op_code,'APPROVAL',p_target_id,
+      p_campus_id,p_expected_version,p_payload,p_reason)::text,'UTF8'));
+  SELECT * INTO receipt_row FROM app_private.d1_command_receipt_lookup(
+    op_code,p_idempotency_key,intent_hash);
+  IF p_kind='STUDENT' THEN
+    SELECT co.campus_id INTO target_campus
+      FROM app_private.enrollments e
+      JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.student_id=p_target_id AND e.placement_kind='PRIMARY'
+       AND e.placement_state='ACTIVE'
+       AND e.effective_from<=pg_catalog.statement_timestamp()::date
+       AND (e.effective_until IS NULL OR
+            pg_catalog.statement_timestamp()::date<e.effective_until)
+       AND so.campus_id=co.campus_id;
+    IF target_campus IS NULL OR (p_campus_id IS NOT NULL
+       AND p_campus_id<>target_campus) THEN
+      RAISE EXCEPTION 'D1 Student profile placement unavailable';
+    END IF;
+  ELSE
+    target_campus:=p_campus_id;
+  END IF;
+  IF receipt_row.receipt_id IS NULL THEN
+    SELECT * INTO policy_row FROM app_private.d1_profile_policy(op_code,target_campus);
+    IF policy_row.policy_id IS NULL THEN
+      RAISE EXCEPTION 'D1 profile policy unavailable';
+    END IF;
+  END IF;
+  IF p_kind='STUDENT' THEN
+    SELECT * INTO student_row FROM app_private.students s
+      WHERE s.id=p_target_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Student profile target missing'; END IF;
+  ELSE
+    SELECT * INTO employee_row FROM app_private.employees e
+      WHERE e.id=p_target_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee profile target missing'; END IF;
+  END IF;
+  IF NOT app_private.d1_profile_authorized(
+    receipt_row.actor_id,op_code,p_kind,p_target_id,target_campus,NULL) THEN
+    RAISE EXCEPTION 'D1 profile request authority unavailable';
+  END IF;
+  IF receipt_row.receipt_id IS NOT NULL THEN
+    IF receipt_row.receipt_state<>'SUCCEEDED'
+       OR receipt_row.result_ref IS NULL THEN
+      RAISE EXCEPTION 'D1 profile request receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT receipt_row.result_ref,
+      (receipt_row.result_summary->>'request_version')::bigint;
+    RETURN;
+  END IF;
+  IF policy_row.route_mode IS DISTINCT FROM 'APPROVAL' THEN
+    RAISE EXCEPTION 'D1 profile policy selects direct command';
+  END IF;
+  IF app_private.d1_p1_route(op_code,target_campus) IS DISTINCT FROM 'APPROVAL' THEN
+    RAISE EXCEPTION 'D1 approval policy changed after lock wait';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM app_private.operation_contracts o
+    JOIN app_private.permissions p ON p.id=o.review_permission_id
+   WHERE o.id=receipt_row.operation_id AND p.state='ENABLED'
+     AND NOT p.family_safe AND p.code=CASE p_kind
+       WHEN 'STUDENT' THEN 'student.profile.approve'
+       ELSE 'employee.profile.approve' END
+  ) THEN RAISE EXCEPTION 'D1 profile review permission unavailable'; END IF;
+  IF (p_kind='STUDENT' AND (student_row.row_version<>p_expected_version
+       OR student_row.current_status<>'ACTIVE'))
+     OR (p_kind='EMPLOYEE' AND (employee_row.row_version<>p_expected_version
+       OR employee_row.current_state<>'ACTIVE')) THEN
+    RAISE EXCEPTION 'D1 profile request target version/state changed';
+  END IF;
+  IF p_kind='STUDENT' THEN
+    old_values:=pg_catalog.jsonb_build_object(
+      'date_of_birth',student_row.date_of_birth,
+      'gender_code',student_row.gender_code,
+      'nationality_code',student_row.nationality_code,
+      'general_contact',student_row.general_contact,
+      'previous_school',student_row.previous_school,
+      'profile_photo_file_id',student_row.profile_photo_file_id);
+  ELSE
+    old_values:=pg_catalog.jsonb_build_object(
+      'profile_photo_file_id',employee_row.profile_photo_file_id);
+  END IF;
+  INSERT INTO app_private.approval_requests
+    (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,
+     target_ref,expected_target_version,reason,old_snapshot,
+     requested_payload,created_by)
+  VALUES (new_request,receipt_row.operation_id,1,policy_row.policy_id,
+    receipt_row.actor_id,target_campus,p_target_id,p_expected_version,
+    p_reason,old_values,p_payload,receipt_row.actor_id);
+  UPDATE app_private.approval_requests r
+     SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
+   WHERE r.id=new_request;
+  FOR template_row IN
+    SELECT t.id,t.step_number,t.required_reviews
+      FROM app_private.approval_step_templates t
+     WHERE t.policy_id=policy_row.policy_id ORDER BY t.step_number
+  LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps
+      (id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step
+                 ELSE pg_catalog.gen_random_uuid() END,
+      new_request,policy_row.policy_id,template_row.id,
+      template_row.step_number,template_row.required_reviews,receipt_row.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN RAISE EXCEPTION 'D1 profile policy has no first step'; END IF;
+  UPDATE app_private.approval_requests r SET state='PENDING' WHERE r.id=new_request
+    RETURNING r.row_version INTO final_version;
+  UPDATE app_private.approval_request_steps s
+     SET state='OPEN',opened_at=pg_catalog.statement_timestamp()
+   WHERE s.id=first_step;
+  INSERT INTO app_private.approval_step_reviewers
+    (step_id,reviewer_id,assignment_reason,created_by)
+  SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',
+         receipt_row.actor_id
+    FROM app_private.d1_review_candidates(new_request,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT;
+  IF candidate_count=0 THEN
+    RAISE EXCEPTION 'D1 profile approval step has no eligible reviewer';
+  END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,
+     canonical_payload_hash,canonicalization_version,expected_target_version,
+     request_id,state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES (new_receipt,receipt_row.actor_id,receipt_row.operation_id,op_code,
+    p_idempotency_key,intent_hash,1,p_expected_version,new_request,
+    'SUCCEEDED','D1_PROFILE_REQUEST',new_request,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),
+    pg_catalog.transaction_timestamp(),receipt_row.actor_id);
+  INSERT INTO app_private.approval_transitions
+    (request_id,sequence_number,from_state,to_state,reason,
+     command_receipt_id,created_by)
+  VALUES (new_request,1,NULL,'DRAFT','D1_PROFILE_DRAFT',new_receipt,
+            receipt_row.actor_id),
+         (new_request,2,'DRAFT','SUBMITTED','D1_PROFILE_SUBMIT',new_receipt,
+            receipt_row.actor_id),
+         (new_request,3,'SUBMITTED','PENDING','D1_PROFILE_OPEN',new_receipt,
+            receipt_row.actor_id);
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,
+     event_type,target_kind,target_ref,campus_id,command_receipt_id,
+     approval_request_id,source_kind,details,created_by)
+  VALUES (receipt_row.actor_id,'INDIVIDUAL','SUCCEEDED',
+    pg_catalog.jsonb_build_object('permission',op_code,'route','APPROVAL'),
+    p_expected_version,op_code||'.requested',p_kind,p_target_id,
+    target_campus,new_receipt,new_request,'API',
+    pg_catalog.jsonb_build_object('state','PENDING','request_version',final_version),
+    receipt_row.actor_id);
+  RETURN QUERY SELECT new_request,final_version;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_profile_submit(text,uuid,uuid,bigint,jsonb,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE FUNCTION app_private.d1_profile_review_evidence_live(p_request_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE req record; step_row record; review_count bigint; step_count bigint:=0;
+        requester_person uuid; reviewer_person uuid; review_code text;
+        profile_kind text;
+BEGIN
+  SELECT r.id,r.requester_id,r.target_ref,r.campus_id,r.state,
+         o.code,o.review_permission_id
+    INTO req FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+   WHERE r.id=p_request_id AND o.code IN
+     ('student.profile.update','employee.profile.update');
+  IF NOT FOUND OR req.state<>'PENDING' THEN RETURN false; END IF;
+  profile_kind:=CASE req.code WHEN 'student.profile.update' THEN 'STUDENT'
+                ELSE 'EMPLOYEE' END;
+  review_code:=CASE profile_kind WHEN 'STUDENT' THEN 'student.profile.approve'
+                ELSE 'employee.profile.approve' END;
+  IF NOT EXISTS (SELECT 1 FROM app_private.permissions p
+       WHERE p.id=req.review_permission_id AND p.code=review_code
+         AND p.state='ENABLED' AND NOT p.family_safe) THEN RETURN false; END IF;
+  SELECT person_id INTO requester_person FROM app_private.principals
+   WHERE id=req.requester_id AND kind='INDIVIDUAL' AND state='ACTIVE';
+  IF requester_person IS NULL THEN RETURN false; END IF;
+  FOR step_row IN
+    SELECT s.id,t.reviewer_role_id,t.selection_resolver_key,s.state
+      FROM app_private.approval_request_steps s
+      JOIN app_private.approval_step_templates t ON t.id=s.template_id
+       AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+     WHERE s.request_id=p_request_id ORDER BY s.step_number
+  LOOP
+    step_count:=step_count+1;
+    IF step_row.state<>'APPROVED' OR
+       step_row.selection_resolver_key<>'D1_REVIEWER_ROLE_SCOPE' THEN
+      RETURN false;
+    END IF;
+    SELECT count(*) INTO review_count
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=v.step_id
+       AND a.reviewer_id=v.reviewer_id
+     WHERE v.step_id=step_row.id AND v.decision='APPROVE'
+       AND a.withdrawn_at IS NULL
+       AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+    IF review_count<>1 THEN RETURN false; END IF;
+    PERFORM 1 FROM app_private.approval_reviews v
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id
+     WHERE v.step_id=step_row.id AND a.withdrawn_at IS NULL FOR SHARE OF a;
+    IF NOT FOUND THEN RETURN false; END IF;
+    SELECT p.person_id INTO reviewer_person
+      FROM app_private.approval_reviews v
+      JOIN app_private.principals p ON p.id=v.reviewer_id
+     WHERE v.step_id=step_row.id AND v.decision='APPROVE'
+       AND p.id<>req.requester_id AND p.kind='INDIVIDUAL'
+       AND p.state='ACTIVE';
+    IF reviewer_person IS NULL OR reviewer_person=requester_person THEN
+      RETURN false;
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM app_private.approval_reviews v
+       WHERE v.step_id=step_row.id AND v.decision='APPROVE'
+         AND app_private.d1_profile_authorized(v.reviewer_id,review_code,
+           profile_kind,req.target_ref,req.campus_id,step_row.reviewer_role_id)
+    ) THEN RETURN false; END IF;
+  END LOOP;
+  RETURN step_count>0;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_profile_review_evidence_live(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+
+-- Called only after the last reviewed step closes, while the request lock is
+-- held. NULL means a stale approved intent: the caller records INVALIDATED
+-- and leaves the domain row untouched. Constraint errors still roll back.
+CREATE FUNCTION app_private.d1_profile_apply(p_request_id uuid)
+RETURNS bigint
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE req record; profile_kind text; target_version bigint; target_state text;
+BEGIN
+  SELECT r.id,r.requester_id,r.target_ref,r.campus_id,r.state,
+         r.expected_target_version,r.requested_payload,o.code
+    INTO req FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+   WHERE r.id=p_request_id AND o.code IN
+     ('student.profile.update','employee.profile.update');
+  IF NOT FOUND OR req.state<>'PENDING' THEN RETURN NULL; END IF;
+  profile_kind:=CASE req.code WHEN 'student.profile.update' THEN 'STUDENT'
+                ELSE 'EMPLOYEE' END;
+  IF app_private.d1_profile_payload_valid(profile_kind,req.requested_payload)
+       IS DISTINCT FROM true
+     OR NOT app_private.d1_profile_review_evidence_live(p_request_id) THEN
+    RETURN NULL;
+  END IF;
+  IF profile_kind='STUDENT' THEN
+    SELECT s.row_version,s.current_status INTO target_version,target_state
+      FROM app_private.students s WHERE s.id=req.target_ref FOR UPDATE;
+  ELSE
+    SELECT e.row_version,e.current_state INTO target_version,target_state
+      FROM app_private.employees e WHERE e.id=req.target_ref FOR UPDATE;
+  END IF;
+  IF target_version IS DISTINCT FROM req.expected_target_version
+     OR target_state IS DISTINCT FROM 'ACTIVE'
+     OR app_private.d1_p1_route(req.code,req.campus_id)
+          IS DISTINCT FROM 'APPROVAL'
+     OR NOT app_private.d1_profile_authorized(req.requester_id,req.code,
+       profile_kind,req.target_ref,req.campus_id,NULL)
+     OR NOT app_private.d1_profile_review_evidence_live(p_request_id) THEN
+    RETURN NULL;
+  END IF;
+  RETURN app_private.d1_profile_effect(profile_kind,req.target_ref,
+    req.expected_target_version,req.requested_payload);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_profile_apply(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE FUNCTION app.d1_review_profile_request(
+  p_request_id uuid,p_decision text,p_expected_request_version bigint,
+  p_reason text,p_idempotency_key text
+) RETURNS TABLE (request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  initial_request record;
+  locked_request record;
+  receipt_row record;
+  policy_row record;
+  step_row record;
+  next_step record;
+  profile_kind text;
+  review_code text;
+  intent_hash bytea;
+  open_count bigint;
+  assignment_count bigint;
+  candidate_count bigint;
+  assignment_id uuid;
+  applied_version bigint;
+  final_version bigint;
+  final_state text;
+  transition_sequence bigint;
+  new_receipt uuid:=pg_catalog.gen_random_uuid();
+  correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_request_id IS NULL OR p_decision IS NULL
+     OR p_decision NOT IN ('APPROVE','REJECT')
+     OR p_expected_request_version IS NULL OR p_expected_request_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 profile review intent invalid';
+  END IF;
+  SELECT r.id,r.campus_id,r.policy_id,o.code,o.review_permission_id
+    INTO initial_request FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+   WHERE r.id=p_request_id AND o.code IN
+     ('student.profile.update','employee.profile.update');
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 profile request unavailable'; END IF;
+  profile_kind:=CASE initial_request.code
+    WHEN 'student.profile.update' THEN 'STUDENT' ELSE 'EMPLOYEE' END;
+  review_code:=CASE profile_kind WHEN 'STUDENT' THEN 'student.profile.approve'
+               ELSE 'employee.profile.approve' END;
+  IF NOT EXISTS (SELECT 1 FROM app_private.permissions p
+       WHERE p.id=initial_request.review_permission_id AND p.code=review_code
+         AND p.state='ENABLED' AND NOT p.family_safe) THEN
+    RAISE EXCEPTION 'D1 profile review permission unavailable';
+  END IF;
+  intent_hash:=pg_catalog.sha256(pg_catalog.convert_to(
+    pg_catalog.jsonb_build_array(1,initial_request.code,'REVIEW',p_request_id,
+      p_decision,p_expected_request_version,p_reason)::text,'UTF8'));
+  SELECT * INTO receipt_row FROM app_private.d1_command_receipt_lookup(
+    initial_request.code,p_idempotency_key,intent_hash);
+  IF receipt_row.receipt_id IS NOT NULL THEN
+    IF receipt_row.receipt_state<>'SUCCEEDED'
+       OR receipt_row.result_ref IS DISTINCT FROM p_request_id THEN
+      RAISE EXCEPTION 'D1 profile review receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT p_request_id,
+      (receipt_row.result_summary->>'request_version')::bigint,
+      receipt_row.result_summary->>'state';
+    RETURN;
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_profile_policy(
+    initial_request.code,initial_request.campus_id);
+  IF policy_row.policy_id IS DISTINCT FROM initial_request.policy_id
+     OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' THEN
+    RAISE EXCEPTION 'D1 profile request policy no longer applies';
+  END IF;
+  SELECT r.* INTO locked_request FROM app_private.approval_requests r
+   WHERE r.id=p_request_id FOR UPDATE;
+  IF NOT FOUND OR locked_request.state<>'PENDING'
+     OR locked_request.row_version<>p_expected_request_version
+     OR locked_request.policy_id IS DISTINCT FROM policy_row.policy_id THEN
+    RAISE EXCEPTION 'D1 profile request version/state changed';
+  END IF;
+  SELECT count(*) INTO open_count FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id AND s.state='OPEN';
+  IF open_count<>1 THEN RAISE EXCEPTION 'D1 profile open-step ambiguity'; END IF;
+  SELECT s.* INTO step_row FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id AND s.state='OPEN' FOR UPDATE;
+  IF app_private.d1_p1_route(initial_request.code,initial_request.campus_id)
+       IS DISTINCT FROM 'APPROVAL' THEN
+    RAISE EXCEPTION 'D1 profile approval policy expired after lock wait';
+  END IF;
+  SELECT count(*),min(a.id::text)::uuid INTO assignment_count,assignment_id
+    FROM app_private.approval_step_reviewers a
+   WHERE a.step_id=step_row.id AND a.reviewer_id=receipt_row.actor_id
+     AND a.withdrawn_at IS NULL
+     AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+  IF assignment_count<>1 THEN
+    RAISE EXCEPTION 'D1 profile reviewer assignment ambiguous';
+  END IF;
+  PERFORM 1 FROM app_private.approval_step_reviewers a
+   WHERE a.id=assignment_id AND a.withdrawn_at IS NULL FOR SHARE;
+  IF NOT FOUND OR
+     NOT app_private.d1_current_reviewer_eligible(p_request_id,step_row.id)
+     OR app_private.current_principal_id() IS DISTINCT FROM receipt_row.actor_id
+     THEN RAISE EXCEPTION 'D1 profile reviewer authority revoked'; END IF;
+  INSERT INTO app_private.approval_reviews
+    (reviewer_assignment_id,step_id,reviewer_id,decision,reason,
+     expected_request_version,created_by)
+  VALUES (assignment_id,step_row.id,receipt_row.actor_id,p_decision,p_reason,
+    p_expected_request_version,receipt_row.actor_id);
+  UPDATE app_private.approval_request_steps s
+     SET state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+         closed_at=pg_catalog.statement_timestamp()
+   WHERE s.id=step_row.id;
+  IF p_decision='REJECT' THEN
+    UPDATE app_private.approval_request_steps s
+       SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp()
+     WHERE s.request_id=p_request_id AND s.state='WAITING';
+    final_state:='REJECTED';
+    UPDATE app_private.approval_requests r SET state=final_state
+      WHERE r.id=p_request_id RETURNING r.row_version INTO final_version;
+  ELSE
+    SELECT s.* INTO next_step FROM app_private.approval_request_steps s
+     WHERE s.request_id=p_request_id AND s.step_number=step_row.step_number+1
+       AND s.state='WAITING' FOR UPDATE;
+    IF FOUND THEN
+      UPDATE app_private.approval_request_steps s
+         SET state='OPEN',opened_at=pg_catalog.statement_timestamp()
+       WHERE s.id=next_step.id;
+      INSERT INTO app_private.approval_step_reviewers
+        (step_id,reviewer_id,assignment_reason,created_by)
+      SELECT next_step.id,c.candidate_principal_id,
+             'D1_REVIEWER_ROLE_SCOPE',receipt_row.actor_id
+        FROM app_private.d1_review_candidates(p_request_id,next_step.id) c;
+      GET DIAGNOSTICS candidate_count=ROW_COUNT;
+      IF candidate_count=0 THEN
+        RAISE EXCEPTION 'D1 next approval step has no eligible reviewer';
+      END IF;
+      final_state:='PENDING';
+      UPDATE app_private.approval_requests r SET state='PENDING'
+        WHERE r.id=p_request_id RETURNING r.row_version INTO final_version;
+    ELSE
+      IF EXISTS (SELECT 1 FROM app_private.approval_request_steps s
+           WHERE s.request_id=p_request_id AND s.state<>'APPROVED') THEN
+        RAISE EXCEPTION 'D1 profile approval step sequence incomplete';
+      END IF;
+      applied_version:=app_private.d1_profile_apply(p_request_id);
+      IF applied_version IS NULL THEN
+        final_state:='INVALIDATED';
+        UPDATE app_private.approval_requests r SET state=final_state
+          WHERE r.id=p_request_id RETURNING r.row_version INTO final_version;
+      ELSE
+        final_state:='EXECUTED';
+        UPDATE app_private.approval_requests r SET state='APPROVED'
+          WHERE r.id=p_request_id;
+        UPDATE app_private.approval_requests r SET state=final_state
+          WHERE r.id=p_request_id RETURNING r.row_version INTO final_version;
+      END IF;
+    END IF;
+  END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,
+     canonical_payload_hash,canonicalization_version,expected_target_version,
+     request_id,expected_request_version,state,result_kind,result_ref,
+     result_summary,completed_at,created_by)
+  VALUES (new_receipt,receipt_row.actor_id,receipt_row.operation_id,
+    initial_request.code,p_idempotency_key,intent_hash,1,
+    locked_request.expected_target_version,p_request_id,p_expected_request_version,
+    'SUCCEEDED','D1_PROFILE_REVIEW',p_request_id,
+    pg_catalog.jsonb_build_object('request_version',final_version,
+      'state',final_state,'target_version',applied_version),
+    pg_catalog.transaction_timestamp(),receipt_row.actor_id);
+  SELECT COALESCE(max(t.sequence_number),0) INTO transition_sequence
+    FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  IF final_state='EXECUTED' THEN
+    INSERT INTO app_private.approval_transitions
+      (request_id,sequence_number,from_state,to_state,reason,
+       command_receipt_id,created_by)
+    VALUES (p_request_id,transition_sequence+1,'PENDING','APPROVED',
+              'D1_PROFILE_APPROVED',new_receipt,receipt_row.actor_id),
+           (p_request_id,transition_sequence+2,'APPROVED','EXECUTED',
+              'D1_PROFILE_APPLIED',new_receipt,receipt_row.actor_id);
+    INSERT INTO app_private.approval_applications
+      (request_id,command_receipt_id,operation_id,applied_target_version,
+       result_ref,created_by)
+    VALUES (p_request_id,new_receipt,receipt_row.operation_id,applied_version,
+      locked_request.target_ref,receipt_row.actor_id);
+    INSERT INTO app_private.audit_events
+      (actor_id,actor_kind,outcome,authority_evidence,target_version,
+       event_type,target_kind,target_ref,campus_id,command_receipt_id,
+       approval_request_id,source_kind,correlation_id,details,created_by)
+    VALUES (receipt_row.actor_id,'INDIVIDUAL','SUCCEEDED',
+      pg_catalog.jsonb_build_object('permission',review_code,'route','APPROVAL'),
+      applied_version,initial_request.code,profile_kind,
+      locked_request.target_ref,locked_request.campus_id,new_receipt,
+      p_request_id,'API',correlation,
+      pg_catalog.jsonb_build_object('row_version',applied_version),
+      receipt_row.actor_id);
+    IF profile_kind='STUDENT' THEN
+      INSERT INTO app_private.outbox_events
+        (event_type,aggregate_kind,aggregate_ref,aggregate_version,
+         command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+      VALUES ('student.profile_changed','STUDENT',locked_request.target_ref,
+        applied_version,new_receipt,1,correlation,
+        pg_catalog.jsonb_build_object('student_id',locked_request.target_ref,
+          'row_version',applied_version),receipt_row.actor_id);
+    END IF;
+  ELSE
+    INSERT INTO app_private.approval_transitions
+      (request_id,sequence_number,from_state,to_state,reason,
+       command_receipt_id,created_by)
+    VALUES (p_request_id,transition_sequence+1,'PENDING',final_state,
+      'D1_PROFILE_REVIEW_'||final_state,new_receipt,receipt_row.actor_id);
+  END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,event_type,target_kind,
+     target_ref,campus_id,command_receipt_id,approval_request_id,source_kind,
+     correlation_id,details,created_by)
+  VALUES (receipt_row.actor_id,'INDIVIDUAL','SUCCEEDED',
+    pg_catalog.jsonb_build_object('permission',review_code),
+    initial_request.code||'.reviewed',profile_kind,locked_request.target_ref,
+    locked_request.campus_id,new_receipt,p_request_id,'API',correlation,
+    pg_catalog.jsonb_build_object('decision',p_decision,'state',final_state,
+      'step_number',step_row.step_number),receipt_row.actor_id);
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_review_profile_request(uuid,text,bigint,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_review_profile_request(uuid,text,bigint,text,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_change_student_profile(
+  p_student_id uuid,p_campus_id uuid,p_date_of_birth date,p_gender_code text,
+  p_nationality_code text,p_general_contact text,p_previous_school text,
+  p_profile_photo_file_id uuid,p_expected_version bigint,p_idempotency_key text
+) RETURNS TABLE (student_id uuid,row_version bigint)
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT result.target_id,result.row_version
+    FROM app_private.d1_profile_direct('STUDENT',p_student_id,p_campus_id,
+      p_expected_version,pg_catalog.jsonb_build_object(
+        'date_of_birth',p_date_of_birth,'gender_code',p_gender_code,
+        'nationality_code',p_nationality_code,'general_contact',p_general_contact,
+        'previous_school',p_previous_school,
+        'profile_photo_file_id',p_profile_photo_file_id),p_idempotency_key) result;
+$body$;
+REVOKE ALL ON FUNCTION app.d1_change_student_profile(
+  uuid,uuid,date,text,text,text,text,uuid,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_student_profile(
+  uuid,uuid,date,text,text,text,text,uuid,bigint,text) TO authenticated;
+
+CREATE FUNCTION app.d1_submit_student_profile_update(
+  p_student_id uuid,p_campus_id uuid,p_date_of_birth date,p_gender_code text,
+  p_nationality_code text,p_general_contact text,p_previous_school text,
+  p_profile_photo_file_id uuid,p_expected_version bigint,p_reason text,
+  p_idempotency_key text
+) RETURNS TABLE (request_id uuid,request_version bigint)
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT result.request_id,result.request_version
+    FROM app_private.d1_profile_submit('STUDENT',p_student_id,p_campus_id,
+      p_expected_version,pg_catalog.jsonb_build_object(
+        'date_of_birth',p_date_of_birth,'gender_code',p_gender_code,
+        'nationality_code',p_nationality_code,'general_contact',p_general_contact,
+        'previous_school',p_previous_school,
+        'profile_photo_file_id',p_profile_photo_file_id),
+      p_reason,p_idempotency_key) result;
+$body$;
+REVOKE ALL ON FUNCTION app.d1_submit_student_profile_update(
+  uuid,uuid,date,text,text,text,text,uuid,bigint,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_student_profile_update(
+  uuid,uuid,date,text,text,text,text,uuid,bigint,text,text) TO authenticated;
+
+CREATE FUNCTION app.d1_change_employee_profile(
+  p_employee_id uuid,p_campus_id uuid,p_profile_photo_file_id uuid,
+  p_expected_version bigint,p_idempotency_key text
+) RETURNS TABLE (employee_id uuid,row_version bigint)
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT result.target_id,result.row_version
+    FROM app_private.d1_profile_direct('EMPLOYEE',p_employee_id,p_campus_id,
+      p_expected_version,pg_catalog.jsonb_build_object(
+        'profile_photo_file_id',p_profile_photo_file_id),p_idempotency_key) result;
+$body$;
+REVOKE ALL ON FUNCTION app.d1_change_employee_profile(uuid,uuid,uuid,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_employee_profile(uuid,uuid,uuid,bigint,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_submit_employee_profile_update(
+  p_employee_id uuid,p_campus_id uuid,p_profile_photo_file_id uuid,
+  p_expected_version bigint,p_reason text,p_idempotency_key text
+) RETURNS TABLE (request_id uuid,request_version bigint)
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+  SELECT result.request_id,result.request_version
+    FROM app_private.d1_profile_submit('EMPLOYEE',p_employee_id,p_campus_id,
+      p_expected_version,pg_catalog.jsonb_build_object(
+        'profile_photo_file_id',p_profile_photo_file_id),
+      p_reason,p_idempotency_key) result;
+$body$;
+REVOKE ALL ON FUNCTION app.d1_submit_employee_profile_update(
+  uuid,uuid,uuid,bigint,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_employee_profile_update(
+  uuid,uuid,uuid,bigint,text,text) TO authenticated;
+RESET ROLE;
