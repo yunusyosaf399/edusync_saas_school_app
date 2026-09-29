@@ -1,5 +1,20 @@
 # D1C1 Migration 10 SQL review — working draft
 
+## D1C1B receipt/security correction against `71b568c2402be438e56e9f2ea711d112b8d342c9`
+
+The independent Profile re-review identified an explicitly callable
+schema-owner receipt helper, JSONB-text hashing instead of frozen RFC 8785
+canonicalization, and invented phase-suffixed audit event types. The current
+source-only correction splits receipt access under `schoolos_evidence_writer`
+from an exact ACTIVE Principal row lock under `schoolos_identity_executor`,
+changes the fixed caller envelopes to canonical UUID/decimal-string versions,
+serializes the restricted JCS subset before UTF-8 SHA-256, and keeps Profile
+audit `event_type` at the stable operation code with phase in safe evidence.
+The security review records the trigger-only owner exception and source-only
+canonicalization vectors. The draft has not been parsed or executed by
+PostgreSQL; D1C1B remains INCOMPLETE and Migration 10 application/D1C2 remain
+unauthorized. Foundation migrations 1-9 and tests 01-09 were not changed.
+
 **2026-09-29 continuation status:** D1C1A's structural/integrity kernel and
 the separately reviewed bootstrap-manifest gate remain PASS. Commit
 `ee7d9adf8718e5a9f2afb0c2c426337fd7eea5a5` is the accepted partial

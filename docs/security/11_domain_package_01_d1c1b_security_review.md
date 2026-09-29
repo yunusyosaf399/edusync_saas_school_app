@@ -1,5 +1,101 @@
 # D1C1B security SQL review — in progress
 
+## Correction against `71b568c2402be438e56e9f2ea711d112b8d342c9`
+
+Independent re-review accepted the separate Profile review and apply transactions,
+requester/final-approver apply gate, distinct phase receipts and Profile effect
+owners, but found three blockers: explicitly callable schema-owner receipt lookup,
+PostgreSQL JSONB-text hashing presented as JCS, and phase-suffixed Profile audit
+event types. The product-owner clarification distinguishes explicit command/RPC
+helpers from trigger-only defensive integrity functions. Frozen Foundation and
+D1C1A schema-owner SECURITY DEFINER triggers may fire on protected DML; their
+direct EXECUTE remains revoked and they do not authorize a command. This
+correction does not change their ownership or structural behavior.
+
+The explicitly callable `d1_command_receipt_lookup` is now SECURITY DEFINER
+owned by `schoolos_evidence_writer`, with a fixed operation/phase input
+boundary and only reviewed receipt/operation SELECT. It does not read or lock
+Principals. `d1_lock_current_principal` is SECURITY DEFINER owned by
+`schoolos_identity_executor`: it compares the expected UUID to the verified
+current Principal, SELECT FOR UPDATE locks that exact ACTIVE row, checks it
+again, returns no Principal fields and mutates none. Its underlying privilege
+is SELECT(id,state) plus UPDATE(id), the minimum PostgreSQL row-lock privilege,
+with role-specific SELECT/UPDATE RLS. The role is NOLOGIN; no executor
+membership was added. EXECUTE is only for the fixed Academic, Student,
+Employee and workflow executor roles, never PUBLIC/anon/authenticated/
+service_role. Each fixed caller follows SHARED `(71001,1)` authorization lock,
+verified Principal, `(71002, resource)` receipt-key lock, exact Principal row
+lock, domain locks, post-wait authorization, mutation and atomic evidence.
+
+Canonicalization version 1 hashes `SHA-256(UTF8(JCS(envelope)))`. The server
+constructs an object with fixed ASCII keys for canonicalization version,
+operation code/version/UUID, fixed command kind, verified Principal UUID,
+typed intent and idempotency key. `d1_jcs_typed` sorts these fixed keys with
+bytewise `C` collation (equivalent to RFC 8785 UTF-16 order for ASCII),
+preserves array order, serializes Unicode strings code point by code point
+with the RFC control/quote/backslash escapes, and rejects unsupported keys or
+numeric shapes. PostgreSQL UTF-8 text cannot hold NUL or lone surrogates;
+other Unicode text is neither trimmed nor normalized. Current bigint versions
+are validated typed SQL values converted to decimal JSON strings; typed UUIDs
+become lowercase PostgreSQL UUID text. The supported numeric subset is safe
+integer literals only (the envelope uses literal 1); no floating-point or
+Finance decimal canonicalization is claimed. Typed Profile payloads have
+exact fixed key sets with explicit nulls; no universal omitted/null equivalence
+is introduced. The final document is never serialized with `jsonb::text`.
+Unknown stored receipt canonicalization versions deny replay. These are
+source-level claims pending PostgreSQL execution and independent RFC vectors.
+
+Source-only canonicalization vectors for the supported subset (expected
+behavior, **not executed assertions**):
+
+| Input distinction | Canonical expectation |
+|---|---|
+| `{"profile_photo_file_id":"x","general_contact":"y"}` versus reversed key order | Both `{"general_contact":"y","profile_photo_file_id":"x"}`; same UTF-8/hash. |
+| `["first","second"]` versus `["second","first"]` | Order retained; different hash. |
+| Profile payload keys in different input order | Same fixed-key canonical bytes; explicit required null remains `null`. Missing required Profile key denies before hashing. |
+| Typed UUID supplied with uppercase hex | PostgreSQL UUID text is lowercase; same typed UUID hashes identically. |
+| Typed bigint version 42 | JSON string `"42"`, never a lossy JSON number. Version 43 changes hash. |
+| Same intent under `request.submit`, `request.review`, `request.apply` | `command_kind` differs; hashes differ. |
+| Same expected version, different target UUID | Typed target array slot differs; hash differs. |
+| Quote, backslash, tab, newline and U+000F in a string | JCS escapes quote/backslash, uses `\t`, `\n`, `\u000f` (lowercase hex); other characters stay intact. |
+| Non-ASCII U+20AC (euro sign) and canonically distinct Unicode sequences | UTF-8 characters preserved without normalization; distinct sequences stay distinct. |
+| Unsupported numeric fraction/exponent or integer above 9007199254740991 | Deny; no arbitrary IEEE-754 serializer. |
+| Existing receipt canonicalization version other than 1 | Deny replay. |
+
+The RFC 8785 primitive example's U+20AC remains unescaped, U+000F becomes
+`\u000f`, newline becomes `\n`, slash stays `/`, and object properties sort
+lexicographically. Those rules are represented in the narrow serializer; the
+RFC floating-point example is outside this reviewed subset. No runtime proof
+is asserted by this vector list.
+
+Profile audit `event_type` is now exactly `student.profile.update` or
+`employee.profile.update`; the bounded DIRECT/SUBMIT/REVIEW/APPLY phase remains
+in `authority_evidence.phase`. No raw Profile value or reason is added to broad
+audit evidence. Student successful mutation still uses only
+`student.profile_changed`; Employee Profile has no selected outbox event.
+
+The explicit Profile call graph uses `schoolos_authz_reader` for authorization
+and participant/policy checks, `schoolos_identity_executor` for the Principal
+row lock, `schoolos_evidence_writer` for receipt/audit/outbox work,
+`schoolos_workflow_executor` for workflow, `schoolos_student_executor` and
+`schoolos_employee_executor` for typed effects, and `schoolos_read_executor`
+for the checked read. The pure JCS serializers and fixed invoker dispatch are
+SECURITY INVOKER. No explicitly callable Profile command helper in this graph
+runs as `schoolos_schema_owner`. Separately, trigger-only defensive functions
+include Foundation `advance_row_version`/`guard_approval_requests` and D1
+`d1_guard_record`, file-purpose and deferred state guards. Their schema-owner
+execution is the clarified structural exception; it is not an RPC grant.
+
+This remains an incomplete, unexecuted Migration 10 `.sql.draft`. D1C1B is
+not passed and D1C2/application is not authorized.
+
+After this correction, source checks returned `FOUNDATION_SOURCE_PASS 9
+migrations + 9 tests`, `LOCAL_CONFIG_PASS`, and `STAGING_VALIDATE_PASS`;
+`git diff --check` found no whitespace error. Registrar recount found 97
+unique permissions, 322 unique scope alternatives and 36 unique operations.
+These checks do not parse the SQL draft or prove PostgreSQL privilege or JCS
+runtime behavior.
+
 **Status: INCOMPLETE STATIC DRAFT.** Migration 10 remains
 `supabase/migrations/20260928000000_domain_package_01.sql.draft`. It has not
 been executed, and its broad provisional D1 executor policies are not approved

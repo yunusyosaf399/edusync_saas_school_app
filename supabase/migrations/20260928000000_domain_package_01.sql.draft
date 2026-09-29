@@ -3378,10 +3378,133 @@ GRANT EXECUTE ON FUNCTION app_private.d1_file_domain_permission(text,text,uuid)
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
 
--- Internal first phase for a fixed typed command. It never applies domain
--- state or returns a replay to a client; the calling fixed command must still
--- reauthorize its exact target before returning an existing terminal result.
-SET ROLE schoolos_schema_owner;
+-- Identity-only row lock after the receipt-key advisory lock. UPDATE(id) is
+-- required by SELECT FOR UPDATE; this helper never issues UPDATE or returns
+-- Principal fields, and its NOLOGIN owner has no executor membership.
+CREATE POLICY d1_command_principal_lock_read ON app_private.principals
+  FOR SELECT TO schoolos_identity_executor USING (true);
+CREATE POLICY d1_command_principal_lock_update ON app_private.principals
+  FOR UPDATE TO schoolos_identity_executor USING (true) WITH CHECK (true);
+GRANT SELECT (id,state), UPDATE (id) ON app_private.principals
+  TO schoolos_identity_executor;
+GRANT CREATE ON SCHEMA app_private TO schoolos_identity_executor;
+SET ROLE schoolos_authz_reader;
+GRANT EXECUTE ON FUNCTION app_private.current_principal_id()
+  TO schoolos_identity_executor;
+RESET ROLE;
+SET ROLE schoolos_identity_executor;
+CREATE FUNCTION app_private.d1_lock_current_principal(p_expected uuid)
+RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v_state text;
+BEGIN
+  IF p_expected IS NULL OR app_private.current_principal_id() IS DISTINCT FROM p_expected THEN
+    RAISE EXCEPTION 'D1 current Principal unavailable';
+  END IF;
+  SELECT p.state INTO v_state FROM app_private.principals p
+    WHERE p.id=p_expected FOR UPDATE;
+  IF v_state IS DISTINCT FROM 'ACTIVE'
+     OR app_private.current_principal_id() IS DISTINCT FROM p_expected THEN
+    RAISE EXCEPTION 'D1 current Principal changed after lock';
+  END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_lock_current_principal(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_lock_current_principal(uuid)
+  TO schoolos_academic_executor,schoolos_student_executor,
+     schoolos_employee_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_identity_executor;
+
+-- Canonical JSON V1: fixed ASCII object keys, arrays, Unicode strings, null,
+-- booleans and safe integer literals. No arbitrary binary64 decimal formatter
+-- is claimed. Bigint versions are supplied by fixed callers as JSON strings.
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_jcs_quote(p_value text) RETURNS text
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v_result text:='"'; v_char text; v_code integer; v_index integer;
+BEGIN
+  IF p_value IS NULL OR pg_catalog.getdatabaseencoding()<>'UTF8' THEN
+    RAISE EXCEPTION 'D1 JCS string unavailable';
+  END IF;
+  FOR v_index IN 1..pg_catalog.char_length(p_value) LOOP
+    v_char:=pg_catalog.substr(p_value,v_index,1);
+    v_code:=pg_catalog.ascii(v_char);
+    IF v_code IN (34,92) THEN
+      v_result:=v_result||pg_catalog.chr(92)||v_char;
+    ELSIF v_code=8 THEN v_result:=v_result||pg_catalog.chr(92)||'b';
+    ELSIF v_code=9 THEN v_result:=v_result||pg_catalog.chr(92)||'t';
+    ELSIF v_code=10 THEN v_result:=v_result||pg_catalog.chr(92)||'n';
+    ELSIF v_code=12 THEN v_result:=v_result||pg_catalog.chr(92)||'f';
+    ELSIF v_code=13 THEN v_result:=v_result||pg_catalog.chr(92)||'r';
+    ELSIF v_code<32 THEN
+      v_result:=v_result||pg_catalog.chr(92)||'u'||
+        pg_catalog.lpad(pg_catalog.to_hex(v_code),4,'0');
+    ELSE v_result:=v_result||v_char;
+    END IF;
+  END LOOP;
+  RETURN v_result||'"';
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_jcs_quote(text)
+  FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE FUNCTION app_private.d1_jcs_typed(p_value jsonb) RETURNS text
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v_kind text; v_result text; v_item record; v_first boolean;
+  v_number_text text;
+BEGIN
+  v_kind:=pg_catalog.jsonb_typeof(p_value);
+  IF v_kind='null' THEN RETURN 'null'; END IF;
+  IF v_kind='string' THEN RETURN app_private.d1_jcs_quote(p_value #>> '{}'); END IF;
+  IF v_kind='boolean' THEN
+    IF p_value='true'::jsonb THEN RETURN 'true'; ELSE RETURN 'false'; END IF;
+  END IF;
+  IF v_kind='number' THEN
+    v_number_text:=p_value::text;
+    IF v_number_text !~ '^(0|-[1-9][0-9]*|[1-9][0-9]*)$'
+       OR pg_catalog.length(v_number_text)>17
+       OR pg_catalog.abs(v_number_text::numeric)>9007199254740991 THEN
+      RAISE EXCEPTION 'D1 JCS numeric shape unsupported';
+    END IF;
+    RETURN (v_number_text::bigint)::text;
+  END IF;
+  IF v_kind='array' THEN
+    v_result:='['; v_first:=true;
+    FOR v_item IN SELECT value FROM pg_catalog.jsonb_array_elements(p_value) LOOP
+      IF NOT v_first THEN v_result:=v_result||','; END IF;
+      v_result:=v_result||app_private.d1_jcs_typed(v_item.value);
+      v_first:=false;
+    END LOOP;
+    RETURN v_result||']';
+  END IF;
+  IF v_kind='object' THEN
+    v_result:='{'; v_first:=true;
+    FOR v_item IN SELECT key,value FROM pg_catalog.jsonb_each(p_value)
+                  ORDER BY key COLLATE "C" LOOP
+      IF v_item.key NOT IN ('canonicalization_version','operation_code',
+          'operation_contract_version','operation_id','command_kind',
+          'principal_id','intent','idempotency_key','date_of_birth',
+          'gender_code','nationality_code','general_contact',
+          'previous_school','profile_photo_file_id') THEN
+        RAISE EXCEPTION 'D1 JCS object key unsupported';
+      END IF;
+      IF NOT v_first THEN v_result:=v_result||','; END IF;
+      v_result:=v_result||app_private.d1_jcs_quote(v_item.key)||':'||
+        app_private.d1_jcs_typed(v_item.value);
+      v_first:=false;
+    END LOOP;
+    RETURN v_result||'}';
+  END IF;
+  RAISE EXCEPTION 'D1 JCS value unsupported';
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_jcs_typed(jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_jcs_quote(text),
+  app_private.d1_jcs_typed(jsonb) TO schoolos_evidence_writer;
+
+-- Internal first phase for a fixed typed command. Callers must take the
+-- identity row lock next, then domain locks and current authorization checks.
 CREATE FUNCTION app_private.d1_command_receipt_lookup(
   p_operation_code text, p_command_kind text,
   p_idempotency_key text, p_intent jsonb
@@ -3407,6 +3530,16 @@ BEGIN
      OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array' THEN
     RAISE EXCEPTION 'D1 command idempotency input invalid';
   END IF;
+  IF NOT ((p_operation_code='academic.class.change'
+           AND p_command_kind='academic.class.change'
+           AND pg_catalog.jsonb_array_length(p_intent)=8)
+       OR (p_operation_code IN ('student.profile.update','employee.profile.update')
+           AND ((p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=4)
+             OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=5)
+             OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+             OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=5)))) THEN
+    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
+  END IF;
   PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
   v_actor := app_private.current_principal_id();
   IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 command requires verified actor'; END IF;
@@ -3414,11 +3547,14 @@ BEGIN
    WHERE o.code = p_operation_code AND o.contract_version = 1
      AND o.handler_key = p_operation_code AND o.enabled;
   IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 operation is not enabled'; END IF;
-  -- The fixed caller chooses the phase. Identity, operation/version, phase,
-  -- typed intent and key are all bound into one canonical receipt hash.
+  -- Fixed-key object sorting and primitive serialization happen in d1_jcs_typed,
+  -- never by serializing the complete jsonb document with PostgreSQL ::text.
   v_intent_hash := pg_catalog.sha256(pg_catalog.convert_to(
-    pg_catalog.jsonb_build_array(1,p_operation_code,1,v_operation,
-      p_command_kind,v_actor,p_intent,p_idempotency_key)::text,'UTF8'));
+    app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+      'canonicalization_version',1,'operation_code',p_operation_code,
+      'operation_contract_version','1','operation_id',v_operation::text,
+      'command_kind',p_command_kind,'principal_id',v_actor::text,
+      'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
 
   -- SHA-256 of the complete tuple supplies a stable signed int32 advisory
   -- resource. Collisions serialize unrelated keys; the full receipt tuple and
@@ -3431,16 +3567,13 @@ BEGIN
               + pg_catalog.get_byte(v_digest,3)::bigint;
   IF v_resource > 2147483647 THEN v_resource := v_resource - 4294967296; END IF;
   PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
-  PERFORM 1 FROM app_private.principals p WHERE p.id=v_actor FOR UPDATE;
-  IF app_private.current_principal_id() IS DISTINCT FROM v_actor THEN
-    RAISE EXCEPTION 'D1 actor changed after command lock';
-  END IF;
 
   SELECT r.* INTO v_receipt FROM app_private.command_receipts r
    WHERE r.principal_id=v_actor AND r.operation_id=v_operation
      AND r.idempotency_key=p_idempotency_key;
   IF FOUND THEN
-    IF v_receipt.canonical_payload_hash IS DISTINCT FROM v_intent_hash
+    IF v_receipt.canonicalization_version<>1
+       OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_intent_hash
        OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
       RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
     END IF;
@@ -3454,10 +3587,10 @@ END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_command_receipt_lookup(text,text,text,jsonb)
   FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION app_private.d1_command_receipt_lookup(text,text,text,jsonb)
-  TO schoolos_academic_executor, schoolos_student_executor,
-     schoolos_family_executor, schoolos_employee_executor,
-     schoolos_teaching_executor, schoolos_workflow_executor;
+  TO schoolos_academic_executor,schoolos_student_executor,
+     schoolos_employee_executor,schoolos_workflow_executor;
 RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
 -- D1C1B catalog manifest: 97 permissions, 322 supported alternatives and
 -- 36 operation contracts. The trusted bootstrap actor is verified by both
@@ -4953,8 +5086,9 @@ BEGIN
   SELECT * INTO v_context FROM app_private.d1_command_receipt_lookup(
     'academic.class.change','academic.class.change',p_idempotency_key,
     pg_catalog.jsonb_build_array(p_action,p_class_id,p_school_id,p_code,
-      p_label,p_display_order,p_stage_label,p_expected_version));
+      p_label,p_display_order::text,p_stage_label,p_expected_version::text));
   v_hash := v_context.intent_hash;
+  PERFORM app_private.d1_lock_current_principal(v_context.actor_id);
 
   PERFORM 1 FROM app_private.school_profiles s WHERE s.id=p_school_id FOR SHARE;
   IF NOT FOUND THEN RAISE EXCEPTION 'D1 school target missing'; END IF;
@@ -5140,7 +5274,7 @@ CREATE POLICY d1_profile_evidence_outbox_insert ON app_private.outbox_events
 CREATE POLICY d1_profile_evidence_operation_read ON app_private.operation_contracts
   FOR SELECT TO schoolos_evidence_writer USING (true);
 GRANT SELECT, INSERT ON app_private.command_receipts TO schoolos_evidence_writer;
-GRANT SELECT (id,code,contract_version,enabled) ON app_private.operation_contracts
+GRANT SELECT (id,code,contract_version,handler_key,enabled) ON app_private.operation_contracts
   TO schoolos_evidence_writer;
 GRANT INSERT ON app_private.audit_events,app_private.outbox_events
   TO schoolos_evidence_writer;
@@ -5418,7 +5552,7 @@ BEGIN
   VALUES (p_actor,'INDIVIDUAL',CASE WHEN p_state='INVALIDATED'
       THEN 'REJECTED' ELSE 'SUCCEEDED' END,
     pg_catalog.jsonb_build_object('operation',p_operation,'phase',p_phase),
-    p_version,p_operation||'.'||pg_catalog.lower(p_phase),p_kind,p_target,
+    p_version,p_operation,p_kind,p_target,
     p_campus,p_receipt,p_request,'API',p_correlation,
     pg_catalog.jsonb_build_object('state',p_state,'row_version',p_version),
     p_actor);
@@ -5690,8 +5824,9 @@ BEGIN
   SELECT * INTO receipt_row FROM app_private.d1_command_receipt_lookup(
     op_code,op_code,p_idempotency_key,
     pg_catalog.jsonb_build_array(p_target_id,p_campus_id,
-      p_expected_version,p_payload));
+      p_expected_version::text,p_payload));
   intent_hash:=receipt_row.intent_hash;
+  PERFORM app_private.d1_lock_current_principal(receipt_row.actor_id);
   IF p_kind='STUDENT' THEN
     SELECT co.campus_id INTO target_campus
       FROM app_private.enrollments e
@@ -5793,8 +5928,9 @@ BEGIN
   SELECT * INTO receipt_row FROM app_private.d1_command_receipt_lookup(
     op_code,'request.submit',p_idempotency_key,
     pg_catalog.jsonb_build_array(p_target_id,p_campus_id,
-      p_expected_version,p_payload,p_reason));
+      p_expected_version::text,p_payload,p_reason));
   intent_hash:=receipt_row.intent_hash;
+  PERFORM app_private.d1_lock_current_principal(receipt_row.actor_id);
   IF p_kind='STUDENT' THEN
     SELECT co.campus_id INTO target_campus
       FROM app_private.enrollments e
@@ -6128,8 +6264,10 @@ BEGIN
   SELECT * INTO receipt_row FROM app_private.d1_command_receipt_lookup(
     initial_request.code,'request.review',p_idempotency_key,
     pg_catalog.jsonb_build_array(p_request_id,p_decision,
-      p_expected_request_version,p_reason));
+      p_expected_request_version::text,p_reason));
   intent_hash:=receipt_row.intent_hash;
+  PERFORM app_private.d1_lock_current_principal(receipt_row.actor_id);
+  participant_kind:=app_private.d1_profile_participant(p_request_id,verified_actor);
   IF receipt_row.receipt_id IS NOT NULL THEN
     IF participant_kind NOT IN ('DECIDED_REVIEWER','FINAL_APPROVER')
        OR receipt_row.actor_id IS DISTINCT FROM verified_actor
@@ -6340,8 +6478,9 @@ BEGIN
                 ELSE 'EMPLOYEE' END;
   SELECT * INTO receipt_row FROM app_private.d1_command_receipt_lookup(
     op_code,'request.apply',p_idempotency_key,
-    pg_catalog.jsonb_build_array(p_request_id,p_expected_request_version,
-      req.target_ref,req.expected_target_version,req.requested_payload));
+    pg_catalog.jsonb_build_array(p_request_id,p_expected_request_version::text,
+      req.target_ref,req.expected_target_version::text,req.requested_payload));
+  PERFORM app_private.d1_lock_current_principal(receipt_row.actor_id);
   IF receipt_row.receipt_id IS NOT NULL THEN
     IF receipt_row.actor_id IS DISTINCT FROM actor
        OR (app_private.d1_profile_participant(p_request_id,actor)
