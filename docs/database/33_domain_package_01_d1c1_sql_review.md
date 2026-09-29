@@ -26,6 +26,30 @@ checkpoint observations below are retained to explain earlier gaps; their
 older manifest counts and bootstrap mismatch do not describe the current
 working draft.
 
+**Profile workflow corrective review:** Independent review of
+`7977daac5c8af273058e6f41ef3e90a232ac6888` rejected its combined final
+review/apply transaction, phase-collapsed receipts, review receipt used as
+application evidence, schema-owner runtime function authority, and replay
+before current-read authorization. The initially blocking Profile request
+participant/apply-trigger decision is now product-owner approved: current
+requester visibility requires exact live request permission/scope; an OPEN
+assigned reviewer requires live review authority; after closure only an
+actual decided reviewer retains live checked read; explicit application may
+be triggered by the requester or exact final approver only. No administrator
+or background fallback is approved. The corrective draft separates final
+review `PENDING -> APPROVED` from explicit later `APPROVED -> EXECUTED` or
+deterministic `INVALIDATED`, fixes `request.submit`/`request.review`/
+`request.apply` receipts, and assigns runtime functions to the reviewed
+authorization, workflow, typed domain, read and evidence roles. The
+application row points to the distinct successful apply receipt. This is
+**under independent corrective review**; it does not mark overall D1C1B
+PASS. Frozen D1C1A integrity, bootstrap, reviewer resolver, 97/322/36
+manifest vocabulary and Migration 10 `.sql.draft` boundary remain intact.
+The source-only Foundation guard returned `FOUNDATION_SOURCE_PASS 9 migrations
++ 9 tests` and `LOCAL_CONFIG_PASS`; staging validation returned
+`STAGING_VALIDATE_PASS`; `git diff --check` found no whitespace error. No D1
+SQL was parsed or executed, and no Supabase project was contacted.
+
 **Later D1C1A note:** [Review 35](35_domain_package_01_d1c1a_integrity_review.md) records the subsequently drafted structural and integrity kernel. The missing-trigger statements below describe this earlier checkpoint, not the current unexecuted `.sql.draft`; the D1C1B authorization/command and D1C2 runtime gates remain open.
 
 **Later bootstrap-manifest clarification:** The product owner subsequently froze the deployment-bootstrap actor in the [versioned manifest](../../supabase/config/foundation_bootstrap_manifest.json): UUID `3e0e0b72-762c-44e1-b7eb-98dcc449643a`, `kind=SYSTEM`, `system_purpose=deployment-bootstrap`, `state=ACTIVE`. The earlier draft used `system_purpose='bootstrap'`; the accepted `ee7d9ad...` checkpoint corrected the lookup to require both exact UUID and purpose. The current D1C1B continuation preserves that correction.
@@ -33,6 +57,10 @@ working draft.
 **Status: INCOMPLETE WORKING DRAFT — NOT AUTHORIZED FOR APPLICATION.** This record tracks the local D1C1 translation from approved D1B3B baseline `e71d3be34f55235c18255795f32dfb6f09a2b182`. Commit `146174fa5e14b1728d6ee9e5b3353faed9071cab` is an incomplete D1C1 checkpoint, not a pass. No SQL has been applied, no Supabase project has been contacted, and no D1C2 test has been created. The working file uses the non-executable suffix `supabase/migrations/20260928000000_domain_package_01.sql.draft` so an ordinary CLI migration scan cannot select it.
 
 ## Profile workflow implementation gate (static only)
+
+This section records the historical `7977daac` implementation snapshot,
+which the independent review above rejected. Its description of same-
+transaction final apply is not the current corrective draft contract.
 
 The continuation from `14292465063a33bc975f69aed0466c2b98f0563d`
 implements the reusable P1 workflow pattern for exactly two fixed operations.

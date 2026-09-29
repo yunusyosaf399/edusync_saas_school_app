@@ -6,6 +6,63 @@ been executed, and its broad provisional D1 executor policies are not approved
 as the final authorization boundary. Do not activate D1 operations or rename
 the file to `.sql` on the basis of this review.
 
+## Independent review of `7977daac` and Profile correction
+
+The independent review of `7977daac5c8af273058e6f41ef3e90a232ac6888`
+found five material Foundation-contract violations: final review applied the
+target in the same transaction, submit/review/apply reused the business code
+as `command_kind`, a review receipt served as application evidence, Profile
+runtime `SECURITY DEFINER` functions ran as `schoolos_schema_owner`, and
+review replay returned stored results before checking current request-read
+authority. That commit was **not** a Profile-workflow pass.
+
+The product owner then approved the exact Profile-only request-participant
+contract. An ACTIVE INDIVIDUAL requester has safe request visibility only
+while the original operation permission and pinned target scope/context remain
+current. An OPEN-step reviewer needs one non-withdrawn
+`D1_REVIEWER_ROLE_SCOPE` assignment and current role, exact review grant,
+scope and requester separation. After closure, only a reviewer with their own
+immutable decision retains read/replay access under those same current checks;
+former candidates do not. The final approver is the reviewer whose APPROVE
+decision closed the highest required sequential step. Only the currently
+authorized requester or that exact final approver may explicitly trigger
+`request.apply`. Neither a role-name administrator fallback nor an automatic
+SYSTEM/background apply exists. No new permission code is introduced.
+
+The corrective draft adds a fixed checked Profile participant predicate and
+a field-limited Profile request projection. It acquires the Foundation SHARED
+authorization lock and resolves the current Principal before request-specific
+results. Submit, review and apply use separate internally fixed receipt phases
+`request.submit`, `request.review` and `request.apply`; the canonical intent
+binds operation/version, phase, actor, typed target/request, expected version,
+payload and key. A final APPROVE transaction ends at `APPROVED`, with its
+review receipt and transition, and never runs the domain effect. An explicit
+later apply transaction starts only from `APPROVED`, locks the typed target,
+rechecks requester, all required reviewers, policy and target, then either
+atomically executes the fixed effect and records a distinct SUCCEEDED apply
+receipt/application row, or records deterministic `INVALIDATED` with a
+REJECTED apply receipt and no domain/outbox effect. Transient failures roll
+back, leaving the approved request and its prior reviews intact. Replay
+requires current participant authority; old receipts confer no access.
+The draft also adds a Profile-only application-row trigger: in addition to
+the frozen composite request/operation FK, it requires the referenced receipt
+to be `SUCCEEDED` with `command_kind='request.apply'`.
+
+The intended final runtime owners in this draft are `schoolos_authz_reader`
+for the private Profile authority/policy/evidence evaluators,
+`schoolos_workflow_executor` for submit/review/apply orchestration and its
+fixed public RPCs, `schoolos_student_executor` and
+`schoolos_employee_executor` for their respective public direct commands and
+fixed private target effects, `schoolos_read_executor` for the checked
+projection, and `schoolos_evidence_writer` for receipt/audit/outbox append.
+The generic payload/effect/direct helpers are `SECURITY INVOKER`; no Profile
+runtime SECURITY DEFINER function retains schema-owner execution authority.
+Executors have explicit private EXECUTE edges and no inter-executor membership.
+All private Profile helpers revoke authenticated EXECUTE.
+
+This is a **corrective static draft under independent re-review**, not proof
+that the SQL parses, the owners/ACLs behave as designed, or D1C1B is complete.
+
 ## Accepted checkpoint
 
 Commit `ee7d9adf8718e5a9f2afb0c2c426337fd7eea5a5` is an accepted
@@ -79,7 +136,7 @@ private, post-bootstrap, disabled by default, and uninvoked by the migration.
   revoke PUBLIC/anon/authenticated/service-role EXECUTE and grant only the
   existing NOLOGIN `schoolos_workflow_executor`. They return safe Principal IDs
   or a Boolean, not sensitive request payloads. The new profile workflow grants
-  their EXECUTE to the NOLOGIN schema owner only for its fixed server-side
+  their EXECUTE to the NOLOGIN workflow executor for fixed server-side
   orchestration; they remain non-executable by authenticated clients.
 - The resolver deliberately returns no candidate for move/reassignment,
   Family two-sided, roll lineage, restricted-identity/Special lineage, Emergency
@@ -116,6 +173,11 @@ private, post-bootstrap, disabled by default, and uninvoked by the migration.
   generalized to the other operation contracts.
 
 ## Student and Employee Profile P1 workflow continuation
+
+The following paragraphs record the **rejected `7977daac` checkpoint** as
+historical context. Its combined final-review/application behavior and
+schema-owner runtime functions are superseded by the corrective draft above.
+They must not be treated as current implementation claims.
 
 From parent `14292465063a33bc975f69aed0466c2b98f0563d`, the draft adds
 fixed typed `app.d1_change_student_profile`,
@@ -194,6 +256,31 @@ remain unproven until separately authorized execution testing.
 
 This document is a continuation work record, **not** a D1C1B PASS or an
 independent review approval.
+
+## Corrective source-only verification (2026-09-29)
+
+The current diff is limited to this review, the D1C1 working review, and the
+non-executable Migration 10 `.sql.draft`. A lexical recount of the unchanged
+registrar lists found 97 distinct permissions, 322 distinct scope rows and
+36 distinct operations. The Profile command inventory now includes the fixed
+checked request read and separate apply RPC alongside the two direct and two
+submission RPCs and review RPC. The final review body contains no call to
+the domain apply helper. The explicit apply path is the only path that inserts
+`approval_applications`, and it passes the newly inserted `request.apply`
+receipt ID for the same operation and request. The Foundation FK retains
+that chain; PostgreSQL execution has not yet verified it. The apply helper
+requires `APPROVED`; a deterministic stale condition yields a terminal
+REJECTED apply receipt and `INVALIDATED`, while an exception rolls back the
+transaction. Every Profile private helper explicitly revokes EXECUTE from
+PUBLIC, anon, authenticated and service_role; only exact public RPCs grant
+authenticated EXECUTE.
+
+`foundation_guard.py --future report` returned `FOUNDATION_SOURCE_PASS 9
+migrations + 9 tests` and `LOCAL_CONFIG_PASS`; `foundation_staging.py
+validate` returned `STAGING_VALIDATE_PASS`; `git diff --check` found no
+whitespace error. These checks do not parse or execute the D1 draft. D1C1B
+still needs independent SQL/ACL review, all remaining command families,
+privilege narrowing and separately authorized D1C2 runtime tests.
 
 ## Interim static inventory
 
