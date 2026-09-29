@@ -2316,12 +2316,16 @@ DECLARE
   invalid_steps bigint;
   first_step integer;
   last_step integer;
+  activating boolean;
 BEGIN
   IF TG_OP = 'UPDATE' THEN
+    activating := OLD.state = 'DRAFT' AND NEW.state = 'ACTIVE';
     IF OLD.state <> 'DRAFT'
        AND OLD.d1_route_mode IS DISTINCT FROM NEW.d1_route_mode THEN
       RAISE EXCEPTION 'D1 approval route is frozen after activation';
     END IF;
+  ELSE
+    activating := NEW.state = 'ACTIVE';
   END IF;
   SELECT o.code, o.requires_approval
     INTO operation_code, mandatory_approval
@@ -2335,9 +2339,8 @@ BEGIN
      AND NEW.d1_route_mode = 'DIRECT' THEN
     RAISE EXCEPTION 'mandatory-approval operation cannot select D1 DIRECT route';
   END IF;
-  IF TG_OP = 'UPDATE' THEN
-    IF OLD.state = 'DRAFT' AND NEW.state = 'ACTIVE'
-       AND operation_code IN (
+  IF activating THEN
+    IF operation_code IN (
        'student.roll_policy.change', 'student.roll.correct',
        'student.profile.update', 'student.status.change',
        'student.enrollment.move', 'student.enrollment.end',
@@ -2351,20 +2354,40 @@ BEGIN
       IF NEW.d1_route_mode IS NULL THEN
         RAISE EXCEPTION 'D1 P1 policy activation requires explicit route mode';
       END IF;
-      IF NEW.d1_route_mode = 'APPROVAL' THEN
-        SELECT count(*),
-               count(*) FILTER (WHERE r.id IS NULL OR r.state <> 'ACTIVE'
-                 OR t.required_reviews <> 1
-                 OR pg_catalog.length(pg_catalog.btrim(t.selection_resolver_key)) = 0),
-               min(t.step_number), max(t.step_number)
-          INTO step_count, invalid_steps, first_step, last_step
-          FROM app_private.approval_step_templates t
-          LEFT JOIN app_private.roles r ON r.id = t.reviewer_role_id
-         WHERE t.policy_id = NEW.id;
-        IF step_count = 0 OR invalid_steps <> 0 OR first_step <> 1
-           OR last_step::bigint <> step_count THEN
-          RAISE EXCEPTION 'D1 P1 approval route requires valid sequential steps';
-        END IF;
+    END IF;
+    -- P1 APPROVAL and the frozen P2 (including retroactive teaching) use
+    -- one and only one reviewed reviewer-selection resolver. P0 direct and
+    -- preexisting non-D1 Foundation policies retain their own contracts.
+    IF (
+       (operation_code IN (
+          'student.roll_policy.change', 'student.roll.correct',
+          'student.profile.update', 'student.status.change',
+          'student.enrollment.move', 'student.enrollment.end',
+          'student.emergency_contact.change', 'family.relationship.change',
+          'family.principal_membership.change', 'family.child_access.change',
+          'employee.profile.update', 'employee.qualification.change',
+          'employee.experience.change', 'employee.state.change',
+          'employee.job_assignment.change', 'employee.campus_affiliation.change',
+          'teaching.capability.change'
+        ) AND NEW.d1_route_mode = 'APPROVAL')
+       OR operation_code IN (
+          'student.identity.correct', 'student.special.correct',
+          'student.status.correct', 'employee.identity.correct',
+          'teaching.class_assignment.change',
+          'teaching.subject_assignment.change'
+        )) THEN
+      SELECT count(*),
+             count(*) FILTER (WHERE r.id IS NULL OR r.state <> 'ACTIVE'
+               OR t.required_reviews <> 1
+               OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'),
+             min(t.step_number), max(t.step_number)
+        INTO step_count, invalid_steps, first_step, last_step
+        FROM app_private.approval_step_templates t
+        LEFT JOIN app_private.roles r ON r.id = t.reviewer_role_id
+       WHERE t.policy_id = NEW.id;
+      IF step_count = 0 OR invalid_steps <> 0 OR first_step <> 1
+         OR last_step::bigint <> step_count THEN
+        RAISE EXCEPTION 'D1 approval route requires valid D1_REVIEWER_ROLE_SCOPE steps';
       END IF;
     END IF;
   END IF;
@@ -2382,13 +2405,26 @@ GRANT SELECT (id, operation_id, campus_id, state, effective_from,
   ON app_private.approval_policy_versions TO schoolos_authz_reader;
 CREATE POLICY d1_approval_steps_route_input ON app_private.approval_step_templates
   FOR SELECT TO schoolos_authz_reader USING (true);
-GRANT SELECT (policy_id, step_number, reviewer_role_id, required_reviews,
+GRANT SELECT (id, policy_id, step_number, reviewer_role_id, required_reviews,
   selection_resolver_key)
   ON app_private.approval_step_templates TO schoolos_authz_reader;
 CREATE POLICY d1_operation_route_input ON app_private.operation_contracts
   FOR SELECT TO schoolos_authz_reader USING (true);
-GRANT SELECT (id, code, enabled, requires_approval)
+GRANT SELECT (id, code, contract_version, enabled, requires_approval,
+  review_permission_id)
   ON app_private.operation_contracts TO schoolos_authz_reader;
+CREATE POLICY d1_approval_requests_review_input ON app_private.approval_requests
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, policy_id, operation_id, requester_id, campus_id,
+  target_ref, state) ON app_private.approval_requests TO schoolos_authz_reader;
+CREATE POLICY d1_approval_request_steps_review_input ON app_private.approval_request_steps
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id, request_id, policy_id, template_id, step_number,
+  required_reviews, state) ON app_private.approval_request_steps TO schoolos_authz_reader;
+CREATE POLICY d1_approval_step_reviewers_review_input ON app_private.approval_step_reviewers
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (step_id, reviewer_id, assigned_at, withdrawn_at, assignment_reason)
+  ON app_private.approval_step_reviewers TO schoolos_authz_reader;
 -- Person display names are needed by fixed checked projections. This role is
 -- NOLOGIN; the grant does not expose the private People table to clients.
 CREATE POLICY d1_people_checked_display ON app_private.people
@@ -3058,7 +3094,7 @@ BEGIN
     SELECT count(*),
            count(*) FILTER (WHERE r.id IS NULL OR r.state <> 'ACTIVE'
              OR t.required_reviews <> 1
-             OR pg_catalog.length(pg_catalog.btrim(t.selection_resolver_key)) = 0),
+             OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'),
            min(t.step_number), max(t.step_number)
       INTO step_count, invalid_steps, first_step, last_step
       FROM app_private.approval_step_templates t
@@ -3074,6 +3110,239 @@ REVOKE ALL ON FUNCTION app_private.d1_p1_route(text,uuid)
 GRANT EXECUTE ON FUNCTION app_private.d1_p1_route(text,uuid)
   TO schoolos_student_executor, schoolos_family_executor,
      schoolos_employee_executor, schoolos_teaching_executor;
+
+-- Only the reviewed key can enumerate candidates. The request and OPEN step
+-- supply the operation, policy, target and reviewer-role UUID; no caller may
+-- supply a Principal, permission, scope, resolver or target assertion. A
+-- target whose fixed operation interpretation is not yet implemented returns
+-- no candidates, pending that operation's typed workflow command.
+CREATE FUNCTION app_private.d1_review_candidates(
+  p_request_id uuid, p_step_id uuid
+) RETURNS TABLE (candidate_principal_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  at_time timestamptz := pg_catalog.statement_timestamp();
+  ctx record;
+  target_kind text;
+  target_id uuid;
+  target_campus uuid;
+  target_class uuid;
+  target_section uuid;
+  placement_count bigint;
+BEGIN
+  IF p_request_id IS NULL OR p_step_id IS NULL THEN RETURN; END IF;
+  SELECT req.target_ref, req.campus_id, req.requester_id,
+         requester.person_id AS requester_person_id,
+         op.code AS operation_code, op.requires_approval,
+         op.review_permission_id, policy.d1_route_mode,
+         template.reviewer_role_id
+    INTO ctx
+    FROM app_private.approval_requests req
+    JOIN app_private.approval_request_steps step
+      ON step.request_id = req.id AND step.policy_id = req.policy_id
+    JOIN app_private.approval_step_templates template
+      ON template.id = step.template_id AND template.policy_id = req.policy_id
+    JOIN app_private.approval_policy_versions policy
+      ON policy.id = req.policy_id AND policy.operation_id = req.operation_id
+    JOIN app_private.operation_contracts op ON op.id = req.operation_id
+    JOIN app_private.permissions review_permission
+      ON review_permission.id = op.review_permission_id
+    JOIN app_private.principals requester ON requester.id = req.requester_id
+   WHERE req.id = p_request_id AND step.id = p_step_id
+     AND req.state = 'PENDING' AND step.state = 'OPEN'
+     AND step.step_number = template.step_number
+     AND step.required_reviews = 1 AND template.required_reviews = 1
+     AND template.selection_resolver_key = 'D1_REVIEWER_ROLE_SCOPE'
+     AND op.contract_version = 1 AND op.enabled
+     AND review_permission.state = 'ENABLED'
+     AND NOT review_permission.family_safe
+     AND requester.kind = 'INDIVIDUAL' AND requester.state = 'ACTIVE'
+     AND requester.person_id IS NOT NULL;
+  IF NOT FOUND THEN RETURN; END IF;
+  IF ctx.target_ref IS NULL THEN RETURN; END IF;
+
+  IF ctx.operation_code IN (
+    'student.roll_policy.change', 'student.roll.correct',
+    'student.profile.update', 'student.status.change',
+    'student.enrollment.move', 'student.enrollment.end',
+    'student.emergency_contact.change', 'family.relationship.change',
+    'family.principal_membership.change', 'family.child_access.change',
+    'employee.profile.update', 'employee.qualification.change',
+    'employee.experience.change', 'employee.state.change',
+    'employee.job_assignment.change', 'employee.campus_affiliation.change',
+    'teaching.capability.change'
+  ) THEN
+    IF ctx.d1_route_mode IS DISTINCT FROM 'APPROVAL'
+       OR ctx.requires_approval THEN RETURN; END IF;
+  ELSIF ctx.operation_code IN (
+    'student.identity.correct', 'student.special.correct',
+    'student.status.correct', 'employee.identity.correct',
+    'teaching.class_assignment.change',
+    'teaching.subject_assignment.change'
+  ) THEN
+    IF ctx.d1_route_mode = 'DIRECT' THEN RETURN; END IF;
+    IF NOT ctx.requires_approval AND ctx.operation_code NOT IN (
+      'teaching.class_assignment.change',
+      'teaching.subject_assignment.change') THEN RETURN; END IF;
+  ELSE
+    RETURN;
+  END IF;
+
+  -- The following stored-target interpretations are unambiguous in the
+  -- current fixed ledger. Move/reassignment, Family two-sided, roll lineage
+  -- and teaching corrections need later typed source/destination validation;
+  -- they deliberately resolve nobody here rather than guessing a JSON path.
+  IF ctx.operation_code IN (
+    'student.profile.update', 'student.status.change'
+  ) THEN
+    SELECT st.id INTO target_id FROM app_private.students st
+     WHERE st.id = ctx.target_ref;
+    target_kind := 'STUDENT';
+    SELECT count(*) INTO placement_count
+      FROM app_private.enrollments e
+     WHERE e.student_id = target_id AND e.placement_kind = 'PRIMARY'
+       AND e.placement_state = 'ACTIVE'
+       AND e.effective_from <= at_time::date
+       AND (e.effective_until IS NULL OR at_time::date < e.effective_until);
+    IF placement_count <> 1 THEN RETURN; END IF;
+    SELECT so.id, co.id, co.campus_id
+      INTO target_section, target_class, target_campus
+      FROM app_private.enrollments e
+      JOIN app_private.section_offerings so ON so.id = e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id = so.class_offering_id
+     WHERE e.student_id = target_id AND e.placement_kind = 'PRIMARY'
+       AND e.placement_state = 'ACTIVE'
+       AND e.effective_from <= at_time::date
+       AND (e.effective_until IS NULL OR at_time::date < e.effective_until)
+       AND so.campus_id = co.campus_id
+       AND so.state = 'ACTIVE' AND co.state = 'ACTIVE';
+    IF target_section IS NULL OR (ctx.campus_id IS NOT NULL
+       AND ctx.campus_id <> target_campus) THEN RETURN; END IF;
+  ELSIF ctx.operation_code IN (
+    'employee.profile.update'
+  ) THEN
+    SELECT emp.id INTO target_id FROM app_private.employees emp
+     WHERE emp.id = ctx.target_ref;
+    target_kind := 'EMPLOYEE';
+    IF ctx.campus_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM app_private.employee_campus_affiliations ca
+       WHERE ca.employee_id = target_id AND ca.campus_id = ctx.campus_id
+         AND ca.effective_from <= at_time::date
+         AND (ca.effective_until IS NULL OR at_time::date < ca.effective_until)
+    ) THEN RETURN; END IF;
+  ELSE
+    RETURN;
+  END IF;
+  IF target_id IS NULL THEN RETURN; END IF;
+
+  RETURN QUERY
+  SELECT DISTINCT candidate.id
+    FROM app_private.principals candidate
+    JOIN app_private.principal_role_assignments role_filter
+      ON role_filter.principal_id = candidate.id
+     AND role_filter.role_id = ctx.reviewer_role_id
+    JOIN app_private.roles configured_role
+      ON configured_role.id = role_filter.role_id
+   WHERE candidate.kind = 'INDIVIDUAL' AND candidate.state = 'ACTIVE'
+     AND candidate.person_id IS NOT NULL
+     AND candidate.id <> ctx.requester_id
+     AND candidate.person_id <> ctx.requester_person_id
+     AND configured_role.state = 'ACTIVE' AND NOT configured_role.family_only
+     AND role_filter.principal_kind = 'INDIVIDUAL'
+     AND role_filter.context_kind = 'INDIVIDUAL'
+     AND role_filter.valid_from <= at_time
+     AND (role_filter.valid_until IS NULL OR at_time < role_filter.valid_until)
+     AND (role_filter.revoked_at IS NULL OR at_time < role_filter.revoked_at)
+     AND EXISTS (
+       SELECT 1 FROM app_private.principal_auth_bindings binding
+        WHERE binding.principal_id = candidate.id
+          AND binding.auth_user_id IS NOT NULL
+     )
+     AND EXISTS (
+       SELECT 1
+         FROM app_private.assignment_permission_scopes scope
+         JOIN app_private.principal_role_assignments assignment
+           ON assignment.id = scope.assignment_id
+         JOIN app_private.role_permission_grants grant_row
+           ON grant_row.id = scope.grant_id
+         JOIN app_private.permission_scope_contracts contract
+           ON contract.id = scope.scope_contract_id
+         JOIN app_private.permissions permission_row
+           ON permission_row.id = scope.permission_id
+         JOIN app_private.roles grant_role ON grant_role.id = scope.role_id
+        WHERE assignment.principal_id = candidate.id
+          AND assignment.principal_kind = 'INDIVIDUAL'
+          AND assignment.context_kind = 'INDIVIDUAL'
+          AND assignment.role_id = scope.role_id
+          AND grant_row.role_id = scope.role_id
+          AND grant_row.permission_id = scope.permission_id
+          AND contract.permission_id = scope.permission_id
+          AND contract.scope_kind = scope.scope_kind
+          AND contract.resolver_key = scope.resolver_key
+          AND contract.enabled
+          AND permission_row.id = ctx.review_permission_id
+          AND permission_row.state = 'ENABLED'
+          AND NOT permission_row.family_safe
+          AND grant_role.state = 'ACTIVE'
+          AND assignment.valid_from <= at_time
+          AND (assignment.valid_until IS NULL OR at_time < assignment.valid_until)
+          AND (assignment.revoked_at IS NULL OR at_time < assignment.revoked_at)
+          AND grant_row.valid_from <= at_time
+          AND (grant_row.valid_until IS NULL OR at_time < grant_row.valid_until)
+          AND (grant_row.revoked_at IS NULL OR at_time < grant_row.revoked_at)
+          AND scope.valid_from <= at_time
+          AND (scope.valid_until IS NULL OR at_time < scope.valid_until)
+          AND (scope.revoked_at IS NULL OR at_time < scope.revoked_at)
+          AND scope.resolver_key = 'DIRECT'
+          AND (
+            (scope.scope_kind = 'ALL' AND scope.campus_id IS NULL)
+            OR (scope.scope_kind = 'CAMPUS' AND (
+              (target_kind = 'STUDENT' AND scope.campus_id = target_campus)
+              OR (target_kind = 'EMPLOYEE' AND EXISTS (
+                SELECT 1 FROM app_private.employee_campus_affiliations ca
+                 WHERE ca.employee_id = target_id
+                   AND ca.campus_id = scope.campus_id
+                   AND ca.effective_from <= at_time::date
+                   AND (ca.effective_until IS NULL OR at_time::date < ca.effective_until)
+              ))))
+            OR (target_kind = 'STUDENT' AND scope.scope_kind = 'CLASS'
+                AND scope.class_offering_id = target_class)
+            OR (target_kind = 'STUDENT' AND scope.scope_kind = 'SECTION'
+                AND scope.section_offering_id = target_section)
+          )
+     );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_review_candidates(uuid,uuid)
+  FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_review_candidates(uuid,uuid)
+  TO schoolos_workflow_executor;
+
+-- A reviewer decision must check the live candidate predicate again. The
+-- earlier stored candidate row is evidence of assignment, not enduring
+-- authority. The verified request Principal is derived from request claims.
+CREATE FUNCTION app_private.d1_current_reviewer_eligible(
+  p_request_id uuid, p_step_id uuid
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE actor uuid;
+BEGIN
+  actor := app_private.current_principal_id();
+  IF actor IS NULL THEN RETURN false; END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.d1_review_candidates(p_request_id,p_step_id) c
+     WHERE c.candidate_principal_id = actor
+  ) AND EXISTS (
+    SELECT 1 FROM app_private.approval_step_reviewers assigned
+     WHERE assigned.step_id = p_step_id AND assigned.reviewer_id = actor
+       AND assigned.withdrawn_at IS NULL
+       AND assigned.assignment_reason = 'D1_REVIEWER_ROLE_SCOPE'
+       AND assigned.assigned_at <= pg_catalog.statement_timestamp()
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_current_reviewer_eligible(uuid,uuid)
+  FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_current_reviewer_eligible(uuid,uuid)
+  TO schoolos_workflow_executor;
 
 -- File-service domain gate only. It does not inspect the object/provider,
 -- entitlement, stored owner relation, private classification or issue access;

@@ -11,7 +11,13 @@ recorded in [D1C1B security review](../security/11_domain_package_01_d1c1b_secur
 including the product-owner-approved SQL-translation clarification that P1
 route mode is an explicit `DIRECT`/`APPROVAL` field, never inferred from
 approval-step count. Missing policy or mode denies, `APPROVAL` requires a valid
-step, and P2 cannot select `DIRECT`. The remaining protected commands and
+step, and P2 cannot select `DIRECT`. The product owner subsequently approved
+`D1_REVIEWER_ROLE_SCOPE` as the sole D1 approval-step resolver. The draft now
+validates that exact key on P1 APPROVAL/P2 policy activation and provides
+private request/step-bound candidate and live reviewer-recheck predicates;
+ambiguous source/destination targets fail closed pending typed workflow
+commands. The reviewer-selection key ambiguity is resolved, while candidate
+insertion, review decisions, apply paths, and the remaining protected commands and
 final RLS/ACL remain incomplete. **D1C1B is not
 passed.** Migration 10 remains non-executable `.sql.draft`; D1C1C is separate
 and D1C2 execution/runtime testing is not authorized. The historical
