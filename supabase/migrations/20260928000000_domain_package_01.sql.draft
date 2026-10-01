@@ -1585,7 +1585,7 @@ CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_e
 CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_job_assignments
   FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,department_id,designation_id','employee_id');
 CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_campus_affiliations
-  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,campus_id','employee_id,campus_id');
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,campus_id','employee_id');
 CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.teacher_capabilities
   FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id','employee_id');
 CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.class_teacher_assignments
@@ -3634,6 +3634,11 @@ BEGIN
        OR (p_operation_code='employee.job_assignment.change' AND (
             (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=13)
          OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=13)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='employee.campus_affiliation.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=11)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=11)
          OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
          OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2))) THEN
     RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
@@ -10782,6 +10787,1614 @@ END $body$;
 REVOKE ALL ON FUNCTION app.d1_read_employee_job_assignment_request(uuid)
   FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app.d1_read_employee_job_assignment_request(uuid)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
+
+-- D1C1B Employee campus-affiliation P1 continuation. Product-owner semantics:
+-- typed ADD/END/CORRECT retained HE history; source/destination Campus scope is
+-- authorization input only and the affiliation fact itself never grants authority.
+-- Migration 10 remains a non-executable draft pending D1C2/runtime gates.
+
+-- Narrow the structural D1B grants before activating any protected command.
+REVOKE SELECT, INSERT ON app_private.employee_campus_affiliations
+  FROM schoolos_employee_executor;
+GRANT SELECT (id,created_at,created_by,ended_at,ended_by,employee_id,campus_id,
+  effective_from,effective_until,reason,supersedes_id),
+  INSERT (id,created_by,ended_at,ended_by,employee_id,campus_id,effective_from,
+    effective_until,reason,supersedes_id)
+  ON app_private.employee_campus_affiliations TO schoolos_employee_executor;
+
+-- Employee campus-affiliation commands must lock affected Campus rows after
+-- Employee and before history. UPDATE(id) exists solely for SELECT ... FOR UPDATE.
+CREATE POLICY d1_employee_campus_lock_input ON app.campuses
+  FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_employee_campus_lock_update ON app.campuses
+  FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT (id,school_id,state),UPDATE(id) ON app.campuses
+  TO schoolos_employee_executor;
+
+-- Reviewer helpers need only the bounded typed request snapshots; reason remains
+-- a separate protected workflow column and is not exposed to schoolos_authz_reader.
+GRANT SELECT (old_snapshot,requested_payload) ON app_private.approval_requests
+  TO schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_employee_executor;
+SET ROLE schoolos_employee_executor;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_payload_valid(p jsonb)
+RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE action text; source_id text; source_campus text; source_from text;
+  source_supersedes text; campus text; effective_from text; effective_until text;
+  source_start date; effect_start date; effect_end date;
+BEGIN
+  IF p IS NULL OR pg_catalog.jsonb_typeof(p)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p))<>8
+     OR NOT (p ?& ARRAY['action','source_affiliation_id','source_campus_id',
+       'source_effective_from','source_supersedes_id','campus_id',
+       'effective_from','effective_until']) THEN
+    RETURN false;
+  END IF;
+  action:=p->>'action'; source_id:=p->>'source_affiliation_id';
+  source_campus:=p->>'source_campus_id'; source_from:=p->>'source_effective_from';
+  source_supersedes:=p->>'source_supersedes_id'; campus:=p->>'campus_id';
+  effective_from:=p->>'effective_from'; effective_until:=p->>'effective_until';
+  IF pg_catalog.jsonb_typeof(p->'action')<>'string'
+     OR action NOT IN ('ADD','END','CORRECT') THEN RETURN false; END IF;
+  IF pg_catalog.jsonb_typeof(p->'source_affiliation_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_campus_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_effective_from') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_supersedes_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'campus_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'effective_from') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'effective_until') NOT IN ('string','null') THEN
+    RETURN false;
+  END IF;
+  IF (source_id IS NOT NULL AND source_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_campus IS NOT NULL AND source_campus !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_supersedes IS NOT NULL AND source_supersedes !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (campus IS NOT NULL AND campus !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_from IS NOT NULL AND source_from !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+     OR (effective_from IS NOT NULL AND effective_from !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+     OR (effective_until IS NOT NULL AND effective_until !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') THEN
+    RETURN false;
+  END IF;
+  IF action='ADD' AND (source_id IS NOT NULL OR source_campus IS NOT NULL
+      OR source_from IS NOT NULL OR source_supersedes IS NOT NULL
+      OR campus IS NULL OR effective_from IS NULL) THEN RETURN false; END IF;
+  IF action='END' AND (source_id IS NULL OR source_campus IS NULL
+      OR source_from IS NULL OR campus IS NOT NULL OR effective_from IS NOT NULL
+      OR effective_until IS NULL) THEN RETURN false; END IF;
+  IF action='CORRECT' AND (source_id IS NULL OR source_campus IS NULL
+      OR source_from IS NULL OR campus IS NULL OR effective_from IS NULL
+      OR effective_until IS NOT NULL) THEN RETURN false; END IF;
+  BEGIN
+    IF source_from IS NOT NULL THEN source_start:=source_from::date; END IF;
+    IF effective_from IS NOT NULL THEN effect_start:=effective_from::date; END IF;
+    IF effective_until IS NOT NULL THEN effect_end:=effective_until::date; END IF;
+  EXCEPTION WHEN invalid_datetime_format OR datetime_field_overflow THEN
+    RETURN false;
+  END;
+  IF action='ADD' AND effect_end IS NOT NULL AND effect_end<=effect_start THEN RETURN false; END IF;
+  IF action='END' AND effect_end<=source_start THEN RETURN false; END IF;
+  IF action='CORRECT' AND effect_start<=source_start THEN RETURN false; END IF;
+  RETURN true;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_payload_valid(jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_payload_valid(jsonb)
+  TO schoolos_employee_executor,schoolos_workflow_executor,schoolos_read_executor,schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_request_payload_valid(
+  p_old jsonb,p_requested jsonb
+) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_old IS NULL OR p_requested IS NULL
+     OR pg_catalog.jsonb_typeof(p_old)<>'object'
+     OR pg_catalog.jsonb_typeof(p_requested)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_old))<>4
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_requested))<>4
+     OR NOT (p_old ?& ARRAY['source_affiliation_id','source_campus_id',
+       'source_effective_from','source_supersedes_id'])
+     OR NOT (p_requested ?& ARRAY['action','campus_id','effective_from','effective_until']) THEN
+    RETURN false;
+  END IF;
+  RETURN app_private.d1_employee_campus_affiliation_payload_valid(p_old||p_requested);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_request_payload_valid(jsonb,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_request_payload_valid(jsonb,jsonb)
+  TO schoolos_employee_executor,schoolos_workflow_executor,schoolos_read_executor,schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_result_matches(
+  p_action text,p_employee uuid,p_affiliation uuid,p_source uuid,
+  p_source_campus uuid,p_source_from date,p_source_supersedes uuid,
+  p_campus uuid,p_effective_from date,p_effective_until date
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE result app_private.employee_campus_affiliations%ROWTYPE;
+BEGIN
+  IF p_action NOT IN ('ADD','END','CORRECT') OR p_employee IS NULL OR p_affiliation IS NULL THEN
+    RETURN false;
+  END IF;
+  SELECT * INTO result FROM app_private.employee_campus_affiliations a
+   WHERE a.id=p_affiliation AND a.employee_id=p_employee;
+  IF NOT FOUND THEN RETURN false; END IF;
+  IF p_action='ADD' THEN
+    RETURN result.campus_id IS NOT DISTINCT FROM p_campus
+      AND result.effective_from IS NOT DISTINCT FROM p_effective_from
+      AND result.supersedes_id IS NULL
+      AND ((p_effective_until IS NULL AND result.effective_until IS NULL
+            AND result.ended_at IS NULL AND result.ended_by IS NULL)
+        OR (p_effective_until IS NOT NULL
+          AND result.effective_until IS NOT DISTINCT FROM p_effective_until
+          AND result.ended_at IS NOT NULL AND result.ended_by IS NOT NULL));
+  ELSIF p_action='END' THEN
+    RETURN result.id IS NOT DISTINCT FROM p_source
+      AND result.campus_id IS NOT DISTINCT FROM p_source_campus
+      AND result.effective_from IS NOT DISTINCT FROM p_source_from
+      AND result.supersedes_id IS NOT DISTINCT FROM p_source_supersedes
+      AND result.effective_until IS NOT DISTINCT FROM p_effective_until
+      AND result.ended_at IS NOT NULL AND result.ended_by IS NOT NULL;
+  ELSE
+    RETURN result.supersedes_id IS NOT DISTINCT FROM p_source
+      AND result.campus_id IS NOT DISTINCT FROM p_campus
+      AND result.effective_from IS NOT DISTINCT FROM p_effective_from
+      AND result.effective_until IS NULL
+      AND result.ended_at IS NULL AND result.ended_by IS NULL
+      AND EXISTS (SELECT 1 FROM app_private.employee_campus_affiliations predecessor
+        WHERE predecessor.id=p_source AND predecessor.employee_id=p_employee
+          AND predecessor.campus_id=p_source_campus
+          AND predecessor.effective_from=p_source_from
+          AND predecessor.supersedes_id IS NOT DISTINCT FROM p_source_supersedes
+          AND predecessor.effective_until=p_effective_from
+          AND predecessor.ended_at IS NOT NULL AND predecessor.ended_by IS NOT NULL);
+  END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_result_matches(
+  text,uuid,uuid,uuid,uuid,date,uuid,uuid,date,date)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_result_matches(
+  text,uuid,uuid,uuid,uuid,date,uuid,uuid,date,date)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_lock_context(
+  p_employee_id uuid,p_expected_employee_version bigint,p_enforce_version boolean,
+  p_source_affiliation_id uuid,p_expected_source_campus_id uuid,
+  p_expected_source_effective_from date,p_expected_source_supersedes_id uuid,
+  p_destination_campus_id uuid,p_additional_affiliation_id uuid
+) RETURNS TABLE(employee_version bigint,error_code text,source_snapshot jsonb)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actual_version bigint; source_row app_private.employee_campus_affiliations%ROWTYPE;
+  actual_source_campus uuid; additional_campus uuid; campus_ids uuid[];
+  campus_row record; history_row record;
+BEGIN
+  SELECT e.row_version INTO actual_version FROM app_private.employees e
+   WHERE e.id=p_employee_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT NULL::bigint,'D1_CAMPUS_AFFILIATION_EMPLOYEE_MISSING'::text,'{}'::jsonb;
+    RETURN;
+  END IF;
+  IF p_enforce_version AND actual_version IS DISTINCT FROM p_expected_employee_version THEN
+    error_code:='D1_CAMPUS_AFFILIATION_EMPLOYEE_VERSION_STALE';
+  END IF;
+  IF p_source_affiliation_id IS NOT NULL THEN
+    SELECT a.campus_id INTO actual_source_campus
+      FROM app_private.employee_campus_affiliations a
+     WHERE a.id=p_source_affiliation_id AND a.employee_id=p_employee_id;
+  END IF;
+  IF p_additional_affiliation_id IS NOT NULL THEN
+    SELECT a.campus_id INTO additional_campus
+      FROM app_private.employee_campus_affiliations a
+     WHERE a.id=p_additional_affiliation_id AND a.employee_id=p_employee_id;
+  END IF;
+  SELECT pg_catalog.array_agg(DISTINCT x ORDER BY x) INTO campus_ids
+    FROM pg_catalog.unnest(ARRAY[p_expected_source_campus_id,p_destination_campus_id,
+      actual_source_campus,additional_campus]::uuid[]) x WHERE x IS NOT NULL;
+  IF campus_ids IS NOT NULL THEN
+    FOR campus_row IN
+      SELECT c.id FROM app.campuses c WHERE c.id=ANY(campus_ids)
+       ORDER BY c.id FOR UPDATE
+    LOOP NULL; END LOOP;
+  END IF;
+  FOR history_row IN
+    SELECT a.id FROM app_private.employee_campus_affiliations a
+     WHERE a.employee_id=p_employee_id
+       AND ((p_source_affiliation_id IS NOT NULL AND a.id=p_source_affiliation_id)
+         OR (p_additional_affiliation_id IS NOT NULL AND a.id=p_additional_affiliation_id)
+         OR (campus_ids IS NOT NULL AND a.campus_id=ANY(campus_ids)))
+     ORDER BY a.id FOR UPDATE
+  LOOP NULL; END LOOP;
+  IF p_source_affiliation_id IS NOT NULL THEN
+    SELECT a.* INTO source_row FROM app_private.employee_campus_affiliations a
+     WHERE a.id=p_source_affiliation_id AND a.employee_id=p_employee_id;
+    IF NOT FOUND THEN
+      error_code:=COALESCE(error_code,'D1_CAMPUS_AFFILIATION_SOURCE_MISSING');
+      source_snapshot:='{}'::jsonb;
+    ELSE
+      IF source_row.campus_id IS DISTINCT FROM p_expected_source_campus_id
+         OR source_row.effective_from IS DISTINCT FROM p_expected_source_effective_from
+         OR source_row.supersedes_id IS DISTINCT FROM p_expected_source_supersedes_id THEN
+        error_code:=COALESCE(error_code,'D1_CAMPUS_AFFILIATION_SOURCE_FACTS_STALE');
+      END IF;
+      source_snapshot:=pg_catalog.jsonb_build_object(
+        'affiliation_id',source_row.id,'employee_id',source_row.employee_id,
+        'campus_id',source_row.campus_id,
+        'effective_from',pg_catalog.to_char(source_row.effective_from,'YYYY-MM-DD'),
+        'effective_until',CASE WHEN source_row.effective_until IS NULL THEN NULL
+          ELSE pg_catalog.to_char(source_row.effective_until,'YYYY-MM-DD') END,
+        'supersedes_id',source_row.supersedes_id);
+    END IF;
+  ELSE
+    source_snapshot:='{}'::jsonb;
+  END IF;
+  RETURN QUERY SELECT actual_version,error_code,source_snapshot;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_lock_context(
+  uuid,bigint,boolean,uuid,uuid,date,uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_lock_context(
+  uuid,bigint,boolean,uuid,uuid,date,uuid,uuid,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_preflight(
+  p_employee_id uuid,p_expected_employee_version bigint,p_action text,
+  p_source_affiliation_id uuid,p_expected_source_campus_id uuid,
+  p_expected_source_effective_from date,p_expected_source_supersedes_id uuid,
+  p_campus_id uuid,p_effective_from date,p_effective_until date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text,employee_version bigint,source_snapshot jsonb)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE context record; source_row app_private.employee_campus_affiliations%ROWTYPE;
+  project_school uuid; source_school uuid; destination_school uuid; destination_state text;
+BEGIN
+  SELECT * INTO context FROM app_private.d1_employee_campus_affiliation_lock_context(
+    p_employee_id,p_expected_employee_version,true,p_source_affiliation_id,
+    p_expected_source_campus_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_campus_id,NULL);
+  IF context.error_code IS NOT NULL THEN
+    RETURN QUERY SELECT false,context.error_code,context.employee_version,context.source_snapshot;
+    RETURN;
+  END IF;
+  IF p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT') THEN
+    RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_ACTION_INVALID'::text,
+      context.employee_version,context.source_snapshot; RETURN;
+  END IF;
+  IF (p_action='ADD' AND (p_source_affiliation_id IS NOT NULL
+       OR p_expected_source_campus_id IS NOT NULL
+       OR p_expected_source_effective_from IS NOT NULL
+       OR p_expected_source_supersedes_id IS NOT NULL
+       OR p_campus_id IS NULL OR p_effective_from IS NULL
+       OR (p_effective_until IS NOT NULL AND p_effective_until<=p_effective_from)))
+     OR (p_action='END' AND (p_source_affiliation_id IS NULL
+       OR p_expected_source_campus_id IS NULL
+       OR p_expected_source_effective_from IS NULL
+       OR p_campus_id IS NOT NULL OR p_effective_from IS NOT NULL
+       OR p_effective_until IS NULL))
+     OR (p_action='CORRECT' AND (p_source_affiliation_id IS NULL
+       OR p_expected_source_campus_id IS NULL
+       OR p_expected_source_effective_from IS NULL
+       OR p_campus_id IS NULL OR p_effective_from IS NULL
+       OR p_effective_until IS NOT NULL)) THEN
+    RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_ACTION_SHAPE_INVALID'::text,
+      context.employee_version,context.source_snapshot; RETURN;
+  END IF;
+  IF p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_REASON_INVALID'::text,
+      context.employee_version,context.source_snapshot; RETURN;
+  END IF;
+  SELECT sp.id INTO project_school FROM app_private.school_profiles sp ORDER BY sp.id LIMIT 1;
+  IF project_school IS NULL THEN
+    RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_SCHOOL_MISSING'::text,
+      context.employee_version,context.source_snapshot; RETURN;
+  END IF;
+  IF p_action<>'ADD' THEN
+    SELECT a.* INTO source_row FROM app_private.employee_campus_affiliations a
+     WHERE a.id=p_source_affiliation_id AND a.employee_id=p_employee_id;
+    IF NOT FOUND OR source_row.effective_until IS NOT NULL
+       OR source_row.ended_at IS NOT NULL OR source_row.ended_by IS NOT NULL THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_SOURCE_NOT_OPEN'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+    SELECT c.school_id INTO source_school FROM app.campuses c WHERE c.id=source_row.campus_id;
+    IF source_school IS DISTINCT FROM project_school THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_SOURCE_SCHOOL_MISMATCH'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+    IF EXISTS (SELECT 1 FROM app_private.employee_campus_affiliations successor
+       WHERE successor.supersedes_id=source_row.id) THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_SOURCE_ALREADY_SUPERSEDED'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+    IF p_action='END' AND p_effective_until<=source_row.effective_from THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_END_BOUND_INVALID'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+    IF p_action='CORRECT' AND p_effective_from<=source_row.effective_from THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_CORRECTION_BOUND_INVALID'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+    IF p_action='CORRECT' AND p_campus_id=source_row.campus_id
+       AND pg_catalog.btrim(p_reason)=pg_catalog.btrim(source_row.reason) THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_CORRECTION_NO_CHANGE'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+  END IF;
+  IF p_action IN ('ADD','CORRECT') THEN
+    SELECT c.school_id,c.state INTO destination_school,destination_state
+      FROM app.campuses c WHERE c.id=p_campus_id;
+    IF NOT FOUND THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_CAMPUS_MISSING'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+    IF destination_school IS DISTINCT FROM project_school THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_CAMPUS_SCHOOL_MISMATCH'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+    IF destination_state IS DISTINCT FROM 'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_CAMPUS_NOT_ACTIVE'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+  END IF;
+  IF p_action='ADD' THEN
+    IF EXISTS (SELECT 1 FROM app_private.employee_campus_affiliations a
+       WHERE a.employee_id=p_employee_id AND a.campus_id=p_campus_id
+         AND (p_effective_until IS NULL OR a.effective_from<p_effective_until)
+         AND (a.effective_until IS NULL OR p_effective_from<a.effective_until)) THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_DUPLICATE_INTERVAL'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+  ELSIF p_action='END' THEN
+    IF EXISTS (SELECT 1 FROM app_private.employee_campus_affiliations a
+       WHERE a.employee_id=p_employee_id AND a.campus_id=source_row.campus_id
+         AND a.id<>source_row.id AND a.effective_from<p_effective_until
+         AND (a.effective_until IS NULL OR source_row.effective_from<a.effective_until)) THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_SOURCE_INTERVAL_CONFLICT'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+  ELSE
+    IF EXISTS (SELECT 1 FROM app_private.employee_campus_affiliations a
+       WHERE a.employee_id=p_employee_id AND a.campus_id=source_row.campus_id
+         AND a.id<>source_row.id AND a.effective_from<p_effective_from
+         AND (a.effective_until IS NULL OR source_row.effective_from<a.effective_until)) THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_PREDECESSOR_INTERVAL_CONFLICT'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+    IF EXISTS (SELECT 1 FROM app_private.employee_campus_affiliations a
+       WHERE a.employee_id=p_employee_id AND a.campus_id=p_campus_id
+         AND a.id<>source_row.id
+         AND (a.effective_until IS NULL OR a.effective_until>p_effective_from)) THEN
+      RETURN QUERY SELECT false,'D1_CAMPUS_AFFILIATION_SUCCESSOR_INTERVAL_CONFLICT'::text,
+        context.employee_version,context.source_snapshot; RETURN;
+    END IF;
+  END IF;
+  RETURN QUERY SELECT true,NULL::text,context.employee_version,context.source_snapshot;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_preflight(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_preflight(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_effect(
+  p_employee_id uuid,p_expected_employee_version bigint,p_action text,
+  p_source_affiliation_id uuid,p_expected_source_campus_id uuid,
+  p_expected_source_effective_from date,p_expected_source_supersedes_id uuid,
+  p_campus_id uuid,p_effective_from date,p_effective_until date,p_reason text
+) RETURNS TABLE(affiliation_id uuid,employee_id uuid,action text,source_campus_id uuid,
+  campus_id uuid,effective_from date,effective_until date,employee_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; preflight record; source_row app_private.employee_campus_affiliations%ROWTYPE;
+  source_closed_id uuid; result_id uuid; result_source_campus uuid; result_campus uuid;
+  result_from date; result_until date;
+BEGIN
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation effect intent invalid';
+  END IF;
+  SELECT * INTO preflight FROM app_private.d1_employee_campus_affiliation_preflight(
+    p_employee_id,p_expected_employee_version,p_action,p_source_affiliation_id,
+    p_expected_source_campus_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_campus_id,p_effective_from,p_effective_until,p_reason);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation deterministic preflight failed: %',
+      preflight.error_code;
+  END IF;
+  IF p_action='ADD' THEN
+    result_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.employee_campus_affiliations
+      (id,created_by,ended_at,ended_by,employee_id,campus_id,effective_from,
+       effective_until,reason,supersedes_id)
+    VALUES (result_id,actor,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE pg_catalog.statement_timestamp() END,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE actor END,
+      p_employee_id,p_campus_id,p_effective_from,p_effective_until,p_reason,NULL);
+    result_source_campus:=NULL; result_campus:=p_campus_id;
+    result_from:=p_effective_from; result_until:=p_effective_until;
+  ELSIF p_action='END' THEN
+    SELECT * INTO source_row FROM app_private.employee_campus_affiliations a
+     WHERE a.id=p_source_affiliation_id AND a.employee_id=p_employee_id FOR UPDATE;
+    UPDATE app_private.employee_campus_affiliations a SET
+      effective_until=p_effective_until,ended_at=pg_catalog.statement_timestamp(),
+      ended_by=actor
+     WHERE a.id=source_row.id AND a.effective_until IS NULL
+     RETURNING a.id,a.campus_id,a.effective_from,a.effective_until
+      INTO result_id,result_campus,result_from,result_until;
+    IF result_id IS NULL THEN
+      RAISE EXCEPTION 'D1 Employee campus affiliation END source close failed';
+    END IF;
+    result_source_campus:=source_row.campus_id;
+  ELSE
+    SELECT * INTO source_row FROM app_private.employee_campus_affiliations a
+     WHERE a.id=p_source_affiliation_id AND a.employee_id=p_employee_id FOR UPDATE;
+    UPDATE app_private.employee_campus_affiliations a SET
+      effective_until=p_effective_from,ended_at=pg_catalog.statement_timestamp(),
+      ended_by=actor
+     WHERE a.id=source_row.id AND a.effective_until IS NULL
+     RETURNING a.id INTO source_closed_id;
+    IF source_closed_id IS NULL THEN
+      RAISE EXCEPTION 'D1 Employee campus affiliation CORRECT source close failed';
+    END IF;
+    result_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.employee_campus_affiliations
+      (id,created_by,ended_at,ended_by,employee_id,campus_id,effective_from,
+       effective_until,reason,supersedes_id)
+    VALUES (result_id,actor,NULL,NULL,p_employee_id,p_campus_id,p_effective_from,
+      NULL,p_reason,source_row.id);
+    result_source_campus:=source_row.campus_id; result_campus:=p_campus_id;
+    result_from:=p_effective_from; result_until:=NULL;
+  END IF;
+  RETURN QUERY SELECT result_id,p_employee_id,p_action,result_source_campus,
+    result_campus,result_from,result_until,preflight.employee_version;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_effect(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_effect(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_employee_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_receipt(
+  p_phase text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+  p_expected_employee_version bigint,p_request uuid,p_request_version bigint,
+  p_state text,p_result_kind text,p_result_ref uuid,p_summary jsonb,p_error text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE new_id uuid:=pg_catalog.gen_random_uuid(); op_code text;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o
+   WHERE o.id=p_operation AND o.code='employee.campus_affiliation.change'
+     AND o.contract_version=1 AND o.enabled;
+  IF op_code IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN (op_code,'request.submit','request.review','request.apply')
+     OR p_key IS NULL OR pg_catalog.length(p_key) NOT BETWEEN 1 AND 200
+     OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+     OR p_expected_employee_version IS NULL OR p_expected_employee_version<1
+     OR (p_phase=op_code AND (p_request IS NOT NULL OR p_request_version IS NOT NULL))
+     OR (p_phase<>op_code AND p_request IS NULL)
+     OR p_state NOT IN ('SUCCEEDED','REJECTED')
+     OR (p_state='SUCCEEDED' AND (p_result_kind IS NULL OR p_result_ref IS NULL OR p_error IS NOT NULL))
+     OR (p_state='REJECTED' AND (p_phase<>'request.apply' OR p_error IS NULL OR p_result_ref IS NOT NULL))
+     OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object' THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation receipt intent denied';
+  END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,
+     canonical_payload_hash,canonicalization_version,expected_target_version,
+     request_id,expected_request_version,state,result_kind,result_ref,
+     result_summary,error_code,completed_at,created_by)
+  VALUES (new_id,p_actor,p_operation,p_phase,p_key,p_hash,1,
+    p_expected_employee_version,p_request,p_request_version,p_state,p_result_kind,
+    p_result_ref,p_summary,p_error,pg_catalog.transaction_timestamp(),p_actor);
+  RETURN new_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_receipt(
+  text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_receipt(
+  text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_audit(
+  p_actor uuid,p_phase text,p_action text,p_employee uuid,p_affiliation uuid,
+  p_source uuid,p_source_campus uuid,p_campus uuid,p_receipt uuid,p_request uuid,
+  p_employee_version bigint,p_effective_from date,p_effective_until date,
+  p_outcome text,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN ('DIRECT','SUBMIT','REVIEW','APPLY')
+     OR (p_action IS NOT NULL AND p_action NOT IN ('ADD','END','CORRECT'))
+     OR (p_outcome='SUCCEEDED' AND p_action IS NULL)
+     OR p_employee IS NULL OR p_receipt IS NULL
+     OR p_employee_version IS NULL OR p_employee_version<1
+     OR p_outcome NOT IN ('SUCCEEDED','REJECTED') OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation audit intent denied';
+  END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
+     target_kind,target_ref,command_receipt_id,approval_request_id,source_kind,
+     correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',p_outcome,
+    pg_catalog.jsonb_build_object('operation','employee.campus_affiliation.change','phase',p_phase),
+    p_employee_version,'employee.campus_affiliation.change','EMPLOYEE',p_employee,
+    p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'affiliation_id',p_affiliation,
+      'source_affiliation_id',p_source,'source_campus_id',p_source_campus,
+      'campus_id',p_campus,'effective_from',p_effective_from,
+      'effective_until',p_effective_until),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_audit(
+  uuid,text,text,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_audit(
+  uuid,text,text,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,text,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_event(
+  p_actor uuid,p_action text,p_employee uuid,p_affiliation uuid,p_source uuid,
+  p_source_campus uuid,p_campus uuid,p_receipt uuid,p_employee_version bigint,
+  p_effective_from date,p_effective_until date,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_action NOT IN ('ADD','END','CORRECT') OR p_employee IS NULL
+     OR p_affiliation IS NULL OR p_receipt IS NULL OR p_employee_version IS NULL
+     OR p_employee_version<1 OR p_campus IS NULL OR p_effective_from IS NULL
+     OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation outbox intent denied';
+  END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+     event_ordinal,correlation_id,payload,created_by)
+  VALUES ('employee.campus_affiliation_changed','EMPLOYEE_CAMPUS_AFFILIATION',
+    p_affiliation,1,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'employee_id',p_employee,
+      'affiliation_id',p_affiliation,'source_affiliation_id',p_source,
+      'source_campus_id',p_source_campus,'campus_id',p_campus,
+      'effective_from',p_effective_from,'effective_until',p_effective_until,
+      'employee_version',p_employee_version),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_event(
+  uuid,text,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_event(
+  uuid,text,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_authorized(
+  p_principal uuid,p_permission text,p_employee uuid,p_source_campus uuid,
+  p_destination_campus uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); source_ok boolean:=true;
+  destination_ok boolean:=true;
+BEGIN
+  IF p_principal IS NULL OR p_employee IS NULL
+     OR (p_source_campus IS NULL AND p_destination_campus IS NULL)
+     OR p_permission NOT IN ('employee.campus_affiliation.change',
+       'employee.campus_affiliation.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.employees e WHERE e.id=p_employee)
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+         AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL) THEN
+    RETURN false;
+  END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+    WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+      AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  IF p_source_campus IS NOT NULL THEN
+    SELECT EXISTS (
+      SELECT 1 FROM app_private.assignment_permission_scopes s
+      JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+      JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+      JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+      JOIN app_private.permissions p ON p.id=s.permission_id
+      JOIN app_private.roles r ON r.id=s.role_id
+      WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL'
+        AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+        AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+        AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+        AND c.resolver_key=s.resolver_key AND c.enabled
+        AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+        AND r.state='ACTIVE' AND NOT r.family_only
+        AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+        AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+        AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+        AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+        AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until)
+        AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+        AND s.resolver_key='DIRECT'
+        AND ((s.scope_kind='ALL' AND s.campus_id IS NULL)
+          OR (s.scope_kind='CAMPUS' AND s.campus_id=p_source_campus))
+    ) INTO source_ok;
+  END IF;
+  IF p_destination_campus IS NOT NULL THEN
+    SELECT EXISTS (
+      SELECT 1 FROM app_private.assignment_permission_scopes s
+      JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+      JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+      JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+      JOIN app_private.permissions p ON p.id=s.permission_id
+      JOIN app_private.roles r ON r.id=s.role_id
+      WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL'
+        AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+        AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+        AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+        AND c.resolver_key=s.resolver_key AND c.enabled
+        AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+        AND r.state='ACTIVE' AND NOT r.family_only
+        AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+        AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+        AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+        AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+        AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until)
+        AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+        AND s.resolver_key='DIRECT'
+        AND ((s.scope_kind='ALL' AND s.campus_id IS NULL)
+          OR (s.scope_kind='CAMPUS' AND s.campus_id=p_destination_campus))
+    ) INTO destination_ok;
+  END IF;
+  RETURN source_ok AND destination_ok;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_authorized(
+  uuid,text,uuid,uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_authorized(
+  uuid,text,uuid,uuid,uuid,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_policy()
+RETURNS TABLE(policy_id uuid,route_mode text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE selected_route text; n bigint; selected_id uuid; stored_route text;
+  at_time timestamptz:=pg_catalog.clock_timestamp();
+BEGIN
+  selected_route:=app_private.d1_p1_route('employee.campus_affiliation.change',NULL);
+  IF selected_route IS NULL THEN RETURN; END IF;
+  SELECT count(*),min(p.id::text)::uuid,min(p.d1_route_mode)
+    INTO n,selected_id,stored_route
+    FROM app_private.approval_policy_versions p
+    JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='employee.campus_affiliation.change' AND o.contract_version=1
+     AND o.enabled AND NOT o.requires_approval AND p.campus_id IS NULL
+     AND p.state='ACTIVE' AND p.effective_from<=at_time
+     AND (p.effective_until IS NULL OR at_time<p.effective_until);
+  IF n<>1 OR stored_route IS DISTINCT FROM selected_route THEN RETURN; END IF;
+  RETURN QUERY SELECT selected_id,selected_route;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_policy()
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_policy()
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_candidates(
+  p_request uuid,p_step uuid
+) RETURNS TABLE(candidate_principal_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; requester_person uuid; payload jsonb; source_campus uuid; destination_campus uuid;
+BEGIN
+  SELECT r.requester_id,r.target_ref,r.old_snapshot,r.requested_payload,t.reviewer_role_id
+    INTO ctx FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+    JOIN app_private.approval_request_steps s ON s.request_id=r.id AND s.id=p_step
+    JOIN app_private.approval_step_templates t ON t.id=s.template_id
+      AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+   WHERE r.id=p_request AND r.state='PENDING' AND s.state='OPEN'
+     AND o.code='employee.campus_affiliation.change' AND o.contract_version=1 AND o.enabled
+     AND t.required_reviews=1 AND s.required_reviews=1
+     AND rp.code='employee.campus_affiliation.approve' AND rp.state='ENABLED'
+     AND NOT rp.family_safe
+     AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE';
+  IF NOT FOUND OR NOT app_private.d1_employee_campus_affiliation_request_payload_valid(
+      ctx.old_snapshot,ctx.requested_payload) THEN RETURN; END IF;
+  payload:=ctx.old_snapshot||ctx.requested_payload;
+  source_campus:=NULLIF(payload->>'source_campus_id','')::uuid;
+  destination_campus:=NULLIF(payload->>'campus_id','')::uuid;
+  SELECT p.person_id INTO requester_person FROM app_private.principals p
+   WHERE p.id=ctx.requester_id;
+  IF requester_person IS NULL THEN RETURN; END IF;
+  RETURN QUERY SELECT p.id FROM app_private.principals p
+   WHERE p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL
+     AND p.id<>ctx.requester_id AND p.person_id<>requester_person
+     AND app_private.d1_employee_campus_affiliation_authorized(
+       p.id,'employee.campus_affiliation.approve',ctx.target_ref,
+       source_campus,destination_campus,ctx.reviewer_role_id)
+   ORDER BY p.id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_candidates(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_candidates(uuid,uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_reviews_live(p_request uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; s record; reviewer uuid; reviewer_person uuid; requester_person uuid;
+  n bigint; steps bigint:=0; payload jsonb; source_campus uuid; destination_campus uuid;
+BEGIN
+  SELECT r.requester_id,r.target_ref,r.old_snapshot,r.requested_payload,
+         requester.person_id AS requester_person_id
+    INTO req FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+    JOIN app_private.principals requester ON requester.id=r.requester_id
+   WHERE r.id=p_request AND r.state='APPROVED'
+     AND o.code='employee.campus_affiliation.change'
+     AND rp.code='employee.campus_affiliation.approve'
+     AND rp.state='ENABLED' AND NOT rp.family_safe;
+  IF NOT FOUND OR req.requester_person_id IS NULL
+     OR NOT app_private.d1_employee_campus_affiliation_request_payload_valid(
+       req.old_snapshot,req.requested_payload) THEN RETURN false; END IF;
+  payload:=req.old_snapshot||req.requested_payload;
+  source_campus:=NULLIF(payload->>'source_campus_id','')::uuid;
+  destination_campus:=NULLIF(payload->>'campus_id','')::uuid;
+  requester_person:=req.requester_person_id;
+  FOR s IN SELECT x.id,x.step_number,x.state,t.reviewer_role_id,t.selection_resolver_key
+    FROM app_private.approval_request_steps x
+    JOIN app_private.approval_step_templates t
+      ON t.id=x.template_id AND t.policy_id=x.policy_id AND t.step_number=x.step_number
+   WHERE x.request_id=p_request ORDER BY x.step_number LOOP
+    steps:=steps+1;
+    IF s.state<>'APPROVED' OR s.selection_resolver_key<>'D1_REVIEWER_ROLE_SCOPE' THEN
+      RETURN false;
+    END IF;
+    SELECT count(*),min(v.reviewer_id::text)::uuid INTO n,reviewer
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=v.step_id
+       AND a.reviewer_id=v.reviewer_id
+     WHERE v.step_id=s.id AND v.decision='APPROVE'
+       AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+    SELECT p.person_id INTO reviewer_person FROM app_private.principals p
+     WHERE p.id=reviewer AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+    IF n<>1 OR reviewer_person IS NULL OR reviewer_person=requester_person
+       OR NOT app_private.d1_employee_campus_affiliation_authorized(
+         reviewer,'employee.campus_affiliation.approve',req.target_ref,
+         source_campus,destination_campus,s.reviewer_role_id) THEN
+      RETURN false;
+    END IF;
+  END LOOP;
+  RETURN steps>0;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_reviews_live(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_reviews_live(uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_participant(
+  p_request uuid,p_actor uuid
+) RETURNS text
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; actor_person uuid; requester_person uuid; final_step integer;
+  decided record; payload jsonb; source_campus uuid; destination_campus uuid;
+BEGIN
+  IF p_request IS NULL OR p_actor IS NULL
+     OR app_private.current_principal_id() IS DISTINCT FROM p_actor THEN RETURN NULL; END IF;
+  SELECT r.requester_id,r.target_ref,r.old_snapshot,r.requested_payload,
+         requester.person_id AS requester_person_id
+    INTO req FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.principals requester ON requester.id=r.requester_id
+   WHERE r.id=p_request AND o.code='employee.campus_affiliation.change';
+  IF NOT FOUND OR NOT app_private.d1_employee_campus_affiliation_request_payload_valid(
+      req.old_snapshot,req.requested_payload) THEN RETURN NULL; END IF;
+  payload:=req.old_snapshot||req.requested_payload;
+  source_campus:=NULLIF(payload->>'source_campus_id','')::uuid;
+  destination_campus:=NULLIF(payload->>'campus_id','')::uuid;
+  IF req.requester_id=p_actor
+     AND app_private.d1_employee_campus_affiliation_authorized(
+       p_actor,'employee.campus_affiliation.change',req.target_ref,
+       source_campus,destination_campus,NULL) THEN
+    RETURN 'REQUESTER';
+  END IF;
+  SELECT p.person_id INTO actor_person FROM app_private.principals p
+   WHERE p.id=p_actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+  requester_person:=req.requester_person_id;
+  IF actor_person IS NULL OR requester_person IS NULL OR p_actor=req.requester_id
+     OR actor_person=requester_person THEN RETURN NULL; END IF;
+  IF EXISTS (
+    SELECT 1 FROM app_private.approval_request_steps s
+    JOIN app_private.approval_step_templates t
+      ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+    JOIN app_private.approval_step_reviewers a ON a.step_id=s.id
+   WHERE s.request_id=p_request AND s.state='OPEN'
+     AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+     AND a.reviewer_id=p_actor AND a.withdrawn_at IS NULL
+     AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+     AND (SELECT count(*) FROM app_private.approval_step_reviewers exactly_one
+       WHERE exactly_one.step_id=s.id AND exactly_one.reviewer_id=p_actor
+         AND exactly_one.withdrawn_at IS NULL
+         AND exactly_one.assignment_reason='D1_REVIEWER_ROLE_SCOPE')=1
+     AND app_private.d1_employee_campus_affiliation_authorized(
+       p_actor,'employee.campus_affiliation.approve',req.target_ref,
+       source_campus,destination_campus,t.reviewer_role_id)
+     AND EXISTS (SELECT 1 FROM app_private.d1_employee_campus_affiliation_candidates(
+       p_request,s.id) c WHERE c.candidate_principal_id=p_actor)
+  ) THEN RETURN 'OPEN_REVIEWER'; END IF;
+  SELECT max(s.step_number) INTO final_step
+    FROM app_private.approval_request_steps s WHERE s.request_id=p_request;
+  FOR decided IN
+    SELECT s.step_number,s.state,t.reviewer_role_id,t.selection_resolver_key,
+           v.decision,a.assignment_reason
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t
+        ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=s.id
+       AND a.reviewer_id=v.reviewer_id
+     WHERE s.request_id=p_request AND v.reviewer_id=p_actor
+  LOOP
+    IF decided.state IN ('APPROVED','REJECTED')
+       AND decided.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+       AND decided.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+       AND app_private.d1_employee_campus_affiliation_authorized(
+         p_actor,'employee.campus_affiliation.approve',req.target_ref,
+         source_campus,destination_campus,decided.reviewer_role_id) THEN
+      IF decided.step_number=final_step AND decided.decision='APPROVE'
+         AND decided.state='APPROVED' THEN RETURN 'FINAL_APPROVER'; END IF;
+      RETURN 'DECIDED_REVIEWER';
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_participant(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_campus_affiliation_participant(uuid,uuid)
+  TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_employee_campus_affiliation_application_receipt_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE op_code text; receipt app_private.command_receipts%ROWTYPE;
+  req app_private.approval_requests%ROWTYPE;
+  affiliation app_private.employee_campus_affiliations%ROWTYPE;
+  predecessor app_private.employee_campus_affiliations%ROWTYPE;
+  action text; source_id uuid; req_source_campus uuid; req_source_from date;
+  req_source_supersedes uuid; req_campus uuid; req_from date; req_until date;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF op_code<>'employee.campus_affiliation.change' THEN RETURN NEW; END IF;
+  SELECT r.* INTO receipt FROM app_private.command_receipts r
+   WHERE r.id=NEW.command_receipt_id AND r.operation_id=NEW.operation_id
+     AND r.request_id=NEW.request_id AND r.command_kind='request.apply'
+     AND r.state='SUCCEEDED'
+     AND r.result_kind='D1_EMPLOYEE_CAMPUS_AFFILIATION_APPLY'
+     AND r.result_ref=NEW.result_ref;
+  SELECT q.* INTO req FROM app_private.approval_requests q
+   WHERE q.id=NEW.request_id AND q.operation_id=NEW.operation_id
+     AND q.state='EXECUTED';
+  SELECT a.* INTO affiliation FROM app_private.employee_campus_affiliations a
+   WHERE a.id=NEW.result_ref;
+  IF receipt.id IS NULL OR req.id IS NULL OR affiliation.id IS NULL
+     OR affiliation.employee_id IS DISTINCT FROM req.target_ref
+     OR NEW.applied_target_version IS NULL
+     OR pg_catalog.jsonb_typeof(req.old_snapshot)<>'object'
+     OR pg_catalog.jsonb_typeof(req.requested_payload)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.old_snapshot))<>4
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.requested_payload))<>4
+     OR NOT (req.old_snapshot ?& ARRAY['source_affiliation_id','source_campus_id',
+       'source_effective_from','source_supersedes_id'])
+     OR NOT (req.requested_payload ?& ARRAY['action','campus_id',
+       'effective_from','effective_until'])
+     OR receipt.result_summary IS NULL
+     OR pg_catalog.jsonb_typeof(receipt.result_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(receipt.result_summary))<>10
+     OR NOT (receipt.result_summary ?& ARRAY['request_version','state','action',
+       'affiliation_id','employee_version','source_affiliation_id','source_campus_id',
+       'campus_id','effective_from','effective_until'])
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'employee_version')<>'number'
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'request_version')<>'number'
+     OR (receipt.result_summary->>'employee_version')::bigint<>NEW.applied_target_version
+     OR (receipt.result_summary->>'request_version')::bigint<>req.row_version
+     OR receipt.expected_target_version IS DISTINCT FROM req.expected_target_version
+     OR receipt.result_summary->>'state'<>'EXECUTED'
+     OR (receipt.result_summary->>'affiliation_id')::uuid IS DISTINCT FROM NEW.result_ref
+     OR receipt.result_summary->>'action' NOT IN ('ADD','END','CORRECT')
+     OR affiliation.campus_id IS DISTINCT FROM (receipt.result_summary->>'campus_id')::uuid
+     OR affiliation.effective_from IS DISTINCT FROM
+       (receipt.result_summary->>'effective_from')::date THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation application requires successful apply receipt';
+  END IF;
+  action:=receipt.result_summary->>'action';
+  source_id:=NULLIF(receipt.result_summary->>'source_affiliation_id','')::uuid;
+  req_source_campus:=NULLIF(req.old_snapshot->>'source_campus_id','')::uuid;
+  req_source_from:=NULLIF(req.old_snapshot->>'source_effective_from','')::date;
+  req_source_supersedes:=NULLIF(req.old_snapshot->>'source_supersedes_id','')::uuid;
+  req_campus:=NULLIF(req.requested_payload->>'campus_id','')::uuid;
+  req_from:=NULLIF(req.requested_payload->>'effective_from','')::date;
+  req_until:=NULLIF(req.requested_payload->>'effective_until','')::date;
+  IF action IS DISTINCT FROM req.requested_payload->>'action'
+     OR source_id IS DISTINCT FROM
+       NULLIF(req.old_snapshot->>'source_affiliation_id','')::uuid
+     OR NULLIF(receipt.result_summary->>'source_campus_id','')::uuid
+       IS DISTINCT FROM req_source_campus
+     OR (receipt.result_summary->>'effective_until' IS NULL
+         AND affiliation.effective_until IS NOT NULL)
+     OR (receipt.result_summary->>'effective_until' IS NOT NULL
+         AND affiliation.effective_until IS DISTINCT FROM
+           (receipt.result_summary->>'effective_until')::date) THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation application request/receipt intent mismatch';
+  END IF;
+  IF action='ADD' THEN
+    IF source_id IS NOT NULL OR affiliation.supersedes_id IS NOT NULL
+       OR req_source_campus IS NOT NULL OR req_source_from IS NOT NULL
+       OR req_source_supersedes IS NOT NULL
+       OR affiliation.campus_id IS DISTINCT FROM req_campus
+       OR affiliation.effective_from IS DISTINCT FROM req_from
+       OR affiliation.effective_until IS DISTINCT FROM req_until THEN
+      RAISE EXCEPTION 'D1 Employee campus affiliation ADD application binding invalid';
+    END IF;
+  ELSIF action='END' THEN
+    IF source_id IS NULL OR source_id IS DISTINCT FROM affiliation.id
+       OR req_campus IS NOT NULL OR req_from IS NOT NULL
+       OR affiliation.campus_id IS DISTINCT FROM req_source_campus
+       OR affiliation.effective_from IS DISTINCT FROM req_source_from
+       OR affiliation.supersedes_id IS DISTINCT FROM req_source_supersedes
+       OR affiliation.effective_until IS DISTINCT FROM req_until THEN
+      RAISE EXCEPTION 'D1 Employee campus affiliation END application binding invalid';
+    END IF;
+  ELSE
+    SELECT p.* INTO predecessor FROM app_private.employee_campus_affiliations p
+     WHERE p.id=source_id;
+    IF source_id IS NULL OR predecessor.id IS NULL
+       OR predecessor.employee_id IS DISTINCT FROM req.target_ref
+       OR predecessor.campus_id IS DISTINCT FROM req_source_campus
+       OR predecessor.effective_from IS DISTINCT FROM req_source_from
+       OR predecessor.supersedes_id IS DISTINCT FROM req_source_supersedes
+       OR predecessor.effective_until IS DISTINCT FROM req_from
+       OR affiliation.supersedes_id IS DISTINCT FROM source_id
+       OR affiliation.campus_id IS DISTINCT FROM req_campus
+       OR affiliation.effective_from IS DISTINCT FROM req_from
+       OR affiliation.effective_until IS NOT NULL OR req_until IS NOT NULL THEN
+      RAISE EXCEPTION 'D1 Employee campus affiliation CORRECT application binding invalid';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_campus_affiliation_application_receipt_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER d1_employee_campus_affiliation_application_receipt_guard
+  BEFORE INSERT ON app_private.approval_applications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_employee_campus_affiliation_application_receipt_guard();
+
+GRANT CREATE ON SCHEMA app TO schoolos_employee_executor;
+SET ROLE schoolos_employee_executor;
+CREATE FUNCTION app.d1_change_employee_campus_affiliation(
+  p_employee_id uuid,p_expected_employee_version bigint,p_action text,
+  p_source_affiliation_id uuid,p_expected_source_campus_id uuid,
+  p_expected_source_effective_from date,p_expected_source_supersedes_id uuid,
+  p_campus_id uuid,p_effective_from date,p_effective_until date,
+  p_reason text,p_idempotency_key text
+) RETURNS TABLE(affiliation_id uuid,employee_id uuid,action text,source_campus_id uuid,
+  campus_id uuid,effective_from date,effective_until date,employee_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; lock_row record; policy_row record; preflight record; effect_row record;
+  receipt uuid; correlation uuid:=pg_catalog.gen_random_uuid(); payload jsonb;
+BEGIN
+  payload:=pg_catalog.jsonb_build_object('action',p_action,
+    'source_affiliation_id',p_source_affiliation_id,
+    'source_campus_id',p_expected_source_campus_id,
+    'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
+    'source_supersedes_id',p_expected_source_supersedes_id,
+    'campus_id',p_campus_id,
+    'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,
+    'effective_until',CASE WHEN p_effective_until IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_until,'YYYY-MM-DD') END);
+  IF p_employee_id IS NULL OR p_expected_employee_version IS NULL OR p_expected_employee_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR NOT app_private.d1_employee_campus_affiliation_payload_valid(payload) THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'employee.campus_affiliation.change','employee.campus_affiliation.change',
+    p_idempotency_key,pg_catalog.jsonb_build_array(
+      p_employee_id,p_expected_employee_version::text,p_action,p_source_affiliation_id,
+      p_expected_source_campus_id,p_expected_source_effective_from,
+      p_expected_source_supersedes_id,p_campus_id,p_effective_from,p_effective_until,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT * INTO lock_row FROM app_private.d1_employee_campus_affiliation_lock_context(
+    p_employee_id,p_expected_employee_version,ctx.receipt_id IS NULL,
+    p_source_affiliation_id,p_expected_source_campus_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_campus_id,ctx.result_ref);
+  IF NOT app_private.d1_employee_campus_affiliation_authorized(
+      ctx.actor_id,'employee.campus_affiliation.change',p_employee_id,
+      p_expected_source_campus_id,p_campus_id,NULL) THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>8
+       OR NOT (ctx.result_summary ?& ARRAY['action','affiliation_id','employee_version',
+         'source_affiliation_id','source_campus_id','campus_id',
+         'effective_from','effective_until'])
+       OR ctx.result_summary->>'action' IS DISTINCT FROM p_action
+       OR NOT app_private.d1_employee_campus_affiliation_result_matches(
+         p_action,p_employee_id,ctx.result_ref,p_source_affiliation_id,
+         p_expected_source_campus_id,p_expected_source_effective_from,
+         p_expected_source_supersedes_id,p_campus_id,p_effective_from,p_effective_until) THEN
+      RAISE EXCEPTION 'D1 Employee campus affiliation receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT (ctx.result_summary->>'affiliation_id')::uuid,p_employee_id,p_action,
+      NULLIF(ctx.result_summary->>'source_campus_id','')::uuid,
+      (ctx.result_summary->>'campus_id')::uuid,
+      (ctx.result_summary->>'effective_from')::date,
+      NULLIF(ctx.result_summary->>'effective_until','')::date,
+      (ctx.result_summary->>'employee_version')::bigint;
+    RETURN;
+  END IF;
+  IF lock_row.error_code IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation preflight denied: %',lock_row.error_code;
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_employee_campus_affiliation_policy();
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'DIRECT' THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation requires approval request';
+  END IF;
+  SELECT * INTO preflight FROM app_private.d1_employee_campus_affiliation_preflight(
+    p_employee_id,p_expected_employee_version,p_action,p_source_affiliation_id,
+    p_expected_source_campus_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_campus_id,p_effective_from,p_effective_until,p_reason);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation preflight denied: %',preflight.error_code;
+  END IF;
+  SELECT * INTO effect_row FROM app_private.d1_employee_campus_affiliation_effect(
+    p_employee_id,p_expected_employee_version,p_action,p_source_affiliation_id,
+    p_expected_source_campus_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_campus_id,p_effective_from,p_effective_until,p_reason);
+  receipt:=app_private.d1_employee_campus_affiliation_receipt(
+    'employee.campus_affiliation.change',ctx.actor_id,ctx.operation_id,p_idempotency_key,
+    ctx.intent_hash,p_expected_employee_version,NULL,NULL,'SUCCEEDED',
+    'D1_EMPLOYEE_CAMPUS_AFFILIATION',effect_row.affiliation_id,
+    pg_catalog.jsonb_build_object('action',p_action,
+      'affiliation_id',effect_row.affiliation_id,'employee_version',effect_row.employee_version,
+      'source_affiliation_id',p_source_affiliation_id,
+      'source_campus_id',effect_row.source_campus_id,'campus_id',effect_row.campus_id,
+      'effective_from',pg_catalog.to_char(effect_row.effective_from,'YYYY-MM-DD'),
+      'effective_until',CASE WHEN effect_row.effective_until IS NULL THEN NULL
+        ELSE pg_catalog.to_char(effect_row.effective_until,'YYYY-MM-DD') END),NULL);
+  PERFORM app_private.d1_employee_campus_affiliation_audit(
+    ctx.actor_id,'DIRECT',p_action,p_employee_id,effect_row.affiliation_id,
+    p_source_affiliation_id,effect_row.source_campus_id,effect_row.campus_id,
+    receipt,NULL,effect_row.employee_version,effect_row.effective_from,
+    effect_row.effective_until,'SUCCEEDED',correlation);
+  PERFORM app_private.d1_employee_campus_affiliation_event(
+    ctx.actor_id,p_action,p_employee_id,effect_row.affiliation_id,p_source_affiliation_id,
+    effect_row.source_campus_id,effect_row.campus_id,receipt,effect_row.employee_version,
+    effect_row.effective_from,effect_row.effective_until,correlation);
+  RETURN QUERY SELECT effect_row.affiliation_id,p_employee_id,p_action,
+    effect_row.source_campus_id,effect_row.campus_id,effect_row.effective_from,
+    effect_row.effective_until,effect_row.employee_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_employee_campus_affiliation(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_employee_campus_affiliation(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_employee_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_submit_employee_campus_affiliation_change(
+  p_employee_id uuid,p_expected_employee_version bigint,p_action text,
+  p_source_affiliation_id uuid,p_expected_source_campus_id uuid,
+  p_expected_source_effective_from date,p_expected_source_supersedes_id uuid,
+  p_campus_id uuid,p_effective_from date,p_effective_until date,
+  p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; lock_row record; policy_row record; preflight record; template_row record;
+  old_snapshot jsonb; requested_payload jsonb; payload jsonb;
+  new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid;
+  candidate_count bigint; final_version bigint; receipt uuid;
+BEGIN
+  old_snapshot:=pg_catalog.jsonb_build_object(
+    'source_affiliation_id',p_source_affiliation_id,
+    'source_campus_id',p_expected_source_campus_id,
+    'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
+    'source_supersedes_id',p_expected_source_supersedes_id);
+  requested_payload:=pg_catalog.jsonb_build_object('action',p_action,'campus_id',p_campus_id,
+    'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,
+    'effective_until',CASE WHEN p_effective_until IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_until,'YYYY-MM-DD') END);
+  payload:=old_snapshot||requested_payload;
+  IF p_employee_id IS NULL OR p_expected_employee_version IS NULL OR p_expected_employee_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR NOT app_private.d1_employee_campus_affiliation_payload_valid(payload) THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation request intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'employee.campus_affiliation.change','request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_employee_id,p_expected_employee_version::text,p_action,
+      p_source_affiliation_id,p_expected_source_campus_id,p_expected_source_effective_from,
+      p_expected_source_supersedes_id,p_campus_id,p_effective_from,p_effective_until,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT * INTO lock_row FROM app_private.d1_employee_campus_affiliation_lock_context(
+    p_employee_id,p_expected_employee_version,ctx.receipt_id IS NULL,
+    p_source_affiliation_id,p_expected_source_campus_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_campus_id,NULL);
+  IF NOT app_private.d1_employee_campus_affiliation_authorized(
+      ctx.actor_id,'employee.campus_affiliation.change',p_employee_id,
+      p_expected_source_campus_id,p_campus_id,NULL) THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation request authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR pg_catalog.jsonb_typeof(ctx.result_summary->'request_version')<>'number'
+       OR ctx.result_summary->>'state'<>'PENDING'
+       OR NOT EXISTS (SELECT 1 FROM app_private.approval_requests r
+         WHERE r.id=ctx.result_ref AND r.operation_id=ctx.operation_id
+           AND r.target_ref=p_employee_id
+           AND r.expected_target_version=p_expected_employee_version
+           AND r.old_snapshot IS NOT DISTINCT FROM old_snapshot
+           AND r.requested_payload IS NOT DISTINCT FROM requested_payload) THEN
+      RAISE EXCEPTION 'D1 Employee campus affiliation request receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint;
+    RETURN;
+  END IF;
+  IF lock_row.error_code IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation request preflight denied: %',
+      lock_row.error_code;
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_employee_campus_affiliation_policy();
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation policy selects direct command';
+  END IF;
+  SELECT * INTO preflight FROM app_private.d1_employee_campus_affiliation_preflight(
+    p_employee_id,p_expected_employee_version,p_action,p_source_affiliation_id,
+    p_expected_source_campus_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_campus_id,p_effective_from,p_effective_until,p_reason);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation request preflight denied: %',
+      preflight.error_code;
+  END IF;
+  INSERT INTO app_private.approval_requests
+    (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
+     expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,NULL,p_employee_id,
+    p_expected_employee_version,p_reason,old_snapshot,requested_payload,ctx.actor_id);
+  UPDATE app_private.approval_requests
+     SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
+   WHERE id=new_request;
+  FOR template_row IN SELECT t.id,t.step_number,t.required_reviews
+    FROM app_private.approval_step_templates t WHERE t.policy_id=policy_row.policy_id
+    ORDER BY t.step_number LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps
+      (id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step
+                 ELSE pg_catalog.gen_random_uuid() END,
+      new_request,policy_row.policy_id,template_row.id,template_row.step_number,
+      template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation policy has no first step';
+  END IF;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request
+   RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps
+     SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  INSERT INTO app_private.approval_step_reviewers
+    (step_id,reviewer_id,assignment_reason,created_by)
+  SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+    FROM app_private.d1_employee_campus_affiliation_candidates(new_request,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT;
+  IF candidate_count=0 THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation step has no reviewer';
+  END IF;
+  receipt:=app_private.d1_employee_campus_affiliation_receipt(
+    'request.submit',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    p_expected_employee_version,new_request,NULL,'SUCCEEDED',
+    'D1_EMPLOYEE_CAMPUS_AFFILIATION_REQUEST',new_request,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),NULL);
+  INSERT INTO app_private.approval_transitions
+    (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+  VALUES (new_request,1,NULL,'DRAFT','D1_EMPLOYEE_CAMPUS_AFFILIATION_DRAFT',receipt,ctx.actor_id),
+    (new_request,2,'DRAFT','SUBMITTED','D1_EMPLOYEE_CAMPUS_AFFILIATION_SUBMIT',receipt,ctx.actor_id),
+    (new_request,3,'SUBMITTED','PENDING','D1_EMPLOYEE_CAMPUS_AFFILIATION_OPEN',receipt,ctx.actor_id);
+  PERFORM app_private.d1_employee_campus_affiliation_audit(
+    ctx.actor_id,'SUBMIT',p_action,p_employee_id,NULL,p_source_affiliation_id,
+    p_expected_source_campus_id,p_campus_id,receipt,new_request,
+    p_expected_employee_version,p_effective_from,p_effective_until,
+    'SUCCEEDED',pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT new_request,final_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_submit_employee_campus_affiliation_change(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_employee_campus_affiliation_change(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_review_employee_campus_affiliation_request(
+  p_request_id uuid,p_decision text,p_expected_request_version bigint,
+  p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; req record; step_row record; next_step record; policy_row record;
+  assignment_id uuid; n bigint; candidate_count bigint; final_version bigint;
+  final_state text; receipt uuid; sequence_no bigint; reviewer_role uuid;
+  payload jsonb; action text; source_id uuid; source_campus uuid; source_from date;
+  source_supersedes uuid; destination_campus uuid; effect_from date; effect_until date;
+  lock_row record;
+BEGIN
+  IF p_request_id IS NULL OR p_decision NOT IN ('APPROVE','REJECT')
+     OR p_expected_request_version IS NULL OR p_expected_request_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation review intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'employee.campus_affiliation.change','request.review',p_idempotency_key,
+    pg_catalog.jsonb_build_array(
+      p_request_id,p_decision,p_expected_request_version::text,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT r.* INTO req FROM app_private.approval_requests r
+   WHERE r.id=p_request_id AND r.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee campus affiliation request unavailable'; END IF;
+  IF NOT app_private.d1_employee_campus_affiliation_request_payload_valid(
+      req.old_snapshot,req.requested_payload) THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation request payload unavailable';
+  END IF;
+  payload:=req.old_snapshot||req.requested_payload;
+  action:=payload->>'action';
+  source_id:=NULLIF(payload->>'source_affiliation_id','')::uuid;
+  source_campus:=NULLIF(payload->>'source_campus_id','')::uuid;
+  source_from:=NULLIF(payload->>'source_effective_from','')::date;
+  source_supersedes:=NULLIF(payload->>'source_supersedes_id','')::uuid;
+  destination_campus:=NULLIF(payload->>'campus_id','')::uuid;
+  effect_from:=NULLIF(payload->>'effective_from','')::date;
+  effect_until:=NULLIF(payload->>'effective_until','')::date;
+  PERFORM s.id FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id ORDER BY s.step_number FOR UPDATE;
+  SELECT s.* INTO step_row FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id AND s.state='OPEN' ORDER BY s.step_number;
+  SELECT * INTO lock_row FROM app_private.d1_employee_campus_affiliation_lock_context(
+    req.target_ref,req.expected_target_version,false,source_id,source_campus,
+    source_from,source_supersedes,destination_campus,NULL);
+  IF ctx.receipt_id IS NOT NULL THEN
+    SELECT count(*),min(t.reviewer_role_id::text)::uuid INTO n,reviewer_role
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t
+        ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+     WHERE s.request_id=p_request_id AND v.reviewer_id=ctx.actor_id
+       AND v.decision=p_decision AND v.expected_request_version=p_expected_request_version;
+    IF n<>1 OR reviewer_role IS NULL
+       OR NOT app_private.d1_employee_campus_affiliation_authorized(
+         ctx.actor_id,'employee.campus_affiliation.approve',req.target_ref,
+         source_campus,destination_campus,reviewer_role) THEN
+      RAISE EXCEPTION 'D1 Employee campus affiliation reviewer authority revoked';
+    END IF;
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS DISTINCT FROM p_request_id
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR pg_catalog.jsonb_typeof(ctx.result_summary->'request_version')<>'number' THEN
+      RAISE EXCEPTION 'D1 Employee campus affiliation review receipt invalid';
+    END IF;
+    RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,
+      ctx.result_summary->>'state'; RETURN;
+  END IF;
+  SELECT count(*) INTO n FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id AND s.state='OPEN';
+  IF req.state<>'PENDING' OR req.row_version<>p_expected_request_version
+     OR step_row.id IS NULL OR n<>1 THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation review state changed';
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_employee_campus_affiliation_policy();
+  IF policy_row.policy_id IS DISTINCT FROM req.policy_id
+     OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' OR req.campus_id IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation request policy no longer applies';
+  END IF;
+  SELECT count(*),min(a.id::text)::uuid INTO n,assignment_id
+    FROM app_private.approval_step_reviewers a
+   WHERE a.step_id=step_row.id AND a.reviewer_id=ctx.actor_id
+     AND a.withdrawn_at IS NULL AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+  IF n<>1 OR NOT EXISTS (
+    SELECT 1 FROM app_private.d1_employee_campus_affiliation_candidates(
+      p_request_id,step_row.id) c WHERE c.candidate_principal_id=ctx.actor_id) THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation reviewer authority denied';
+  END IF;
+  INSERT INTO app_private.approval_reviews
+    (reviewer_assignment_id,step_id,reviewer_id,decision,reason,
+     expected_request_version,created_by)
+  VALUES (assignment_id,step_row.id,ctx.actor_id,p_decision,p_reason,
+    p_expected_request_version,ctx.actor_id);
+  UPDATE app_private.approval_request_steps SET
+    state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+  IF p_decision='REJECT' THEN
+    UPDATE app_private.approval_request_steps
+       SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp()
+     WHERE request_id=p_request_id AND state='WAITING';
+    final_state:='REJECTED';
+  ELSE
+    SELECT * INTO next_step FROM app_private.approval_request_steps s
+     WHERE s.request_id=p_request_id AND s.step_number=step_row.step_number+1
+       AND s.state='WAITING' FOR UPDATE;
+    IF FOUND THEN
+      UPDATE app_private.approval_request_steps
+         SET state='OPEN',opened_at=pg_catalog.statement_timestamp()
+       WHERE id=next_step.id;
+      INSERT INTO app_private.approval_step_reviewers
+        (step_id,reviewer_id,assignment_reason,created_by)
+      SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+        FROM app_private.d1_employee_campus_affiliation_candidates(
+          p_request_id,next_step.id) c;
+      GET DIAGNOSTICS candidate_count=ROW_COUNT;
+      IF candidate_count=0 THEN
+        RAISE EXCEPTION 'D1 Employee campus affiliation next step has no reviewer';
+      END IF;
+      final_state:='PENDING';
+    ELSE
+      final_state:='APPROVED';
+    END IF;
+  END IF;
+  UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
+   RETURNING row_version INTO final_version;
+  receipt:=app_private.d1_employee_campus_affiliation_receipt(
+    'request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
+    'D1_EMPLOYEE_CAMPUS_AFFILIATION_REVIEW',p_request_id,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+    FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  IF final_state IN ('APPROVED','REJECTED') THEN
+    INSERT INTO app_private.approval_transitions
+      (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+    VALUES (p_request_id,sequence_no+1,'PENDING',final_state,
+      'D1_EMPLOYEE_CAMPUS_AFFILIATION_REVIEW_'||final_state,receipt,ctx.actor_id);
+  END IF;
+  PERFORM app_private.d1_employee_campus_affiliation_audit(
+    ctx.actor_id,'REVIEW',action,req.target_ref,NULL,source_id,source_campus,
+    destination_campus,receipt,p_request_id,req.expected_target_version,
+    effect_from,effect_until,'SUCCEEDED',pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_review_employee_campus_affiliation_request(
+  uuid,text,bigint,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_review_employee_campus_affiliation_request(
+  uuid,text,bigint,text,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_apply_employee_campus_affiliation_request(
+  p_request_id uuid,p_expected_request_version bigint,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; req record; lock_row record; policy_row record; preflight record;
+  effect_row record; payload jsonb; participant text; action text; source_id uuid;
+  source_campus uuid; source_from date; source_supersedes uuid; destination_campus uuid;
+  effect_from date; effect_until date; invalidation_code text; final_state text;
+  final_version bigint; receipt uuid; sequence_no bigint;
+  correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_request_id IS NULL OR p_expected_request_version IS NULL
+     OR p_expected_request_version<1 THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation apply intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'employee.campus_affiliation.change','request.apply',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_expected_request_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT r.* INTO req FROM app_private.approval_requests r
+   WHERE r.id=p_request_id AND r.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee campus affiliation request unavailable'; END IF;
+  PERFORM s.id FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id ORDER BY s.step_number FOR UPDATE;
+  -- Employee is the serialization anchor. Full source/destination Campus locks
+  -- follow after bounded payload interpretation and before history locks.
+  SELECT * INTO lock_row FROM app_private.d1_employee_campus_affiliation_lock_context(
+    req.target_ref,req.expected_target_version,false,NULL,NULL,NULL,NULL,NULL,NULL);
+  participant:=app_private.d1_employee_campus_affiliation_participant(
+    p_request_id,ctx.actor_id);
+  IF participant IS NULL OR participant NOT IN ('REQUESTER','FINAL_APPROVER') THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation request unavailable';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state NOT IN ('SUCCEEDED','REJECTED')
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR pg_catalog.jsonb_typeof(ctx.result_summary->'request_version')<>'number'
+       OR (ctx.receipt_state='SUCCEEDED' AND (
+         ctx.result_ref IS NULL
+         OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>10
+         OR ctx.result_summary->>'state'<>'EXECUTED'))
+       OR (ctx.receipt_state='REJECTED' AND (
+         ctx.result_ref IS NOT NULL
+         OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+         OR ctx.result_summary->>'state'<>'INVALIDATED')) THEN
+      RAISE EXCEPTION 'D1 Employee campus affiliation apply receipt invalid';
+    END IF;
+    RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,
+      ctx.result_summary->>'state'; RETURN;
+  END IF;
+  IF req.state<>'APPROVED' OR req.row_version<>p_expected_request_version THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation approved request changed';
+  END IF;
+  IF NOT app_private.d1_employee_campus_affiliation_request_payload_valid(
+      req.old_snapshot,req.requested_payload) THEN
+    invalidation_code:='D1_CAMPUS_AFFILIATION_REQUEST_PAYLOAD_INVALID';
+  ELSE
+    payload:=req.old_snapshot||req.requested_payload;
+    action:=payload->>'action';
+    source_id:=NULLIF(payload->>'source_affiliation_id','')::uuid;
+    source_campus:=NULLIF(payload->>'source_campus_id','')::uuid;
+    source_from:=NULLIF(payload->>'source_effective_from','')::date;
+    source_supersedes:=NULLIF(payload->>'source_supersedes_id','')::uuid;
+    destination_campus:=NULLIF(payload->>'campus_id','')::uuid;
+    effect_from:=NULLIF(payload->>'effective_from','')::date;
+    effect_until:=NULLIF(payload->>'effective_until','')::date;
+  END IF;
+  IF invalidation_code IS NULL THEN
+    SELECT * INTO lock_row FROM app_private.d1_employee_campus_affiliation_lock_context(
+      req.target_ref,req.expected_target_version,true,source_id,source_campus,
+      source_from,source_supersedes,destination_campus,NULL);
+    IF lock_row.error_code IS NOT NULL THEN invalidation_code:=lock_row.error_code; END IF;
+  END IF;
+  IF invalidation_code IS NULL THEN
+    SELECT * INTO policy_row FROM app_private.d1_employee_campus_affiliation_policy();
+    IF policy_row.policy_id IS DISTINCT FROM req.policy_id
+       OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' OR req.campus_id IS NOT NULL THEN
+      invalidation_code:='D1_CAMPUS_AFFILIATION_POLICY_STALE';
+    ELSIF NOT app_private.d1_employee_campus_affiliation_authorized(
+        req.requester_id,'employee.campus_affiliation.change',req.target_ref,
+        source_campus,destination_campus,NULL) THEN
+      invalidation_code:='D1_CAMPUS_AFFILIATION_REQUESTER_AUTHORITY_STALE';
+    ELSIF NOT app_private.d1_employee_campus_affiliation_reviews_live(p_request_id) THEN
+      invalidation_code:='D1_CAMPUS_AFFILIATION_REVIEWER_AUTHORITY_STALE';
+    ELSE
+      SELECT * INTO preflight FROM app_private.d1_employee_campus_affiliation_preflight(
+        req.target_ref,req.expected_target_version,action,source_id,source_campus,
+        source_from,source_supersedes,destination_campus,effect_from,effect_until,req.reason);
+      IF NOT FOUND OR preflight.eligible IS NULL THEN
+        RAISE EXCEPTION 'D1 Employee campus affiliation preflight result unavailable';
+      ELSIF preflight.eligible IS FALSE THEN
+        IF preflight.error_code IS NULL
+           OR pg_catalog.length(pg_catalog.btrim(preflight.error_code))=0 THEN
+          RAISE EXCEPTION 'D1 Employee campus affiliation preflight denial lacks error code';
+        END IF;
+        invalidation_code:=preflight.error_code;
+      END IF;
+    END IF;
+  END IF;
+  IF invalidation_code IS NOT NULL THEN
+    final_state:='INVALIDATED';
+    UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
+     RETURNING row_version INTO final_version;
+    receipt:=app_private.d1_employee_campus_affiliation_receipt(
+      'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+      req.expected_target_version,p_request_id,p_expected_request_version,
+      'REJECTED',NULL,NULL,
+      pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),
+      invalidation_code);
+    PERFORM app_private.d1_employee_campus_affiliation_audit(
+      ctx.actor_id,'APPLY',action,req.target_ref,NULL,source_id,source_campus,
+      destination_campus,receipt,p_request_id,req.expected_target_version,
+      effect_from,effect_until,'REJECTED',correlation);
+  ELSE
+    SELECT * INTO effect_row FROM app_private.d1_employee_campus_affiliation_effect(
+      req.target_ref,req.expected_target_version,action,source_id,source_campus,
+      source_from,source_supersedes,destination_campus,effect_from,effect_until,req.reason);
+    final_state:='EXECUTED';
+    UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
+     RETURNING row_version INTO final_version;
+    receipt:=app_private.d1_employee_campus_affiliation_receipt(
+      'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+      req.expected_target_version,p_request_id,p_expected_request_version,
+      'SUCCEEDED','D1_EMPLOYEE_CAMPUS_AFFILIATION_APPLY',
+      effect_row.affiliation_id,pg_catalog.jsonb_build_object(
+        'request_version',final_version,'state',final_state,'action',action,
+        'affiliation_id',effect_row.affiliation_id,
+        'employee_version',effect_row.employee_version,
+        'source_affiliation_id',source_id,'source_campus_id',effect_row.source_campus_id,
+        'campus_id',effect_row.campus_id,
+        'effective_from',pg_catalog.to_char(effect_row.effective_from,'YYYY-MM-DD'),
+        'effective_until',CASE WHEN effect_row.effective_until IS NULL THEN NULL
+          ELSE pg_catalog.to_char(effect_row.effective_until,'YYYY-MM-DD') END),NULL);
+    INSERT INTO app_private.approval_applications
+      (request_id,command_receipt_id,operation_id,applied_target_version,result_ref,created_by)
+    VALUES (p_request_id,receipt,ctx.operation_id,effect_row.employee_version,
+      effect_row.affiliation_id,ctx.actor_id);
+    PERFORM app_private.d1_employee_campus_affiliation_audit(
+      ctx.actor_id,'APPLY',action,req.target_ref,effect_row.affiliation_id,source_id,
+      effect_row.source_campus_id,effect_row.campus_id,receipt,p_request_id,
+      effect_row.employee_version,effect_row.effective_from,effect_row.effective_until,
+      'SUCCEEDED',correlation);
+    PERFORM app_private.d1_employee_campus_affiliation_event(
+      ctx.actor_id,action,req.target_ref,effect_row.affiliation_id,source_id,
+      effect_row.source_campus_id,effect_row.campus_id,receipt,effect_row.employee_version,
+      effect_row.effective_from,effect_row.effective_until,correlation);
+  END IF;
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+    FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  INSERT INTO app_private.approval_transitions
+    (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+  VALUES (p_request_id,sequence_no+1,'APPROVED',final_state,
+    CASE WHEN final_state='EXECUTED' THEN 'D1_EMPLOYEE_CAMPUS_AFFILIATION_APPLIED'
+         ELSE invalidation_code END,receipt,ctx.actor_id);
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_apply_employee_campus_affiliation_request(uuid,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_employee_campus_affiliation_request(uuid,bigint,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+CREATE FUNCTION app.d1_read_employee_campus_affiliation_request(p_request_id uuid)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,
+  employee_id uuid,action text,source_affiliation_id uuid,source_campus_id uuid,
+  source_effective_from date,requested_campus_id uuid,effective_from date,effective_until date)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; participant text; req record; payload jsonb;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation request unavailable';
+  END IF;
+  participant:=app_private.d1_employee_campus_affiliation_participant(p_request_id,actor);
+  IF participant IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation request unavailable';
+  END IF;
+  SELECT r.id,r.row_version,r.state,r.target_ref,r.old_snapshot,r.requested_payload INTO req
+    FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+   WHERE r.id=p_request_id AND o.code='employee.campus_affiliation.change';
+  IF NOT FOUND OR NOT app_private.d1_employee_campus_affiliation_request_payload_valid(
+      req.old_snapshot,req.requested_payload) THEN
+    RAISE EXCEPTION 'D1 Employee campus affiliation request unavailable';
+  END IF;
+  payload:=req.old_snapshot||req.requested_payload;
+  RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,payload->>'action',
+    NULLIF(payload->>'source_affiliation_id','')::uuid,
+    NULLIF(payload->>'source_campus_id','')::uuid,
+    NULLIF(payload->>'source_effective_from','')::date,
+    NULLIF(payload->>'campus_id','')::uuid,
+    NULLIF(payload->>'effective_from','')::date,
+    NULLIF(payload->>'effective_until','')::date;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_campus_affiliation_request(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_campus_affiliation_request(uuid)
   TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
