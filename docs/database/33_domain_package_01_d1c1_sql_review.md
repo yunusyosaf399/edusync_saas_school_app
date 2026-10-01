@@ -352,6 +352,7 @@ and absence of any additional public operation effect. The Foundation guard
 returned `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests` and
 `LOCAL_CONFIG_PASS`; staging validation returned `STAGING_VALIDATE_PASS`;
 `git diff --check` found no whitespace errors. SQL was not executed and no
+Supabase project was contacted.
 
 ## Employee create P0 operation continuation (static draft)
 
@@ -424,3 +425,44 @@ executor grant is only SELECT(id,state) plus lock-only UPDATE(id), with no
 Person-state mutation privilege. Manifest counts and the 11/36
 implemented-effect count are unchanged. D1C1B remains incomplete; Migration 10
 remains non-executable and no Supabase remote operation was performed.
+
+## Employee state P1 operation continuation (static draft)
+
+The draft now implements the single `employee.state.change` effect with
+explicit DIRECT/APPROVAL routing. The direct and submission intents bind the
+Employee, requested state, expected version and exact private employment
+reason. The effect date is never caller input: execution uses its own
+`CURRENT_DATE`, while successful replay returns stored result evidence without
+recomputing or repeating the effect.
+
+The closed transition graph is ACTIVE→INACTIVE, ACTIVE→ENDED,
+INACTIVE→ACTIVE, INACTIVE→ENDED and ENDED→ACTIVE. Same-state and
+ENDED→INACTIVE changes deny. The locked Employee must have exactly one open
+current employment period whose state matches the projection and whose start
+precedes today. The effect closes it at today, appends a new open period with
+the exact protected reason, and synchronizes the projection atomically.
+Rehire appends history and never reopens an earlier period. Person state is
+not consulted.
+
+INACTIVE and ENDED effects precollect every remaining Teacher capability,
+Class Teacher assignment and Subject Teacher assignment. Future-starting rows
+and bounded rows extending beyond today deny. Only open rows that started
+before today are closed; their original reasons remain unchanged. Fixed cause
+`EMPLOYMENT_STATE_CHANGE`, safe IDs and counts appear only in minimized
+evidence. Reactivation recreates no Teaching authority. Job assignments and
+campus affiliations are untouched.
+
+Global authorization derives the current affected-campus union from live
+affiliations and live teaching assignments. ALL covers the operation;
+otherwise every campus needs a complete exact CAMPUS grant, while an empty
+set requires ALL. The state-specific policy selector applies campus-over-
+school precedence for every affected campus and requires one common policy
+ID and one explicit route. Apply rechecks requester authority, reviewers,
+policy, target version and the current campus set.
+
+This brings the static drafted-effect inventory to **12 of 36**; **24 effects
+remain**. Migration 10 stays a non-executable `.sql.draft`. No SQL was applied
+and no Supabase project was contacted. Local regression checks returned
+`FOUNDATION_SOURCE_PASS 9 migrations + 9 tests`, `LOCAL_CONFIG_PASS`, 121
+passing Python tests and `STAGING_VALIDATE_PASS`; `git diff --check` found no
+whitespace errors.

@@ -735,3 +735,33 @@ Person and code binding. No Employee lifecycle coupling or authorization
 side effect is introduced. The approved initial employment contract and
 receipt/audit/outbox payloads remain unchanged. SQL was not executed and no
 Supabase remote operation was performed; D1C1B remains incomplete.
+
+## Employee state P1 security continuation
+
+`employee.state.change` uses a dedicated global-target authorization helper
+instead of the single-campus Profile interpretation. It admits only a live
+non-family Individual with the exact change or approval permission and either
+ALL or complete CAMPUS coverage of every server-derived current affected
+campus. Partial and empty CAMPUS-only coverage deny. Submission, review,
+apply and terminal replay re-evaluate current authority.
+
+Policy resolution is state-specific and fail-closed. A unique active campus
+policy overrides the school policy for that campus; every affected campus
+must resolve to the same policy ID. No-campus targets require one school-wide
+policy. DIRECT and APPROVAL remain explicit, and APPROVAL requires the frozen
+contiguous reviewer-step contract. Frozen Profile helpers are unchanged.
+
+The Employee executor owns the direct RPC, Employee lock and employment
+effect. The Workflow executor owns approval orchestration and receives no
+general D1 table DML. The Teaching executor owns the fixed dependency-close
+helper; Employee receives only its narrow EXECUTE grant. The Evidence writer
+alone appends receipts, audit and `employee.state_changed` outbox rows. The
+private HR reason remains in the protected request and new employment-period
+row and is excluded from broad evidence.
+
+Dependency closing follows Employee, sorted academic ancestry and child-
+history locks. It never deletes, shortens a bounded row, creates a zero-length
+interval, changes a teaching reason, or restores teaching rows on activation.
+Organization and campus history is untouched. No role membership, permission,
+grant, scope or runtime schema-owner entry point is added. Migration 10 remains
+static and unexecuted; D1C1B remains incomplete.
