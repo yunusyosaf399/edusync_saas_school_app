@@ -605,3 +605,69 @@ authenticated EXECUTE. No other public D1 operation effect was added.
 `STAGING_VALIDATE_PASS`; `git diff --check` found no whitespace errors.
 Those checks do not parse or execute Migration 10 and do not prove runtime
 security. No local or managed Supabase database was contacted.
+
+## Employee organization catalog P0 family continuation (static only)
+
+The draft adds only the fixed direct P0 commands
+`app.d1_change_employee_department` and
+`app.d1_change_employee_designation`, for operation codes
+`employee.department.change` and `employee.designation.change`. The exact
+permissions are `employee.department.manage` and
+`employee.designation.manage`; each permission has only the already-registered
+`ALL` scope with resolver `DIRECT`. The checked target is the owning School.
+The live complete Foundation permission/scope chain is re-evaluated after the
+School and catalog-row locks. FAMILY cannot satisfy these non-family-safe
+permissions, and the frozen D1 evaluator admits no SYSTEM actor. No title,
+Department membership, Designation, HR label or role-name shortcut is used.
+
+Each command's executor and public RPC owner is the existing NOLOGIN
+`schoolos_employee_executor`; authorization remains with
+`schoolos_authz_reader`, the current Principal row lock with
+`schoolos_identity_executor`, and append-only evidence with
+`schoolos_evidence_writer`. The deterministic lock order is the receipt
+helper's shared Foundation authorization lock `(71001,1)`, verified Principal,
+namespace-71002 idempotency lock inside receipt lookup, current Principal row,
+School row, then the relevant Department or Designation row. A fresh live
+authorization statement follows target locks and precedes replay or mutation.
+CREATE replay locks and verifies the stored result row. Exact successful
+replay returns the immutable stored result only after current authority;
+changed intent under the same key conflicts in the frozen canonical receipt
+helper. Bigint expected versions are represented as decimal strings in the
+six-element canonical intent array. Existing UPDATE/ARCHIVE requires the
+expected version and ACTIVE target state.
+
+RLS and ACL are limited for this family: Department and Designation SELECT and
+INSERT use explicit columns; UPDATE is limited to `label`, `state`,
+`archived_at` and `archived_by`. Parent School locking has only SELECT(id) and
+UPDATE(id) with matching executor RLS policies. Public EXECUTE is granted to
+`authenticated` only for the two exact typed RPC signatures; private helpers
+revoke PUBLIC, anon, authenticated and service_role. The Employee executor
+does not receive evidence-table INSERT from this work. It receives no new
+Employee/Student/Family/Teaching mutation privileges from this continuation;
+pre-existing Employee Profile grants are unchanged.
+
+The dedicated evidence-writer helpers accept only the two exact operation
+codes and append one successful immutable receipt and one minimized audit row
+atomically with each effect. Audit event types are exactly
+`employee.department.change` and `employee.designation.change`; action, state
+and resulting version are bounded safe details, with no arbitrary reason
+text. Neither operation has a selected D1 outbox event, and no outbox row is
+written. Department and Designation are organizational facts only: these
+commands create no role, permission, principal assignment, scope grant,
+reviewer authority or Teacher capability. Archival retains rows and all
+historical references; it does not cascade or rewrite Employee history.
+
+This continuation drafts two of the 36 operation effects and does not change
+the manifest counts (97 permissions, 322 scope alternatives, 36 operations).
+It remains unexecuted, unparsed Migration 10 draft SQL. D1C1B is still
+incomplete and awaits independent review; D1C2, migration application and
+remote Supabase operations are not authorized. Source-only validation for
+this continuation reconfirmed 97 unique permissions, 322 unique scope
+alternatives and 36 unique operations, with exactly these two P0/direct
+operation mappings and no additional public command. The command protocol and
+evidence-boundary assertions passed. The Foundation guard returned
+`FOUNDATION_SOURCE_PASS 9 migrations + 9 tests` and `LOCAL_CONFIG_PASS`;
+staging validation returned `STAGING_VALIDATE_PASS`; `git diff --check` found
+no whitespace errors. These checks do not establish PostgreSQL parse or
+runtime behavior. No Migration 10 SQL was executed and no Supabase project
+was contacted.

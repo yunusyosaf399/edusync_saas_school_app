@@ -2443,6 +2443,13 @@ CREATE POLICY d1_academic_school_lock_input ON app_private.school_profiles
 CREATE POLICY d1_academic_school_lock_update ON app_private.school_profiles
   FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
 GRANT SELECT (id),UPDATE(id) ON app_private.school_profiles TO schoolos_academic_executor;
+-- Employee organization-catalog commands take this lock only to serialize
+-- school-wide catalog writes; UPDATE(id) grants no mutable School field.
+CREATE POLICY d1_employee_school_lock_input ON app_private.school_profiles
+  FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_employee_school_lock_update ON app_private.school_profiles
+  FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT (id),UPDATE(id) ON app_private.school_profiles TO schoolos_employee_executor;
 CREATE POLICY d1_academic_campus_lock_input ON app.campuses
   FOR SELECT TO schoolos_academic_executor USING (true);
 CREATE POLICY d1_academic_campus_lock_update ON app.campuses
@@ -2743,7 +2750,10 @@ GRANT SELECT (id, school_id, code, label, state, archived_at, archived_by) ON ap
 CREATE POLICY d1_23_executor_read ON app_private.departments FOR SELECT TO schoolos_employee_executor USING (true);
 CREATE POLICY d1_23_executor_insert ON app_private.departments FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
 CREATE POLICY d1_23_executor_update ON app_private.departments FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT ON app_private.departments TO schoolos_employee_executor;
+GRANT SELECT (id, created_at, created_by, row_version, updated_at, school_id,
+  code, label, state, archived_at, archived_by),
+  INSERT (id, school_id, code, label, created_by)
+  ON app_private.departments TO schoolos_employee_executor;
 GRANT UPDATE (label, state, archived_at, archived_by) ON app_private.departments TO schoolos_employee_executor;
 CREATE POLICY d1_24_schema_maintenance ON app_private.designations
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -2753,7 +2763,10 @@ GRANT SELECT (id, school_id, code, label, state, archived_at, archived_by) ON ap
 CREATE POLICY d1_24_executor_read ON app_private.designations FOR SELECT TO schoolos_employee_executor USING (true);
 CREATE POLICY d1_24_executor_insert ON app_private.designations FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
 CREATE POLICY d1_24_executor_update ON app_private.designations FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT ON app_private.designations TO schoolos_employee_executor;
+GRANT SELECT (id, created_at, created_by, row_version, updated_at, school_id,
+  code, label, state, archived_at, archived_by),
+  INSERT (id, school_id, code, label, created_by)
+  ON app_private.designations TO schoolos_employee_executor;
 GRANT UPDATE (label, state, archived_at, archived_by) ON app_private.designations TO schoolos_employee_executor;
 CREATE POLICY d1_25_schema_maintenance ON app_private.employees
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -3582,6 +3595,10 @@ BEGIN
         OR (p_operation_code='academic.section_room.change'
              AND pg_catalog.jsonb_array_length(p_intent)=8)
         OR (p_operation_code='academic.capacity.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=6)
+           OR (p_operation_code='employee.department.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=6)
+           OR (p_operation_code='employee.designation.change'
              AND pg_catalog.jsonb_array_length(p_intent)=6)))
        OR (p_operation_code IN ('student.profile.update','employee.profile.update')
            AND ((p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=4)
@@ -5264,6 +5281,100 @@ REVOKE ALL ON FUNCTION app_private.d1_academic_event(
 GRANT EXECUTE ON FUNCTION app_private.d1_academic_event(
   uuid,text,uuid,bigint,uuid,uuid,text)
   TO schoolos_academic_executor;
+
+CREATE FUNCTION app_private.d1_employee_catalog_receipt(
+  p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+  p_expected_version bigint,p_action text,p_target_kind text,
+  p_result_ref uuid,p_summary jsonb
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE new_id uuid:=pg_catalog.gen_random_uuid(); op_code text;
+  expected_kind text; result_kind text; result_state text;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o
+   WHERE o.id=p_operation AND o.contract_version=1 AND o.enabled
+     AND o.handler_key=o.code;
+  expected_kind:=CASE op_code
+    WHEN 'employee.department.change' THEN 'DEPARTMENT'
+    WHEN 'employee.designation.change' THEN 'DESIGNATION' END;
+  result_kind:=CASE op_code
+    WHEN 'employee.department.change' THEN 'D1_DEPARTMENT'
+    WHEN 'employee.designation.change' THEN 'D1_DESIGNATION' END;
+  result_state:=p_summary->>'state';
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR op_code IS NULL
+     OR op_code NOT IN ('employee.department.change','employee.designation.change')
+     OR expected_kind IS DISTINCT FROM p_target_kind
+     OR p_action IS NULL OR p_action NOT IN ('CREATE','UPDATE','ARCHIVE')
+     OR p_key IS NULL OR pg_catalog.length(p_key) NOT BETWEEN 1 AND 200
+     OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+     OR p_result_ref IS NULL OR p_summary IS NULL
+     OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+    OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>2
+    OR NOT (p_summary ? 'state') OR NOT (p_summary ? 'row_version')
+     OR pg_catalog.jsonb_typeof(p_summary->'row_version')<>'number'
+     OR (p_summary->>'row_version')::numeric<1
+     OR (p_action='CREATE' AND
+         (p_expected_version IS NOT NULL OR result_state<>'ACTIVE'))
+     OR (p_action='UPDATE' AND
+         (p_expected_version IS NULL OR p_expected_version<1 OR result_state<>'ACTIVE'))
+     OR (p_action='ARCHIVE' AND
+         (p_expected_version IS NULL OR p_expected_version<1 OR result_state<>'ARCHIVED'))
+     OR result_state NOT IN ('ACTIVE','ARCHIVED') THEN
+    RAISE EXCEPTION 'D1 Employee catalog receipt intent denied';
+  END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,
+     canonical_payload_hash,canonicalization_version,expected_target_version,
+     state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES (new_id,p_actor,p_operation,op_code,p_key,p_hash,1,
+    p_expected_version,'SUCCEEDED',result_kind,p_result_ref,p_summary,
+    pg_catalog.transaction_timestamp(),p_actor);
+  RETURN new_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_catalog_receipt(
+  uuid,uuid,text,bytea,bigint,text,text,uuid,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_catalog_receipt(
+  uuid,uuid,text,bytea,bigint,text,text,uuid,jsonb)
+  TO schoolos_employee_executor;
+
+CREATE FUNCTION app_private.d1_employee_catalog_audit(
+  p_actor uuid,p_operation text,p_action text,p_target_kind text,p_target uuid,
+  p_receipt uuid,p_version bigint,p_state text,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE expected_kind text;
+BEGIN
+  expected_kind:=CASE p_operation
+    WHEN 'employee.department.change' THEN 'DEPARTMENT'
+    WHEN 'employee.designation.change' THEN 'DESIGNATION' END;
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR expected_kind IS NULL OR expected_kind IS DISTINCT FROM p_target_kind
+     OR p_action IS NULL OR p_action NOT IN ('CREATE','UPDATE','ARCHIVE')
+     OR p_target IS NULL OR p_receipt IS NULL OR p_version IS NULL OR p_version<1
+    OR p_correlation IS NULL OR p_state IS NULL
+    OR p_state NOT IN ('ACTIVE','ARCHIVED')
+     OR (p_action IN ('CREATE','UPDATE') AND p_state<>'ACTIVE')
+     OR (p_action='ARCHIVE' AND p_state<>'ARCHIVED') THEN
+    RAISE EXCEPTION 'D1 Employee catalog audit intent denied';
+  END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,
+     event_type,target_kind,target_ref,command_receipt_id,source_kind,
+     correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL','SUCCEEDED',
+    pg_catalog.jsonb_build_object('operation',p_operation),p_version,
+    p_operation,p_target_kind,p_target,p_receipt,'API',p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'state',p_state,
+      'row_version',p_version),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_catalog_audit(
+  uuid,text,text,text,uuid,uuid,bigint,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_catalog_audit(
+  uuid,text,text,text,uuid,uuid,bigint,text,uuid)
+  TO schoolos_employee_executor;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
@@ -7454,3 +7565,188 @@ REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader,
 REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor,
   schoolos_student_executor,schoolos_employee_executor,
   schoolos_read_executor;
+GRANT CREATE ON SCHEMA app TO schoolos_employee_executor;
+SET ROLE schoolos_employee_executor;
+CREATE FUNCTION app.d1_change_employee_department(
+  p_action text,p_department_id uuid,p_school_id uuid,p_code text,
+  p_label text,p_expected_version bigint,p_idempotency_key text
+) RETURNS TABLE (department_id uuid,row_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; old_row app_private.departments%ROWTYPE;
+  target_id uuid; new_version bigint; new_state text; receipt uuid;
+  correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_action IS NULL OR p_action NOT IN ('CREATE','UPDATE','ARCHIVE')
+     OR p_school_id IS NULL OR p_code IS NULL
+     OR pg_catalog.length(pg_catalog.btrim(p_code))=0
+     OR (p_action='CREATE' AND
+         (p_department_id IS NOT NULL OR p_expected_version IS NOT NULL
+          OR p_label IS NULL OR pg_catalog.length(pg_catalog.btrim(p_label))=0))
+     OR (p_action='UPDATE' AND
+         (p_department_id IS NULL OR p_expected_version IS NULL OR p_expected_version<1
+          OR p_label IS NULL OR pg_catalog.length(pg_catalog.btrim(p_label))=0))
+     OR (p_action='ARCHIVE' AND
+         (p_department_id IS NULL OR p_expected_version IS NULL OR p_expected_version<1
+          OR p_label IS NOT NULL)) THEN
+    RAISE EXCEPTION 'D1 Employee Department intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'employee.department.change','employee.department.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_action,p_department_id,p_school_id,p_code,
+      p_label,p_expected_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  PERFORM 1 FROM app_private.school_profiles s WHERE s.id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee Department School missing'; END IF;
+  IF p_action<>'CREATE' THEN
+    SELECT * INTO old_row FROM app_private.departments d
+     WHERE d.id=p_department_id FOR UPDATE;
+    IF NOT FOUND OR old_row.school_id IS DISTINCT FROM p_school_id
+       OR old_row.code IS DISTINCT FROM p_code THEN
+      RAISE EXCEPTION 'D1 Employee Department target/ancestry changed';
+    END IF;
+  ELSIF ctx.receipt_id IS NOT NULL THEN
+    SELECT * INTO old_row FROM app_private.departments d
+     WHERE d.id=ctx.result_ref FOR UPDATE;
+    IF NOT FOUND OR old_row.school_id IS DISTINCT FROM p_school_id
+       OR old_row.code IS DISTINCT FROM p_code THEN
+      RAISE EXCEPTION 'D1 Employee Department replay target changed';
+    END IF;
+  END IF;
+  IF NOT app_private.d1_authorized(
+      'employee.department.manage','SCHOOL',p_school_id) THEN
+    RAISE EXCEPTION 'D1 Employee Department authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL THEN
+      RAISE EXCEPTION 'D1 prior Employee Department command was not successful';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'row_version')::bigint;
+    RETURN;
+  END IF;
+  IF p_action='CREATE' THEN
+    target_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.departments(id,school_id,code,label,created_by)
+      VALUES(target_id,p_school_id,p_code,p_label,ctx.actor_id);
+    new_version:=1; new_state:='ACTIVE';
+  ELSE
+    IF old_row.row_version<>p_expected_version OR old_row.state<>'ACTIVE' THEN
+      RAISE EXCEPTION 'D1 Employee Department stale version/state';
+    END IF;
+    target_id:=old_row.id;
+    IF p_action='UPDATE' THEN
+      UPDATE app_private.departments d SET label=p_label WHERE d.id=target_id
+       RETURNING d.row_version INTO new_version;
+      new_state:='ACTIVE';
+    ELSE
+      UPDATE app_private.departments d SET state='ARCHIVED',
+        archived_at=pg_catalog.statement_timestamp(),archived_by=ctx.actor_id
+       WHERE d.id=target_id RETURNING d.row_version INTO new_version;
+      new_state:='ARCHIVED';
+    END IF;
+  END IF;
+  receipt:=app_private.d1_employee_catalog_receipt(ctx.actor_id,ctx.operation_id,
+    p_idempotency_key,ctx.intent_hash,p_expected_version,p_action,'DEPARTMENT',
+    target_id,pg_catalog.jsonb_build_object('row_version',new_version,'state',new_state));
+  PERFORM app_private.d1_employee_catalog_audit(ctx.actor_id,
+    'employee.department.change',p_action,'DEPARTMENT',target_id,receipt,
+    new_version,new_state,correlation);
+  RETURN QUERY SELECT target_id,new_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_employee_department(
+  text,uuid,uuid,text,text,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_employee_department(
+  text,uuid,uuid,text,text,bigint,text) TO authenticated;
+
+CREATE FUNCTION app.d1_change_employee_designation(
+  p_action text,p_designation_id uuid,p_school_id uuid,p_code text,
+  p_label text,p_expected_version bigint,p_idempotency_key text
+) RETURNS TABLE (designation_id uuid,row_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; old_row app_private.designations%ROWTYPE;
+  target_id uuid; new_version bigint; new_state text; receipt uuid;
+  correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_action IS NULL OR p_action NOT IN ('CREATE','UPDATE','ARCHIVE')
+     OR p_school_id IS NULL OR p_code IS NULL
+     OR pg_catalog.length(pg_catalog.btrim(p_code))=0
+     OR (p_action='CREATE' AND
+         (p_designation_id IS NOT NULL OR p_expected_version IS NOT NULL
+          OR p_label IS NULL OR pg_catalog.length(pg_catalog.btrim(p_label))=0))
+     OR (p_action='UPDATE' AND
+         (p_designation_id IS NULL OR p_expected_version IS NULL OR p_expected_version<1
+          OR p_label IS NULL OR pg_catalog.length(pg_catalog.btrim(p_label))=0))
+     OR (p_action='ARCHIVE' AND
+         (p_designation_id IS NULL OR p_expected_version IS NULL OR p_expected_version<1
+          OR p_label IS NOT NULL)) THEN
+    RAISE EXCEPTION 'D1 Employee Designation intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'employee.designation.change','employee.designation.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_action,p_designation_id,p_school_id,p_code,
+      p_label,p_expected_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  PERFORM 1 FROM app_private.school_profiles s WHERE s.id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee Designation School missing'; END IF;
+  IF p_action<>'CREATE' THEN
+    SELECT * INTO old_row FROM app_private.designations d
+     WHERE d.id=p_designation_id FOR UPDATE;
+    IF NOT FOUND OR old_row.school_id IS DISTINCT FROM p_school_id
+       OR old_row.code IS DISTINCT FROM p_code THEN
+      RAISE EXCEPTION 'D1 Employee Designation target/ancestry changed';
+    END IF;
+  ELSIF ctx.receipt_id IS NOT NULL THEN
+    SELECT * INTO old_row FROM app_private.designations d
+     WHERE d.id=ctx.result_ref FOR UPDATE;
+    IF NOT FOUND OR old_row.school_id IS DISTINCT FROM p_school_id
+       OR old_row.code IS DISTINCT FROM p_code THEN
+      RAISE EXCEPTION 'D1 Employee Designation replay target changed';
+    END IF;
+  END IF;
+  IF NOT app_private.d1_authorized(
+      'employee.designation.manage','SCHOOL',p_school_id) THEN
+    RAISE EXCEPTION 'D1 Employee Designation authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL THEN
+      RAISE EXCEPTION 'D1 prior Employee Designation command was not successful';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'row_version')::bigint;
+    RETURN;
+  END IF;
+  IF p_action='CREATE' THEN
+    target_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.designations(id,school_id,code,label,created_by)
+      VALUES(target_id,p_school_id,p_code,p_label,ctx.actor_id);
+    new_version:=1; new_state:='ACTIVE';
+  ELSE
+    IF old_row.row_version<>p_expected_version OR old_row.state<>'ACTIVE' THEN
+      RAISE EXCEPTION 'D1 Employee Designation stale version/state';
+    END IF;
+    target_id:=old_row.id;
+    IF p_action='UPDATE' THEN
+      UPDATE app_private.designations d SET label=p_label WHERE d.id=target_id
+       RETURNING d.row_version INTO new_version;
+      new_state:='ACTIVE';
+    ELSE
+      UPDATE app_private.designations d SET state='ARCHIVED',
+        archived_at=pg_catalog.statement_timestamp(),archived_by=ctx.actor_id
+       WHERE d.id=target_id RETURNING d.row_version INTO new_version;
+      new_state:='ARCHIVED';
+    END IF;
+  END IF;
+  receipt:=app_private.d1_employee_catalog_receipt(ctx.actor_id,ctx.operation_id,
+    p_idempotency_key,ctx.intent_hash,p_expected_version,p_action,'DESIGNATION',
+    target_id,pg_catalog.jsonb_build_object('row_version',new_version,'state',new_state));
+  PERFORM app_private.d1_employee_catalog_audit(ctx.actor_id,
+    'employee.designation.change',p_action,'DESIGNATION',target_id,receipt,
+    new_version,new_state,correlation);
+  RETURN QUERY SELECT target_id,new_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_employee_designation(
+  text,uuid,uuid,text,text,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_employee_designation(
+  text,uuid,uuid,text,text,bigint,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_employee_executor;

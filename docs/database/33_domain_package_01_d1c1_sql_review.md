@@ -302,3 +302,54 @@ the lower projection. No operation, table, queue, job or workflow was added.
 
 D1C1B remains incomplete. Migration 10 remains a non-executable `.sql.draft`;
 this clarification does not authorize D1C2 or migration application.
+
+## Employee organization catalog P0 family continuation (static draft)
+
+The working Migration 10 `.sql.draft` now drafts exactly two additional
+operation effects: `employee.department.change` and
+`employee.designation.change`. Their fixed public entry points are
+`app.d1_change_employee_department` and
+`app.d1_change_employee_designation`, both direct P0 commands. Each accepts
+CREATE, UPDATE, or ARCHIVE. Create writes a generated ID, school, stable code,
+label and actor. Update changes only label. Archive changes only state,
+archive timestamp and archive actor. Stable code and school ancestry are
+checked against the locked target and cannot be changed. Existing updates and
+archives require the expected row version. No DELETE, historical
+job-assignment rewrite, or authorization mutation is performed; retained
+Department/Designation references remain intact and the frozen history trigger
+remains the future-use defense.
+
+Both commands use only the registered `ALL`/`DIRECT` permission scope and
+resolve it through the School target using the live
+`employee.department.manage` or `employee.designation.manage` chain. The
+fixed receipt lookup allowlist admits only these two operation-equals-command
+pairs with six-position typed intent arrays; the shared Canonicalization V1
+serializer and JCS object-key language are otherwise unchanged. New fixed
+receipt/audit append helpers are owned by `schoolos_evidence_writer` and
+allowlist only these two operation codes. The Employee executor has no direct
+receipt/audit/outbox INSERT. Audit `event_type` is exactly the stable operation
+code; bounded action/state/version data is placed in safe details. No selected
+outbox event exists for these operations, so none is emitted.
+
+Department and Designation executor SELECT/INSERT/UPDATE grants are
+column-scoped. The Employee executor receives only `SELECT(id)` and
+`UPDATE(id)` on the School parent for fixed row locking, paired with
+role-specific SELECT/UPDATE RLS policies; the command issues no School update.
+Authenticated receives EXECUTE only on the two public RPC signatures. Private
+helpers explicitly revoke PUBLIC, anon, authenticated and service_role
+EXECUTE. No unrelated Employee, Student, Family or Teaching mutation grant is
+added by this continuation.
+
+This brings the drafted effect count to **10 of 36** operation contracts:
+six Academic P0 effects, two Profile effects, and these two Employee
+organization-catalog effects. **26 operation effects remain**. This is static
+draft work only: D1C1B remains incomplete, Migration 10 remains non-executable,
+and neither PostgreSQL parse/runtime correctness nor independent review is
+claimed. Static extraction reconfirmed 97 unique permissions, 322 unique
+scope alternatives and 36 unique operations; source assertions confirmed the
+two P0/direct mappings, exact scope sets, fixed command order, evidence ACLs,
+and absence of any additional public operation effect. The Foundation guard
+returned `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests` and
+`LOCAL_CONFIG_PASS`; staging validation returned `STAGING_VALIDATE_PASS`;
+`git diff --check` found no whitespace errors. SQL was not executed and no
+Supabase project was contacted.
