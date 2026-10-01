@@ -1583,7 +1583,7 @@ CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_q
 CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_experience_entries
   FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,experience_record_id','employee_id,experience_record_id');
 CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_job_assignments
-  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,department_id,designation_id','employee_id,department_id,designation_id');
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,department_id,designation_id','employee_id');
 CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.employee_campus_affiliations
   FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history('employees','employee_id','employee_id,campus_id','employee_id,campus_id');
 CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.teacher_capabilities
@@ -3290,6 +3290,10 @@ BEGIN
   ) THEN
     SELECT emp.id INTO target_id FROM app_private.employees emp
      WHERE emp.id = ctx.target_ref AND emp.current_state = 'ACTIVE';
+      ELSIF ctx.operation_code='employee.job_assignment.change' THEN
+        SELECT emp.id INTO target_id FROM app_private.employees emp
+         WHERE emp.id=ctx.target_ref;
+        target_kind:='EMPLOYEE';
     target_kind := 'EMPLOYEE';
     IF ctx.campus_id IS NOT NULL AND NOT EXISTS (
       SELECT 1 FROM app_private.employee_campus_affiliations ca
@@ -3297,6 +3301,10 @@ BEGIN
          AND ca.effective_from <= at_time::date
          AND (ca.effective_until IS NULL OR at_time::date < ca.effective_until)
     ) THEN RETURN; END IF;
+  ELSIF ctx.operation_code='employee.job_assignment.change' THEN
+    SELECT emp.id INTO target_id FROM app_private.employees emp
+     WHERE emp.id=ctx.target_ref;
+    target_kind:='EMPLOYEE';
   ELSE
     RETURN;
   END IF;
@@ -3373,6 +3381,18 @@ BEGIN
                    AND ca.effective_from <= at_time::date
                    AND (ca.effective_until IS NULL OR at_time::date < ca.effective_until)
               ))))
+            OR (target_kind='EMPLOYEE'
+                AND ctx.operation_code='employee.job_assignment.change'
+                AND EXISTS (SELECT 1 FROM app_private.employee_campus_affiliations ca
+                  WHERE ca.employee_id=target_id AND ca.campus_id=scope.campus_id
+                    AND ca.effective_from<=at_time::date
+                    AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until)))
+              OR (target_kind='EMPLOYEE'
+                AND ctx.operation_code='employee.job_assignment.change'
+                AND EXISTS (SELECT 1 FROM app_private.employee_campus_affiliations ca
+                  WHERE ca.employee_id=target_id AND ca.campus_id=scope.campus_id
+                    AND ca.effective_from<=at_time::date
+                    AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until)))
             OR (target_kind = 'STUDENT' AND scope.scope_kind = 'CLASS'
                 AND scope.class_offering_id = target_class)
             OR (target_kind = 'STUDENT' AND scope.scope_kind = 'SECTION'
@@ -3625,7 +3645,12 @@ BEGIN
        OR (p_operation_code='employee.state.change' AND (
             (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=4)
          OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
-         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='employee.job_assignment.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2))) THEN
     RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
   END IF;
   PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
@@ -9101,6 +9126,708 @@ GRANT EXECUTE ON FUNCTION app.d1_create_employee(uuid,text,date,text)
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_employee_executor;
 
+GRANT CREATE ON SCHEMA app_private TO schoolos_employee_executor;
+SET ROLE schoolos_employee_executor;
+CREATE FUNCTION app_private.d1_employee_job_assignment_payload_valid(p jsonb)
+RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE action text; source_id text; source_department text; source_designation text;
+  source_from text; source_supersedes text; department text; designation text;
+  effective_from text; effective_until text; start_date date; end_date date;
+BEGIN
+  IF p IS NULL OR pg_catalog.jsonb_typeof(p)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p))<>10
+     OR NOT (p ?& ARRAY['action','source_assignment_id','source_department_id',
+       'source_designation_id','source_effective_from','source_supersedes_id',
+       'department_id','designation_id','effective_from','effective_until']) THEN
+    RETURN false;
+  END IF;
+  action:=p->>'action'; source_id:=p->>'source_assignment_id';
+  source_department:=p->>'source_department_id'; source_designation:=p->>'source_designation_id';
+  source_from:=p->>'source_effective_from'; source_supersedes:=p->>'source_supersedes_id';
+  department:=p->>'department_id'; designation:=p->>'designation_id';
+  effective_from:=p->>'effective_from'; effective_until:=p->>'effective_until';
+  IF pg_catalog.jsonb_typeof(p->'action')<>'string'
+     OR action NOT IN ('ADD','END','CORRECT') THEN RETURN false; END IF;
+  IF pg_catalog.jsonb_typeof(p->'source_assignment_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_department_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_designation_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_effective_from') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_supersedes_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'department_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'designation_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'effective_from') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'effective_until') NOT IN ('string','null') THEN
+    RETURN false;
+  END IF;
+  IF (source_id IS NOT NULL AND source_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_department IS NOT NULL AND source_department !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_designation IS NOT NULL AND source_designation !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_supersedes IS NOT NULL AND source_supersedes !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (department IS NOT NULL AND department !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (designation IS NOT NULL AND designation !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_from IS NOT NULL AND source_from !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+     OR (effective_from IS NOT NULL AND effective_from !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+     OR (effective_until IS NOT NULL AND effective_until !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') THEN
+    RETURN false;
+  END IF;
+  IF action='ADD' AND (source_id IS NOT NULL OR source_department IS NOT NULL
+      OR source_designation IS NOT NULL OR source_from IS NOT NULL
+      OR source_supersedes IS NOT NULL OR department IS NULL OR designation IS NULL
+      OR effective_from IS NULL) THEN RETURN false; END IF;
+  IF action='END' AND (source_id IS NULL OR source_department IS NULL
+      OR source_designation IS NULL OR source_from IS NULL OR department IS NOT NULL
+      OR designation IS NOT NULL OR effective_from IS NOT NULL OR effective_until IS NULL) THEN
+    RETURN false;
+  END IF;
+  IF action='CORRECT' AND (source_id IS NULL OR source_department IS NULL
+      OR source_designation IS NULL OR source_from IS NULL OR department IS NULL
+      OR designation IS NULL OR effective_from IS NULL OR effective_until IS NOT NULL) THEN
+    RETURN false;
+  END IF;
+  BEGIN
+    IF source_from IS NOT NULL THEN start_date:=source_from::date; END IF;
+    IF action IN ('ADD','CORRECT') THEN start_date:=effective_from::date; END IF;
+    IF effective_until IS NOT NULL THEN end_date:=effective_until::date; END IF;
+  EXCEPTION WHEN invalid_datetime_format OR datetime_field_overflow THEN
+    RETURN false;
+  END;
+  IF action='ADD' AND end_date IS NOT NULL AND end_date<=start_date THEN RETURN false; END IF;
+  RETURN true;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_payload_valid(jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_payload_valid(jsonb)
+  TO schoolos_employee_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_employee_job_assignment_result_matches(
+  p_action text,p_employee uuid,p_assignment uuid,p_source uuid,
+  p_source_department uuid,p_source_designation uuid,p_source_from date,
+  p_source_supersedes uuid,p_department uuid,p_designation uuid,
+  p_effective_from date,p_effective_until date
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE result app_private.employee_job_assignments%ROWTYPE;
+BEGIN
+  IF p_action NOT IN ('ADD','END','CORRECT') OR p_employee IS NULL OR p_assignment IS NULL THEN
+    RETURN false;
+  END IF;
+  SELECT * INTO result FROM app_private.employee_job_assignments j
+   WHERE j.id=p_assignment AND j.employee_id=p_employee;
+  IF NOT FOUND THEN RETURN false; END IF;
+  IF p_action='ADD' THEN
+    RETURN result.department_id IS NOT DISTINCT FROM p_department
+      AND result.designation_id IS NOT DISTINCT FROM p_designation
+      AND result.effective_from IS NOT DISTINCT FROM p_effective_from
+      AND result.effective_until IS NOT DISTINCT FROM p_effective_until
+      AND result.supersedes_id IS NULL
+      AND ((p_effective_until IS NULL AND result.ended_at IS NULL AND result.ended_by IS NULL)
+        OR (p_effective_until IS NOT NULL AND result.ended_at IS NOT NULL AND result.ended_by IS NOT NULL));
+  ELSIF p_action='END' THEN
+    RETURN result.id IS NOT DISTINCT FROM p_source
+      AND result.department_id IS NOT DISTINCT FROM p_source_department
+      AND result.designation_id IS NOT DISTINCT FROM p_source_designation
+      AND result.effective_from IS NOT DISTINCT FROM p_source_from
+      AND result.supersedes_id IS NOT DISTINCT FROM p_source_supersedes
+      AND result.effective_until IS NOT DISTINCT FROM p_effective_until
+      AND result.ended_at IS NOT NULL AND result.ended_by IS NOT NULL;
+  ELSE
+    RETURN result.supersedes_id IS NOT DISTINCT FROM p_source
+      AND result.department_id IS NOT DISTINCT FROM p_department
+      AND result.designation_id IS NOT DISTINCT FROM p_designation
+      AND result.effective_from IS NOT DISTINCT FROM p_effective_from
+      AND result.effective_until IS NULL AND result.ended_at IS NULL AND result.ended_by IS NULL
+      AND EXISTS (SELECT 1 FROM app_private.employee_job_assignments predecessor
+        WHERE predecessor.id=p_source AND predecessor.employee_id=p_employee
+          AND predecessor.department_id=p_source_department
+          AND predecessor.designation_id=p_source_designation
+          AND predecessor.effective_from=p_source_from
+          AND predecessor.supersedes_id IS NOT DISTINCT FROM p_source_supersedes
+          AND predecessor.effective_until=p_effective_from
+          AND predecessor.ended_at IS NOT NULL AND predecessor.ended_by IS NOT NULL);
+  END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_result_matches(
+  text,uuid,uuid,uuid,uuid,uuid,date,uuid,uuid,uuid,date,date)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_result_matches(
+  text,uuid,uuid,uuid,uuid,uuid,date,uuid,uuid,uuid,date,date)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_employee_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_employee_job_assignment_receipt(
+  p_phase text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+  p_expected_employee_version bigint,p_request uuid,p_request_version bigint,
+  p_state text,p_result_kind text,p_result_ref uuid,p_summary jsonb,p_error text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE new_id uuid:=pg_catalog.gen_random_uuid(); op_code text;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o
+   WHERE o.id=p_operation AND o.code='employee.job_assignment.change'
+     AND o.contract_version=1 AND o.enabled;
+  IF op_code IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN (op_code,'request.submit','request.review','request.apply')
+     OR p_key IS NULL OR pg_catalog.length(p_key) NOT BETWEEN 1 AND 200
+     OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+     OR p_expected_employee_version IS NULL OR p_expected_employee_version<1
+     OR (p_phase=op_code AND (p_request IS NOT NULL OR p_request_version IS NOT NULL))
+     OR (p_phase<>op_code AND p_request IS NULL)
+     OR p_state NOT IN ('SUCCEEDED','REJECTED')
+     OR (p_state='SUCCEEDED' AND (p_result_kind IS NULL OR p_result_ref IS NULL OR p_error IS NOT NULL))
+     OR (p_state='REJECTED' AND (p_phase<>'request.apply' OR p_error IS NULL OR p_result_ref IS NOT NULL))
+     OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object' THEN
+    RAISE EXCEPTION 'D1 Employee job receipt intent denied';
+  END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,
+     canonical_payload_hash,canonicalization_version,expected_target_version,
+     request_id,expected_request_version,state,result_kind,result_ref,
+     result_summary,error_code,completed_at,created_by)
+  VALUES (new_id,p_actor,p_operation,p_phase,p_key,p_hash,1,
+    p_expected_employee_version,p_request,p_request_version,p_state,p_result_kind,
+    p_result_ref,p_summary,p_error,pg_catalog.transaction_timestamp(),p_actor);
+  RETURN new_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_receipt(
+  text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_receipt(
+  text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_job_assignment_audit(
+  p_actor uuid,p_phase text,p_action text,p_employee uuid,p_assignment uuid,
+  p_source uuid,p_department uuid,p_designation uuid,p_receipt uuid,p_request uuid,
+  p_employee_version bigint,p_effective_from date,p_effective_until date,
+  p_outcome text,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN ('DIRECT','SUBMIT','REVIEW','APPLY')
+     OR p_action NOT IN ('ADD','END','CORRECT') OR p_employee IS NULL
+     OR p_receipt IS NULL OR p_employee_version IS NULL OR p_employee_version<1
+     OR p_outcome NOT IN ('SUCCEEDED','REJECTED') OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee job audit intent denied';
+  END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
+     target_kind,target_ref,command_receipt_id,approval_request_id,source_kind,
+     correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',p_outcome,
+    pg_catalog.jsonb_build_object('operation','employee.job_assignment.change','phase',p_phase),
+    p_employee_version,'employee.job_assignment.change','EMPLOYEE',p_employee,
+    p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'assignment_id',p_assignment,
+      'source_assignment_id',p_source,'department_id',p_department,
+      'designation_id',p_designation,'effective_from',p_effective_from,
+      'effective_until',p_effective_until),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_audit(
+  uuid,text,text,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_audit(
+  uuid,text,text,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,text,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_job_assignment_event(
+  p_actor uuid,p_action text,p_employee uuid,p_assignment uuid,p_source uuid,
+  p_department uuid,p_designation uuid,p_receipt uuid,p_employee_version bigint,
+  p_effective_from date,p_effective_until date,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_action NOT IN ('ADD','END','CORRECT') OR p_employee IS NULL
+     OR p_assignment IS NULL OR p_receipt IS NULL OR p_employee_version IS NULL
+     OR p_employee_version<1 OR p_department IS NULL OR p_designation IS NULL
+     OR p_effective_from IS NULL OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee job outbox intent denied';
+  END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+     event_ordinal,correlation_id,payload,created_by)
+  VALUES ('employee.job_changed','EMPLOYEE_JOB_ASSIGNMENT',p_assignment,1,p_receipt,
+    1,p_correlation,pg_catalog.jsonb_build_object('action',p_action,
+      'employee_id',p_employee,'assignment_id',p_assignment,
+      'source_assignment_id',p_source,'department_id',p_department,
+      'designation_id',p_designation,'effective_from',p_effective_from,
+      'effective_until',p_effective_until,'employee_version',p_employee_version),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_event(
+  uuid,text,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_event(
+  uuid,text,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_employee_executor;
+SET ROLE schoolos_employee_executor;
+CREATE FUNCTION app_private.d1_employee_job_assignment_lock_context(
+  p_employee_id uuid,p_expected_employee_version bigint,
+  p_check_employee_version boolean,p_source_assignment_id uuid,
+  p_expected_source_department_id uuid,p_expected_source_designation_id uuid,
+  p_expected_source_effective_from date,p_expected_source_supersedes_id uuid,
+  p_department_id uuid,p_designation_id uuid,p_additional_assignment_id uuid
+) RETURNS TABLE(employee_version bigint,error_code text,source_snapshot jsonb)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actual_version bigint; employee_found boolean:=false;
+  source_row app_private.employee_job_assignments%ROWTYPE;
+  source_found boolean:=false; project_school uuid; department_ids uuid[];
+  designation_ids uuid[]; locked_count bigint; history_row record;
+BEGIN
+  IF p_employee_id IS NULL OR p_expected_employee_version IS NULL
+     OR p_expected_employee_version<1 OR p_check_employee_version IS NULL THEN
+    RETURN QUERY SELECT NULL::bigint,'D1_JOB_INTENT_INVALID'::text,'{}'::jsonb;
+    RETURN;
+  END IF;
+  SELECT e.row_version INTO actual_version FROM app_private.employees e
+   WHERE e.id=p_employee_id FOR UPDATE;
+  employee_found:=FOUND;
+  IF NOT employee_found THEN
+    RETURN QUERY SELECT NULL::bigint,'D1_JOB_EMPLOYEE_MISSING'::text,'{}'::jsonb;
+    RETURN;
+  END IF;
+  IF p_check_employee_version AND actual_version<>p_expected_employee_version THEN
+    error_code:='D1_JOB_EMPLOYEE_VERSION_STALE';
+  END IF;
+  SELECT sp.id INTO project_school FROM app_private.school_profiles sp
+   ORDER BY sp.id LIMIT 1;
+  IF project_school IS NULL THEN
+    RETURN QUERY SELECT actual_version,'D1_JOB_SCHOOL_MISSING'::text,'{}'::jsonb;
+    RETURN;
+  END IF;
+  SELECT ARRAY(SELECT DISTINCT x.id FROM pg_catalog.unnest(
+      ARRAY[p_expected_source_department_id,p_department_id]) AS x(id)
+      WHERE x.id IS NOT NULL ORDER BY x.id)
+    INTO department_ids;
+  SELECT ARRAY(SELECT DISTINCT x.id FROM pg_catalog.unnest(
+      ARRAY[p_expected_source_designation_id,p_designation_id]) AS x(id)
+      WHERE x.id IS NOT NULL ORDER BY x.id)
+    INTO designation_ids;
+  FOR history_row IN SELECT d.id FROM app_private.departments d
+    WHERE d.id=ANY(COALESCE(department_ids,'{}'::uuid[]))
+    ORDER BY d.id FOR UPDATE LOOP NULL; END LOOP;
+  SELECT count(*) INTO locked_count FROM app_private.departments d
+   WHERE d.id=ANY(COALESCE(department_ids,'{}'::uuid[]));
+  IF locked_count<>COALESCE(pg_catalog.cardinality(department_ids),0) THEN
+    error_code:=COALESCE(error_code,'D1_JOB_DEPARTMENT_MISSING');
+  END IF;
+  FOR history_row IN SELECT d.id FROM app_private.designations d
+    WHERE d.id=ANY(COALESCE(designation_ids,'{}'::uuid[]))
+    ORDER BY d.id FOR UPDATE LOOP NULL; END LOOP;
+  SELECT count(*) INTO locked_count FROM app_private.designations d
+   WHERE d.id=ANY(COALESCE(designation_ids,'{}'::uuid[]));
+  IF locked_count<>COALESCE(pg_catalog.cardinality(designation_ids),0) THEN
+    error_code:=COALESCE(error_code,'D1_JOB_DESIGNATION_MISSING');
+  END IF;
+  IF EXISTS (SELECT 1 FROM app_private.departments d
+      WHERE d.id=ANY(COALESCE(department_ids,'{}'::uuid[]))
+        AND d.school_id IS DISTINCT FROM project_school)
+     OR EXISTS (SELECT 1 FROM app_private.designations d
+      WHERE d.id=ANY(COALESCE(designation_ids,'{}'::uuid[]))
+        AND d.school_id IS DISTINCT FROM project_school) THEN
+    error_code:=COALESCE(error_code,'D1_JOB_CATALOG_SCHOOL_MISMATCH');
+  END IF;
+  IF p_source_assignment_id IS NOT NULL THEN
+    SELECT j.* INTO source_row FROM app_private.employee_job_assignments j
+     WHERE j.id=p_source_assignment_id AND j.employee_id=p_employee_id;
+    source_found:=FOUND;
+    IF NOT source_found THEN
+      error_code:=COALESCE(error_code,'D1_JOB_SOURCE_MISSING');
+    ELSIF source_row.department_id IS DISTINCT FROM p_expected_source_department_id
+       OR source_row.designation_id IS DISTINCT FROM p_expected_source_designation_id
+       OR source_row.effective_from IS DISTINCT FROM p_expected_source_effective_from
+       OR source_row.supersedes_id IS DISTINCT FROM p_expected_source_supersedes_id THEN
+      error_code:=COALESCE(error_code,'D1_JOB_SOURCE_FACTS_STALE');
+    END IF;
+  ELSIF p_expected_source_department_id IS NOT NULL
+     OR p_expected_source_designation_id IS NOT NULL
+     OR p_expected_source_effective_from IS NOT NULL
+     OR p_expected_source_supersedes_id IS NOT NULL THEN
+    error_code:=COALESCE(error_code,'D1_JOB_SOURCE_INTENT_INVALID');
+  END IF;
+  FOR history_row IN
+    SELECT j.id FROM app_private.employee_job_assignments j
+     WHERE j.employee_id=p_employee_id AND (
+       (p_source_assignment_id IS NOT NULL AND j.id=p_source_assignment_id)
+       OR (p_additional_assignment_id IS NOT NULL AND j.id=p_additional_assignment_id)
+       OR (p_expected_source_department_id IS NOT NULL
+         AND j.department_id=p_expected_source_department_id
+         AND j.designation_id=p_expected_source_designation_id)
+       OR (p_department_id IS NOT NULL AND j.department_id=p_department_id
+         AND j.designation_id=p_designation_id))
+     ORDER BY j.id FOR UPDATE LOOP NULL;
+  END LOOP;
+  IF p_source_assignment_id IS NOT NULL THEN
+    SELECT j.* INTO source_row FROM app_private.employee_job_assignments j
+     WHERE j.id=p_source_assignment_id AND j.employee_id=p_employee_id;
+    source_found:=FOUND;
+    IF NOT source_found THEN
+      error_code:=COALESCE(error_code,'D1_JOB_SOURCE_MISSING');
+      source_snapshot:='{}'::jsonb;
+    ELSE
+      IF source_row.department_id IS DISTINCT FROM p_expected_source_department_id
+         OR source_row.designation_id IS DISTINCT FROM p_expected_source_designation_id
+         OR source_row.effective_from IS DISTINCT FROM p_expected_source_effective_from
+         OR source_row.supersedes_id IS DISTINCT FROM p_expected_source_supersedes_id THEN
+        error_code:=COALESCE(error_code,'D1_JOB_SOURCE_FACTS_STALE');
+      END IF;
+      source_snapshot:=pg_catalog.jsonb_build_object(
+        'assignment_id',source_row.id,'employee_id',source_row.employee_id,
+        'department_id',source_row.department_id,'designation_id',source_row.designation_id,
+        'effective_from',pg_catalog.to_char(source_row.effective_from,'YYYY-MM-DD'),
+        'effective_until',CASE WHEN source_row.effective_until IS NULL THEN NULL
+          ELSE pg_catalog.to_char(source_row.effective_until,'YYYY-MM-DD') END,
+        'supersedes_id',source_row.supersedes_id);
+    END IF;
+  ELSE
+    source_snapshot:='{}'::jsonb;
+  END IF;
+  RETURN QUERY SELECT actual_version,error_code,source_snapshot;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_lock_context(
+  uuid,bigint,boolean,uuid,uuid,uuid,date,uuid,uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_lock_context(
+  uuid,bigint,boolean,uuid,uuid,uuid,date,uuid,uuid,uuid,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_job_assignment_preflight(
+  p_employee_id uuid,p_expected_employee_version bigint,p_action text,
+  p_source_assignment_id uuid,p_expected_source_department_id uuid,
+  p_expected_source_designation_id uuid,p_expected_source_effective_from date,
+  p_expected_source_supersedes_id uuid,p_department_id uuid,p_designation_id uuid,
+  p_effective_from date,p_effective_until date
+) RETURNS TABLE(eligible boolean,error_code text,employee_version bigint,
+  source_snapshot jsonb)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE context record; source_row app_private.employee_job_assignments%ROWTYPE;
+  project_school uuid; department_ids uuid[]; designation_ids uuid[];
+  destination_school uuid; destination_state text; source_end date;
+BEGIN
+  SELECT * INTO context FROM app_private.d1_employee_job_assignment_lock_context(
+    p_employee_id,p_expected_employee_version,true,p_source_assignment_id,
+    p_expected_source_department_id,p_expected_source_designation_id,
+    p_expected_source_effective_from,p_expected_source_supersedes_id,
+    p_department_id,p_designation_id,NULL);
+  IF context.error_code IS NOT NULL THEN
+    RETURN QUERY SELECT false,context.error_code,context.employee_version,
+      context.source_snapshot; RETURN;
+  END IF;
+  IF p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT') THEN
+    RETURN QUERY SELECT false,'D1_JOB_ACTION_INVALID'::text,context.employee_version,
+      context.source_snapshot; RETURN;
+  END IF;
+  IF (p_action='ADD' AND (p_source_assignment_id IS NOT NULL
+       OR p_expected_source_department_id IS NOT NULL
+       OR p_expected_source_designation_id IS NOT NULL
+       OR p_expected_source_effective_from IS NOT NULL
+       OR p_expected_source_supersedes_id IS NOT NULL
+       OR p_department_id IS NULL OR p_designation_id IS NULL
+       OR p_effective_from IS NULL
+       OR (p_effective_until IS NOT NULL AND p_effective_until<=p_effective_from)))
+     OR (p_action='END' AND (p_source_assignment_id IS NULL
+       OR p_expected_source_department_id IS NULL
+       OR p_expected_source_designation_id IS NULL
+       OR p_expected_source_effective_from IS NULL
+       OR p_department_id IS NOT NULL OR p_designation_id IS NOT NULL
+       OR p_effective_from IS NOT NULL OR p_effective_until IS NULL))
+     OR (p_action='CORRECT' AND (p_source_assignment_id IS NULL
+       OR p_expected_source_department_id IS NULL
+       OR p_expected_source_designation_id IS NULL
+       OR p_expected_source_effective_from IS NULL
+       OR p_department_id IS NULL OR p_designation_id IS NULL
+       OR p_effective_from IS NULL OR p_effective_until IS NOT NULL)) THEN
+    RETURN QUERY SELECT false,'D1_JOB_ACTION_SHAPE_INVALID'::text,context.employee_version,
+      context.source_snapshot; RETURN;
+  END IF;
+  SELECT sp.id INTO project_school FROM app_private.school_profiles sp
+   ORDER BY sp.id LIMIT 1;
+  IF project_school IS NULL THEN
+    RETURN QUERY SELECT false,'D1_JOB_SCHOOL_MISSING'::text,context.employee_version,
+      context.source_snapshot; RETURN;
+  END IF;
+  IF p_action<>'ADD' THEN
+    SELECT * INTO source_row FROM app_private.employee_job_assignments j
+     WHERE j.id=p_source_assignment_id AND j.employee_id=p_employee_id;
+    IF NOT FOUND OR source_row.effective_until IS NOT NULL
+       OR source_row.ended_at IS NOT NULL OR source_row.ended_by IS NOT NULL THEN
+      RETURN QUERY SELECT false,'D1_JOB_SOURCE_NOT_OPEN'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+    IF p_action='END' AND p_effective_until<=source_row.effective_from THEN
+      RETURN QUERY SELECT false,'D1_JOB_END_BOUND_INVALID'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+    IF p_action='CORRECT' AND p_effective_from<=source_row.effective_from THEN
+      RETURN QUERY SELECT false,'D1_JOB_CORRECTION_BOUND_INVALID'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+    IF p_action='CORRECT' AND p_department_id=source_row.department_id
+       AND p_designation_id=source_row.designation_id THEN
+      RETURN QUERY SELECT false,'D1_JOB_CORRECTION_NO_CHANGE'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+    IF p_action='CORRECT' AND EXISTS (
+      SELECT 1 FROM app_private.employee_job_assignments successor
+       WHERE successor.supersedes_id=source_row.id) THEN
+      RETURN QUERY SELECT false,'D1_JOB_SOURCE_ALREADY_SUPERSEDED'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+  END IF;
+  IF p_action IN ('ADD','CORRECT') THEN
+    SELECT d.school_id,d.state INTO destination_school,destination_state
+      FROM app_private.departments d WHERE d.id=p_department_id;
+    IF NOT FOUND THEN
+      RETURN QUERY SELECT false,'D1_JOB_DEPARTMENT_MISSING'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+    IF destination_school IS DISTINCT FROM project_school THEN
+      RETURN QUERY SELECT false,'D1_JOB_DEPARTMENT_SCHOOL_MISMATCH'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+    IF destination_state IS DISTINCT FROM 'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_JOB_DEPARTMENT_NOT_ACTIVE'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+    SELECT d.school_id,d.state INTO destination_school,destination_state
+      FROM app_private.designations d WHERE d.id=p_designation_id;
+    IF NOT FOUND THEN
+      RETURN QUERY SELECT false,'D1_JOB_DESIGNATION_MISSING'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+    IF destination_school IS DISTINCT FROM project_school THEN
+      RETURN QUERY SELECT false,'D1_JOB_DESIGNATION_SCHOOL_MISMATCH'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+    IF destination_state IS DISTINCT FROM 'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_JOB_DESIGNATION_NOT_ACTIVE'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+  END IF;
+  IF p_action='END' THEN
+    IF EXISTS (SELECT 1 FROM app_private.employee_job_assignments j
+       WHERE j.employee_id=p_employee_id
+         AND j.department_id=source_row.department_id
+         AND j.designation_id=source_row.designation_id AND j.id<>source_row.id
+         AND j.effective_from<p_effective_until
+         AND (j.effective_until IS NULL OR source_row.effective_from<j.effective_until)) THEN
+      RETURN QUERY SELECT false,'D1_JOB_SOURCE_INTERVAL_CONFLICT'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+  ELSIF p_action='ADD' THEN
+    IF EXISTS (SELECT 1 FROM app_private.employee_job_assignments j
+       WHERE j.employee_id=p_employee_id AND j.department_id=p_department_id
+         AND j.designation_id=p_designation_id
+         AND (p_effective_until IS NULL OR j.effective_from<p_effective_until)
+         AND (j.effective_until IS NULL OR p_effective_from<j.effective_until)) THEN
+      RETURN QUERY SELECT false,'D1_JOB_DUPLICATE_INTERVAL'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+  ELSE
+    IF EXISTS (SELECT 1 FROM app_private.employee_job_assignments j
+       WHERE j.employee_id=p_employee_id AND j.department_id=source_row.department_id
+         AND j.designation_id=source_row.designation_id AND j.id<>source_row.id
+         AND j.effective_from<p_effective_from
+         AND (j.effective_until IS NULL OR source_row.effective_from<j.effective_until)) THEN
+      RETURN QUERY SELECT false,'D1_JOB_PREDECESSOR_INTERVAL_CONFLICT'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+    IF EXISTS (SELECT 1 FROM app_private.employee_job_assignments j
+       WHERE j.employee_id=p_employee_id AND j.department_id=p_department_id
+         AND j.designation_id=p_designation_id AND j.id<>source_row.id
+         AND (j.effective_until IS NULL OR j.effective_until>p_effective_from)) THEN
+      RETURN QUERY SELECT false,'D1_JOB_SUCCESSOR_INTERVAL_CONFLICT'::text,context.employee_version,
+        context.source_snapshot; RETURN;
+    END IF;
+  END IF;
+  RETURN QUERY SELECT true,NULL::text,context.employee_version,context.source_snapshot;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_preflight(
+  uuid,bigint,text,uuid,uuid,uuid,date,uuid,uuid,uuid,date,date)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_preflight(
+  uuid,bigint,text,uuid,uuid,uuid,date,uuid,uuid,uuid,date,date)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_job_assignment_effect(
+  p_employee_id uuid,p_expected_employee_version bigint,p_action text,
+  p_source_assignment_id uuid,p_expected_source_department_id uuid,
+  p_expected_source_designation_id uuid,p_expected_source_effective_from date,
+  p_expected_source_supersedes_id uuid,p_department_id uuid,p_designation_id uuid,
+  p_effective_from date,p_effective_until date,p_reason text
+) RETURNS TABLE(assignment_id uuid,employee_id uuid,action text,
+  department_id uuid,designation_id uuid,effective_from date,
+  effective_until date,employee_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; preflight record; source_row app_private.employee_job_assignments%ROWTYPE;
+  source_closed_id uuid;
+  result_id uuid; result_department uuid; result_designation uuid;
+  result_from date; result_until date;
+BEGIN
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL OR p_reason IS NULL OR length(btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Employee job effect intent invalid';
+  END IF;
+  SELECT * INTO preflight FROM app_private.d1_employee_job_assignment_preflight(
+    p_employee_id,p_expected_employee_version,p_action,p_source_assignment_id,
+    p_expected_source_department_id,p_expected_source_designation_id,
+    p_expected_source_effective_from,p_expected_source_supersedes_id,
+    p_department_id,p_designation_id,p_effective_from,p_effective_until);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee job deterministic preflight failed: %',
+      preflight.error_code;
+  END IF;
+  IF p_action='ADD' THEN
+    result_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.employee_job_assignments
+      (id,created_by,ended_at,ended_by,employee_id,department_id,
+       designation_id,effective_from,effective_until,reason,supersedes_id)
+    VALUES (result_id,actor,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE pg_catalog.statement_timestamp() END,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE actor END,
+      p_employee_id,p_department_id,p_designation_id,p_effective_from,
+      p_effective_until,p_reason,NULL);
+    result_department:=p_department_id; result_designation:=p_designation_id;
+    result_from:=p_effective_from; result_until:=p_effective_until;
+  ELSIF p_action='END' THEN
+    SELECT * INTO source_row FROM app_private.employee_job_assignments j
+     WHERE j.id=p_source_assignment_id AND j.employee_id=p_employee_id FOR UPDATE;
+    UPDATE app_private.employee_job_assignments j SET
+      effective_until=p_effective_until,ended_at=pg_catalog.statement_timestamp(),
+      ended_by=actor
+     WHERE j.id=source_row.id AND j.effective_until IS NULL
+     RETURNING j.id,j.department_id,j.designation_id,j.effective_from,j.effective_until
+      INTO result_id,result_department,result_designation,result_from,result_until;
+    IF result_id IS NULL THEN
+      RAISE EXCEPTION 'D1 Employee job END source close failed';
+    END IF;
+  ELSE
+    SELECT * INTO source_row FROM app_private.employee_job_assignments j
+     WHERE j.id=p_source_assignment_id AND j.employee_id=p_employee_id FOR UPDATE;
+    UPDATE app_private.employee_job_assignments j SET
+      effective_until=p_effective_from,ended_at=pg_catalog.statement_timestamp(),
+      ended_by=actor
+     WHERE j.id=source_row.id AND j.effective_until IS NULL
+     RETURNING j.id INTO source_closed_id;
+    IF source_closed_id IS NULL THEN
+      RAISE EXCEPTION 'D1 Employee job CORRECT source close failed';
+    END IF;
+    result_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.employee_job_assignments
+      (id,created_by,ended_at,ended_by,employee_id,department_id,
+       designation_id,effective_from,effective_until,reason,supersedes_id)
+    VALUES (result_id,actor,NULL,NULL,p_employee_id,p_department_id,
+      p_designation_id,p_effective_from,NULL,p_reason,source_row.id);
+    result_department:=p_department_id; result_designation:=p_designation_id;
+    result_from:=p_effective_from; result_until:=NULL;
+  END IF;
+  RETURN QUERY SELECT result_id,p_employee_id,p_action,result_department,
+    result_designation,result_from,result_until,preflight.employee_version;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_effect(
+  uuid,bigint,text,uuid,uuid,uuid,date,uuid,uuid,uuid,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_effect(
+  uuid,bigint,text,uuid,uuid,uuid,date,uuid,uuid,uuid,date,date,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_employee_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_employee_job_assignment_authorized(
+  p_principal uuid,p_permission text,p_employee uuid,
+  p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date;
+BEGIN
+  IF p_principal IS NULL OR p_employee IS NULL OR p_permission NOT IN
+     ('employee.job_assignment.change','employee.job_assignment.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.employees e WHERE e.id=p_employee)
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+         AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL) THEN
+    RETURN false;
+  END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+    WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+      AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  on_date:=at_time::date;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes s
+    JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+    JOIN app_private.permissions p ON p.id=s.permission_id
+    JOIN app_private.roles r ON r.id=s.role_id
+    WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL'
+      AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+      AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+      AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+      AND c.resolver_key=s.resolver_key AND c.enabled
+      AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+      AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until)
+      AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+      AND s.resolver_key='DIRECT' AND (
+        (s.scope_kind='ALL' AND s.campus_id IS NULL)
+        OR (s.scope_kind='CAMPUS' AND EXISTS (
+          SELECT 1 FROM app_private.employee_campus_affiliations ca
+           WHERE ca.employee_id=p_employee AND ca.campus_id=s.campus_id
+             AND ca.effective_from<=on_date
+             AND (ca.effective_until IS NULL OR on_date<ca.effective_until)))
+      )
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_authorized(uuid,text,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_authorized(uuid,text,uuid,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_employee_job_assignment_policy()
+RETURNS TABLE(policy_id uuid,route_mode text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE selected_route text; n bigint; selected_id uuid; stored_route text;
+BEGIN
+  selected_route:=app_private.d1_p1_route('employee.job_assignment.change',NULL);
+  IF selected_route IS NULL THEN RETURN; END IF;
+  SELECT count(*),min(p.id::text)::uuid,min(p.d1_route_mode)
+    INTO n,selected_id,stored_route
+    FROM app_private.approval_policy_versions p
+    JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='employee.job_assignment.change' AND o.contract_version=1
+     AND o.enabled AND NOT o.requires_approval AND p.campus_id IS NULL
+     AND p.state='ACTIVE' AND p.effective_from<=pg_catalog.clock_timestamp()
+     AND (p.effective_until IS NULL OR pg_catalog.clock_timestamp()<p.effective_until);
+  IF n<>1 OR stored_route IS DISTINCT FROM selected_route THEN RETURN; END IF;
+  RETURN QUERY SELECT selected_id,selected_route;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_policy()
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_policy()
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
 GRANT CREATE ON SCHEMA app TO schoolos_employee_executor;
 SET ROLE schoolos_employee_executor;
 CREATE FUNCTION app.d1_change_employee_state(
@@ -9162,3 +9889,208 @@ GRANT EXECUTE ON FUNCTION app.d1_change_employee_state(uuid,text,bigint,text,tex
   TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_employee_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_employee_job_assignment_authorized(
+  p_principal uuid,p_permission text,p_employee uuid,
+  p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date;
+BEGIN
+  IF p_principal IS NULL OR p_employee IS NULL OR p_permission NOT IN
+     ('employee.job_assignment.change','employee.job_assignment.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.employees e WHERE e.id=p_employee)
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+         AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL) THEN
+    RETURN false;
+  END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+    WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+      AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  on_date:=at_time::date;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes s
+    JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+    JOIN app_private.permissions p ON p.id=s.permission_id
+    JOIN app_private.roles r ON r.id=s.role_id
+    WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL'
+      AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+      AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+      AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+      AND c.resolver_key=s.resolver_key AND c.enabled
+      AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+      AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until)
+      AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+      AND s.resolver_key='DIRECT' AND (
+        (s.scope_kind='ALL' AND s.campus_id IS NULL)
+        OR (s.scope_kind='CAMPUS' AND EXISTS (
+          SELECT 1 FROM app_private.employee_campus_affiliations ca
+           WHERE ca.employee_id=p_employee AND ca.campus_id=s.campus_id
+             AND ca.effective_from<=on_date
+             AND (ca.effective_until IS NULL OR on_date<ca.effective_until)))
+      )
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_authorized(uuid,text,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_authorized(uuid,text,uuid,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_employee_job_assignment_policy()
+RETURNS TABLE(policy_id uuid,route_mode text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE selected_route text; n bigint; selected_id uuid; stored_route text;
+  at_time timestamptz:=pg_catalog.clock_timestamp();
+BEGIN
+  selected_route:=app_private.d1_p1_route('employee.job_assignment.change',NULL);
+  IF selected_route IS NULL THEN RETURN; END IF;
+  SELECT count(*),min(p.id::text)::uuid,min(p.d1_route_mode)
+    INTO n,selected_id,stored_route
+    FROM app_private.approval_policy_versions p
+    JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='employee.job_assignment.change' AND o.contract_version=1
+     AND o.enabled AND NOT o.requires_approval AND p.campus_id IS NULL
+     AND p.state='ACTIVE' AND p.effective_from<=at_time
+     AND (p.effective_until IS NULL OR at_time<p.effective_until);
+  IF n<>1 OR stored_route IS DISTINCT FROM selected_route THEN RETURN; END IF;
+  RETURN QUERY SELECT selected_id,selected_route;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_policy()
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_policy()
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_job_assignment_reviews_live(p_request uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; s record; reviewer uuid; reviewer_person uuid;
+  requester_person uuid; n bigint; steps bigint:=0;
+BEGIN
+  SELECT r.requester_id,r.target_ref,requester.person_id AS requester_person_id
+    INTO req FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+    JOIN app_private.principals requester ON requester.id=r.requester_id
+   WHERE r.id=p_request AND r.state='APPROVED'
+     AND o.code='employee.job_assignment.change'
+     AND rp.code='employee.job_assignment.approve'
+     AND rp.state='ENABLED' AND NOT rp.family_safe;
+  IF NOT FOUND OR req.requester_person_id IS NULL THEN RETURN false; END IF;
+  requester_person:=req.requester_person_id;
+  FOR s IN SELECT x.id,x.step_number,x.state,t.reviewer_role_id,t.selection_resolver_key
+    FROM app_private.approval_request_steps x
+    JOIN app_private.approval_step_templates t
+      ON t.id=x.template_id AND t.policy_id=x.policy_id AND t.step_number=x.step_number
+   WHERE x.request_id=p_request ORDER BY x.step_number LOOP
+    steps:=steps+1;
+    IF s.state<>'APPROVED' OR s.selection_resolver_key<>'D1_REVIEWER_ROLE_SCOPE' THEN
+      RETURN false;
+    END IF;
+    SELECT count(*),min(v.reviewer_id::text)::uuid INTO n,reviewer
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=v.step_id
+       AND a.reviewer_id=v.reviewer_id
+     WHERE v.step_id=s.id AND v.decision='APPROVE'
+       AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+    SELECT p.person_id INTO reviewer_person FROM app_private.principals p
+     WHERE p.id=reviewer AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+    IF n<>1 OR reviewer_person IS NULL OR reviewer_person=requester_person
+       OR NOT app_private.d1_employee_job_assignment_authorized(
+         reviewer,'employee.job_assignment.approve',req.target_ref,s.reviewer_role_id) THEN
+      RETURN false;
+    END IF;
+  END LOOP;
+  RETURN steps>0;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_reviews_live(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_reviews_live(uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_job_assignment_participant(
+  p_request uuid,p_actor uuid
+) RETURNS text
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; actor_person uuid; final_step integer; step_row record;
+  reviewer_role uuid; requester_person uuid; decision text;
+BEGIN
+  IF p_request IS NULL OR p_actor IS NULL
+     OR app_private.current_principal_id() IS DISTINCT FROM p_actor THEN RETURN NULL; END IF;
+  SELECT r.requester_id,r.target_ref,requester.person_id AS requester_person_id
+    INTO req FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.principals requester ON requester.id=r.requester_id
+   WHERE r.id=p_request AND o.code='employee.job_assignment.change';
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  IF req.requester_id=p_actor AND app_private.d1_employee_job_assignment_authorized(
+      p_actor,'employee.job_assignment.change',req.target_ref,NULL) THEN
+    RETURN 'REQUESTER';
+  END IF;
+  SELECT p.person_id INTO actor_person FROM app_private.principals p
+   WHERE p.id=p_actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+  requester_person:=req.requester_person_id;
+  IF actor_person IS NULL OR requester_person IS NULL OR p_actor=req.requester_id
+     OR actor_person=requester_person THEN RETURN NULL; END IF;
+  IF EXISTS (
+    SELECT 1 FROM app_private.approval_request_steps s
+    JOIN app_private.approval_step_templates t ON t.id=s.template_id AND t.policy_id=s.policy_id
+    JOIN app_private.approval_step_reviewers a ON a.step_id=s.id
+   WHERE s.request_id=p_request AND s.state='OPEN'
+     AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+     AND a.reviewer_id=p_actor AND a.withdrawn_at IS NULL
+     AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+     AND (SELECT count(*) FROM app_private.approval_step_reviewers a2
+       WHERE a2.step_id=s.id AND a2.reviewer_id=p_actor AND a2.withdrawn_at IS NULL
+         AND a2.assignment_reason='D1_REVIEWER_ROLE_SCOPE')=1
+     AND app_private.d1_employee_job_assignment_authorized(
+       p_actor,'employee.job_assignment.approve',req.target_ref,t.reviewer_role_id)
+     AND EXISTS (SELECT 1 FROM app_private.d1_review_candidates(p_request,s.id) c
+       WHERE c.candidate_principal_id=p_actor)
+  ) THEN RETURN 'OPEN_REVIEWER'; END IF;
+  SELECT max(step_number) INTO final_step FROM app_private.approval_request_steps
+   WHERE request_id=p_request;
+  FOR step_row IN
+    SELECT s.step_number,s.state,t.reviewer_role_id,t.selection_resolver_key,
+           v.decision,a.assignment_reason
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t ON t.id=s.template_id AND t.policy_id=s.policy_id
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=s.id AND a.reviewer_id=v.reviewer_id
+     WHERE s.request_id=p_request AND v.reviewer_id=p_actor
+  LOOP
+    IF step_row.state IN ('APPROVED','REJECTED')
+       AND step_row.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+       AND step_row.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+       AND app_private.d1_employee_job_assignment_authorized(
+         p_actor,'employee.job_assignment.approve',req.target_ref,step_row.reviewer_role_id) THEN
+      IF step_row.step_number=final_step AND step_row.decision='APPROVE'
+         AND step_row.state='APPROVED' THEN RETURN 'FINAL_APPROVER'; END IF;
+      RETURN 'DECIDED_REVIEWER';
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_job_assignment_participant(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_job_assignment_participant(uuid,uuid)
+  TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
