@@ -852,3 +852,7 @@ This remains a static, unexecuted Migration 10 draft and **candidate 16/36** pen
 ## Independent freeze note — effect 16/36
 
 Corrected commit `9bd51d4f1b0a3768d8f4039cd3fbbcc933ac626a` passed independent authorization/ACL/workflow review and GitHub Actions run `36906436388` (121/121 tooling tests; 220/220 frozen Foundation assertions). The final correction removed CLASS as an authorization path, leaving only complete live ALL, matching CAMPUS or exact SECTION scope as approved; reviewer authority follows the same affected-Section scope rule with the configured reviewer role and `teaching.assignment.approve`. No-self-assignment, requester/reviewer Person separation, current-authority replay, deterministic invalidation, application/receipt binding, bounded checked read and minimized audit/outbox evidence were rechecked. `teaching.class_assignment.change` is frozen as effect **16/36** at that SHA. Migration 10 remains a static `.sql.draft`; no D1 runtime, D1C2 or remote Supabase execution claim is implied.
+
+### Effect 16 concurrency correction
+
+A follow-up command-path review found and corrected one lock inversion in d1_teaching_class_assignment_lock_context: after UUID-sorted Employee locks, Academic Class now precedes Campus and Academic Year, matching the frozen global teaching lock order and the existing structural academic-path helper. No permission, scope, reviewer, disclosure or workflow semantics changed. The corrected effect-16 SHA remains pending CI revalidation before refreezing.

@@ -14377,12 +14377,12 @@ BEGIN
     WHERE e.id=ANY(COALESCE(employee_ids,'{}'::uuid[])) ORDER BY e.id FOR UPDATE
   LOOP NULL; END LOOP;
 
+  PERFORM 1 FROM app_private.academic_classes c WHERE c.id=pre_class FOR UPDATE;
+  IF NOT FOUND THEN error_code:='D1_CLASS_ASSIGNMENT_CLASS_MISSING'; END IF;
   PERFORM 1 FROM app.campuses c WHERE c.id=pre_campus FOR UPDATE;
-  IF NOT FOUND THEN error_code:='D1_CLASS_ASSIGNMENT_CAMPUS_MISSING'; END IF;
+  IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_CAMPUS_MISSING'); END IF;
   PERFORM 1 FROM app.academic_years ay WHERE ay.id=pre_year FOR UPDATE;
   IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_YEAR_MISSING'); END IF;
-  PERFORM 1 FROM app_private.academic_classes c WHERE c.id=pre_class FOR UPDATE;
-  IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_CLASS_MISSING'); END IF;
   PERFORM 1 FROM app_private.class_offerings co WHERE co.id=pre_offering FOR UPDATE;
   IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_OFFERING_MISSING'); END IF;
   SELECT so.row_version INTO locked_version FROM app_private.section_offerings so
