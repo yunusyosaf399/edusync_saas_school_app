@@ -353,3 +353,56 @@ returned `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests` and
 `LOCAL_CONFIG_PASS`; staging validation returned `STAGING_VALIDATE_PASS`;
 `git diff --check` found no whitespace errors. SQL was not executed and no
 Supabase project was contacted.
+Supabase project was contacted.
+
+## Employee create P0 operation continuation (static draft)
+
+The product owner approved the previously unresolved create contract. The
+single public entry point is
+`app.d1_create_employee(p_person_id uuid, p_employee_code text,
+p_effective_from date, p_idempotency_key text)`, for fixed operation and
+command kind `employee.create`. It accepts no state, end date, reason or photo
+argument. The code is required nonblank and is stored exactly as supplied; the
+joining date is required and a new execution denies dates after `CURRENT_DATE`
+without replacing the caller's date.
+
+The Employee INSERT is limited to `person_id`, `employee_code`, fixed
+`current_state='ACTIVE'`, fixed `profile_photo_file_id=NULL`, and verified
+`created_by`; ID, version and timestamps use server defaults. In the same
+transaction exactly one initial `employment_periods` row is inserted with the
+new Employee ID, fixed `state='ACTIVE'`, caller's `effective_from`,
+`effective_until=NULL`, fixed `reason='INITIAL_EMPLOYMENT'`,
+`supersedes_id=NULL`, and verified `created_by`. The period ID/creation time
+are server defaults and end metadata remains NULL. No photo purpose is
+activated. The existing deferred Employee/history completeness triggers and
+HE/effective-history guards are unchanged; failure to create either row or
+evidence rolls back the whole transaction.
+
+The fixed order is receipt lookup (SHARED Foundation lock and namespace-71002
+key lock), verified Principal row lock, School anchor lock, exact existing
+Person row lock, replay Employee row lock when applicable, fresh live
+`employee.create` authorization, then new-command date/uniqueness checks,
+Employee insert, initial history insert and evidence append. Unique Person and
+Employee-code constraints remain the race-safe final defenses. Person receives
+only SELECT(id) and UPDATE(id) lock capability with matching RLS; no Person
+column is mutated.
+
+The fixed receipt allowlist adds only `employee.create` with a three-element
+intent containing canonical Person UUID, exact Employee code and ISO joining
+date; operation/version/Principal/command-kind/key remain in the standard
+Canonicalization V1 outer envelope. Existing successful replay locks the
+same Person and stored Employee, checks the Employee still matches the pinned
+Person/code, then reauthorizes before returning the stored Employee ID/version.
+Replay bypasses new-execution date validation and appends no duplicate rows or
+evidence. Changed intent conflicts under the same key.
+
+Dedicated `schoolos_evidence_writer` helpers append the fixed receipt, audit
+and outbox. Audit event type is `employee.create`; the selected outbox event
+is `employee.created` with only Employee ID, ACTIVE state and row version.
+No authorization provisioning or other domain side effect is performed.
+
+The drafted effect count is now **11 of 36**: six Academic P0 effects, two
+Profile effects, two Employee organization-catalog effects, and
+`employee.create`. **25 operation effects remain**. This remains static draft
+work; D1C1B is incomplete, Migration 10 remains non-executable, and no SQL was
+executed or Supabase project contacted.

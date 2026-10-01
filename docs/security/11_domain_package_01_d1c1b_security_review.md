@@ -671,3 +671,50 @@ staging validation returned `STAGING_VALIDATE_PASS`; `git diff --check` found
 no whitespace errors. These checks do not establish PostgreSQL parse or
 runtime behavior. No Migration 10 SQL was executed and no Supabase project
 was contacted.
+was contacted.
+
+## Employee create P0 security continuation (static only)
+
+`app.d1_create_employee(uuid,text,date,text)` is the only new public command
+and is owned by the existing NOLOGIN `schoolos_employee_executor`. It requires
+exact permission `employee.create` under the already-registered `ALL` /
+`DIRECT` scope, evaluated against the locked School. No CAMPUS inference is
+possible before affiliation. Current live authorization is checked after
+School, Person and any replay Employee locks. FAMILY cannot satisfy the
+non-family-safe permission; the D1 evaluator rejects SYSTEM and no role-name
+fallback exists.
+
+The command locks only the existing Person row before Employee creation.
+Employee receives SELECT(id) plus UPDATE(id) solely for `SELECT ... FOR
+UPDATE`, with matching role-specific RLS policies; it receives no Person
+business-column update grant and issues no Person mutation. Employee SELECT
+is limited to ID, row version, Person, employee code, current state and photo
+link, retaining the frozen Profile projection. Employee INSERT is limited to
+Person, code, current state, photo link and actor columns. Employment-period
+INSERT is limited to employee, state, effective dates, reason, supersession
+and actor columns; no history SELECT or additional UPDATE is granted for this
+command. Existing Profile and history-end UPDATE grants are unchanged. The
+existing Employee and period RLS policies remain enabled, and no authenticated
+base-table DML is granted.
+
+Receipt, audit and outbox appends cross three operation-fixed SECURITY
+DEFINER helpers owned by `schoolos_evidence_writer`. Each explicitly revokes
+PUBLIC, anon, authenticated and service_role EXECUTE, and grants EXECUTE only
+to the Employee executor. The Employee executor receives no direct INSERT on
+receipts, audit or outbox. The public RPC revokes broad EXECUTE and grants only
+the exact signature to authenticated. The Employee executor owns the public
+domain command; authorization is evaluated by `schoolos_authz_reader` and the
+verified Principal lock remains owned by `schoolos_identity_executor`.
+
+There are no Auth/Principal/Role/role-assignment/permission/scope/reviewer,
+Department/Designation job, campus-affiliation or Teaching writes. Employee
+creation does not provision an account or capability. Audit event type is
+exactly `employee.create`; the only outbox event is `employee.created`, with
+minimized Employee ID/state/version/correlation evidence and no reason or
+private profile data. Replay rechecks current authority and verifies the
+stored Employee's Person/code binding before returning the durable result.
+
+The operation-effect inventory is **11/36**; the manifest remains **97
+permissions, 322 scope alternatives and 36 operations**. The draft remains
+unexecuted and D1C1B remains incomplete pending independent review. This
+continuation does not authorize D1C2 or Migration 10 application.

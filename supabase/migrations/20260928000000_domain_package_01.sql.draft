@@ -2430,6 +2430,11 @@ GRANT SELECT (step_id, reviewer_id, assigned_at, withdrawn_at, assignment_reason
 CREATE POLICY d1_people_checked_display ON app_private.people
   FOR SELECT TO schoolos_read_executor USING (true);
 GRANT SELECT (id, display_name) ON app_private.people TO schoolos_read_executor;
+CREATE POLICY d1_employee_person_lock_read ON app_private.people
+  FOR SELECT TO schoolos_employee_executor USING (true);
+CREATE POLICY d1_employee_person_lock_update ON app_private.people
+  FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
+GRANT SELECT (id),UPDATE(id) ON app_private.people TO schoolos_employee_executor;
 CREATE POLICY d1_rooms_checked_display ON app.rooms
   FOR SELECT TO schoolos_read_executor USING (true);
 GRANT SELECT (id, campus_id, code, name) ON app.rooms TO schoolos_read_executor;
@@ -2779,7 +2784,11 @@ GRANT SELECT (id, person_id, employee_code, current_state, profile_photo_file_id
 CREATE POLICY d1_25_executor_read ON app_private.employees FOR SELECT TO schoolos_employee_executor USING (true);
 CREATE POLICY d1_25_executor_insert ON app_private.employees FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
 CREATE POLICY d1_25_executor_update ON app_private.employees FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT ON app_private.employees TO schoolos_employee_executor;
+REVOKE SELECT, INSERT ON app_private.employees FROM schoolos_employee_executor;
+GRANT SELECT (id, row_version, person_id, employee_code, current_state,
+  profile_photo_file_id),
+  INSERT (person_id, employee_code, current_state, profile_photo_file_id, created_by)
+  ON app_private.employees TO schoolos_employee_executor;
 GRANT UPDATE (current_state, profile_photo_file_id) ON app_private.employees TO schoolos_employee_executor;
 CREATE POLICY d1_26_schema_maintenance ON app_private.employment_periods
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -2792,7 +2801,10 @@ GRANT SELECT (id, employee_id, state, effective_from, effective_until, reason, s
 CREATE POLICY d1_26_executor_read ON app_private.employment_periods FOR SELECT TO schoolos_employee_executor USING (true);
 CREATE POLICY d1_26_executor_insert ON app_private.employment_periods FOR INSERT TO schoolos_employee_executor WITH CHECK (true);
 CREATE POLICY d1_26_executor_update ON app_private.employment_periods FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT ON app_private.employment_periods TO schoolos_employee_executor;
+REVOKE SELECT, INSERT ON app_private.employment_periods FROM schoolos_employee_executor;
+GRANT INSERT (employee_id, state, effective_from, effective_until, reason,
+    supersedes_id, created_by)
+  ON app_private.employment_periods TO schoolos_employee_executor;
 GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.employment_periods TO schoolos_employee_executor;
 CREATE POLICY d1_27_schema_maintenance ON app_private.employee_identity_details
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -3599,7 +3611,9 @@ BEGIN
            OR (p_operation_code='employee.department.change'
              AND pg_catalog.jsonb_array_length(p_intent)=6)
            OR (p_operation_code='employee.designation.change'
-             AND pg_catalog.jsonb_array_length(p_intent)=6)))
+             AND pg_catalog.jsonb_array_length(p_intent)=6)
+           OR (p_operation_code='employee.create'
+             AND pg_catalog.jsonb_array_length(p_intent)=3)))
        OR (p_operation_code IN ('student.profile.update','employee.profile.update')
            AND ((p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=4)
              OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=5)
@@ -5375,6 +5389,90 @@ REVOKE ALL ON FUNCTION app_private.d1_employee_catalog_audit(
 GRANT EXECUTE ON FUNCTION app_private.d1_employee_catalog_audit(
   uuid,text,text,text,uuid,uuid,bigint,text,uuid)
   TO schoolos_employee_executor;
+
+CREATE FUNCTION app_private.d1_employee_create_receipt(
+  p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+  p_employee_id uuid,p_row_version bigint
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE new_id uuid:=pg_catalog.gen_random_uuid(); op_code text;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o
+   WHERE o.id=p_operation AND o.contract_version=1 AND o.enabled
+     AND o.handler_key=o.code;
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR op_code IS DISTINCT FROM 'employee.create'
+     OR p_key IS NULL OR pg_catalog.length(p_key) NOT BETWEEN 1 AND 200
+     OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+     OR p_employee_id IS NULL OR p_row_version IS DISTINCT FROM 1 THEN
+    RAISE EXCEPTION 'D1 Employee create receipt intent denied';
+  END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,
+     canonical_payload_hash,canonicalization_version,expected_target_version,
+     state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES (new_id,p_actor,p_operation,op_code,p_key,p_hash,1,NULL,
+    'SUCCEEDED','D1_EMPLOYEE',p_employee_id,
+    pg_catalog.jsonb_build_object('state','ACTIVE','row_version',p_row_version),
+    pg_catalog.transaction_timestamp(),p_actor);
+  RETURN new_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_create_receipt(
+  uuid,uuid,text,bytea,uuid,bigint)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_create_receipt(
+  uuid,uuid,text,bytea,uuid,bigint) TO schoolos_employee_executor;
+
+CREATE FUNCTION app_private.d1_employee_create_audit(
+  p_actor uuid,p_target uuid,p_receipt uuid,p_row_version bigint,
+  p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_target IS NULL OR p_receipt IS NULL
+     OR p_row_version IS DISTINCT FROM 1 OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee create audit intent denied';
+  END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,
+     event_type,target_kind,target_ref,command_receipt_id,source_kind,
+     correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL','SUCCEEDED',
+    pg_catalog.jsonb_build_object('operation','employee.create'),p_row_version,
+    'employee.create','EMPLOYEE',p_target,p_receipt,'API',p_correlation,
+    pg_catalog.jsonb_build_object('state','ACTIVE','row_version',p_row_version),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_create_audit(
+  uuid,uuid,uuid,bigint,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_create_audit(
+  uuid,uuid,uuid,bigint,uuid) TO schoolos_employee_executor;
+
+CREATE FUNCTION app_private.d1_employee_create_event(
+  p_actor uuid,p_target uuid,p_receipt uuid,p_row_version bigint,
+  p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_target IS NULL OR p_receipt IS NULL
+     OR p_row_version IS DISTINCT FROM 1 OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee create event intent denied';
+  END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,
+     command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('employee.created','EMPLOYEE',p_target,p_row_version,
+    p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('employee_id',p_target,
+      'state','ACTIVE','row_version',p_row_version),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_create_event(
+  uuid,uuid,uuid,bigint,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_create_event(
+  uuid,uuid,uuid,bigint,uuid) TO schoolos_employee_executor;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
@@ -7748,5 +7846,104 @@ REVOKE ALL ON FUNCTION app.d1_change_employee_designation(
   FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app.d1_change_employee_designation(
   text,uuid,uuid,text,text,bigint,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_employee_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_employee_executor;
+SET ROLE schoolos_employee_executor;
+CREATE FUNCTION app.d1_create_employee(
+  p_person_id uuid,p_employee_code text,p_effective_from date,
+  p_idempotency_key text
+) RETURNS TABLE (employee_id uuid,row_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; school_id uuid; locked_person uuid;
+  locked_employee_id uuid; locked_employee_person_id uuid;
+  locked_employee_code text;
+  new_employee_id uuid; new_row_version bigint; new_receipt uuid;
+  correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_person_id IS NULL OR p_employee_code IS NULL
+     OR pg_catalog.length(pg_catalog.btrim(p_employee_code))=0
+     OR p_effective_from IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee create intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'employee.create','employee.create',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_person_id,p_employee_code,
+      pg_catalog.to_char(p_effective_from,'YYYY-MM-DD')));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+
+  SELECT sp.id INTO school_id FROM app_private.school_profiles sp
+   ORDER BY sp.id LIMIT 1 FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee create School anchor missing'; END IF;
+  SELECT p.id INTO locked_person FROM app_private.people p
+   WHERE p.id=p_person_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee Person missing'; END IF;
+
+  IF ctx.receipt_id IS NOT NULL AND ctx.result_ref IS NOT NULL THEN
+    SELECT e.id,e.person_id,e.employee_code
+      INTO locked_employee_id,locked_employee_person_id,locked_employee_code
+      FROM app_private.employees e
+     WHERE e.id=ctx.result_ref FOR UPDATE;
+    IF NOT FOUND OR locked_employee_id IS DISTINCT FROM ctx.result_ref
+       OR locked_employee_person_id IS DISTINCT FROM p_person_id
+       OR locked_employee_code IS DISTINCT FROM p_employee_code THEN
+      RAISE EXCEPTION 'D1 Employee create replay target mismatch';
+    END IF;
+  END IF;
+  IF NOT app_private.d1_authorized('employee.create','SCHOOL',school_id) THEN
+    RAISE EXCEPTION 'D1 Employee create authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL
+       OR ctx.result_summary IS NULL
+       OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ? 'state')
+       OR NOT (ctx.result_summary ? 'row_version')
+       OR ctx.result_summary->>'state'<>'ACTIVE'
+      OR pg_catalog.jsonb_typeof(ctx.result_summary->'row_version')<>'number'
+      OR ctx.result_summary->>'row_version'<>'1' THEN
+      RAISE EXCEPTION 'D1 prior Employee create receipt is invalid';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,
+      (ctx.result_summary->>'row_version')::bigint;
+    RETURN;
+  END IF;
+
+  IF p_effective_from>CURRENT_DATE THEN
+    RAISE EXCEPTION 'D1 Employee joining date cannot be in the future';
+  END IF;
+  IF EXISTS (SELECT 1 FROM app_private.employees e
+              WHERE e.person_id=p_person_id) THEN
+    RAISE EXCEPTION 'D1 Person already has an Employee';
+  END IF;
+  IF EXISTS (SELECT 1 FROM app_private.employees e
+              WHERE e.employee_code=p_employee_code) THEN
+    RAISE EXCEPTION 'D1 Employee code already exists';
+  END IF;
+
+  INSERT INTO app_private.employees
+    (person_id,employee_code,current_state,profile_photo_file_id,created_by)
+  VALUES (p_person_id,p_employee_code,'ACTIVE',NULL,ctx.actor_id)
+  RETURNING id,row_version INTO new_employee_id,new_row_version;
+  INSERT INTO app_private.employment_periods
+    (employee_id,state,effective_from,effective_until,reason,supersedes_id,created_by)
+  VALUES (new_employee_id,'ACTIVE',p_effective_from,NULL,
+    'INITIAL_EMPLOYMENT',NULL,ctx.actor_id);
+
+  new_receipt:=app_private.d1_employee_create_receipt(
+    ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    new_employee_id,new_row_version);
+  PERFORM app_private.d1_employee_create_audit(
+    ctx.actor_id,new_employee_id,new_receipt,new_row_version,correlation);
+  PERFORM app_private.d1_employee_create_event(
+    ctx.actor_id,new_employee_id,new_receipt,new_row_version,correlation);
+  RETURN QUERY SELECT new_employee_id,new_row_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_create_employee(uuid,text,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_create_employee(uuid,text,date,text)
+  TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_employee_executor;
