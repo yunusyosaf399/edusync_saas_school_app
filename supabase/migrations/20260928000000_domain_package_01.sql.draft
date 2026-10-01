@@ -14642,9 +14642,8 @@ CREATE FUNCTION app_private.d1_teaching_class_assignment_authorized(
 ) RETURNS boolean
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); target_campus uuid;
-  target_class uuid;
 BEGIN
-  SELECT co.campus_id,so.class_offering_id INTO target_campus,target_class
+  SELECT co.campus_id INTO target_campus
     FROM app_private.section_offerings so
     JOIN app_private.class_offerings co ON co.id=so.class_offering_id
    WHERE so.id=p_section;
@@ -14685,7 +14684,6 @@ BEGIN
       AND s.resolver_key='DIRECT'
       AND ((s.scope_kind='ALL' AND s.campus_id IS NULL)
         OR (s.scope_kind='CAMPUS' AND s.campus_id=target_campus)
-        OR (s.scope_kind='CLASS' AND s.class_offering_id=target_class)
         OR (s.scope_kind='SECTION' AND s.section_offering_id=p_section))
   );
 END $body$;
