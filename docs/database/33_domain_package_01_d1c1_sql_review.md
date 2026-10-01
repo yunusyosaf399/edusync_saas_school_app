@@ -525,3 +525,19 @@ The static draft implements the frozen Employee → Campus/Year → Class → Cl
 Public typed surfaces are `app.d1_change_teacher_capability`, `app.d1_submit_teacher_capability_change`, `app.d1_review_teacher_capability_request`, `app.d1_apply_teacher_capability_request`, and bounded `app.d1_read_teacher_capability_request`. Migration 10 remains `.sql.draft` and unexecuted. This is effect candidate **15/36**, not a frozen/pass result. Manifests remain **97 permissions / 322 scope alternatives / 36 operations**. D1C1B remains incomplete; D1C2, Migration 10 application and remote Supabase operations remain unauthorized.
 
 No fresh PostgreSQL/D1 runtime claim is made by this status section; runtime proof remains a later separately authorized gate.
+
+## Independent freeze note — effect 15/36
+
+Independent review of commit `5870baf88ceac2f323f3d8dd46fed50231d00f56` and GitHub Actions run `36896963330` passed. The run completed 121/121 tooling tests and the unchanged frozen Foundation local regression at 220/220 pgTAP assertions. `teaching.capability.change` is therefore frozen as effect **15/36** at that SHA. This freeze does not authorize Migration 10 execution or D1C2.
+
+## Class-teacher assignment P0/P2 continuation — candidate 16/36
+
+Product-owner clarification fixes `teaching.class_assignment.change` as typed `ADD`, `END`, and `CORRECT`. Current/future ADD, END and CORRECT are P0 direct operations. Only a CORRECT boundary strictly before the current business date is P2 and requires `teaching.assignment.approve`. ADD may be initially bounded; END one-way closes one open source row without rewriting its immutable reason; CORRECT closes one open source and appends one open successor at the same boundary with `supersedes_id=source.id`. Class-teacher lineage remains on the same Section while the destination Employee may change. Already-ended or already-superseded sources deny, and exact no-op correction is rejected.
+
+The command uses Section `row_version` as the mutable-target concurrency binding but does not increment Section version for unrelated child history. Source snapshot plus Section/history locks serialize the assignment stream. When CORRECT changes teacher, source and destination Employees are precollected and locked UUID-ascending before Campus → Academic Year → Academic Class → Class Offering → Section Offering → history. One effective Class Teacher per Section remains enforced by the existing relation-33 overlap guard.
+
+Destination eligibility must cover the complete stored interval. Open assignments use the Academic Year exclusive boundary as the validation horizon. ACTIVE employment must cover that horizon, and Teacher Capability may cover it through the already-frozen gap-free adjacent retained capability chain. The immediate cross-row assignment guard is aligned to that same helper, correcting a defensive mismatch with effect 15's frozen capability-containment rule without changing capability command semantics.
+
+The static draft exposes P0 `app.d1_change_class_teacher_assignment` plus the P2-only `app.d1_submit_class_teacher_assignment_correction`, `app.d1_review_class_teacher_assignment_request`, `app.d1_apply_class_teacher_assignment_request`, and bounded `app.d1_read_class_teacher_assignment_request`. P2 uses one unambiguous current school/campus policy, exact `D1_REVIEWER_ROLE_SCOPE`, requester/reviewer Person separation, deterministic `APPROVED→INVALIDATED` apply failures, current-authority replay, and one successful `teaching.class_assignment_changed` event.
+
+Migration 10 remains `.sql.draft` and unexecuted. This is effect candidate **16/36**, not a frozen/pass result. Manifests remain **97 permissions / 322 scope alternatives / 36 operations**. D1C1B remains incomplete; D1C2 and remote Supabase operations remain unauthorized.

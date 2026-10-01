@@ -832,3 +832,19 @@ P1 DIRECT/APPROVAL uses current requester/reviewer authority, exact `D1_REVIEWER
 The checked request read exposes only request state, Employee, action, source capability/start and requested effective dates. It excludes private reason, arbitrary workflow JSON, receipts, audit JSON, assignment reasons, identity fields and authorization internals. Broad audit/outbox evidence contains no private HR/staffing reason. Successful END auto-closure emits no class/subject assignment event.
 
 This remains a static, unexecuted Migration 10 draft and **candidate 15/36** pending independent review. No Foundation/runtime test claim is added here.
+
+## Independent freeze note — effect 15/36
+
+Commit `5870baf88ceac2f323f3d8dd46fed50231d00f56` passed independent authorization/ACL/workflow review and GitHub Actions run `36896963330` (121 tooling tests; 220/220 frozen Foundation assertions). `teaching.capability.change` is frozen as effect **15/36**. No runtime D1 or Migration 10 execution claim is implied.
+
+## Class-teacher assignment P0/P2 security continuation — candidate 16/36
+
+`teaching.class_assignment.change` is non-family-safe TC authority. The protected authorization path accepts only complete live ALL, matching CAMPUS, matching CLASS or exact SECTION scope chains with resolver `DIRECT`; the existence of a Class Teacher assignment never grants mutation authority. Current/future ADD/END/CORRECT use the fixed P0 entry point. Retroactive CORRECT alone uses P2 with `teaching.assignment.approve`, an unambiguous active school/campus policy, configured reviewer role, exact Section-scope applicability and requester/reviewer Person separation.
+
+No-self-assignment is enforced for ADD/CORRECT against the requester's Person and destination Employee and is rechecked at P2 apply. P2 final review stops at `APPROVED`. Apply revalidates policy, current requester and reviewer authority, Section version/ancestry, source head/facts, no-op/self rules, destination employment/capability coverage and one-teacher overlap. Deterministic invalidity yields `INVALIDATED` plus a REJECTED `request.apply`, with no `approval_applications` row, assignment effect or outbox. Unexpected SQL/infrastructure failures are not normalized to INVALIDATED.
+
+The application guard is schema-owner trigger-only and binds a successful P2 application to a SUCCEEDED `request.apply`, fixed `D1_TEACHING_CLASS_ASSIGNMENT_APPLY` result kind, EXECUTED request, exact source/successor Section lineage, destination Employee, approved retroactive boundary, protected reason and Section version. The checked request read exposes only request state plus Section/action/source Employee/source start/destination Employee/correction date. Private reasons, arbitrary workflow JSON, receipts, identity details and authorization internals are excluded.
+
+The provisional broad relation-33 teaching grant is revoked and replaced by explicit retained-history SELECT/INSERT columns plus the existing one-way end update. Additional teaching-executor parent privileges are read/lock-only columns required for Employee and Section ancestry validation. Authenticated receives exact RPC EXECUTE only and no base-table DML. Broad audit/outbox evidence excludes private reason text; successful domain effects emit only `teaching.class_assignment_changed`.
+
+This remains a static, unexecuted Migration 10 draft and **candidate 16/36** pending independent review. No D1 runtime test claim is added here.

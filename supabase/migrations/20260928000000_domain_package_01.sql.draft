@@ -1954,9 +1954,8 @@ BEGIN
         WHERE ep.employee_id=NEW.employee_id AND ep.state='ACTIVE'
           AND ep.effective_from<=NEW.effective_from
           AND (ep.effective_until IS NULL OR ep.effective_until>=coverage_until))
-       OR NOT EXISTS (SELECT 1 FROM app_private.teacher_capabilities tc
-        WHERE tc.employee_id=NEW.employee_id AND tc.effective_from<=NEW.effective_from
-          AND (tc.effective_until IS NULL OR tc.effective_until>=coverage_until))) THEN
+       OR NOT app_private.d1_teacher_capability_covers_interval(
+          NEW.employee_id,NEW.effective_from,coverage_until)) THEN
       RAISE EXCEPTION 'D1 teaching assignment lacks full employment/capability eligibility';
     END IF;
     IF TG_TABLE_NAME='subject_teacher_assignments' AND NOT EXISTS (
@@ -3670,6 +3669,11 @@ BEGIN
        OR (p_operation_code='teaching.capability.change' AND (
             (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
          OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='teaching.class_assignment.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=11)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=11)
          OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
          OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2))) THEN
     RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
@@ -14167,6 +14171,1496 @@ END $body$;
 REVOKE ALL ON FUNCTION app.d1_read_teacher_capability_request(uuid)
   FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app.d1_read_teacher_capability_request(uuid)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
+
+-- D1C1B Class-teacher assignment P0/P2 continuation. Product-owner semantics:
+-- current/future ADD/END/CORRECT execute P0; only retroactive CORRECT uses P2.
+-- One Section has at most one effective Class Teacher. Assignment facts never
+-- grant mutation authority. Migration 10 remains a non-executable draft.
+
+-- Replace the provisional broad teaching grants on relation 33 with explicit
+-- retained-history columns plus the one-way HE close.
+REVOKE SELECT, INSERT ON app_private.class_teacher_assignments
+  FROM schoolos_teaching_executor;
+GRANT SELECT (id,created_at,created_by,ended_at,ended_by,section_offering_id,
+    employee_id,effective_from,effective_until,reason,supersedes_id),
+  INSERT (id,created_by,ended_at,ended_by,section_offering_id,employee_id,
+    effective_from,effective_until,reason,supersedes_id)
+  ON app_private.class_teacher_assignments TO schoolos_teaching_executor;
+
+-- Effect 12/15 already installed lock-only teaching policies. Extend only the
+-- SELECT columns required to revalidate exact Section ancestry and eligibility.
+GRANT SELECT (person_id) ON app_private.employees TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state) ON app.campuses TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state,starts_on,ends_on) ON app.academic_years
+  TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state) ON app_private.academic_classes
+  TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state) ON app_private.class_offerings
+  TO schoolos_teaching_executor;
+GRANT SELECT (row_version,campus_id,state) ON app_private.section_offerings
+  TO schoolos_teaching_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_teaching_executor;
+SET ROLE schoolos_teaching_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_payload_valid(p jsonb)
+RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE action text; source_id text; source_employee text; source_from text;
+  source_supersedes text; employee text; effect_from text; effect_until text;
+  source_start date; start_on date; end_on date;
+BEGIN
+  IF p IS NULL OR pg_catalog.jsonb_typeof(p)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p))<>8
+     OR NOT (p ?& ARRAY['action','source_assignment_id','source_employee_id',
+       'source_effective_from','source_supersedes_id','employee_id',
+       'effective_from','effective_until']) THEN RETURN false; END IF;
+  action:=p->>'action'; source_id:=p->>'source_assignment_id';
+  source_employee:=p->>'source_employee_id'; source_from:=p->>'source_effective_from';
+  source_supersedes:=p->>'source_supersedes_id'; employee:=p->>'employee_id';
+  effect_from:=p->>'effective_from'; effect_until:=p->>'effective_until';
+  IF pg_catalog.jsonb_typeof(p->'action')<>'string'
+     OR action NOT IN ('ADD','END','CORRECT') THEN RETURN false; END IF;
+  IF pg_catalog.jsonb_typeof(p->'source_assignment_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_employee_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_effective_from') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_supersedes_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'employee_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'effective_from') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'effective_until') NOT IN ('string','null') THEN
+    RETURN false;
+  END IF;
+  IF (source_id IS NOT NULL AND source_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_employee IS NOT NULL AND source_employee !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_supersedes IS NOT NULL AND source_supersedes !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (employee IS NOT NULL AND employee !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_from IS NOT NULL AND source_from !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+     OR (effect_from IS NOT NULL AND effect_from !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+     OR (effect_until IS NOT NULL AND effect_until !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') THEN
+    RETURN false;
+  END IF;
+  IF action='ADD' AND (source_id IS NOT NULL OR source_employee IS NOT NULL
+      OR source_from IS NOT NULL OR source_supersedes IS NOT NULL
+      OR employee IS NULL OR effect_from IS NULL) THEN RETURN false; END IF;
+  IF action='END' AND (source_id IS NULL OR source_employee IS NULL OR source_from IS NULL
+      OR employee IS NOT NULL OR effect_from IS NOT NULL OR effect_until IS NULL) THEN
+    RETURN false;
+  END IF;
+  IF action='CORRECT' AND (source_id IS NULL OR source_employee IS NULL OR source_from IS NULL
+      OR employee IS NULL OR effect_from IS NULL OR effect_until IS NOT NULL) THEN
+    RETURN false;
+  END IF;
+  BEGIN
+    IF source_from IS NOT NULL THEN source_start:=source_from::date; END IF;
+    IF effect_from IS NOT NULL THEN start_on:=effect_from::date; END IF;
+    IF effect_until IS NOT NULL THEN end_on:=effect_until::date; END IF;
+  EXCEPTION WHEN invalid_datetime_format OR datetime_field_overflow THEN RETURN false;
+  END;
+  IF action='ADD' AND end_on IS NOT NULL AND end_on<=start_on THEN RETURN false; END IF;
+  IF action='END' AND end_on<=source_start THEN RETURN false; END IF;
+  IF action='CORRECT' AND start_on<=source_start THEN RETURN false; END IF;
+  RETURN true;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_payload_valid(jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_payload_valid(jsonb)
+  TO schoolos_teaching_executor,schoolos_workflow_executor,schoolos_read_executor,
+     schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_request_payload_valid(
+  p_old jsonb,p_requested jsonb
+) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_old IS NULL OR p_requested IS NULL
+     OR pg_catalog.jsonb_typeof(p_old)<>'object'
+     OR pg_catalog.jsonb_typeof(p_requested)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_old))<>4
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_requested))<>4
+     OR NOT (p_old ?& ARRAY['source_assignment_id','source_employee_id',
+       'source_effective_from','source_supersedes_id'])
+     OR NOT (p_requested ?& ARRAY['action','employee_id','effective_from','effective_until'])
+  THEN RETURN false; END IF;
+  RETURN app_private.d1_teaching_class_assignment_payload_valid(p_old||p_requested);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_request_payload_valid(jsonb,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_request_payload_valid(jsonb,jsonb)
+  TO schoolos_teaching_executor,schoolos_workflow_executor,schoolos_read_executor,
+     schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_result_matches(
+  p_action text,p_section uuid,p_assignment uuid,p_source uuid,p_source_employee uuid,
+  p_source_from date,p_source_supersedes uuid,p_employee uuid,p_effective_from date,
+  p_effective_until date
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE result app_private.class_teacher_assignments%ROWTYPE;
+BEGIN
+  IF p_action NOT IN ('ADD','END','CORRECT') OR p_section IS NULL OR p_assignment IS NULL THEN
+    RETURN false;
+  END IF;
+  SELECT * INTO result FROM app_private.class_teacher_assignments a
+   WHERE a.id=p_assignment AND a.section_offering_id=p_section;
+  IF NOT FOUND THEN RETURN false; END IF;
+  IF p_action='ADD' THEN
+    RETURN result.employee_id IS NOT DISTINCT FROM p_employee
+      AND result.effective_from IS NOT DISTINCT FROM p_effective_from
+      AND result.supersedes_id IS NULL
+      AND (p_effective_until IS NULL
+        OR (result.effective_until IS NOT DISTINCT FROM p_effective_until
+          AND result.ended_at IS NOT NULL AND result.ended_by IS NOT NULL));
+  ELSIF p_action='END' THEN
+    RETURN result.id IS NOT DISTINCT FROM p_source
+      AND result.employee_id IS NOT DISTINCT FROM p_source_employee
+      AND result.effective_from IS NOT DISTINCT FROM p_source_from
+      AND result.supersedes_id IS NOT DISTINCT FROM p_source_supersedes
+      AND result.effective_until IS NOT DISTINCT FROM p_effective_until
+      AND result.ended_at IS NOT NULL AND result.ended_by IS NOT NULL;
+  ELSE
+    RETURN result.employee_id IS NOT DISTINCT FROM p_employee
+      AND result.effective_from IS NOT DISTINCT FROM p_effective_from
+      AND result.supersedes_id IS NOT DISTINCT FROM p_source
+      AND EXISTS (SELECT 1 FROM app_private.class_teacher_assignments predecessor
+        WHERE predecessor.id=p_source AND predecessor.section_offering_id=p_section
+          AND predecessor.employee_id=p_source_employee
+          AND predecessor.effective_from=p_source_from
+          AND predecessor.supersedes_id IS NOT DISTINCT FROM p_source_supersedes
+          AND predecessor.effective_until=p_effective_from
+          AND predecessor.ended_at IS NOT NULL AND predecessor.ended_by IS NOT NULL);
+  END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_result_matches(
+  text,uuid,uuid,uuid,uuid,date,uuid,uuid,date,date)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_result_matches(
+  text,uuid,uuid,uuid,uuid,date,uuid,uuid,date,date)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_lock_context(
+  p_section uuid,p_expected_section_version bigint,p_enforce_version boolean,
+  p_source_assignment uuid,p_expected_source_employee uuid,p_expected_source_from date,
+  p_expected_source_supersedes uuid,p_destination_employee uuid,p_additional_assignment uuid
+) RETURNS TABLE(section_version bigint,error_code text,campus_id uuid,
+  class_offering_id uuid,academic_year_id uuid,source_snapshot jsonb)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre_offering uuid; pre_campus uuid; pre_year uuid; pre_class uuid;
+  locked_version bigint; source_row app_private.class_teacher_assignments%ROWTYPE;
+  actual_source_employee uuid; additional_employee uuid; employee_ids uuid[]; r record;
+BEGIN
+  SELECT so.class_offering_id,co.campus_id,co.academic_year_id,co.class_id
+    INTO pre_offering,pre_campus,pre_year,pre_class
+    FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+   WHERE so.id=p_section;
+  IF pre_offering IS NULL THEN
+    RETURN QUERY SELECT NULL::bigint,'D1_CLASS_ASSIGNMENT_SECTION_MISSING'::text,
+      NULL::uuid,NULL::uuid,NULL::uuid,'{}'::jsonb; RETURN;
+  END IF;
+  IF p_source_assignment IS NOT NULL THEN
+    SELECT a.employee_id INTO actual_source_employee
+      FROM app_private.class_teacher_assignments a
+     WHERE a.id=p_source_assignment AND a.section_offering_id=p_section;
+  END IF;
+  IF p_additional_assignment IS NOT NULL THEN
+    SELECT a.employee_id INTO additional_employee
+      FROM app_private.class_teacher_assignments a
+     WHERE a.id=p_additional_assignment AND a.section_offering_id=p_section;
+  END IF;
+  SELECT pg_catalog.array_agg(DISTINCT x ORDER BY x) INTO employee_ids
+    FROM pg_catalog.unnest(ARRAY[p_expected_source_employee,p_destination_employee,
+      actual_source_employee,additional_employee]::uuid[]) x WHERE x IS NOT NULL;
+  FOR r IN SELECT e.id FROM app_private.employees e
+    WHERE e.id=ANY(COALESCE(employee_ids,'{}'::uuid[])) ORDER BY e.id FOR UPDATE
+  LOOP NULL; END LOOP;
+
+  PERFORM 1 FROM app.campuses c WHERE c.id=pre_campus FOR UPDATE;
+  IF NOT FOUND THEN error_code:='D1_CLASS_ASSIGNMENT_CAMPUS_MISSING'; END IF;
+  PERFORM 1 FROM app.academic_years ay WHERE ay.id=pre_year FOR UPDATE;
+  IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_YEAR_MISSING'); END IF;
+  PERFORM 1 FROM app_private.academic_classes c WHERE c.id=pre_class FOR UPDATE;
+  IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_CLASS_MISSING'); END IF;
+  PERFORM 1 FROM app_private.class_offerings co WHERE co.id=pre_offering FOR UPDATE;
+  IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_OFFERING_MISSING'); END IF;
+  SELECT so.row_version INTO locked_version FROM app_private.section_offerings so
+    WHERE so.id=p_section FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT NULL::bigint,'D1_CLASS_ASSIGNMENT_SECTION_MISSING'::text,
+      pre_campus,pre_offering,pre_year,'{}'::jsonb; RETURN;
+  END IF;
+  IF p_enforce_version AND locked_version IS DISTINCT FROM p_expected_section_version THEN
+    error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_SECTION_VERSION_STALE');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    WHERE so.id=p_section AND so.class_offering_id=pre_offering
+      AND co.campus_id=pre_campus AND co.academic_year_id=pre_year AND co.class_id=pre_class)
+  THEN error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_ANCESTRY_STALE'); END IF;
+
+  FOR r IN SELECT ep.id FROM app_private.employment_periods ep
+    WHERE ep.employee_id=ANY(COALESCE(employee_ids,'{}'::uuid[]))
+    ORDER BY ep.id FOR UPDATE LOOP NULL; END LOOP;
+  FOR r IN SELECT tc.id FROM app_private.teacher_capabilities tc
+    WHERE tc.employee_id=ANY(COALESCE(employee_ids,'{}'::uuid[]))
+    ORDER BY tc.id FOR UPDATE LOOP NULL; END LOOP;
+  FOR r IN SELECT a.id FROM app_private.class_teacher_assignments a
+    WHERE a.section_offering_id=p_section ORDER BY a.id FOR UPDATE LOOP NULL; END LOOP;
+
+  IF p_source_assignment IS NOT NULL THEN
+    SELECT * INTO source_row FROM app_private.class_teacher_assignments a
+     WHERE a.id=p_source_assignment AND a.section_offering_id=p_section;
+    IF NOT FOUND THEN
+      error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_SOURCE_MISSING');
+      source_snapshot:='{}'::jsonb;
+    ELSE
+      IF source_row.employee_id IS DISTINCT FROM p_expected_source_employee
+         OR source_row.effective_from IS DISTINCT FROM p_expected_source_from
+         OR source_row.supersedes_id IS DISTINCT FROM p_expected_source_supersedes THEN
+        error_code:=COALESCE(error_code,'D1_CLASS_ASSIGNMENT_SOURCE_FACTS_STALE');
+      END IF;
+      source_snapshot:=pg_catalog.jsonb_build_object(
+        'assignment_id',source_row.id,'section_offering_id',source_row.section_offering_id,
+        'employee_id',source_row.employee_id,
+        'effective_from',pg_catalog.to_char(source_row.effective_from,'YYYY-MM-DD'),
+        'effective_until',CASE WHEN source_row.effective_until IS NULL THEN NULL
+          ELSE pg_catalog.to_char(source_row.effective_until,'YYYY-MM-DD') END,
+        'supersedes_id',source_row.supersedes_id);
+    END IF;
+  ELSE source_snapshot:='{}'::jsonb; END IF;
+  RETURN QUERY SELECT locked_version,error_code,pre_campus,pre_offering,pre_year,source_snapshot;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_lock_context(
+  uuid,bigint,boolean,uuid,uuid,date,uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_lock_context(
+  uuid,bigint,boolean,uuid,uuid,date,uuid,uuid,uuid)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_preflight(
+  p_section uuid,p_expected_section_version bigint,p_action text,p_source_assignment uuid,
+  p_expected_source_employee uuid,p_expected_source_from date,
+  p_expected_source_supersedes uuid,p_employee uuid,p_effective_from date,
+  p_effective_until date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text,section_version bigint,campus_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE context record; source_row app_private.class_teacher_assignments%ROWTYPE;
+  year_start date; year_end date; year_state text; section_state text;
+  offering_state text; campus_state text; class_state text; horizon date;
+BEGIN
+  IF p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_REASON_INVALID'::text,
+      NULL::bigint,NULL::uuid; RETURN;
+  END IF;
+  SELECT * INTO context FROM app_private.d1_teaching_class_assignment_lock_context(
+    p_section,p_expected_section_version,true,p_source_assignment,
+    p_expected_source_employee,p_expected_source_from,p_expected_source_supersedes,
+    p_employee,NULL);
+  IF context.error_code IS NOT NULL THEN
+    RETURN QUERY SELECT false,context.error_code,context.section_version,context.campus_id; RETURN;
+  END IF;
+  IF p_action NOT IN ('ADD','END','CORRECT') THEN
+    RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_ACTION_INVALID'::text,
+      context.section_version,context.campus_id; RETURN;
+  END IF;
+  IF (p_action='ADD' AND (p_source_assignment IS NOT NULL
+       OR p_expected_source_employee IS NOT NULL OR p_expected_source_from IS NOT NULL
+       OR p_expected_source_supersedes IS NOT NULL OR p_employee IS NULL
+       OR p_effective_from IS NULL
+       OR (p_effective_until IS NOT NULL AND p_effective_until<=p_effective_from)))
+     OR (p_action='END' AND (p_source_assignment IS NULL OR p_expected_source_employee IS NULL
+       OR p_expected_source_from IS NULL OR p_employee IS NOT NULL
+       OR p_effective_from IS NOT NULL OR p_effective_until IS NULL))
+     OR (p_action='CORRECT' AND (p_source_assignment IS NULL OR p_expected_source_employee IS NULL
+       OR p_expected_source_from IS NULL OR p_employee IS NULL
+       OR p_effective_from IS NULL OR p_effective_until IS NOT NULL)) THEN
+    RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_ACTION_SHAPE_INVALID'::text,
+      context.section_version,context.campus_id; RETURN;
+  END IF;
+
+  SELECT ay.starts_on,ay.ends_on,ay.state,so.state,co.state,c.state,cl.state
+    INTO year_start,year_end,year_state,section_state,offering_state,campus_state,class_state
+    FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    JOIN app_private.academic_classes cl ON cl.id=co.class_id
+    JOIN app.academic_years ay ON ay.id=co.academic_year_id
+    JOIN app.campuses c ON c.id=co.campus_id
+   WHERE so.id=p_section;
+  IF year_start IS NULL THEN
+    RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_ANCESTRY_MISSING'::text,
+      context.section_version,context.campus_id; RETURN;
+  END IF;
+
+  IF p_action IN ('END','CORRECT') THEN
+    SELECT * INTO source_row FROM app_private.class_teacher_assignments a
+     WHERE a.id=p_source_assignment AND a.section_offering_id=p_section;
+    IF NOT FOUND OR source_row.effective_until IS NOT NULL
+       OR source_row.ended_at IS NOT NULL OR source_row.ended_by IS NOT NULL THEN
+      RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_SOURCE_NOT_OPEN'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF EXISTS (SELECT 1 FROM app_private.class_teacher_assignments successor
+       WHERE successor.supersedes_id=source_row.id) THEN
+      RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_SOURCE_ALREADY_SUPERSEDED'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF p_action='END' AND (p_effective_until<=source_row.effective_from
+        OR p_effective_until>year_end+1) THEN
+      RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_END_BOUND_INVALID'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF p_action='CORRECT' AND p_effective_from<=source_row.effective_from THEN
+      RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_CORRECTION_BOUND_INVALID'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF p_action='CORRECT' AND p_employee=source_row.employee_id
+       AND pg_catalog.btrim(p_reason)=pg_catalog.btrim(source_row.reason) THEN
+      RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_CORRECTION_NO_CHANGE'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+  END IF;
+
+  IF p_action IN ('ADD','CORRECT') THEN
+    IF class_state IS DISTINCT FROM 'ACTIVE'
+       OR section_state NOT IN ('PLANNED','OPEN')
+       OR offering_state NOT IN ('PLANNED','OPEN')
+       OR campus_state NOT IN ('PLANNED','ACTIVE')
+       OR year_state NOT IN ('PLANNED','ACTIVE') THEN
+      RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_TARGET_UNUSABLE'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    horizon:=COALESCE(p_effective_until,year_end+1);
+    IF p_effective_from<year_start OR p_effective_from>=year_end+1 OR horizon>year_end+1 THEN
+      RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_OUTSIDE_YEAR'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM app_private.employment_periods ep
+      WHERE ep.employee_id=p_employee AND ep.state='ACTIVE'
+        AND ep.effective_from<=p_effective_from
+        AND (ep.effective_until IS NULL OR ep.effective_until>=horizon)) THEN
+      RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_EMPLOYMENT_COVERAGE_MISSING'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF NOT app_private.d1_teacher_capability_covers_interval(
+        p_employee,p_effective_from,horizon) THEN
+      RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_CAPABILITY_COVERAGE_MISSING'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF EXISTS (SELECT 1 FROM app_private.class_teacher_assignments a
+      WHERE a.section_offering_id=p_section
+        AND (p_action<>'CORRECT' OR a.id<>source_row.id)
+        AND (horizon IS NULL OR a.effective_from<horizon)
+        AND (a.effective_until IS NULL OR p_effective_from<a.effective_until)) THEN
+      RETURN QUERY SELECT false,'D1_CLASS_ASSIGNMENT_SECTION_OVERLAP'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+  END IF;
+  RETURN QUERY SELECT true,NULL::text,context.section_version,context.campus_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_preflight(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_preflight(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_effect(
+  p_section uuid,p_expected_section_version bigint,p_action text,p_source_assignment uuid,
+  p_expected_source_employee uuid,p_expected_source_from date,
+  p_expected_source_supersedes uuid,p_employee uuid,p_effective_from date,
+  p_effective_until date,p_reason text
+) RETURNS TABLE(assignment_id uuid,section_offering_id uuid,action text,
+  source_employee_id uuid,employee_id uuid,effective_from date,effective_until date,
+  section_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; preflight record; source_row app_private.class_teacher_assignments%ROWTYPE;
+  result_id uuid; result_employee uuid; result_from date; result_until date; closed uuid;
+BEGIN
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1 Class assignment actor unavailable'; END IF;
+  SELECT * INTO preflight FROM app_private.d1_teaching_class_assignment_preflight(
+    p_section,p_expected_section_version,p_action,p_source_assignment,
+    p_expected_source_employee,p_expected_source_from,p_expected_source_supersedes,
+    p_employee,p_effective_from,p_effective_until,p_reason);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Class assignment deterministic preflight failed: %',
+      preflight.error_code;
+  END IF;
+  IF p_action='ADD' THEN
+    result_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.class_teacher_assignments
+      (id,created_by,ended_at,ended_by,section_offering_id,employee_id,
+       effective_from,effective_until,reason,supersedes_id)
+    VALUES (result_id,actor,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE pg_catalog.statement_timestamp() END,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE actor END,
+      p_section,p_employee,p_effective_from,p_effective_until,p_reason,NULL);
+    result_employee:=p_employee; result_from:=p_effective_from; result_until:=p_effective_until;
+  ELSIF p_action='END' THEN
+    UPDATE app_private.class_teacher_assignments a SET
+      effective_until=p_effective_until,ended_at=pg_catalog.statement_timestamp(),ended_by=actor
+     WHERE a.id=p_source_assignment AND a.section_offering_id=p_section
+       AND a.effective_until IS NULL
+     RETURNING a.id,a.employee_id,a.effective_from,a.effective_until
+      INTO result_id,result_employee,result_from,result_until;
+    IF result_id IS NULL THEN RAISE EXCEPTION 'D1 Class assignment END source close failed'; END IF;
+  ELSE
+    SELECT * INTO source_row FROM app_private.class_teacher_assignments a
+     WHERE a.id=p_source_assignment AND a.section_offering_id=p_section FOR UPDATE;
+    UPDATE app_private.class_teacher_assignments a SET
+      effective_until=p_effective_from,ended_at=pg_catalog.statement_timestamp(),ended_by=actor
+     WHERE a.id=source_row.id AND a.effective_until IS NULL RETURNING a.id INTO closed;
+    IF closed IS NULL THEN RAISE EXCEPTION 'D1 Class assignment CORRECT source close failed'; END IF;
+    result_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.class_teacher_assignments
+      (id,created_by,ended_at,ended_by,section_offering_id,employee_id,
+       effective_from,effective_until,reason,supersedes_id)
+    VALUES (result_id,actor,NULL,NULL,p_section,p_employee,p_effective_from,NULL,
+      p_reason,source_row.id);
+    result_employee:=p_employee; result_from:=p_effective_from; result_until:=NULL;
+  END IF;
+  RETURN QUERY SELECT result_id,p_section,p_action,
+    CASE WHEN p_action='ADD' THEN NULL::uuid ELSE p_expected_source_employee END,
+    result_employee,result_from,result_until,preflight.section_version;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_effect(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_effect(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_teaching_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_authorized(
+  p_principal uuid,p_permission text,p_section uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); target_campus uuid;
+  target_class uuid;
+BEGIN
+  SELECT co.campus_id,so.class_offering_id INTO target_campus,target_class
+    FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+   WHERE so.id=p_section;
+  IF p_principal IS NULL OR target_campus IS NULL
+     OR p_permission NOT IN ('teaching.class_assignment.change','teaching.assignment.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+         AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL) THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+    WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+      AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes s
+    JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+    JOIN app_private.permissions p ON p.id=s.permission_id
+    JOIN app_private.roles r ON r.id=s.role_id
+    WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL'
+      AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+      AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+      AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+      AND c.resolver_key=s.resolver_key AND c.enabled
+      AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+      AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until)
+      AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+      AND s.resolver_key='DIRECT'
+      AND ((s.scope_kind='ALL' AND s.campus_id IS NULL)
+        OR (s.scope_kind='CAMPUS' AND s.campus_id=target_campus)
+        OR (s.scope_kind='CLASS' AND s.class_offering_id=target_class)
+        OR (s.scope_kind='SECTION' AND s.section_offering_id=p_section))
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_authorized(
+  uuid,text,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_authorized(
+  uuid,text,uuid,uuid)
+  TO schoolos_teaching_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_not_self(
+  p_principal uuid,p_employee uuid
+) RETURNS boolean
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT p_principal IS NOT NULL AND p_employee IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principals p
+    JOIN app_private.employees e ON e.person_id=p.person_id
+    WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+      AND e.id=p_employee
+  );
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_not_self(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_not_self(uuid,uuid)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_p2_policy(p_section uuid)
+RETURNS TABLE(policy_id uuid,campus_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE target_campus uuid; n bigint; selected uuid; selected_campus uuid;
+  steps bigint; invalid bigint; first_no int; last_no int; at_time timestamptz:=pg_catalog.clock_timestamp();
+BEGIN
+  SELECT co.campus_id INTO target_campus FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_section;
+  IF target_campus IS NULL THEN RETURN; END IF;
+  SELECT count(*),min(p.id::text)::uuid,min(p.campus_id::text)::uuid
+    INTO n,selected,selected_campus
+    FROM app_private.approval_policy_versions p
+    JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='teaching.class_assignment.change' AND o.contract_version=1
+     AND o.enabled AND NOT o.requires_approval AND p.state='ACTIVE'
+     AND (p.campus_id IS NULL OR p.campus_id=target_campus)
+     AND p.d1_route_mode IS DISTINCT FROM 'DIRECT'
+     AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+  IF n<>1 OR selected IS NULL THEN RETURN; END IF;
+  SELECT count(*),count(*) FILTER(WHERE r.id IS NULL OR r.state<>'ACTIVE'
+      OR t.required_reviews<>1 OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'),
+      min(t.step_number),max(t.step_number)
+    INTO steps,invalid,first_no,last_no FROM app_private.approval_step_templates t
+    LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id WHERE t.policy_id=selected;
+  IF steps=0 OR invalid<>0 OR first_no<>1 OR last_no::bigint<>steps THEN RETURN; END IF;
+  RETURN QUERY SELECT selected,selected_campus;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_p2_policy(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_p2_policy(uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_candidates(
+  p_request uuid,p_step uuid
+) RETURNS TABLE(candidate_principal_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; requester_person uuid;
+BEGIN
+  SELECT r.requester_id,r.target_ref,t.reviewer_role_id INTO ctx
+    FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+    JOIN app_private.approval_request_steps s ON s.request_id=r.id AND s.id=p_step
+    JOIN app_private.approval_step_templates t ON t.id=s.template_id
+      AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+   WHERE r.id=p_request AND r.state='PENDING' AND s.state='OPEN'
+     AND o.code='teaching.class_assignment.change' AND o.contract_version=1 AND o.enabled
+     AND t.required_reviews=1 AND s.required_reviews=1
+     AND rp.code='teaching.assignment.approve' AND rp.state='ENABLED'
+     AND NOT rp.family_safe AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE';
+  IF NOT FOUND THEN RETURN; END IF;
+  SELECT p.person_id INTO requester_person FROM app_private.principals p
+   WHERE p.id=ctx.requester_id;
+  IF requester_person IS NULL THEN RETURN; END IF;
+  RETURN QUERY SELECT p.id FROM app_private.principals p
+   WHERE p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL
+     AND p.id<>ctx.requester_id AND p.person_id<>requester_person
+     AND app_private.d1_teaching_class_assignment_authorized(
+       p.id,'teaching.assignment.approve',ctx.target_ref,ctx.reviewer_role_id)
+   ORDER BY p.id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_candidates(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_candidates(uuid,uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_reviews_live(p_request uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; s record; reviewer uuid; reviewer_person uuid; requester_person uuid;
+  n bigint; steps bigint:=0;
+BEGIN
+  SELECT r.requester_id,r.target_ref,requester.person_id AS requester_person_id INTO req
+    FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+    JOIN app_private.principals requester ON requester.id=r.requester_id
+   WHERE r.id=p_request AND r.state='APPROVED'
+     AND o.code='teaching.class_assignment.change'
+     AND rp.code='teaching.assignment.approve' AND rp.state='ENABLED'
+     AND NOT rp.family_safe;
+  IF NOT FOUND OR req.requester_person_id IS NULL THEN RETURN false; END IF;
+  requester_person:=req.requester_person_id;
+  FOR s IN SELECT x.id,x.state,t.reviewer_role_id,t.selection_resolver_key
+    FROM app_private.approval_request_steps x
+    JOIN app_private.approval_step_templates t
+      ON t.id=x.template_id AND t.policy_id=x.policy_id AND t.step_number=x.step_number
+   WHERE x.request_id=p_request ORDER BY x.step_number LOOP
+    steps:=steps+1;
+    IF s.state<>'APPROVED' OR s.selection_resolver_key<>'D1_REVIEWER_ROLE_SCOPE' THEN
+      RETURN false; END IF;
+    SELECT count(*),min(v.reviewer_id::text)::uuid INTO n,reviewer
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=v.step_id
+       AND a.reviewer_id=v.reviewer_id
+     WHERE v.step_id=s.id AND v.decision='APPROVE'
+       AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+    SELECT p.person_id INTO reviewer_person FROM app_private.principals p
+     WHERE p.id=reviewer AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+    IF n<>1 OR reviewer_person IS NULL OR reviewer_person=requester_person
+       OR NOT app_private.d1_teaching_class_assignment_authorized(
+         reviewer,'teaching.assignment.approve',req.target_ref,s.reviewer_role_id)
+    THEN RETURN false; END IF;
+  END LOOP;
+  RETURN steps>0;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_reviews_live(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_reviews_live(uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_participant(
+  p_request uuid,p_actor uuid
+) RETURNS text
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; actor_person uuid; requester_person uuid; final_step integer; decided record;
+BEGIN
+  IF p_request IS NULL OR p_actor IS NULL
+     OR app_private.current_principal_id() IS DISTINCT FROM p_actor THEN RETURN NULL; END IF;
+  SELECT r.requester_id,r.target_ref,requester.person_id AS requester_person_id INTO req
+    FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.principals requester ON requester.id=r.requester_id
+   WHERE r.id=p_request AND o.code='teaching.class_assignment.change';
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  IF req.requester_id=p_actor AND app_private.d1_teaching_class_assignment_authorized(
+      p_actor,'teaching.class_assignment.change',req.target_ref,NULL) THEN
+    RETURN 'REQUESTER';
+  END IF;
+  SELECT p.person_id INTO actor_person FROM app_private.principals p
+   WHERE p.id=p_actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+  requester_person:=req.requester_person_id;
+  IF actor_person IS NULL OR requester_person IS NULL OR p_actor=req.requester_id
+     OR actor_person=requester_person THEN RETURN NULL; END IF;
+  IF EXISTS (
+    SELECT 1 FROM app_private.approval_request_steps s
+    JOIN app_private.approval_step_templates t
+      ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+    JOIN app_private.approval_step_reviewers a ON a.step_id=s.id
+   WHERE s.request_id=p_request AND s.state='OPEN'
+     AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+     AND a.reviewer_id=p_actor AND a.withdrawn_at IS NULL
+     AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+     AND (SELECT count(*) FROM app_private.approval_step_reviewers exactly_one
+       WHERE exactly_one.step_id=s.id AND exactly_one.reviewer_id=p_actor
+         AND exactly_one.withdrawn_at IS NULL
+         AND exactly_one.assignment_reason='D1_REVIEWER_ROLE_SCOPE')=1
+     AND app_private.d1_teaching_class_assignment_authorized(
+       p_actor,'teaching.assignment.approve',req.target_ref,t.reviewer_role_id)
+     AND EXISTS (SELECT 1 FROM app_private.d1_teaching_class_assignment_candidates(
+       p_request,s.id) c WHERE c.candidate_principal_id=p_actor)
+  ) THEN RETURN 'OPEN_REVIEWER'; END IF;
+  SELECT max(s.step_number) INTO final_step
+    FROM app_private.approval_request_steps s WHERE s.request_id=p_request;
+  FOR decided IN
+    SELECT s.step_number,s.state,t.reviewer_role_id,t.selection_resolver_key,
+           v.decision,a.assignment_reason
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t
+        ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=s.id AND a.reviewer_id=v.reviewer_id
+     WHERE s.request_id=p_request AND v.reviewer_id=p_actor
+  LOOP
+    IF decided.state IN ('APPROVED','REJECTED')
+       AND decided.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+       AND decided.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+       AND app_private.d1_teaching_class_assignment_authorized(
+         p_actor,'teaching.assignment.approve',req.target_ref,decided.reviewer_role_id) THEN
+      IF decided.step_number=final_step AND decided.decision='APPROVE'
+         AND decided.state='APPROVED' THEN RETURN 'FINAL_APPROVER'; END IF;
+      RETURN 'DECIDED_REVIEWER';
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_participant(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_participant(uuid,uuid)
+  TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_receipt(
+  p_phase text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+  p_expected_section_version bigint,p_request uuid,p_request_version bigint,
+  p_state text,p_result_kind text,p_result_ref uuid,p_summary jsonb,p_error text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE new_id uuid:=pg_catalog.gen_random_uuid(); op_code text;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o
+   WHERE o.id=p_operation AND o.code='teaching.class_assignment.change'
+     AND o.contract_version=1 AND o.enabled;
+  IF op_code IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN (op_code,'request.submit','request.review','request.apply')
+     OR p_key IS NULL OR pg_catalog.length(p_key) NOT BETWEEN 1 AND 200
+     OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+     OR p_expected_section_version IS NULL OR p_expected_section_version<1
+     OR (p_phase=op_code AND (p_request IS NOT NULL OR p_request_version IS NOT NULL))
+     OR (p_phase<>op_code AND p_request IS NULL)
+     OR p_state NOT IN ('SUCCEEDED','REJECTED')
+     OR (p_state='SUCCEEDED' AND (p_result_kind IS NULL OR p_result_ref IS NULL OR p_error IS NOT NULL))
+     OR (p_state='REJECTED' AND (p_phase<>'request.apply' OR p_error IS NULL OR p_result_ref IS NOT NULL))
+     OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object' THEN
+    RAISE EXCEPTION 'D1 Class assignment receipt intent denied';
+  END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,
+     canonicalization_version,expected_target_version,request_id,expected_request_version,
+     state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (new_id,p_actor,p_operation,p_phase,p_key,p_hash,1,p_expected_section_version,
+    p_request,p_request_version,p_state,p_result_kind,p_result_ref,p_summary,p_error,
+    pg_catalog.transaction_timestamp(),p_actor);
+  RETURN new_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_receipt(
+  text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_receipt(
+  text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_audit(
+  p_actor uuid,p_phase text,p_action text,p_section uuid,p_assignment uuid,
+  p_source uuid,p_source_employee uuid,p_employee uuid,p_receipt uuid,p_request uuid,
+  p_section_version bigint,p_effective_from date,p_effective_until date,
+  p_outcome text,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN ('DIRECT','SUBMIT','REVIEW','APPLY')
+     OR (p_action IS NOT NULL AND p_action NOT IN ('ADD','END','CORRECT'))
+     OR p_section IS NULL OR p_receipt IS NULL OR p_section_version IS NULL
+     OR p_section_version<1 OR p_outcome NOT IN ('SUCCEEDED','REJECTED')
+     OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Class assignment audit intent denied';
+  END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
+     target_kind,target_ref,command_receipt_id,approval_request_id,source_kind,
+     correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',p_outcome,
+    pg_catalog.jsonb_build_object('operation','teaching.class_assignment.change','phase',p_phase),
+    p_section_version,'teaching.class_assignment.change','SECTION',p_section,
+    p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'assignment_id',p_assignment,
+      'source_assignment_id',p_source,'source_employee_id',p_source_employee,
+      'employee_id',p_employee,'effective_from',p_effective_from,
+      'effective_until',p_effective_until),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_audit(
+  uuid,text,text,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_audit(
+  uuid,text,text,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,text,uuid)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_class_assignment_event(
+  p_actor uuid,p_action text,p_section uuid,p_assignment uuid,p_source uuid,
+  p_source_employee uuid,p_employee uuid,p_receipt uuid,p_section_version bigint,
+  p_effective_from date,p_effective_until date,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_action NOT IN ('ADD','END','CORRECT') OR p_section IS NULL
+     OR p_assignment IS NULL OR p_employee IS NULL OR p_receipt IS NULL
+     OR p_section_version IS NULL OR p_section_version<1
+     OR p_effective_from IS NULL OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Class assignment outbox intent denied';
+  END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+     event_ordinal,correlation_id,payload,created_by)
+  VALUES ('teaching.class_assignment_changed','CLASS_TEACHER_ASSIGNMENT',p_assignment,1,
+    p_receipt,1,p_correlation,pg_catalog.jsonb_build_object(
+      'action',p_action,'section_offering_id',p_section,'assignment_id',p_assignment,
+      'source_assignment_id',p_source,'source_employee_id',p_source_employee,
+      'employee_id',p_employee,'effective_from',p_effective_from,
+      'effective_until',p_effective_until,'section_version',p_section_version),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_event(
+  uuid,text,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_class_assignment_event(
+  uuid,text,uuid,uuid,uuid,uuid,uuid,uuid,bigint,date,date,uuid)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_teaching_class_assignment_application_receipt_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE op_code text; receipt app_private.command_receipts%ROWTYPE;
+  req app_private.approval_requests%ROWTYPE; result app_private.class_teacher_assignments%ROWTYPE;
+  predecessor app_private.class_teacher_assignments%ROWTYPE; action text; source_id uuid;
+  source_employee uuid; source_from date; source_supersedes uuid; employee uuid; effect_from date;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF op_code<>'teaching.class_assignment.change' THEN RETURN NEW; END IF;
+  SELECT r.* INTO receipt FROM app_private.command_receipts r
+   WHERE r.id=NEW.command_receipt_id AND r.operation_id=NEW.operation_id
+     AND r.request_id=NEW.request_id AND r.command_kind='request.apply'
+     AND r.state='SUCCEEDED' AND r.result_kind='D1_TEACHING_CLASS_ASSIGNMENT_APPLY'
+     AND r.result_ref=NEW.result_ref;
+  SELECT q.* INTO req FROM app_private.approval_requests q
+   WHERE q.id=NEW.request_id AND q.operation_id=NEW.operation_id AND q.state='EXECUTED';
+  SELECT a.* INTO result FROM app_private.class_teacher_assignments a WHERE a.id=NEW.result_ref;
+  IF receipt.id IS NULL OR req.id IS NULL OR result.id IS NULL
+     OR result.section_offering_id IS DISTINCT FROM req.target_ref
+     OR NEW.applied_target_version IS NULL
+     OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR NOT app_private.d1_teaching_class_assignment_request_payload_valid(
+       req.old_snapshot,req.requested_payload)
+     OR receipt.result_summary IS NULL
+     OR pg_catalog.jsonb_typeof(receipt.result_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(receipt.result_summary))<>10
+     OR NOT (receipt.result_summary ?& ARRAY['request_version','state','action',
+       'assignment_id','section_version','source_assignment_id','source_employee_id',
+       'employee_id','effective_from','effective_until'])
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'request_version')<>'number'
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'section_version')<>'number'
+     OR (receipt.result_summary->>'request_version')::bigint<>req.row_version
+     OR (receipt.result_summary->>'section_version')::bigint<>NEW.applied_target_version
+     OR receipt.expected_target_version IS DISTINCT FROM req.expected_target_version
+     OR receipt.result_summary->>'state'<>'EXECUTED'
+     OR receipt.result_summary->>'action'<>'CORRECT'
+     OR (receipt.result_summary->>'assignment_id')::uuid IS DISTINCT FROM NEW.result_ref THEN
+    RAISE EXCEPTION 'D1 Class assignment application requires successful apply receipt';
+  END IF;
+  action:=req.requested_payload->>'action';
+  source_id:=NULLIF(req.old_snapshot->>'source_assignment_id','')::uuid;
+  source_employee:=NULLIF(req.old_snapshot->>'source_employee_id','')::uuid;
+  source_from:=NULLIF(req.old_snapshot->>'source_effective_from','')::date;
+  source_supersedes:=NULLIF(req.old_snapshot->>'source_supersedes_id','')::uuid;
+  employee:=NULLIF(req.requested_payload->>'employee_id','')::uuid;
+  effect_from:=NULLIF(req.requested_payload->>'effective_from','')::date;
+  SELECT a.* INTO predecessor FROM app_private.class_teacher_assignments a WHERE a.id=source_id;
+  IF action<>'CORRECT' OR effect_from>=CURRENT_DATE OR source_id IS NULL
+     OR predecessor.id IS NULL OR predecessor.section_offering_id IS DISTINCT FROM req.target_ref
+     OR predecessor.employee_id IS DISTINCT FROM source_employee
+     OR predecessor.effective_from IS DISTINCT FROM source_from
+     OR predecessor.supersedes_id IS DISTINCT FROM source_supersedes
+     OR predecessor.effective_until IS DISTINCT FROM effect_from
+     OR result.supersedes_id IS DISTINCT FROM source_id
+     OR result.employee_id IS DISTINCT FROM employee
+     OR result.effective_from IS DISTINCT FROM effect_from
+     OR result.reason IS DISTINCT FROM req.reason
+     OR NULLIF(receipt.result_summary->>'source_assignment_id','')::uuid IS DISTINCT FROM source_id
+     OR NULLIF(receipt.result_summary->>'source_employee_id','')::uuid IS DISTINCT FROM source_employee
+     OR (receipt.result_summary->>'employee_id')::uuid IS DISTINCT FROM employee
+     OR (receipt.result_summary->>'effective_from')::date IS DISTINCT FROM effect_from
+     OR receipt.result_summary->>'effective_until' IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Class assignment application request/receipt binding invalid';
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_class_assignment_application_receipt_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER d1_teaching_class_assignment_application_receipt_guard
+  BEFORE INSERT ON app_private.approval_applications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_teaching_class_assignment_application_receipt_guard();
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app TO schoolos_teaching_executor;
+SET ROLE schoolos_teaching_executor;
+CREATE FUNCTION app.d1_change_class_teacher_assignment(
+  p_section_offering_id uuid,p_expected_section_version bigint,p_action text,
+  p_source_assignment_id uuid,p_expected_source_employee_id uuid,
+  p_expected_source_effective_from date,p_expected_source_supersedes_id uuid,
+  p_employee_id uuid,p_effective_from date,p_effective_until date,
+  p_reason text,p_idempotency_key text
+) RETURNS TABLE(assignment_id uuid,section_offering_id uuid,action text,
+  source_employee_id uuid,employee_id uuid,effective_from date,effective_until date,
+  section_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; lock_row record; preflight record; effect_row record; receipt uuid;
+  correlation uuid:=pg_catalog.gen_random_uuid(); payload jsonb; route text;
+BEGIN
+  payload:=pg_catalog.jsonb_build_object('action',p_action,
+    'source_assignment_id',p_source_assignment_id,
+    'source_employee_id',p_expected_source_employee_id,
+    'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
+    'source_supersedes_id',p_expected_source_supersedes_id,'employee_id',p_employee_id,
+    'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,
+    'effective_until',CASE WHEN p_effective_until IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_until,'YYYY-MM-DD') END);
+  IF p_section_offering_id IS NULL OR p_expected_section_version IS NULL
+     OR p_expected_section_version<1 OR p_reason IS NULL
+     OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR NOT app_private.d1_teaching_class_assignment_payload_valid(payload) THEN
+    RAISE EXCEPTION 'D1 Class assignment intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'teaching.class_assignment.change','teaching.class_assignment.change',
+    p_idempotency_key,pg_catalog.jsonb_build_array(
+      p_section_offering_id,p_expected_section_version::text,p_action,
+      p_source_assignment_id,p_expected_source_employee_id,p_expected_source_effective_from,
+      p_expected_source_supersedes_id,p_employee_id,p_effective_from,p_effective_until,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT * INTO lock_row FROM app_private.d1_teaching_class_assignment_lock_context(
+    p_section_offering_id,p_expected_section_version,ctx.receipt_id IS NULL,
+    p_source_assignment_id,p_expected_source_employee_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_employee_id,ctx.result_ref);
+  IF NOT app_private.d1_teaching_class_assignment_authorized(
+      ctx.actor_id,'teaching.class_assignment.change',p_section_offering_id,NULL) THEN
+    RAISE EXCEPTION 'D1 Class assignment authority denied';
+  END IF;
+  IF p_action IN ('ADD','CORRECT') AND NOT app_private.d1_teaching_class_assignment_not_self(
+      ctx.actor_id,p_employee_id) THEN
+    RAISE EXCEPTION 'D1 Class assignment self-assignment denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>8
+       OR NOT (ctx.result_summary ?& ARRAY['action','assignment_id','section_version',
+         'source_assignment_id','source_employee_id','employee_id','effective_from','effective_until'])
+       OR pg_catalog.jsonb_typeof(ctx.result_summary->'section_version')<>'number'
+       OR ctx.result_summary->>'action' IS DISTINCT FROM p_action
+       OR NOT app_private.d1_teaching_class_assignment_result_matches(
+         p_action,p_section_offering_id,ctx.result_ref,p_source_assignment_id,
+         p_expected_source_employee_id,p_expected_source_effective_from,
+         p_expected_source_supersedes_id,p_employee_id,p_effective_from,p_effective_until) THEN
+      RAISE EXCEPTION 'D1 Class assignment receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT (ctx.result_summary->>'assignment_id')::uuid,p_section_offering_id,p_action,
+      NULLIF(ctx.result_summary->>'source_employee_id','')::uuid,
+      (ctx.result_summary->>'employee_id')::uuid,
+      (ctx.result_summary->>'effective_from')::date,
+      NULLIF(ctx.result_summary->>'effective_until','')::date,
+      (ctx.result_summary->>'section_version')::bigint;
+    RETURN;
+  END IF;
+  IF lock_row.error_code IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Class assignment preflight denied: %',lock_row.error_code;
+  END IF;
+  route:=CASE
+    WHEN p_action='ADD' AND p_effective_from>=CURRENT_DATE THEN 'P0'
+    WHEN p_action='END' AND p_effective_until>=CURRENT_DATE THEN 'P0'
+    WHEN p_action='CORRECT' AND p_effective_from>=CURRENT_DATE THEN 'P0'
+    WHEN p_action='CORRECT' AND p_effective_from<CURRENT_DATE THEN 'P2'
+    ELSE NULL END;
+  IF route IS DISTINCT FROM 'P0' THEN
+    RAISE EXCEPTION 'D1 Class assignment retroactive correction requires approval';
+  END IF;
+  SELECT * INTO preflight FROM app_private.d1_teaching_class_assignment_preflight(
+    p_section_offering_id,p_expected_section_version,p_action,p_source_assignment_id,
+    p_expected_source_employee_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_employee_id,p_effective_from,p_effective_until,p_reason);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Class assignment preflight denied: %',preflight.error_code;
+  END IF;
+  SELECT * INTO effect_row FROM app_private.d1_teaching_class_assignment_effect(
+    p_section_offering_id,p_expected_section_version,p_action,p_source_assignment_id,
+    p_expected_source_employee_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_employee_id,p_effective_from,p_effective_until,p_reason);
+  receipt:=app_private.d1_teaching_class_assignment_receipt(
+    'teaching.class_assignment.change',ctx.actor_id,ctx.operation_id,p_idempotency_key,
+    ctx.intent_hash,p_expected_section_version,NULL,NULL,'SUCCEEDED',
+    'D1_TEACHING_CLASS_ASSIGNMENT',effect_row.assignment_id,
+    pg_catalog.jsonb_build_object('action',p_action,'assignment_id',effect_row.assignment_id,
+      'section_version',effect_row.section_version,'source_assignment_id',p_source_assignment_id,
+      'source_employee_id',effect_row.source_employee_id,'employee_id',effect_row.employee_id,
+      'effective_from',pg_catalog.to_char(effect_row.effective_from,'YYYY-MM-DD'),
+      'effective_until',CASE WHEN effect_row.effective_until IS NULL THEN NULL
+        ELSE pg_catalog.to_char(effect_row.effective_until,'YYYY-MM-DD') END),NULL);
+  PERFORM app_private.d1_teaching_class_assignment_audit(
+    ctx.actor_id,'DIRECT',p_action,p_section_offering_id,effect_row.assignment_id,
+    p_source_assignment_id,effect_row.source_employee_id,effect_row.employee_id,
+    receipt,NULL,effect_row.section_version,effect_row.effective_from,
+    effect_row.effective_until,'SUCCEEDED',correlation);
+  PERFORM app_private.d1_teaching_class_assignment_event(
+    ctx.actor_id,p_action,p_section_offering_id,effect_row.assignment_id,p_source_assignment_id,
+    effect_row.source_employee_id,effect_row.employee_id,receipt,effect_row.section_version,
+    effect_row.effective_from,effect_row.effective_until,correlation);
+  RETURN QUERY SELECT effect_row.assignment_id,p_section_offering_id,p_action,
+    effect_row.source_employee_id,effect_row.employee_id,effect_row.effective_from,
+    effect_row.effective_until,effect_row.section_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_class_teacher_assignment(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_class_teacher_assignment(
+  uuid,bigint,text,uuid,uuid,date,uuid,uuid,date,date,text,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_teaching_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_submit_class_teacher_assignment_correction(
+  p_section_offering_id uuid,p_expected_section_version bigint,
+  p_source_assignment_id uuid,p_expected_source_employee_id uuid,
+  p_expected_source_effective_from date,p_expected_source_supersedes_id uuid,
+  p_employee_id uuid,p_effective_from date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; lock_row record; policy_row record; preflight record; template_row record;
+  old_snapshot jsonb; requested_payload jsonb; payload jsonb;
+  new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid;
+  candidate_count bigint; final_version bigint; receipt uuid;
+BEGIN
+  old_snapshot:=pg_catalog.jsonb_build_object('source_assignment_id',p_source_assignment_id,
+    'source_employee_id',p_expected_source_employee_id,
+    'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
+    'source_supersedes_id',p_expected_source_supersedes_id);
+  requested_payload:=pg_catalog.jsonb_build_object('action','CORRECT','employee_id',p_employee_id,
+    'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,'effective_until',NULL);
+  payload:=old_snapshot||requested_payload;
+  IF p_section_offering_id IS NULL OR p_expected_section_version IS NULL
+     OR p_expected_section_version<1 OR p_effective_from IS NULL
+     OR p_effective_from>=CURRENT_DATE OR p_reason IS NULL
+     OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR NOT app_private.d1_teaching_class_assignment_payload_valid(payload) THEN
+    RAISE EXCEPTION 'D1 Class assignment retroactive correction intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'teaching.class_assignment.change','request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_section_offering_id,p_expected_section_version::text,'CORRECT',
+      p_source_assignment_id,p_expected_source_employee_id,p_expected_source_effective_from,
+      p_expected_source_supersedes_id,p_employee_id,p_effective_from,NULL,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT * INTO lock_row FROM app_private.d1_teaching_class_assignment_lock_context(
+    p_section_offering_id,p_expected_section_version,ctx.receipt_id IS NULL,
+    p_source_assignment_id,p_expected_source_employee_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_employee_id,NULL);
+  IF NOT app_private.d1_teaching_class_assignment_authorized(
+      ctx.actor_id,'teaching.class_assignment.change',p_section_offering_id,NULL)
+     OR NOT app_private.d1_teaching_class_assignment_not_self(ctx.actor_id,p_employee_id) THEN
+    RAISE EXCEPTION 'D1 Class assignment correction authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR pg_catalog.jsonb_typeof(ctx.result_summary->'request_version')<>'number'
+       OR ctx.result_summary->>'state'<>'PENDING'
+       OR NOT EXISTS (SELECT 1 FROM app_private.approval_requests q
+         WHERE q.id=ctx.result_ref AND q.operation_id=ctx.operation_id
+           AND q.target_ref=p_section_offering_id
+           AND q.expected_target_version=p_expected_section_version
+           AND q.old_snapshot IS NOT DISTINCT FROM old_snapshot
+           AND q.requested_payload IS NOT DISTINCT FROM requested_payload) THEN
+      RAISE EXCEPTION 'D1 Class assignment correction receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint; RETURN;
+  END IF;
+  IF lock_row.error_code IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Class assignment correction preflight denied: %',lock_row.error_code;
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_teaching_class_assignment_p2_policy(
+    p_section_offering_id);
+  IF policy_row.policy_id IS NULL THEN
+    RAISE EXCEPTION 'D1 Class assignment retroactive correction policy unavailable';
+  END IF;
+  SELECT * INTO preflight FROM app_private.d1_teaching_class_assignment_preflight(
+    p_section_offering_id,p_expected_section_version,'CORRECT',p_source_assignment_id,
+    p_expected_source_employee_id,p_expected_source_effective_from,
+    p_expected_source_supersedes_id,p_employee_id,p_effective_from,NULL,p_reason);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Class assignment correction preflight denied: %',preflight.error_code;
+  END IF;
+  INSERT INTO app_private.approval_requests
+    (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
+     expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,
+    policy_row.campus_id,p_section_offering_id,p_expected_section_version,p_reason,
+    old_snapshot,requested_payload,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',
+    submitted_at=pg_catalog.statement_timestamp() WHERE id=new_request;
+  FOR template_row IN SELECT t.id,t.step_number,t.required_reviews
+    FROM app_private.approval_step_templates t WHERE t.policy_id=policy_row.policy_id
+    ORDER BY t.step_number LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps
+      (id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step ELSE pg_catalog.gen_random_uuid() END,
+      new_request,policy_row.policy_id,template_row.id,template_row.step_number,
+      template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Class assignment policy has no first step'; END IF;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request
+    RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',
+    opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  INSERT INTO app_private.approval_step_reviewers
+    (step_id,reviewer_id,assignment_reason,created_by)
+  SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+    FROM app_private.d1_teaching_class_assignment_candidates(new_request,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT;
+  IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Class assignment step has no reviewer'; END IF;
+  receipt:=app_private.d1_teaching_class_assignment_receipt(
+    'request.submit',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    p_expected_section_version,new_request,NULL,'SUCCEEDED',
+    'D1_TEACHING_CLASS_ASSIGNMENT_REQUEST',new_request,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),NULL);
+  INSERT INTO app_private.approval_transitions
+    (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+  VALUES (new_request,1,NULL,'DRAFT','D1_TEACHING_CLASS_ASSIGNMENT_DRAFT',receipt,ctx.actor_id),
+    (new_request,2,'DRAFT','SUBMITTED','D1_TEACHING_CLASS_ASSIGNMENT_SUBMIT',receipt,ctx.actor_id),
+    (new_request,3,'SUBMITTED','PENDING','D1_TEACHING_CLASS_ASSIGNMENT_OPEN',receipt,ctx.actor_id);
+  PERFORM app_private.d1_teaching_class_assignment_audit(
+    ctx.actor_id,'SUBMIT','CORRECT',p_section_offering_id,NULL,p_source_assignment_id,
+    p_expected_source_employee_id,p_employee_id,receipt,new_request,p_expected_section_version,
+    p_effective_from,NULL,'SUCCEEDED',pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT new_request,final_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_submit_class_teacher_assignment_correction(
+  uuid,bigint,uuid,uuid,date,uuid,uuid,date,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_class_teacher_assignment_correction(
+  uuid,bigint,uuid,uuid,date,uuid,uuid,date,text,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_review_class_teacher_assignment_request(
+  p_request_id uuid,p_decision text,p_expected_request_version bigint,
+  p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; req record; step_row record; next_step record; policy_row record;
+  assignment_id uuid; n bigint; candidate_count bigint; final_version bigint;
+  final_state text; receipt uuid; sequence_no bigint; reviewer_role uuid; payload jsonb;
+  source_id uuid; source_employee uuid; source_from date; source_supersedes uuid;
+  employee uuid; effect_from date; lock_row record;
+BEGIN
+  IF p_request_id IS NULL OR p_decision NOT IN ('APPROVE','REJECT')
+     OR p_expected_request_version IS NULL OR p_expected_request_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Class assignment review intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'teaching.class_assignment.change','request.review',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_decision,p_expected_request_version::text,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT q.* INTO req FROM app_private.approval_requests q
+   WHERE q.id=p_request_id AND q.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND OR NOT app_private.d1_teaching_class_assignment_request_payload_valid(
+      req.old_snapshot,req.requested_payload) THEN
+    RAISE EXCEPTION 'D1 Class assignment request unavailable';
+  END IF;
+  payload:=req.old_snapshot||req.requested_payload;
+  source_id:=NULLIF(payload->>'source_assignment_id','')::uuid;
+  source_employee:=NULLIF(payload->>'source_employee_id','')::uuid;
+  source_from:=NULLIF(payload->>'source_effective_from','')::date;
+  source_supersedes:=NULLIF(payload->>'source_supersedes_id','')::uuid;
+  employee:=NULLIF(payload->>'employee_id','')::uuid;
+  effect_from:=NULLIF(payload->>'effective_from','')::date;
+  PERFORM s.id FROM app_private.approval_request_steps s
+    WHERE s.request_id=p_request_id ORDER BY s.step_number FOR UPDATE;
+  SELECT s.* INTO step_row FROM app_private.approval_request_steps s
+    WHERE s.request_id=p_request_id AND s.state='OPEN' ORDER BY s.step_number;
+  SELECT * INTO lock_row FROM app_private.d1_teaching_class_assignment_lock_context(
+    req.target_ref,req.expected_target_version,false,source_id,source_employee,
+    source_from,source_supersedes,employee,NULL);
+  IF ctx.receipt_id IS NOT NULL THEN
+    SELECT count(*),min(t.reviewer_role_id::text)::uuid INTO n,reviewer_role
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t
+        ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+     WHERE s.request_id=p_request_id AND v.reviewer_id=ctx.actor_id
+       AND v.decision=p_decision AND v.expected_request_version=p_expected_request_version;
+    IF n<>1 OR reviewer_role IS NULL
+       OR NOT app_private.d1_teaching_class_assignment_authorized(
+         ctx.actor_id,'teaching.assignment.approve',req.target_ref,reviewer_role) THEN
+      RAISE EXCEPTION 'D1 Class assignment reviewer authority revoked';
+    END IF;
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS DISTINCT FROM p_request_id
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state']) THEN
+      RAISE EXCEPTION 'D1 Class assignment review receipt invalid';
+    END IF;
+    RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,
+      ctx.result_summary->>'state'; RETURN;
+  END IF;
+  SELECT count(*) INTO n FROM app_private.approval_request_steps s
+    WHERE s.request_id=p_request_id AND s.state='OPEN';
+  IF req.state<>'PENDING' OR req.row_version<>p_expected_request_version
+     OR step_row.id IS NULL OR n<>1 OR effect_from>=CURRENT_DATE THEN
+    RAISE EXCEPTION 'D1 Class assignment review state changed';
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_teaching_class_assignment_p2_policy(req.target_ref);
+  IF policy_row.policy_id IS DISTINCT FROM req.policy_id
+     OR policy_row.campus_id IS DISTINCT FROM req.campus_id THEN
+    RAISE EXCEPTION 'D1 Class assignment request policy no longer applies';
+  END IF;
+  SELECT count(*),min(a.id::text)::uuid INTO n,assignment_id
+    FROM app_private.approval_step_reviewers a
+   WHERE a.step_id=step_row.id AND a.reviewer_id=ctx.actor_id
+     AND a.withdrawn_at IS NULL AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+  IF n<>1 OR NOT EXISTS (
+    SELECT 1 FROM app_private.d1_teaching_class_assignment_candidates(
+      p_request_id,step_row.id) c WHERE c.candidate_principal_id=ctx.actor_id) THEN
+    RAISE EXCEPTION 'D1 Class assignment reviewer authority denied';
+  END IF;
+  INSERT INTO app_private.approval_reviews
+    (reviewer_assignment_id,step_id,reviewer_id,decision,reason,
+     expected_request_version,created_by)
+  VALUES (assignment_id,step_row.id,ctx.actor_id,p_decision,p_reason,
+    p_expected_request_version,ctx.actor_id);
+  UPDATE app_private.approval_request_steps SET
+    state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+  IF p_decision='REJECT' THEN
+    UPDATE app_private.approval_request_steps SET state='CANCELLED',
+      closed_at=pg_catalog.statement_timestamp()
+     WHERE request_id=p_request_id AND state='WAITING';
+    final_state:='REJECTED';
+  ELSE
+    SELECT * INTO next_step FROM app_private.approval_request_steps s
+     WHERE s.request_id=p_request_id AND s.step_number=step_row.step_number+1
+       AND s.state='WAITING' FOR UPDATE;
+    IF FOUND THEN
+      UPDATE app_private.approval_request_steps SET state='OPEN',
+        opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+      INSERT INTO app_private.approval_step_reviewers
+        (step_id,reviewer_id,assignment_reason,created_by)
+      SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+        FROM app_private.d1_teaching_class_assignment_candidates(p_request_id,next_step.id) c;
+      GET DIAGNOSTICS candidate_count=ROW_COUNT;
+      IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Class assignment next step has no reviewer'; END IF;
+      final_state:='PENDING';
+    ELSE final_state:='APPROVED'; END IF;
+  END IF;
+  UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
+    RETURNING row_version INTO final_version;
+  receipt:=app_private.d1_teaching_class_assignment_receipt(
+    'request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
+    'D1_TEACHING_CLASS_ASSIGNMENT_REVIEW',p_request_id,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+    FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  IF final_state IN ('APPROVED','REJECTED') THEN
+    INSERT INTO app_private.approval_transitions
+      (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+    VALUES (p_request_id,sequence_no+1,'PENDING',final_state,
+      'D1_TEACHING_CLASS_ASSIGNMENT_REVIEW_'||final_state,receipt,ctx.actor_id);
+  END IF;
+  PERFORM app_private.d1_teaching_class_assignment_audit(
+    ctx.actor_id,'REVIEW','CORRECT',req.target_ref,NULL,source_id,source_employee,employee,
+    receipt,p_request_id,req.expected_target_version,effect_from,NULL,
+    'SUCCEEDED',pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_review_class_teacher_assignment_request(
+  uuid,text,bigint,text,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_review_class_teacher_assignment_request(
+  uuid,text,bigint,text,text) TO authenticated;
+
+CREATE FUNCTION app.d1_apply_class_teacher_assignment_request(
+  p_request_id uuid,p_expected_request_version bigint,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; req record; lock_row record; policy_row record; preflight record;
+  effect_row record; payload jsonb; participant text; source_id uuid; source_employee uuid;
+  source_from date; source_supersedes uuid; employee uuid; effect_from date;
+  invalidation_code text; final_state text; final_version bigint; receipt uuid;
+  sequence_no bigint; correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_request_id IS NULL OR p_expected_request_version IS NULL
+     OR p_expected_request_version<1 THEN
+    RAISE EXCEPTION 'D1 Class assignment apply intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'teaching.class_assignment.change','request.apply',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_expected_request_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT q.* INTO req FROM app_private.approval_requests q
+   WHERE q.id=p_request_id AND q.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Class assignment request unavailable'; END IF;
+  PERFORM s.id FROM app_private.approval_request_steps s
+    WHERE s.request_id=p_request_id ORDER BY s.step_number FOR UPDATE;
+  participant:=app_private.d1_teaching_class_assignment_participant(p_request_id,ctx.actor_id);
+  IF participant IS NULL OR participant NOT IN ('REQUESTER','FINAL_APPROVER') THEN
+    RAISE EXCEPTION 'D1 Class assignment request unavailable';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state NOT IN ('SUCCEEDED','REJECTED')
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR (ctx.receipt_state='SUCCEEDED' AND (
+         ctx.result_ref IS NULL OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>10
+         OR ctx.result_summary->>'state'<>'EXECUTED'))
+       OR (ctx.receipt_state='REJECTED' AND (
+         ctx.result_ref IS NOT NULL OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+         OR ctx.result_summary->>'state'<>'INVALIDATED')) THEN
+      RAISE EXCEPTION 'D1 Class assignment apply receipt invalid';
+    END IF;
+    RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,
+      ctx.result_summary->>'state'; RETURN;
+  END IF;
+  IF req.state<>'APPROVED' OR req.row_version<>p_expected_request_version THEN
+    RAISE EXCEPTION 'D1 Class assignment approved request changed';
+  END IF;
+  IF NOT app_private.d1_teaching_class_assignment_request_payload_valid(
+      req.old_snapshot,req.requested_payload) THEN
+    invalidation_code:='D1_CLASS_ASSIGNMENT_REQUEST_PAYLOAD_INVALID';
+  ELSE
+    payload:=req.old_snapshot||req.requested_payload;
+    source_id:=NULLIF(payload->>'source_assignment_id','')::uuid;
+    source_employee:=NULLIF(payload->>'source_employee_id','')::uuid;
+    source_from:=NULLIF(payload->>'source_effective_from','')::date;
+    source_supersedes:=NULLIF(payload->>'source_supersedes_id','')::uuid;
+    employee:=NULLIF(payload->>'employee_id','')::uuid;
+    effect_from:=NULLIF(payload->>'effective_from','')::date;
+    IF payload->>'action'<>'CORRECT' OR effect_from>=CURRENT_DATE THEN
+      invalidation_code:='D1_CLASS_ASSIGNMENT_P2_ROUTE_STALE';
+    END IF;
+  END IF;
+  IF invalidation_code IS NULL THEN
+    SELECT * INTO lock_row FROM app_private.d1_teaching_class_assignment_lock_context(
+      req.target_ref,req.expected_target_version,true,source_id,source_employee,
+      source_from,source_supersedes,employee,NULL);
+    IF lock_row.error_code IS NOT NULL THEN invalidation_code:=lock_row.error_code; END IF;
+  END IF;
+  IF invalidation_code IS NULL THEN
+    SELECT * INTO policy_row FROM app_private.d1_teaching_class_assignment_p2_policy(req.target_ref);
+    IF policy_row.policy_id IS DISTINCT FROM req.policy_id
+       OR policy_row.campus_id IS DISTINCT FROM req.campus_id THEN
+      invalidation_code:='D1_CLASS_ASSIGNMENT_POLICY_STALE';
+    ELSIF NOT app_private.d1_teaching_class_assignment_authorized(
+        req.requester_id,'teaching.class_assignment.change',req.target_ref,NULL) THEN
+      invalidation_code:='D1_CLASS_ASSIGNMENT_REQUESTER_AUTHORITY_STALE';
+    ELSIF NOT app_private.d1_teaching_class_assignment_not_self(req.requester_id,employee) THEN
+      invalidation_code:='D1_CLASS_ASSIGNMENT_SELF_ASSIGNMENT';
+    ELSIF NOT app_private.d1_teaching_class_assignment_reviews_live(p_request_id) THEN
+      invalidation_code:='D1_CLASS_ASSIGNMENT_REVIEWER_AUTHORITY_STALE';
+    ELSE
+      SELECT * INTO preflight FROM app_private.d1_teaching_class_assignment_preflight(
+        req.target_ref,req.expected_target_version,'CORRECT',source_id,source_employee,
+        source_from,source_supersedes,employee,effect_from,NULL,req.reason);
+      IF NOT FOUND OR preflight.eligible IS NULL THEN
+        RAISE EXCEPTION 'D1 Class assignment preflight result unavailable';
+      ELSIF preflight.eligible IS FALSE THEN
+        IF preflight.error_code IS NULL OR pg_catalog.length(pg_catalog.btrim(preflight.error_code))=0 THEN
+          RAISE EXCEPTION 'D1 Class assignment preflight denial lacks error code';
+        END IF;
+        invalidation_code:=preflight.error_code;
+      END IF;
+    END IF;
+  END IF;
+  IF invalidation_code IS NOT NULL THEN
+    final_state:='INVALIDATED';
+    UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
+      RETURNING row_version INTO final_version;
+    receipt:=app_private.d1_teaching_class_assignment_receipt(
+      'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+      req.expected_target_version,p_request_id,p_expected_request_version,
+      'REJECTED',NULL,NULL,
+      pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),
+      invalidation_code);
+    PERFORM app_private.d1_teaching_class_assignment_audit(
+      ctx.actor_id,'APPLY','CORRECT',req.target_ref,NULL,source_id,source_employee,employee,
+      receipt,p_request_id,req.expected_target_version,effect_from,NULL,
+      'REJECTED',correlation);
+  ELSE
+    SELECT * INTO effect_row FROM app_private.d1_teaching_class_assignment_effect(
+      req.target_ref,req.expected_target_version,'CORRECT',source_id,source_employee,
+      source_from,source_supersedes,employee,effect_from,NULL,req.reason);
+    final_state:='EXECUTED';
+    UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
+      RETURNING row_version INTO final_version;
+    receipt:=app_private.d1_teaching_class_assignment_receipt(
+      'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+      req.expected_target_version,p_request_id,p_expected_request_version,
+      'SUCCEEDED','D1_TEACHING_CLASS_ASSIGNMENT_APPLY',effect_row.assignment_id,
+      pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state,
+        'action','CORRECT','assignment_id',effect_row.assignment_id,
+        'section_version',effect_row.section_version,'source_assignment_id',source_id,
+        'source_employee_id',source_employee,'employee_id',effect_row.employee_id,
+        'effective_from',pg_catalog.to_char(effect_row.effective_from,'YYYY-MM-DD'),
+        'effective_until',NULL),NULL);
+    INSERT INTO app_private.approval_applications
+      (request_id,command_receipt_id,operation_id,applied_target_version,result_ref,created_by)
+    VALUES (p_request_id,receipt,ctx.operation_id,effect_row.section_version,
+      effect_row.assignment_id,ctx.actor_id);
+    PERFORM app_private.d1_teaching_class_assignment_audit(
+      ctx.actor_id,'APPLY','CORRECT',req.target_ref,effect_row.assignment_id,source_id,
+      source_employee,effect_row.employee_id,receipt,p_request_id,effect_row.section_version,
+      effect_row.effective_from,NULL,'SUCCEEDED',correlation);
+    PERFORM app_private.d1_teaching_class_assignment_event(
+      ctx.actor_id,'CORRECT',req.target_ref,effect_row.assignment_id,source_id,
+      source_employee,effect_row.employee_id,receipt,effect_row.section_version,
+      effect_row.effective_from,NULL,correlation);
+  END IF;
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+    FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  INSERT INTO app_private.approval_transitions
+    (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+  VALUES (p_request_id,sequence_no+1,'APPROVED',final_state,
+    CASE WHEN final_state='EXECUTED' THEN 'D1_TEACHING_CLASS_ASSIGNMENT_APPLIED'
+         ELSE invalidation_code END,receipt,ctx.actor_id);
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_apply_class_teacher_assignment_request(uuid,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_class_teacher_assignment_request(uuid,bigint,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+CREATE FUNCTION app.d1_read_class_teacher_assignment_request(p_request_id uuid)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,
+  section_offering_id uuid,action text,source_assignment_id uuid,source_employee_id uuid,
+  source_effective_from date,requested_employee_id uuid,effective_from date)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; participant text; req record; payload jsonb;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1 Class assignment request unavailable'; END IF;
+  participant:=app_private.d1_teaching_class_assignment_participant(p_request_id,actor);
+  IF participant IS NULL THEN RAISE EXCEPTION 'D1 Class assignment request unavailable'; END IF;
+  SELECT q.id,q.row_version,q.state,q.target_ref,q.old_snapshot,q.requested_payload INTO req
+    FROM app_private.approval_requests q
+    JOIN app_private.operation_contracts o ON o.id=q.operation_id
+   WHERE q.id=p_request_id AND o.code='teaching.class_assignment.change';
+  IF NOT FOUND OR NOT app_private.d1_teaching_class_assignment_request_payload_valid(
+      req.old_snapshot,req.requested_payload) THEN
+    RAISE EXCEPTION 'D1 Class assignment request unavailable';
+  END IF;
+  payload:=req.old_snapshot||req.requested_payload;
+  RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,payload->>'action',
+    NULLIF(payload->>'source_assignment_id','')::uuid,
+    NULLIF(payload->>'source_employee_id','')::uuid,
+    NULLIF(payload->>'source_effective_from','')::date,
+    NULLIF(payload->>'employee_id','')::uuid,
+    NULLIF(payload->>'effective_from','')::date;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_read_class_teacher_assignment_request(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_class_teacher_assignment_request(uuid)
   TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
