@@ -2435,22 +2435,36 @@ CREATE POLICY d1_rooms_checked_display ON app.rooms
 GRANT SELECT (id, campus_id, code, name) ON app.rooms TO schoolos_read_executor;
 CREATE POLICY d1_academic_school_lock_input ON app_private.school_profiles
   FOR SELECT TO schoolos_academic_executor USING (true);
+-- PostgreSQL row-locking SELECTs also require UPDATE privilege and an
+-- applicable UPDATE policy. These four UPDATE(id)-only grants/policies exist
+-- solely for fixed hierarchy locks. The role is NOLOGIN, has no membership
+-- chain, and is reachable only as the owner of the fixed SECURITY DEFINER
+-- Academic RPCs; the RPCs issue no Foundation UPDATE statement.
+CREATE POLICY d1_academic_school_lock_update ON app_private.school_profiles
+  FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
 GRANT SELECT (id),UPDATE(id) ON app_private.school_profiles TO schoolos_academic_executor;
 CREATE POLICY d1_academic_campus_lock_input ON app.campuses
   FOR SELECT TO schoolos_academic_executor USING (true);
+CREATE POLICY d1_academic_campus_lock_update ON app.campuses
+  FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
 GRANT SELECT (id,school_id,state),UPDATE(id) ON app.campuses TO schoolos_academic_executor;
 CREATE POLICY d1_campus_authz_input ON app.campuses
   FOR SELECT TO schoolos_authz_reader USING (true);
 GRANT SELECT (id,school_id) ON app.campuses TO schoolos_authz_reader;
 CREATE POLICY d1_academic_year_lock_input ON app.academic_years
   FOR SELECT TO schoolos_academic_executor USING (true);
+CREATE POLICY d1_academic_year_lock_update ON app.academic_years
+  FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
 GRANT SELECT (id,school_id,state),UPDATE(id) ON app.academic_years TO schoolos_academic_executor;
 CREATE POLICY d1_academic_room_lock_input ON app.rooms
   FOR SELECT TO schoolos_academic_executor USING (true);
+CREATE POLICY d1_academic_room_lock_update ON app.rooms
+  FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
 GRANT SELECT (id,campus_id,state),UPDATE(id) ON app.rooms TO schoolos_academic_executor;
 CREATE POLICY d1_academic_capacity_enrollment_read ON app_private.enrollments
   FOR SELECT TO schoolos_academic_executor USING (true);
-GRANT SELECT (section_offering_id,placement_kind,effective_from,effective_until)
+GRANT SELECT (section_offering_id,placement_kind,placement_state,
+  effective_from,effective_until)
   ON app_private.enrollments TO schoolos_academic_executor;
 -- Academic business executors never receive arbitrary immutable-evidence DML.
 -- Fixed evidence-writer helpers below own this append boundary.
@@ -5810,7 +5824,8 @@ DECLARE ctx record; offering_row app_private.class_offerings%ROWTYPE;
   section_row app_private.section_offerings%ROWTYPE; old_capacity integer;
   new_version bigint; new_revision uuid:=pg_catalog.gen_random_uuid();
   prior_revision uuid; receipt uuid; correlation uuid:=pg_catalog.gen_random_uuid();
-  campus uuid; auth_kind text;
+  campus uuid; auth_kind text; commitment_day date;
+  commitment_occupancy bigint; commitment_peak bigint:=0;
 BEGIN
   IF p_target_kind NOT IN ('CLASS_OFFERING','SECTION') OR p_target_id IS NULL
      OR p_new_capacity IS NULL OR p_new_capacity<0 OR p_effective_on IS NULL
@@ -5867,15 +5882,57 @@ BEGIN
     RAISE EXCEPTION 'D1 Academic Capacity stale version/state';
   END IF;
   IF old_capacity=p_new_capacity THEN RAISE EXCEPTION 'D1 Capacity value unchanged'; END IF;
-  -- The retained placement scan runs under both aggregate locks. A reduction
-  -- preserves every accepted commitment; it never writes an override or
-  -- changes an Enrollment merely because the new projection is lower.
+  -- Under the already-held Offering/Section serialization anchors, evaluate
+  -- the accepted PRIMARY interval set at the effective date and at every
+  -- retained future start/end breakpoint. Counts are constant between these
+  -- dates. The peak is intentionally not emitted as broad evidence.
   IF p_new_capacity<old_capacity THEN
-    PERFORM count(*) FROM app_private.enrollments e
-      JOIN app_private.section_offerings s ON s.id=e.section_offering_id
-     WHERE e.placement_kind='PRIMARY'
-       AND ((p_target_kind='CLASS_OFFERING' AND s.class_offering_id=p_target_id)
-         OR (p_target_kind='SECTION' AND s.id=p_target_id));
+    FOR commitment_day IN
+      SELECT DISTINCT points.business_day
+        FROM (
+          SELECT p_effective_on AS business_day
+          UNION ALL
+          SELECT e.effective_from
+            FROM app_private.enrollments e
+            JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+           WHERE e.placement_kind='PRIMARY'
+             AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+             AND e.effective_from>=p_effective_on
+             AND ((p_target_kind='CLASS_OFFERING'
+                    AND s.class_offering_id=p_target_id)
+               OR (p_target_kind='SECTION' AND s.id=p_target_id))
+          UNION ALL
+          SELECT e.effective_until
+            FROM app_private.enrollments e
+            JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+           WHERE e.placement_kind='PRIMARY'
+             AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+             AND e.effective_until IS NOT NULL
+             AND e.effective_until>p_effective_on
+             AND ((p_target_kind='CLASS_OFFERING'
+                    AND s.class_offering_id=p_target_id)
+               OR (p_target_kind='SECTION' AND s.id=p_target_id))
+        ) AS points
+       ORDER BY points.business_day
+    LOOP
+      SELECT count(*) INTO commitment_occupancy
+        FROM app_private.enrollments e
+        JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+       WHERE e.placement_kind='PRIMARY'
+         AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+         AND e.effective_from<=commitment_day
+         AND (e.effective_until IS NULL OR commitment_day<e.effective_until)
+         AND ((p_target_kind='CLASS_OFFERING'
+                AND s.class_offering_id=p_target_id)
+           OR (p_target_kind='SECTION' AND s.id=p_target_id));
+      commitment_peak:=pg_catalog.greatest(commitment_peak,commitment_occupancy);
+    END LOOP;
+    IF commitment_peak>p_new_capacity THEN
+      -- The frozen rule permits a reduction below already accepted occupancy.
+      -- Existing commitments remain untouched; future placement commands use
+      -- the new projection and their separately reviewed override contract.
+      NULL;
+    END IF;
   END IF;
   IF p_target_kind='CLASS_OFFERING' THEN
     UPDATE app_private.class_offerings o SET capacity=p_new_capacity

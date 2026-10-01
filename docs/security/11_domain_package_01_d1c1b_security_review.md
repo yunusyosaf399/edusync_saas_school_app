@@ -438,6 +438,83 @@ Static extraction reconfirmed 97 unique permissions, 322 unique supported
 scope alternatives and 36 unique operations. These checks did not parse or
 execute Migration 10 and contacted no local or managed Supabase project.
 
+## Academic parent-lock correction after independent review
+
+Independent review of `f1c2a63b660554fec06ba24afcfc1d0c909d9b44`
+found two blockers: the Academic executor had the column privileges needed by
+PostgreSQL locking reads on four Foundation parents but only SELECT RLS, and
+the capacity-reduction branch read retained Enrollments without evaluating
+the frozen breakpoint occupancy algorithm. This correction records those as
+review findings; it does not rewrite `f1c2a63b...` as a pass.
+
+PostgreSQL applies UPDATE privilege and UPDATE RLS to `SELECT ... FOR UPDATE`.
+The draft therefore pairs each Foundation parent's existing SELECT policy and
+narrow SELECT columns with a `FOR UPDATE ... USING (true) WITH CHECK (true)`
+policy and `UPDATE(id)` only. This is lock-only capability: the NOLOGIN
+`schoolos_academic_executor` has no membership chain, is reached only as owner
+of the six fixed SECURITY DEFINER Academic RPCs, and none of those functions
+issues a Foundation UPDATE. No mutable Foundation business column is granted.
+
+| Locked relation | Clause in fixed Academic path | Required privilege | Applicable RLS | Runtime owner |
+|---|---|---|---|---|
+| `app_private.principals` | `FOR UPDATE` in `d1_lock_current_principal` | `SELECT(id,state)`, `UPDATE(id)` | `d1_command_principal_lock_read`; `d1_command_principal_lock_update` | `schoolos_identity_executor` |
+| `app_private.school_profiles` | `FOR UPDATE` for Class, Subject, Offering and Section configuration anchors | `SELECT(id)`, `UPDATE(id)` | `d1_academic_school_lock_input`; `d1_academic_school_lock_update` | `schoolos_academic_executor` |
+| `app.campuses` | `FOR UPDATE` after Academic Class and before Academic Year | `SELECT(id,school_id,state)`, `UPDATE(id)` | `d1_academic_campus_lock_input`; `d1_academic_campus_lock_update` | `schoolos_academic_executor` |
+| `app.academic_years` | `FOR UPDATE` after Campus and before Class Offering | `SELECT(id,school_id,state)`, `UPDATE(id)` | `d1_academic_year_lock_input`; `d1_academic_year_lock_update` | `schoolos_academic_executor` |
+| `app.rooms` | UUID-sorted `FOR UPDATE` after Section for Section Room source/destination | `SELECT(id,campus_id,state)`, `UPDATE(id)` | `d1_academic_room_lock_input`; `d1_academic_room_lock_update` | `schoolos_academic_executor` |
+| `app_private.academic_classes` | `FOR UPDATE` before Campus for stored Offering ancestry, or as the catalog target | explicit SELECT columns and mutable-column UPDATE | `d1_01_executor_read`; `d1_01_executor_update` | `schoolos_academic_executor` |
+| `app_private.subjects` | catalog-target `FOR UPDATE` | explicit SELECT columns and mutable-column UPDATE | `d1_02_executor_read`; `d1_02_executor_update` | `schoolos_academic_executor` |
+| `app_private.class_offerings` | `FOR UPDATE` after Year | explicit SELECT columns and capacity/state/archive UPDATE | `d1_03_executor_read`; `d1_03_executor_update` | `schoolos_academic_executor` |
+| `app_private.section_offerings` | `FOR UPDATE` after Offering | explicit SELECT columns and profile/capacity/state/archive UPDATE | `d1_04_executor_read`; `d1_04_executor_update` | `schoolos_academic_executor` |
+| `app_private.section_room_assignments` | retained predecessor `FOR UPDATE` after all Room locks | explicit SELECT columns and `UPDATE(effective_until)` | `d1_05_executor_read`; `d1_05_executor_update` | `schoolos_academic_executor` |
+| D1 relation selected by `d1_guard_crossrow` | trigger-only repeat lock of the row being validated | schema-owner table privileges | `d1_schema_owner_maintenance` | `schoolos_schema_owner` |
+| Academic ancestry reached by `d1_guard_effective_history` through `d1_lock_academic_path` | trigger-only Class, Campus, Year, Offering and Section locks in global order | schema-owner table privileges | `d1_schema_owner_maintenance` | `schoolos_schema_owner` |
+| Offering/Section ancestry reached by `d1_guard_capacity_lineage` | trigger-only Class Offering then Section Offering lock | schema-owner table privileges | `d1_schema_owner_maintenance` | `schoolos_schema_owner` |
+
+The command-owned locks retain the global hierarchy: receipt and Principal,
+then School/configuration, Academic Class, Campus, Academic Year, Class
+Offering, Section Offering, UUID-sorted Room rows, and finally retained child
+history. Defensive D1C1A triggers reached by these mutations remain the
+previously reviewed trigger-only `schoolos_schema_owner` exception; their
+schema-maintenance policies and owner privileges cover their internal locking
+reads. The only relation selection in the generic cross-row guard comes from
+frozen trigger arguments installed by the draft, not caller input. This
+correction adds no dynamic relation selection and no client-callable locking
+surface.
+
+For a capacity reduction, the command now scans only accepted PRIMARY
+Enrollment history in states ACTIVE, COMPLETED or ENDED. Under the already
+held Offering and applicable Section locks it evaluates occupancy at the
+requested effective date and every retained start/end breakpoint on or after
+that date. Class capacity includes every Section of the Class Offering;
+Section capacity includes only that Section. Each row counts only where its
+half-open retained interval contains the evaluated date, so future accepted
+placements reserve future capacity and ended placements stop counting at
+their exclusive end. The computed peak is deliberately private and has no
+new audit, outbox, warning-table, approval or override representation. A
+reduction below accepted occupancy still succeeds: it preserves every
+Enrollment, emits no capacity override, and leaves later placement commands
+to enforce the new projection. The Academic role receives only the additional
+`placement_state` SELECT column needed by this scan and receives no Enrollment
+INSERT or UPDATE.
+
+The six public APIs, Canonicalization V1, Profile workflow, HE Section Room
+behavior, stable audit/outbox codes and evidence-writer ownership remain
+unchanged by this correction. Runtime SQL remains unexecuted and D1C1B remains
+incomplete.
+
+Source-only verification after the correction returned
+`D1C1B_ACADEMIC_LOCK_AND_CAPACITY_STATIC_PASS`, including applicable global
+lock order, four Foundation parent policy/grant pairs, all six command
+evidence paths, both capacity targets, accepted placement states, half-open
+interval boundaries and absence of Enrollment DML. Registrar extraction
+returned 97/97 permissions, 322/322 scope alternatives and 36/36 operations,
+with unique stable IDs and unique permission/operation codes. The frozen
+guards returned `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests`,
+`LOCAL_CONFIG_PASS` and `STAGING_VALIDATE_PASS`; `git diff --check` found no
+whitespace error. These are static findings only. No D1 SQL was parsed or
+executed and no Supabase project was contacted.
+
 ## Corrective source-only verification (2026-09-29)
 
 The current diff is limited to this review, the D1C1 working review, and the

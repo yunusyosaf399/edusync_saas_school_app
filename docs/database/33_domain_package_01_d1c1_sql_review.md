@@ -225,3 +225,44 @@ rows and 36/36 operation rows, all unique. A fixed-function inventory found
 exactly the six Academic public command entry points and no Academic command
 body with direct receipt/audit/outbox INSERT. These are static findings, not
 PostgreSQL parse or runtime evidence.
+
+## Academic parent-lock and capacity correction
+
+Independent review of `f1c2a63b660554fec06ba24afcfc1d0c909d9b44`
+correctly rejected the Foundation parent lock proof: `UPDATE(id)` privilege
+alone did not make a locking SELECT pass forced RLS. The corrected draft adds
+an Academic-executor UPDATE policy alongside SELECT policy for each of
+`school_profiles`, `campuses`, `academic_years`, and `rooms`. Each relation
+retains only its reviewed SELECT columns plus `UPDATE(id)`; the role is
+NOLOGIN and only the six fixed SECURITY DEFINER Academic commands use it.
+Those commands contain no Foundation UPDATE, so this grants row-lock ability
+without a mutable Foundation business column. Private D1 target tables already
+pair their explicit SELECT/UPDATE column grants with executor SELECT/UPDATE
+policies. The current Principal remains separately locked by the identity
+executor and its reviewed SELECT plus UPDATE(id) policy pair.
+
+The same review found that capacity reduction discarded one aggregate count.
+The corrected command now enumerates the requested effective date and every
+accepted PRIMARY Enrollment start/end breakpoint from that date forward,
+then computes the half-open interval occupancy at each point while holding the
+Class Offering and applicable Section anchors. Class scans include all child
+Sections; Section scans remain exact. ACTIVE, COMPLETED and ENDED accepted
+rows count only while effective, including future accepted commitments. The
+result is a stability recheck, not a new rejection rule: existing commitments
+may remain above the lower projection and are neither rewritten nor given an
+automatic override. Only `placement_state` was added to the Academic
+executor's already narrow Enrollment SELECT grant; it has no Enrollment DML.
+
+This correction preserves all six command signatures, receipt sequencing,
+Canonicalization V1, evidence-writer helpers, stable operation audit types,
+six selected outbox codes, Profile workflow and retained Section Room HE
+behavior. It introduces no operation or operation family. D1C1B remains an
+incomplete, non-executable draft pending independent re-review and D1C2.
+
+The correction's source-only checks returned
+`D1C1B_ACADEMIC_LOCK_AND_CAPACITY_STATIC_PASS`, 97/97 unique permission rows,
+322/322 unique scope-alternative rows, 36/36 unique operation rows,
+`FOUNDATION_SOURCE_PASS 9 migrations + 9 tests`, `LOCAL_CONFIG_PASS`, and
+`STAGING_VALIDATE_PASS`. `git diff --check` found no whitespace error. These
+checks do not establish PostgreSQL parse or runtime correctness; the draft was
+not executed and no Supabase project was contacted.
