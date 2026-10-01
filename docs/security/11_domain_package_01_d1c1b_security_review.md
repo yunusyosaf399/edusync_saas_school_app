@@ -685,7 +685,7 @@ non-family-safe permission; the D1 evaluator rejects SYSTEM and no role-name
 fallback exists.
 
 The command locks only the existing Person row before Employee creation.
-Employee receives SELECT(id) plus UPDATE(id) solely for `SELECT ... FOR
+Employee receives SELECT(id,state) plus UPDATE(id) solely for `SELECT ... FOR
 UPDATE`, with matching role-specific RLS policies; it receives no Person
 business-column update grant and issues no Person mutation. Employee SELECT
 is limited to ID, row version, Person, employee code, current state and photo
@@ -718,3 +718,21 @@ The operation-effect inventory is **11/36**; the manifest remains **97
 permissions, 322 scope alternatives and 36 operations**. The draft remains
 unexecuted and D1C1B remains incomplete pending independent review. This
 continuation does not authorize D1C2 or Migration 10 application.
+
+## Employee Person-state eligibility clarification
+
+The current Person-state predicate is a new-execution eligibility check only.
+After locking Person ID/state and rechecking live `employee.create` authority,
+a command with no receipt requires `Person.state='ACTIVE'`; `INACTIVE` and
+`ARCHIVED` deny. Person state is not an authorization grant, and the command
+does not mutate the Person. The minimum lock boundary is SELECT(id,state) plus
+UPDATE(id) for row locking, with matching Employee-executor RLS; there is no
+UPDATE privilege on Person state or other business columns.
+
+The exact successful-replay branch precedes the ACTIVE predicate but follows
+fresh authorization. It may return the stored Employee result after the
+Person later becomes INACTIVE or ARCHIVED, after verifying the Employee,
+Person and code binding. No Employee lifecycle coupling or authorization
+side effect is introduced. The approved initial employment contract and
+receipt/audit/outbox payloads remain unchanged. SQL was not executed and no
+Supabase remote operation was performed; D1C1B remains incomplete.

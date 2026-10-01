@@ -2434,7 +2434,7 @@ CREATE POLICY d1_employee_person_lock_read ON app_private.people
   FOR SELECT TO schoolos_employee_executor USING (true);
 CREATE POLICY d1_employee_person_lock_update ON app_private.people
   FOR UPDATE TO schoolos_employee_executor USING (true) WITH CHECK (true);
-GRANT SELECT (id),UPDATE(id) ON app_private.people TO schoolos_employee_executor;
+GRANT SELECT (id,state),UPDATE(id) ON app_private.people TO schoolos_employee_executor;
 CREATE POLICY d1_rooms_checked_display ON app.rooms
   FOR SELECT TO schoolos_read_executor USING (true);
 GRANT SELECT (id, campus_id, code, name) ON app.rooms TO schoolos_read_executor;
@@ -7856,7 +7856,8 @@ CREATE FUNCTION app.d1_create_employee(
   p_idempotency_key text
 ) RETURNS TABLE (employee_id uuid,row_version bigint)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE ctx record; school_id uuid; locked_person uuid;
+DECLARE ctx record; school_id uuid; locked_person_id uuid;
+  locked_person_state text;
   locked_employee_id uuid; locked_employee_person_id uuid;
   locked_employee_code text;
   new_employee_id uuid; new_row_version bigint; new_receipt uuid;
@@ -7876,9 +7877,11 @@ BEGIN
   SELECT sp.id INTO school_id FROM app_private.school_profiles sp
    ORDER BY sp.id LIMIT 1 FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee create School anchor missing'; END IF;
-  SELECT p.id INTO locked_person FROM app_private.people p
-   WHERE p.id=p_person_id FOR UPDATE;
-  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee Person missing'; END IF;
+  SELECT p.id,p.state INTO locked_person_id,locked_person_state
+    FROM app_private.people p WHERE p.id=p_person_id FOR UPDATE;
+  IF NOT FOUND OR locked_person_id IS DISTINCT FROM p_person_id THEN
+    RAISE EXCEPTION 'D1 Employee Person missing';
+  END IF;
 
   IF ctx.receipt_id IS NOT NULL AND ctx.result_ref IS NOT NULL THEN
     SELECT e.id,e.person_id,e.employee_code
@@ -7911,6 +7914,9 @@ BEGIN
     RETURN;
   END IF;
 
+  IF locked_person_state IS DISTINCT FROM 'ACTIVE' THEN
+    RAISE EXCEPTION 'D1 Employee Person is not active';
+  END IF;
   IF p_effective_from>CURRENT_DATE THEN
     RAISE EXCEPTION 'D1 Employee joining date cannot be in the future';
   END IF;

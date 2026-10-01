@@ -352,8 +352,6 @@ and absence of any additional public operation effect. The Foundation guard
 returned `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests` and
 `LOCAL_CONFIG_PASS`; staging validation returned `STAGING_VALIDATE_PASS`;
 `git diff --check` found no whitespace errors. SQL was not executed and no
-Supabase project was contacted.
-Supabase project was contacted.
 
 ## Employee create P0 operation continuation (static draft)
 
@@ -384,8 +382,8 @@ Person row lock, replay Employee row lock when applicable, fresh live
 `employee.create` authorization, then new-command date/uniqueness checks,
 Employee insert, initial history insert and evidence append. Unique Person and
 Employee-code constraints remain the race-safe final defenses. Person receives
-only SELECT(id) and UPDATE(id) lock capability with matching RLS; no Person
-column is mutated.
+only SELECT(id,state) and UPDATE(id) lock capability with matching RLS; no
+Person column is mutated.
 
 The fixed receipt allowlist adds only `employee.create` with a three-element
 intent containing canonical Person UUID, exact Employee code and ISO joining
@@ -406,3 +404,23 @@ Profile effects, two Employee organization-catalog effects, and
 `employee.create`. **25 operation effects remain**. This remains static draft
 work; D1C1B is incomplete, Migration 10 remains non-executable, and no SQL was
 executed or Supabase project contacted.
+
+## Employee Person-state eligibility clarification (static draft)
+
+The product owner approved current Person state as a new-execution eligibility
+rule. After receipt arbitration, Person locking and fresh `employee.create`
+authorization, the no-receipt path requires the locked Person state to be
+`ACTIVE`. `INACTIVE` and `ARCHIVED` deny with the deterministic error
+`D1 Employee Person is not active`. The command reads only Person ID/state
+and does not mutate the Person. This does not change the approved ACTIVE
+Employee/period fields, joining-date semantics, history, audit or outbox.
+
+The check follows the exact successful-replay return branch. Replay still
+requires current `employee.create` authority and verifies the stored
+Employee/Person/code binding, but does not require Person to remain ACTIVE.
+It creates no duplicate Employee, history or evidence. Later Person state
+changes do not retroactively invalidate or alter the Employee. The Person
+executor grant is only SELECT(id,state) plus lock-only UPDATE(id), with no
+Person-state mutation privilege. Manifest counts and the 11/36
+implemented-effect count are unchanged. D1C1B remains incomplete; Migration 10
+remains non-executable and no Supabase remote operation was performed.
