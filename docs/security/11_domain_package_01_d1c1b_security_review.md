@@ -671,7 +671,6 @@ staging validation returned `STAGING_VALIDATE_PASS`; `git diff --check` found
 no whitespace errors. These checks do not establish PostgreSQL parse or
 runtime behavior. No Migration 10 SQL was executed and no Supabase project
 was contacted.
-was contacted.
 
 ## Employee create P0 security continuation (static only)
 
