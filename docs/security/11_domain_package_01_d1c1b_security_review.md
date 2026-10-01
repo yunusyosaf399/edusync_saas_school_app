@@ -713,7 +713,8 @@ minimized Employee ID/state/version/correlation evidence and no reason or
 private profile data. Replay rechecks current authority and verifies the
 stored Employee's Person/code binding before returning the durable result.
 
-The operation-effect inventory is **11/36**; the manifest remains **97
+At the Employee-create checkpoint, the operation-effect inventory was
+**11/36**. The current manifest remains **97
 permissions, 322 scope alternatives and 36 operations**. The draft remains
 unexecuted and D1C1B remains incomplete pending independent review. This
 continuation does not authorize D1C2 or Migration 10 application.
@@ -765,3 +766,30 @@ interval, changes a teaching reason, or restores teaching rows on activation.
 Organization and campus history is untouched. No role membership, permission,
 grant, scope or runtime schema-owner entry point is added. Migration 10 remains
 static and unexecuted; D1C1B remains incomplete.
+
+Approval apply now uses narrow Employee- and Teaching-owned preflight helpers
+that return only bounded deterministic eligibility codes. They do not catch
+or classify unexpected database exceptions. A deterministic denial after
+APPROVED produces a terminal INVALIDATED request, one REJECTED apply receipt,
+safe audit and transition; it creates no application row and performs no
+domain mutation. Transient and unclassified failures roll back the transaction
+and leave the APPROVED request retryable. The Employee lock also stabilizes
+the server-derived affiliation and teaching campus set while current policy,
+requester and reviewer authority are rechecked.
+
+`app.d1_read_employee_state_request(uuid)` is owned by the NOLOGIN Read
+executor and grants authenticated only exact EXECUTE. It returns six typed,
+bounded fields and never returns the HR reason. A private Authz-owned
+participant helper admits the currently authorized requester, an exact open
+reviewer still selected by `D1_REVIEWER_ROLE_SCOPE`, or an actual decided
+reviewer who still holds the applicable `employee.state.approve` role/scope.
+Requester/reviewer person separation is enforced and no role-name or generic
+administrator fallback exists. No new base-table SELECT is granted.
+
+The trigger-only schema-owner application guard requires a successful
+`request.apply` receipt for the same request and operation, fixed
+`D1_EMPLOYEE_STATE_APPLY` result kind, an existing Employee target and the
+receipt's resulting row version. INVALIDATED requests have no application
+row. The frozen Profile application guard remains unchanged. The current D1
+draft inventory is **12/36 effects**, with the manifest still **97
+permissions, 322 scope alternatives and 36 operations**.

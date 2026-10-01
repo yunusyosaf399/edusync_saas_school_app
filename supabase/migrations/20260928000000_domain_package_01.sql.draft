@@ -6627,7 +6627,17 @@ BEGIN
     SELECT 1 FROM app_private.command_receipts r
      WHERE r.id=NEW.command_receipt_id AND r.operation_id=NEW.operation_id
        AND r.request_id=NEW.request_id AND r.command_kind='request.apply'
-       AND r.state='SUCCEEDED' AND r.result_ref=NEW.result_ref) THEN
+       AND r.state='SUCCEEDED'
+       AND r.result_kind='D1_EMPLOYEE_STATE_APPLY'
+       AND r.result_ref=NEW.result_ref
+       AND NEW.applied_target_version IS NOT NULL
+       AND pg_catalog.jsonb_typeof(r.result_summary->'row_version')='number'
+       AND (r.result_summary->>'row_version')::bigint=NEW.applied_target_version
+       AND r.result_summary->>'state'='EXECUTED'
+       AND EXISTS (SELECT 1 FROM app_private.approval_requests q
+         JOIN app_private.employees e ON e.id=NEW.result_ref
+         WHERE q.id=NEW.request_id AND q.operation_id=NEW.operation_id
+           AND q.target_ref=e.id)) THEN
     RAISE EXCEPTION 'D1 Employee state application requires successful apply receipt';
   END IF;
   RETURN NEW;
@@ -7989,9 +7999,10 @@ CREATE FUNCTION app.d1_apply_employee_state_request(
 ) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE ctx record; req record; policy_row record; effect_row record;
+  preflight_row record;
   actor uuid; participant boolean:=false; final_step int; reviewer_role uuid;
   final_state text; final_version bigint; receipt uuid; sequence_no bigint;
-  correlation uuid:=gen_random_uuid(); new_state text;
+  correlation uuid:=gen_random_uuid(); new_state text; invalidation_code text;
 BEGIN
   IF p_request_id IS NULL OR p_expected_request_version IS NULL
      OR p_expected_request_version<1 THEN RAISE EXCEPTION 'D1 Employee state apply intent invalid'; END IF;
@@ -8047,26 +8058,41 @@ BEGIN
     RAISE EXCEPTION 'D1 Employee state approved request changed'; END IF;
   new_state:=req.requested_payload->>'new_state';
   IF NOT app_private.d1_employee_state_lock(req.target_ref,req.expected_target_version) THEN
-    final_state:='INVALIDATED';
+    invalidation_code:='D1_EMPLOYEE_STATE_TARGET_VERSION_STALE';
   ELSE
     SELECT * INTO policy_row FROM app_private.d1_employee_state_policy(req.target_ref);
     IF policy_row.policy_id IS DISTINCT FROM req.policy_id
        OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL'
-       OR policy_row.campus_id IS DISTINCT FROM req.campus_id
-       OR NOT app_private.d1_employee_state_authorized(req.requester_id,
-          'employee.state.change',req.target_ref,NULL)
-       OR NOT app_private.d1_employee_state_reviews_live(p_request_id) THEN
-      final_state:='INVALIDATED';
+       OR policy_row.campus_id IS DISTINCT FROM req.campus_id THEN
+      invalidation_code:='D1_EMPLOYEE_STATE_POLICY_STALE';
+    ELSIF NOT app_private.d1_employee_state_authorized(req.requester_id,
+          'employee.state.change',req.target_ref,NULL) THEN
+      invalidation_code:='D1_EMPLOYEE_STATE_REQUESTER_AUTHORITY_STALE';
+    ELSIF NOT app_private.d1_employee_state_reviews_live(p_request_id) THEN
+      invalidation_code:='D1_EMPLOYEE_STATE_REVIEWER_AUTHORITY_STALE';
+    ELSE
+      SELECT * INTO preflight_row FROM app_private.d1_employee_state_preflight(
+        req.target_ref,new_state,req.expected_target_version);
+      IF NOT FOUND OR preflight_row.eligible IS NULL THEN
+        RAISE EXCEPTION 'D1 Employee state preflight result unavailable';
+      ELSIF preflight_row.eligible IS FALSE THEN
+        IF preflight_row.error_code IS NULL
+           OR length(btrim(preflight_row.error_code))=0 THEN
+          RAISE EXCEPTION 'D1 Employee state preflight denial lacks error code';
+        END IF;
+        invalidation_code:=preflight_row.error_code;
+      END IF;
     END IF;
   END IF;
-  IF final_state='INVALIDATED' THEN
+  IF invalidation_code IS NOT NULL THEN
+    final_state:='INVALIDATED';
     UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
      RETURNING row_version INTO final_version;
     receipt:=app_private.d1_employee_state_receipt('request.apply',actor,ctx.operation_id,
       p_idempotency_key,ctx.intent_hash,req.expected_target_version,p_request_id,
       p_expected_request_version,'REJECTED',NULL,NULL,
       jsonb_build_object('request_version',final_version,'state',final_state),
-      'D1_EMPLOYEE_STATE_APPROVAL_STALE');
+      invalidation_code);
     PERFORM app_private.d1_employee_state_audit(actor,'APPLY',req.target_ref,
       receipt,p_request_id,req.expected_target_version,final_state,NULL,
       '{}'::jsonb,correlation);
@@ -8097,7 +8123,7 @@ BEGIN
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
   VALUES (p_request_id,sequence_no+1,'APPROVED',final_state,
     CASE final_state WHEN 'EXECUTED' THEN 'D1_EMPLOYEE_STATE_APPLIED'
-      ELSE 'D1_EMPLOYEE_STATE_APPROVAL_STALE' END,receipt,actor);
+      ELSE invalidation_code END,receipt,actor);
   RETURN QUERY SELECT p_request_id,final_version,final_state;
 END $body$;
 REVOKE ALL ON FUNCTION app.d1_apply_employee_state_request(uuid,bigint,text)
@@ -8301,8 +8327,126 @@ REVOKE ALL ON FUNCTION app_private.d1_employee_state_reviews_live(uuid)
   FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app_private.d1_employee_state_reviews_live(uuid)
   TO schoolos_workflow_executor;
+
+-- Current checked participant authority for Employee-state requests only.
+-- The helper returns no request payload and has no generic administrator path.
+CREATE FUNCTION app_private.d1_employee_state_participant(
+  p_request uuid,p_actor uuid
+) RETURNS text
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; decided record; actor_person uuid; requester_person uuid;
+  final_step integer;
+BEGIN
+  IF p_request IS NULL OR p_actor IS NULL
+     OR app_private.current_principal_id() IS DISTINCT FROM p_actor THEN
+    RETURN NULL;
+  END IF;
+  SELECT r.requester_id,r.target_ref,requester.person_id AS requester_person_id
+    INTO req FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.principals requester ON requester.id=r.requester_id
+   WHERE r.id=p_request AND o.code='employee.state.change';
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  IF req.requester_id=p_actor AND app_private.d1_employee_state_authorized(
+      p_actor,'employee.state.change',req.target_ref,NULL) THEN
+    RETURN 'REQUESTER';
+  END IF;
+  SELECT p.person_id INTO actor_person FROM app_private.principals p
+   WHERE p.id=p_actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+  requester_person:=req.requester_person_id;
+  IF actor_person IS NULL OR requester_person IS NULL OR p_actor=req.requester_id
+     OR actor_person=requester_person THEN RETURN NULL; END IF;
+  IF EXISTS (
+    SELECT 1 FROM app_private.approval_request_steps s
+    JOIN app_private.approval_step_templates t
+      ON t.id=s.template_id AND t.policy_id=s.policy_id
+    JOIN app_private.approval_step_reviewers a ON a.step_id=s.id
+   WHERE s.request_id=p_request AND s.state='OPEN'
+     AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+     AND a.reviewer_id=p_actor AND a.withdrawn_at IS NULL
+     AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+     AND app_private.d1_employee_state_authorized(p_actor,
+       'employee.state.approve',req.target_ref,t.reviewer_role_id)
+     AND (SELECT count(*) FROM app_private.approval_step_reviewers exactly_one
+           WHERE exactly_one.step_id=s.id AND exactly_one.reviewer_id=p_actor
+             AND exactly_one.withdrawn_at IS NULL
+             AND exactly_one.assignment_reason='D1_REVIEWER_ROLE_SCOPE')=1
+     AND EXISTS (SELECT 1 FROM app_private.d1_employee_state_candidates(
+       p_request,s.id) c WHERE c.candidate_principal_id=p_actor)
+  ) THEN RETURN 'OPEN_REVIEWER'; END IF;
+  SELECT max(s.step_number) INTO final_step
+    FROM app_private.approval_request_steps s WHERE s.request_id=p_request;
+  FOR decided IN
+    SELECT s.step_number,s.state,t.reviewer_role_id,t.selection_resolver_key,
+           v.decision,a.assignment_reason
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t
+        ON t.id=s.template_id AND t.policy_id=s.policy_id
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=s.id
+       AND a.reviewer_id=v.reviewer_id
+     WHERE s.request_id=p_request AND v.reviewer_id=p_actor
+  LOOP
+    IF decided.state IN ('APPROVED','REJECTED')
+       AND decided.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+       AND decided.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+       AND app_private.d1_employee_state_authorized(p_actor,
+         'employee.state.approve',req.target_ref,decided.reviewer_role_id) THEN
+      IF decided.step_number=final_step AND decided.decision='APPROVE'
+         AND decided.state='APPROVED' THEN RETURN 'FINAL_APPROVER'; END IF;
+      RETURN 'DECIDED_REVIEWER';
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_state_participant(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_state_participant(uuid,uuid)
+  TO schoolos_read_executor;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+-- Bounded Employee-state request projection. The private reason and arbitrary
+-- request JSON remain unavailable to both requester and workflow reviewers.
+CREATE FUNCTION app.d1_read_employee_state_request(p_request_id uuid)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,
+  employee_id uuid,old_state text,requested_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; participant text; req record;
+BEGIN
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1 Employee state request unavailable'; END IF;
+  participant:=app_private.d1_employee_state_participant(p_request_id,actor);
+  IF participant IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee state request unavailable';
+  END IF;
+  SELECT r.id,r.row_version,r.state,r.target_ref,r.old_snapshot,
+         r.requested_payload INTO req
+    FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+   WHERE r.id=p_request_id AND o.code='employee.state.change';
+  IF NOT FOUND OR jsonb_typeof(req.old_snapshot)<>'object'
+     OR jsonb_typeof(req.requested_payload)<>'object'
+     OR (SELECT count(*) FROM jsonb_object_keys(req.old_snapshot))<>1
+     OR (SELECT count(*) FROM jsonb_object_keys(req.requested_payload))<>1
+     OR NOT (req.old_snapshot ? 'current_state')
+     OR NOT (req.requested_payload ? 'new_state')
+     OR req.old_snapshot->>'current_state' NOT IN ('ACTIVE','INACTIVE','ENDED')
+     OR req.requested_payload->>'new_state' NOT IN ('ACTIVE','INACTIVE','ENDED') THEN
+    RAISE EXCEPTION 'D1 Employee state request unavailable';
+  END IF;
+  RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,
+    req.old_snapshot->>'current_state',req.requested_payload->>'new_state';
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_state_request(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_state_request(uuid)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
 
 GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
 SET ROLE schoolos_evidence_writer;
@@ -8405,32 +8549,37 @@ REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
 GRANT CREATE ON SCHEMA app_private TO schoolos_teaching_executor;
 SET ROLE schoolos_teaching_executor;
-CREATE FUNCTION app_private.d1_close_employee_teaching(
+-- Read-only deterministic dependency preflight. The caller already holds the
+-- Employee row; this function locks the complete sorted academic ancestry and
+-- affected teaching history, then returns a bounded result without mutation.
+CREATE FUNCTION app_private.d1_employee_state_teaching_preflight(
   p_employee uuid,p_on date
-) RETURNS jsonb
+) RETURNS TABLE(eligible boolean,error_code text,closure jsonb)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE r record; capability_ids uuid[]; class_ids uuid[]; subject_assignment_ids uuid[];
-  campus_ids uuid[]; year_ids uuid[]; academic_class_ids uuid[];
-  offering_ids uuid[]; section_ids uuid[]; subject_ids uuid[];
+  subject_section_ids uuid[]; campus_ids uuid[]; year_ids uuid[];
+  academic_class_ids uuid[]; offering_ids uuid[]; section_ids uuid[];
+  subject_ids uuid[]; failure text;
 BEGIN
   IF p_employee IS NULL OR p_on IS DISTINCT FROM CURRENT_DATE
      OR app_private.current_principal_id() IS NULL THEN
-    RAISE EXCEPTION 'D1 teaching dependency closure intent denied';
+    RAISE EXCEPTION 'D1 teaching dependency preflight intent denied';
   END IF;
   SELECT array_agg(x.id ORDER BY x.id) INTO capability_ids
     FROM app_private.teacher_capabilities x WHERE x.employee_id=p_employee
       AND (x.effective_until IS NULL OR x.effective_until>p_on);
-  SELECT array_agg(x.id ORDER BY x.id),array_agg(DISTINCT x.section_offering_id ORDER BY x.section_offering_id)
+  SELECT array_agg(x.id ORDER BY x.id),
+         array_agg(DISTINCT x.section_offering_id ORDER BY x.section_offering_id)
     INTO class_ids,section_ids FROM app_private.class_teacher_assignments x
    WHERE x.employee_id=p_employee AND (x.effective_until IS NULL OR x.effective_until>p_on);
   SELECT array_agg(x.id ORDER BY x.id),
          array_agg(DISTINCT x.section_offering_id ORDER BY x.section_offering_id),
          array_agg(DISTINCT x.subject_id ORDER BY x.subject_id)
-    INTO subject_assignment_ids,offering_ids,subject_ids
+    INTO subject_assignment_ids,subject_section_ids,subject_ids
     FROM app_private.subject_teacher_assignments x
    WHERE x.employee_id=p_employee AND (x.effective_until IS NULL OR x.effective_until>p_on);
   section_ids:=ARRAY(SELECT DISTINCT u.id FROM pg_catalog.unnest(
-    coalesce(section_ids,'{}'::uuid[])||coalesce(offering_ids,'{}'::uuid[])) AS u(id)
+    coalesce(section_ids,'{}'::uuid[])||coalesce(subject_section_ids,'{}'::uuid[])) AS u(id)
     ORDER BY u.id);
   SELECT array_agg(DISTINCT co.campus_id ORDER BY co.campus_id),
          array_agg(DISTINCT co.academic_year_id ORDER BY co.academic_year_id),
@@ -8448,26 +8597,23 @@ BEGIN
   FOR r IN SELECT s.id FROM app_private.subjects s WHERE s.id=ANY(coalesce(subject_ids,'{}'::uuid[])) ORDER BY s.id FOR UPDATE LOOP NULL; END LOOP;
   FOR r IN SELECT x.id,x.effective_from,x.effective_until FROM app_private.teacher_capabilities x
     WHERE x.id=ANY(coalesce(capability_ids,'{}'::uuid[])) ORDER BY x.id FOR UPDATE LOOP
-    IF r.effective_from>=p_on OR r.effective_until IS NOT NULL THEN
-      RAISE EXCEPTION 'D1 Employee state change cannot shorten bounded/future teaching capability'; END IF;
+    IF r.effective_from=p_on THEN failure:=coalesce(failure,'D1_EMPLOYEE_STATE_CAPABILITY_SAME_DAY');
+    ELSIF r.effective_from>p_on THEN failure:=coalesce(failure,'D1_EMPLOYEE_STATE_CAPABILITY_FUTURE');
+    ELSIF r.effective_until IS NOT NULL THEN failure:=coalesce(failure,'D1_EMPLOYEE_STATE_CAPABILITY_BOUNDED_FUTURE'); END IF;
   END LOOP;
   FOR r IN SELECT x.id,x.effective_from,x.effective_until FROM app_private.class_teacher_assignments x
     WHERE x.id=ANY(coalesce(class_ids,'{}'::uuid[])) ORDER BY x.id FOR UPDATE LOOP
-    IF r.effective_from>=p_on OR r.effective_until IS NOT NULL THEN
-      RAISE EXCEPTION 'D1 Employee state change cannot shorten bounded/future Class assignment'; END IF;
+    IF r.effective_from=p_on THEN failure:=coalesce(failure,'D1_EMPLOYEE_STATE_CLASS_ASSIGNMENT_SAME_DAY');
+    ELSIF r.effective_from>p_on THEN failure:=coalesce(failure,'D1_EMPLOYEE_STATE_CLASS_ASSIGNMENT_FUTURE');
+    ELSIF r.effective_until IS NOT NULL THEN failure:=coalesce(failure,'D1_EMPLOYEE_STATE_CLASS_ASSIGNMENT_BOUNDED_FUTURE'); END IF;
   END LOOP;
   FOR r IN SELECT x.id,x.effective_from,x.effective_until FROM app_private.subject_teacher_assignments x
     WHERE x.id=ANY(coalesce(subject_assignment_ids,'{}'::uuid[])) ORDER BY x.id FOR UPDATE LOOP
-    IF r.effective_from>=p_on OR r.effective_until IS NOT NULL THEN
-      RAISE EXCEPTION 'D1 Employee state change cannot shorten bounded/future Subject assignment'; END IF;
+    IF r.effective_from=p_on THEN failure:=coalesce(failure,'D1_EMPLOYEE_STATE_SUBJECT_ASSIGNMENT_SAME_DAY');
+    ELSIF r.effective_from>p_on THEN failure:=coalesce(failure,'D1_EMPLOYEE_STATE_SUBJECT_ASSIGNMENT_FUTURE');
+    ELSIF r.effective_until IS NOT NULL THEN failure:=coalesce(failure,'D1_EMPLOYEE_STATE_SUBJECT_ASSIGNMENT_BOUNDED_FUTURE'); END IF;
   END LOOP;
-  UPDATE app_private.teacher_capabilities SET effective_until=p_on
-    WHERE id=ANY(coalesce(capability_ids,'{}'::uuid[]));
-  UPDATE app_private.class_teacher_assignments SET effective_until=p_on
-    WHERE id=ANY(coalesce(class_ids,'{}'::uuid[]));
-  UPDATE app_private.subject_teacher_assignments SET effective_until=p_on
-    WHERE id=ANY(coalesce(subject_assignment_ids,'{}'::uuid[]));
-  RETURN pg_catalog.jsonb_build_object(
+  closure:=pg_catalog.jsonb_build_object(
     'cause','EMPLOYMENT_STATE_CHANGE',
     'teacher_capability_ids',to_jsonb(coalesce(capability_ids,'{}'::uuid[])),
     'class_teacher_assignment_ids',to_jsonb(coalesce(class_ids,'{}'::uuid[])),
@@ -8475,6 +8621,36 @@ BEGIN
     'teacher_capability_count',coalesce(cardinality(capability_ids),0),
     'class_teacher_assignment_count',coalesce(cardinality(class_ids),0),
     'subject_teacher_assignment_count',coalesce(cardinality(subject_assignment_ids),0));
+  RETURN QUERY SELECT failure IS NULL,failure,closure;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_state_teaching_preflight(uuid,date)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_state_teaching_preflight(uuid,date)
+  TO schoolos_employee_executor;
+
+CREATE FUNCTION app_private.d1_close_employee_teaching(
+  p_employee uuid,p_on date
+) RETURNS jsonb
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE preflight record;
+BEGIN
+  IF p_employee IS NULL OR p_on IS DISTINCT FROM CURRENT_DATE
+     OR app_private.current_principal_id() IS NULL THEN
+    RAISE EXCEPTION 'D1 teaching dependency closure intent denied';
+  END IF;
+  SELECT * INTO preflight FROM app_private.d1_employee_state_teaching_preflight(
+    p_employee,p_on);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 teaching dependency changed after preflight: %',
+      preflight.error_code;
+  END IF;
+  UPDATE app_private.teacher_capabilities SET effective_until=p_on
+    WHERE employee_id=p_employee AND effective_from<p_on AND effective_until IS NULL;
+  UPDATE app_private.class_teacher_assignments SET effective_until=p_on
+    WHERE employee_id=p_employee AND effective_from<p_on AND effective_until IS NULL;
+  UPDATE app_private.subject_teacher_assignments SET effective_until=p_on
+    WHERE employee_id=p_employee AND effective_from<p_on AND effective_until IS NULL;
+  RETURN preflight.closure;
 END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_close_employee_teaching(uuid,date)
   FROM PUBLIC,anon,authenticated,service_role;
@@ -8500,38 +8676,100 @@ REVOKE ALL ON FUNCTION app_private.d1_employee_state_lock(uuid,bigint)
 GRANT EXECUTE ON FUNCTION app_private.d1_employee_state_lock(uuid,bigint)
   TO schoolos_workflow_executor;
 
+-- Deterministic effect preflight. It owns no write and returns only bounded
+-- eligibility codes. Locks survive for the caller's transaction, so a
+-- successful effect consumes the same stable Employee and dependency set.
+CREATE FUNCTION app_private.d1_employee_state_preflight(
+  p_employee uuid,p_new_state text,p_expected bigint
+) RETURNS TABLE(eligible boolean,error_code text,closure jsonb)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE employee_row record; period app_private.employment_periods%ROWTYPE;
+  period_count bigint:=0; r record; teaching record;
+BEGIN
+  IF app_private.current_principal_id() IS NULL OR p_employee IS NULL
+     OR p_expected IS NULL OR p_expected<1
+     OR p_new_state NOT IN ('ACTIVE','INACTIVE','ENDED') THEN
+    RAISE EXCEPTION 'D1 Employee state preflight intent invalid';
+  END IF;
+  SELECT e.id,e.row_version,e.current_state INTO employee_row
+    FROM app_private.employees e WHERE e.id=p_employee FOR UPDATE;
+  IF NOT FOUND OR employee_row.row_version<>p_expected THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_STATE_TARGET_VERSION_STALE'::text,
+      '{}'::jsonb; RETURN;
+  END IF;
+  IF NOT ((employee_row.current_state='ACTIVE' AND p_new_state IN ('INACTIVE','ENDED'))
+       OR (employee_row.current_state='INACTIVE' AND p_new_state IN ('ACTIVE','ENDED'))
+       OR (employee_row.current_state='ENDED' AND p_new_state='ACTIVE')) THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_STATE_TRANSITION_INVALID'::text,
+      '{}'::jsonb; RETURN;
+  END IF;
+  FOR r IN SELECT x.id FROM app_private.employment_periods x
+    WHERE x.employee_id=p_employee AND x.effective_from<=CURRENT_DATE
+      AND (x.effective_until IS NULL OR CURRENT_DATE<x.effective_until)
+    ORDER BY x.id FOR UPDATE LOOP
+    period_count:=period_count+1;
+  END LOOP;
+  IF period_count<>1 THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_STATE_CURRENT_PERIOD_AMBIGUOUS'::text,
+      '{}'::jsonb; RETURN;
+  END IF;
+  SELECT * INTO period FROM app_private.employment_periods x
+   WHERE x.employee_id=p_employee AND x.effective_from<=CURRENT_DATE
+     AND (x.effective_until IS NULL OR CURRENT_DATE<x.effective_until);
+  IF period.state IS DISTINCT FROM employee_row.current_state THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_STATE_PERIOD_PROJECTION_MISMATCH'::text,
+      '{}'::jsonb; RETURN;
+  ELSIF period.effective_from=CURRENT_DATE THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_STATE_PERIOD_SAME_DAY'::text,
+      '{}'::jsonb; RETURN;
+  ELSIF period.effective_from>CURRENT_DATE THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_STATE_PERIOD_FUTURE'::text,
+      '{}'::jsonb; RETURN;
+  ELSIF period.effective_until IS NOT NULL THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_STATE_PERIOD_BOUNDED'::text,
+      '{}'::jsonb; RETURN;
+  END IF;
+  IF p_new_state IN ('INACTIVE','ENDED') THEN
+    SELECT * INTO teaching
+      FROM app_private.d1_employee_state_teaching_preflight(p_employee,CURRENT_DATE);
+    IF NOT teaching.eligible THEN
+      RETURN QUERY SELECT false,teaching.error_code,teaching.closure; RETURN;
+    END IF;
+    RETURN QUERY SELECT true,NULL::text,teaching.closure; RETURN;
+  END IF;
+  RETURN QUERY SELECT true,NULL::text,'{}'::jsonb;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_state_preflight(uuid,text,bigint)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_state_preflight(uuid,text,bigint)
+  TO schoolos_workflow_executor;
+
 CREATE FUNCTION app_private.d1_employee_state_effect(
   p_employee uuid,p_new_state text,p_expected bigint,p_reason text
 ) RETURNS TABLE(new_version bigint,effect_date date,closure jsonb)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE employee_row record; period app_private.employment_periods%ROWTYPE;
-  period_count bigint; actor uuid; closure_data jsonb:='{}'::jsonb; result_version bigint;
+DECLARE period app_private.employment_periods%ROWTYPE; preflight record;
+  actor uuid; closure_data jsonb:='{}'::jsonb; result_version bigint;
 BEGIN
   actor:=app_private.current_principal_id();
   IF actor IS NULL OR p_employee IS NULL OR p_expected IS NULL OR p_expected<1
      OR p_new_state NOT IN ('ACTIVE','INACTIVE','ENDED')
      OR p_reason IS NULL OR length(btrim(p_reason))=0 THEN
     RAISE EXCEPTION 'D1 Employee state effect intent invalid'; END IF;
-  SELECT e.id,e.row_version,e.current_state INTO employee_row
-    FROM app_private.employees e WHERE e.id=p_employee FOR UPDATE;
-  IF NOT FOUND OR employee_row.row_version<>p_expected THEN
-    RAISE EXCEPTION 'D1 Employee state target version changed'; END IF;
-  IF NOT ((employee_row.current_state='ACTIVE' AND p_new_state IN ('INACTIVE','ENDED'))
-       OR (employee_row.current_state='INACTIVE' AND p_new_state IN ('ACTIVE','ENDED'))
-       OR (employee_row.current_state='ENDED' AND p_new_state='ACTIVE')) THEN
-    RAISE EXCEPTION 'D1 Employee state transition denied'; END IF;
-  SELECT count(*) INTO period_count FROM app_private.employment_periods x
-   WHERE x.employee_id=p_employee AND x.effective_from<=CURRENT_DATE
-     AND (x.effective_until IS NULL OR CURRENT_DATE<x.effective_until);
-  IF period_count<>1 THEN RAISE EXCEPTION 'D1 Employee current period ambiguous'; END IF;
+  SELECT * INTO preflight FROM app_private.d1_employee_state_preflight(
+    p_employee,p_new_state,p_expected);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee state deterministic preflight failed: %',
+      preflight.error_code;
+  END IF;
   SELECT * INTO period FROM app_private.employment_periods x
    WHERE x.employee_id=p_employee AND x.effective_from<=CURRENT_DATE
      AND (x.effective_until IS NULL OR CURRENT_DATE<x.effective_until) FOR UPDATE;
-  IF period.state IS DISTINCT FROM employee_row.current_state
-     OR period.effective_until IS NOT NULL OR period.effective_from>=CURRENT_DATE THEN
-    RAISE EXCEPTION 'D1 Employee current period is not closable today'; END IF;
   IF p_new_state IN ('INACTIVE','ENDED') THEN
     closure_data:=app_private.d1_close_employee_teaching(p_employee,CURRENT_DATE);
+    IF closure_data IS DISTINCT FROM preflight.closure THEN
+      RAISE EXCEPTION 'D1 Employee teaching dependency set changed after preflight';
+    END IF;
   END IF;
   UPDATE app_private.employment_periods SET effective_until=CURRENT_DATE
    WHERE id=period.id;

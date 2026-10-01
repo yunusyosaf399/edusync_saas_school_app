@@ -460,6 +460,29 @@ school precedence for every affected campus and requires one common policy
 ID and one explicit route. Apply rechecks requester authority, reviewers,
 policy, target version and the current campus set.
 
+The corrective apply draft now separates deterministic effect eligibility
+from mutation. After the APPROVED request and Employee are locked, stale
+target/policy/requester/reviewer facts, invalid transitions, missing or
+ambiguous current periods, projection mismatch, same-day or bounded periods,
+and same-day/future/bounded-future Teaching dependencies return bounded error
+codes. Apply records one REJECTED `request.apply` receipt, safe audit and one
+`APPROVED` to `INVALIDATED` transition, with no domain write or application
+row. Unexpected SQL, integrity, deadlock, timeout and infrastructure failures
+are not caught and therefore roll back with the request still APPROVED.
+
+Preflight holds the same Employee, sorted academic ancestry and child-history
+locks through the effect. The effect defensively revalidates under those locks
+and requires the dependency closure to remain exact before mutation. The new
+checked `app.d1_read_employee_state_request(uuid)` returns only request ID,
+version/state, Employee ID and old/requested state. It excludes the private
+reason and arbitrary JSON. Current requester authority or a legitimate,
+separate workflow reviewer with current exact approval role/scope is required;
+there is no generic administrator read path. The trigger-only Employee-state
+application guard requires the same request/operation and successful
+`request.apply` receipt, fixed `D1_EMPLOYEE_STATE_APPLY` result kind, existing
+Employee result, and matching applied row version. The Profile application
+guard is unchanged.
+
 This brings the static drafted-effect inventory to **12 of 36**; **24 effects
 remain**. Migration 10 stays a non-executable `.sql.draft`. No SQL was applied
 and no Supabase project was contacted. Local regression checks returned
