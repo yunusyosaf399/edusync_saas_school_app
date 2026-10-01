@@ -798,3 +798,13 @@ receipt's resulting row version. INVALIDATED requests have no application
 row. The frozen Profile application guard remains unchanged. The current D1
 draft inventory is **12/36 effects**, with the manifest still **97
 permissions, 322 scope alternatives and 36 operations**.
+
+## Employee job-assignment P1 security continuation — candidate 13/36
+
+`employee.job_assignment.change` / `employee.job_assignment.approve` remain non-family-safe EA permissions. The operation uses a dedicated Employee authorization/policy/reviewer/participant path; Department, Designation, campus affiliation, labels and creator identity grant nothing. FAMILY/SYSTEM ordinary-business paths deny. Protected entry points take Foundation `(71001,1)` SHARED before current-Principal/participant decisions and preserve Employee → Department → Designation → history locking.
+
+DIRECT is available only under explicit DIRECT policy. APPROVAL uses separate submit/review/apply phases and exact `D1_REVIEWER_ROLE_SCOPE` role+permission+scope eligibility with requester/reviewer Person separation. Final review stops at `APPROVED`. Apply rechecks requester, reviewers, policy, source/history and catalog invariants; deterministic stale/domain invalidity yields `INVALIDATED` plus REJECTED `request.apply`, with no application row, domain effect or outbox. Unexpected database/infrastructure failures are not normalized to INVALIDATED.
+
+The checked request read is purpose-limited and excludes private reason/arbitrary workflow JSON. Replay requires current participant authority. Successful application is defended by an operation-specific receipt/application guard tied to `request.apply`, `D1_EMPLOYEE_JOB_APPLY`, request/result identity and bounded resulting evidence. Evidence uses `employee.job_assignment.change` audit and `employee.job_changed` outbox with minimized identifiers/interval/action data; raw reason is excluded. Employee executor privileges on `employee_job_assignments` are narrowed to explicit columns plus the one-way HE close.
+
+This remains a static, unexecuted Migration 10 draft and **candidate 13/36** pending independent review. No Foundation/runtime test claim is added here.

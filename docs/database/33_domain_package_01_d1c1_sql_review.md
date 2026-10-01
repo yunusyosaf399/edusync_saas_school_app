@@ -489,3 +489,13 @@ and no Supabase project was contacted. Local regression checks returned
 `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests`, `LOCAL_CONFIG_PASS`, 121
 passing Python tests and `STAGING_VALIDATE_PASS`; `git diff --check` found no
 whitespace errors.
+
+## Employee job-assignment P1 continuation — candidate 13/36
+
+Product-owner clarification during D1C1B fixes `employee.job_assignment.change` as typed `ADD`, `END`, and `CORRECT`. ADD uses caller-supplied past/current/future `effective_from` and an optional initial bound. END one-way closes one open row at the caller-supplied boundary without replacing the immutable row reason. CORRECT closes one open predecessor and appends an open Department/Designation successor at the same boundary with `supersedes_id=source.id`, changing Department, Designation, or both. Already-ended rows cannot be corrected. Exact `(Employee,Department,Designation)` overlap is denied while distinct concurrent jobs remain valid; no primary/single-job rule is introduced.
+
+The static draft implements P1 DIRECT/APPROVAL with separate submit, review and explicit apply transactions, current-authority replay, deterministic `APPROVED→INVALIDATED` apply failures, and retained history. The lock order is Foundation authorization/idempotency/Principal then Employee → sorted Department → sorted Designation → history. Department/Designation facts never grant authorization. Broad audit/outbox excludes private reason text; successful effects select `employee.job_changed`.
+
+Public typed surfaces in the draft are `app.d1_change_employee_job_assignment`, `app.d1_submit_employee_job_assignment_change`, `app.d1_review_employee_job_assignment_request`, `app.d1_apply_employee_job_assignment_request`, and bounded `app.d1_read_employee_job_assignment_request`. Migration 10 remains `.sql.draft` and unexecuted. This is effect candidate **13/36**, not a frozen/pass result. Manifests remain **97 permissions / 322 scope alternatives / 36 operations**. D1C1B remains incomplete; D1C2, Migration 10 application and remote Supabase operations remain unauthorized.
+
+No fresh PostgreSQL/Foundation regression is asserted by this status section; runtime proof remains a later separately authorized gate.
