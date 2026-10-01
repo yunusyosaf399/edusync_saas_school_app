@@ -499,14 +499,24 @@ to enforce the new projection. The Academic role receives only the additional
 `placement_state` SELECT column needed by this scan and receives no Enrollment
 INSERT or UPDATE.
 
-The product-owner-approved capacity contract is immediate-only. Initial typed
-validation denies unless `p_effective_on` equals the transaction's server
-`CURRENT_DATE`, using `IS DISTINCT FROM` so NULL also denies. No backdated,
-scheduled, correction, queue, job or approval authorization path exists. The
-accepted date remains part of the canonical receipt intent and the retained
-capacity revision, while the current capacity projection changes in that same
-transaction. Immediate application does not remove the future Enrollment
-commitment scan or change its preservation semantics.
+The product-owner-approved capacity contract is immediate-only for a new
+execution. Commit `d952c88b...` incorrectly enforced `CURRENT_DATE` before
+receipt lookup and is not treated as a passed replay design. The corrected
+initial validation denies NULL but lets a non-NULL historical date reach the
+unchanged canonical receipt lookup. After the Principal and target hierarchy
+locks and fresh `academic.capacity.change` authorization, an exact successful
+receipt may return its stored result across a calendar-date boundary. The old
+receipt never supplies authority and replay performs no second effect or
+evidence append. Only a no-receipt/new execution reaches the fail-closed
+`p_effective_on IS DISTINCT FROM CURRENT_DATE` gate. A changed date changes the
+canonical hash and conflicts; it is never substituted by the server.
+
+No backdated or scheduled new execution, correction, queue, job or approval
+authorization path exists. The accepted date remains part of the canonical
+receipt intent and retained capacity revision, while the current capacity
+projection changes in that same transaction. Immediate application does not
+remove the future Enrollment commitment scan or change its preservation
+semantics.
 
 The six public APIs, Canonicalization V1, Profile workflow, HE Section Room
 behavior, stable audit/outbox codes and evidence-writer ownership remain

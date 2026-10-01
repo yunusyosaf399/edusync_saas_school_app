@@ -5828,8 +5828,7 @@ DECLARE ctx record; offering_row app_private.class_offerings%ROWTYPE;
   commitment_occupancy bigint; commitment_peak bigint:=0;
 BEGIN
   IF p_target_kind NOT IN ('CLASS_OFFERING','SECTION') OR p_target_id IS NULL
-     OR p_new_capacity IS NULL OR p_new_capacity<0
-     OR p_effective_on IS DISTINCT FROM CURRENT_DATE
+     OR p_new_capacity IS NULL OR p_new_capacity<0 OR p_effective_on IS NULL
      OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
      OR p_expected_version IS NULL OR p_expected_version<1 THEN
     RAISE EXCEPTION 'D1 Academic Capacity intent invalid';
@@ -5877,6 +5876,9 @@ BEGIN
     END IF;
     RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'row_version')::bigint;
     RETURN;
+  END IF;
+  IF p_effective_on IS DISTINCT FROM CURRENT_DATE THEN
+    RAISE EXCEPTION 'D1 Academic Capacity effective date must be current';
   END IF;
   IF new_version<>p_expected_version OR offering_row.state='ARCHIVED'
      OR (p_target_kind='SECTION' AND section_row.state='ARCHIVED') THEN

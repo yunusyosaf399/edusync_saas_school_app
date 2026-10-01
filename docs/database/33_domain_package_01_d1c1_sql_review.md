@@ -270,18 +270,31 @@ not executed and no Supabase project was contacted.
 ## Immediate-only Academic capacity effective date
 
 The product owner subsequently froze `academic.capacity.change` as an
-immediate-only P0 command. Its initial typed-input validation now requires
-`p_effective_on IS NOT DISTINCT FROM CURRENT_DATE`; the implemented
-fail-closed predicate is `p_effective_on IS DISTINCT FROM CURRENT_DATE`.
-Consequently NULL, past and future dates all deny. There is no backdated,
-scheduled or alternate approval path, and the command does not normalize a
-caller-supplied date to the server date.
+immediate-only P0 command for new execution. Commit `d952c88b...` placed the
+`p_effective_on IS DISTINCT FROM CURRENT_DATE` predicate in initial validation;
+independent review correctly rejected that placement because it prevented an
+exact successful receipt from replaying after the original calendar date.
+That commit is not treated as a passed replay design.
+
+The corrected initial block performs syntactic validation only and still
+denies a NULL effective date. Receipt lookup then arbitrates Principal,
+operation, idempotency key and the unchanged canonical intent. After the
+Principal and Academic hierarchy locks and fresh target authorization, an
+exact `SUCCEEDED` receipt returns its stored result. Only the no-receipt/new
+path then applies `p_effective_on IS DISTINCT FROM CURRENT_DATE` and denies a
+past or future date before version validation or effect. There is no
+backdated, scheduled or alternate approval path, and the command does not
+normalize a caller-supplied date to the server date.
 
 The accepted `p_effective_on` remains in the Canonicalization V1 positional
 intent and is inserted unchanged into `capacity_revisions.effective_on` in
 the same transaction that changes the parent capacity projection. A replay
 with a different supplied date therefore remains a different intent and
-cannot reuse the frozen receipt contract. The reduction path still evaluates
+conflicts during receipt lookup rather than being rewritten to match. An exact
+same-intent replay can cross a calendar-date boundary, but only after the
+current Principal is verified, locked, and freshly authorized for the locked
+target; its stored result returns without a second mutation, revision, audit
+or outbox event. The reduction path still evaluates
 the current date plus every retained accepted PRIMARY Enrollment start/end
 breakpoint from that date forward, preserves half-open interval semantics and
 does not rewrite or invalidate existing commitments when occupancy exceeds
