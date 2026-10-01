@@ -260,13 +260,13 @@ private, post-bootstrap, disabled by default, and uninvoked by the migration.
   separately permissioned from roster/profile. Historical reads use their
   separate history permission and present grant checks. These interfaces
   still require independent field-by-field and non-owner review.
-- A private receipt lookup now takes the Foundation authorization SHARED lock,
+- A private receipt lookup takes the Foundation authorization SHARED lock,
   a namespace-71002 SHA-256-derived command-key lock, and the current actor
-  row lock before comparing the full immutable receipt tuple. A first fixed
-  `academic.class.change` P0 draft demonstrates typed create/update/archive,
-  expected version, postlock reauthorization, atomic receipt, safe audit, and
-  selected outbox event. This single command has not been SQL-executed or
-  generalized to the other operation contracts.
+  row lock before comparing the full immutable receipt tuple. The six fixed
+  Academic P0 drafts use it for typed effects, expected versions where the
+  target is mutable, post-lock reauthorization, atomic evidence, stable audit
+  discriminators and the six selected outbox events. None has been executed;
+  the other 28 operation effects remain outside this Academic continuation.
 
 ## Student and Employee Profile P1 workflow continuation
 
@@ -334,11 +334,11 @@ remain unproven until separately authorized execution testing.
 
 ## Open completion gates
 
-1. The complete 36-operation ledger is not implemented. In particular,
-   `student.create` remains unavailable pending the approved Admissions
-   handoff; 33 of the other 35 supported effects still need fixed typed
-   commands or reviewed private workflow apply paths. The first Academic Class
-   command also needs independent static and later runtime review.
+1. The complete 36-operation ledger is not implemented. Six Academic P0
+   operations and the two Profile P1 operations now have draft effects, leaving
+   28 operation contracts without effects. In particular, `student.create`
+   remains unavailable pending the approved Admissions handoff. The Academic
+   family still needs independent static and later runtime review.
 2. The two Profile operations above are the only drafted P1 workflow core.
    Other P1/P2 source/destination interpretation, candidate materialization,
    review, apply, receipt and evidence paths remain unimplemented. The
@@ -352,6 +352,91 @@ remain unproven until separately authorized execution testing.
 
 This document is a continuation work record, **not** a D1C1B PASS or an
 independent review approval.
+
+## Academic P0 command-family continuation (static only)
+
+The continuation from `bb2b7a803af332704565fe1da6892ad8a09280ec`
+drafts the complete six-operation Academic P0 family:
+`app.d1_change_academic_class`, `app.d1_change_academic_subject`,
+`app.d1_change_academic_offering`, `app.d1_change_academic_section`,
+`app.d1_change_academic_section_room`, and
+`app.d1_change_academic_capacity`. Each function is owned by the NOLOGIN
+`schoolos_academic_executor`; only its exact signature grants EXECUTE to
+`authenticated`. PUBLIC, anon and service_role retain no D1 application
+EXECUTE and no client receives base-table DML.
+
+Every entry point uses the frozen direct P0 sequence: the evidence-owned
+receipt lookup takes the `(71001,1)` SHARED authorization lock and namespace
+71002 idempotency-key lock, the identity executor locks the verified current
+Principal, the Academic executor takes the deterministic stored-ancestry
+locks, and a fresh authorization call rechecks one complete live grant/scope
+chain before expected state/version validation and mutation. School catalog
+commands use SCHOOL authority; new Offerings use their locked destination
+Campus and existing Offerings use their stored Class Offering; new Sections
+use the locked parent Offering and existing Sections use the stored Section.
+Section-room source and destination share the same locked Section scope and
+both Room rows are locked UUID-sorted when they differ. Capacity authority is
+typed to exactly CLASS or SECTION. No role name, administrator or partial-chain
+fallback is present.
+
+Class and Subject expose only create, mutable-label/order profile update, and
+one-way archive; Class alone also retains its reviewed optional stage label.
+Offering ancestry and Section ancestry/code are immutable. Offering update
+changes only the reviewed PLANNED/OPEN/CLOSED lifecycle state, and Section
+update changes only label/order plus that lifecycle state; capacity is routed
+through the separate capacity command. Offering and Section creation append
+the required initial typed capacity revision in the same transaction. Archive
+retains history and rejects active dependent catalog/room state selected by
+the command boundary. D1C1A guards remain the final ancestry, lifecycle,
+version and archive-use defense.
+
+Section-room supports only ADD, END and CORRECT. END performs the sole HE
+one-way close. CORRECT locks the retained predecessor and source/destination
+Rooms, closes the open predecessor, and appends a same-Section successor with
+`supersedes_id`; it never deletes or rewrites historical business fields.
+Room and Section Campus must match, and the destination Room must be ACTIVE.
+Reason text remains only in private retained history and is excluded from
+broad audit/outbox evidence.
+
+Capacity accepts only `CLASS_OFFERING` or `SECTION`, locks the trusted parent
+hierarchy, rechecks retained accepted commitments on reductions, updates the
+current projection, and appends one matching typed immutable revision with the
+same receipt in the transaction. Existing placements are never modified and
+no enrollment capacity override is synthesized. The D1C1A deferred projection
+and revision checks remain unchanged.
+
+The prior Class command's direct receipt/audit/outbox inserts were removed.
+Three fixed SECURITY DEFINER helpers owned by `schoolos_evidence_writer` now
+validate the six-operation allowlist, result kind, stable operation-code audit
+discriminator and exact selected outbox mapping before appending Foundation
+evidence. `schoolos_academic_executor` has no broad evidence-table INSERT.
+Its domain DML grants are explicit by relation and column; immutable capacity
+history has no UPDATE grant. Lock-only UPDATE(id) privileges on Foundation
+School/Campus/Year/Room anchors have SELECT-only RLS and cannot perform an
+application update. The authorization evaluator remains owned by
+`schoolos_authz_reader`, the Principal lock remains owned by
+`schoolos_identity_executor`, and no membership chain or executor role was
+added.
+
+The receipt phase allowlist now admits only the five new operation-equals-
+command-kind pairs and their fixed positional array lengths. Bigint versions
+remain canonical decimal strings and the restricted Canonicalization V1
+serializer was not generalized. Audit event types are exactly the six dotted
+operation codes. Outbox types are exactly `academic.class_changed`,
+`academic.subject_changed`, `academic.offering_changed`,
+`academic.section_changed`, `academic.section_room_changed`, and
+`academic.capacity_changed`.
+
+This continuation does not alter Profile routing, review, apply or payload
+behavior. It is unexecuted draft SQL; PostgreSQL parsing, ownership, RLS,
+locking, replay and concurrency behavior remain D1C2 evidence gates.
+
+The source-only gate returned `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests`
+and `LOCAL_CONFIG_PASS`; staging contract validation returned
+`STAGING_VALIDATE_PASS`; `git diff --check` reported no whitespace error.
+Static extraction reconfirmed 97 unique permissions, 322 unique supported
+scope alternatives and 36 unique operations. These checks did not parse or
+execute Migration 10 and contacted no local or managed Supabase project.
 
 ## Corrective source-only verification (2026-09-29)
 

@@ -146,7 +146,11 @@ The current draft has **not** implemented the complete approved D1B2/D1B3 runtim
 
 ## Local evidence and next work
 
-### Focused static review findings
+### Historical focused static review findings
+
+The bullets in this subsection describe the early incomplete checkpoint and
+are retained as review history. Later D1C1A, bootstrap, Profile and Academic
+continuation sections supersede their then-current absence claims.
 
 - The earlier checkpoint contained no D1 protected command function, command-key lock, `pg_advisory_xact_lock_shared(71001,1)`, command-receipt write, approval apply call, audit write or outbox write. The current continuation adds a private receipt lookup and one fixed Academic Class command, but the remaining command/workflow paths are absent. The five D1 executor roles still have provisional direct private-table INSERT and selected UPDATE grants with `USING (true)` / `WITH CHECK (true)` policies. These grants are not an acceptable final protected-command boundary.
 - There is no cross-row D1 trigger or deferred constraint trigger. For example, the draft has no parent-locked primary-enrollment overlap/capacity check, no same-transaction initial Student status requirement, and no roll-allocation coverage check. The row-local CHECK bundles and partial unique indexes do not close these gaps.
@@ -168,3 +172,56 @@ Current read-only source counts, including the new partial functions, are 34 D1 
 `python tools/supabase/foundation_guard.py --future report` reported `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests`, `FUTURE_MIGRATIONS_PRESENT`, and `LOCAL_CONFIG_PASS` while the file had a `.sql` suffix. After moving the incomplete file to `.sql.draft`, the default `python tools/supabase/foundation_guard.py` reported `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests` and `LOCAL_CONFIG_PASS`. This validates only the frozen source/config boundary. The working draft has not been SQL-parsed by PostgreSQL, applied locally or remotely, linted, or tested under non-owner roles. Foundation migrations and database tests 01–09 remain untouched.
 
 Finish and statically review the SQL against all D1B2/D1B3 contracts before creating the final Migration 10 `.sql`, then update this record with the actual object inventory and validation. D1C2 later covers clean install and upgrade sequencing, registrar exact/no-op/collision behavior, runtime non-owner security and regressions. No corrective D1C1 completion commit has been made after the incomplete checkpoint.
+
+## Academic P0 family continuation from `bb2b7a8` (static only)
+
+The working Migration 10 `.sql.draft` now contains all six reviewed Academic
+P0 command entry points. The existing Class command was re-reviewed and its
+broad direct Foundation receipt/audit/outbox inserts were replaced by fixed
+evidence helpers owned by `schoolos_evidence_writer`. Its frozen
+create/update/archive fields, receipt-before-Principal-lock ordering,
+post-lock SCHOOL authorization, expected ACTIVE version, stable audit code and
+selected Class outbox code otherwise remain intact.
+
+Five additional typed commands implement Subject create/profile-update/archive;
+Class Offering create/state-update/archive; Section create/profile-and-state
+update/archive; retained Section Room add/end/correct; and typed Class/Section
+capacity change. Offering and Section create append the initial capacity
+revision required by the existing deferred D1C1A completeness trigger.
+Capacity change updates the parent projection and appends its matching
+revision under the same locked transaction and command receipt. No command
+changes an ancestry key, deletes retained history, mutates an Enrollment, or
+creates a capacity override.
+
+The public Academic command signatures are owned by
+`schoolos_academic_executor` and granted only to `authenticated`. Three
+private Academic evidence helpers are owned by `schoolos_evidence_writer`,
+explicitly unavailable to PUBLIC/anon/authenticated/service_role, and callable
+only by the Academic executor. The Academic executor no longer has receipt,
+audit or outbox INSERT. Its Academic table privileges are explicit column
+grants for these six effects. The shared current-Principal and authorization
+owners remain `schoolos_identity_executor` and `schoolos_authz_reader`.
+
+The fixed receipt lookup accepts the new five operations only when command
+kind equals operation code and the positional intent has its exact approved
+shape. The JCS object-key language was not expanded. The six audit event types
+remain the stable operation codes, and the only Academic outbox codes are the
+six frozen `_changed` codes. Profile workflow code and behavior were not
+changed; its evidence policies were merely shared through the same evidence
+writer table boundary rather than duplicated.
+
+This brings the drafted effect count to eight of the 36 registered operation
+contracts: six Academic P0 effects plus Student Profile and Employee Profile.
+Exactly 28 operation effects remain, including the intentionally unavailable
+`student.create`. D1C1B therefore remains incomplete and is not approved for
+application. Migration 10 remains a `.sql.draft`; no SQL was parsed or
+executed and no Supabase project was contacted by this continuation.
+
+The final source-only checks for this continuation returned
+`FOUNDATION_SOURCE_PASS 9 migrations + 9 tests`, `LOCAL_CONFIG_PASS`, and
+`STAGING_VALIDATE_PASS`; `git diff --check` found no whitespace error. A fresh
+registrar extraction found 97/97 permission rows, 322/322 scope-alternative
+rows and 36/36 operation rows, all unique. A fixed-function inventory found
+exactly the six Academic public command entry points and no Academic command
+body with direct receipt/audit/outbox INSERT. These are static findings, not
+PostgreSQL parse or runtime evidence.

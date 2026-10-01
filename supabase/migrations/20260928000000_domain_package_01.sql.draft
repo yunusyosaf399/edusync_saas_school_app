@@ -2435,22 +2435,25 @@ CREATE POLICY d1_rooms_checked_display ON app.rooms
 GRANT SELECT (id, campus_id, code, name) ON app.rooms TO schoolos_read_executor;
 CREATE POLICY d1_academic_school_lock_input ON app_private.school_profiles
   FOR SELECT TO schoolos_academic_executor USING (true);
-GRANT SELECT (id) ON app_private.school_profiles TO schoolos_academic_executor;
-CREATE POLICY d1_academic_receipt_insert ON app_private.command_receipts
-  FOR INSERT TO schoolos_academic_executor
-  WITH CHECK (principal_id=app_private.current_principal_id()
-    AND created_by=principal_id AND state='SUCCEEDED');
-GRANT INSERT ON app_private.command_receipts TO schoolos_academic_executor;
-CREATE POLICY d1_academic_audit_insert ON app_private.audit_events
-  FOR INSERT TO schoolos_academic_executor
-  WITH CHECK (actor_id=app_private.current_principal_id()
-    AND created_by=actor_id AND actor_kind='INDIVIDUAL'
-    AND source_kind='API');
-GRANT INSERT ON app_private.audit_events TO schoolos_academic_executor;
-CREATE POLICY d1_academic_outbox_insert ON app_private.outbox_events
-  FOR INSERT TO schoolos_academic_executor
-  WITH CHECK (created_by=app_private.current_principal_id());
-GRANT INSERT ON app_private.outbox_events TO schoolos_academic_executor;
+GRANT SELECT (id),UPDATE(id) ON app_private.school_profiles TO schoolos_academic_executor;
+CREATE POLICY d1_academic_campus_lock_input ON app.campuses
+  FOR SELECT TO schoolos_academic_executor USING (true);
+GRANT SELECT (id,school_id,state),UPDATE(id) ON app.campuses TO schoolos_academic_executor;
+CREATE POLICY d1_campus_authz_input ON app.campuses
+  FOR SELECT TO schoolos_authz_reader USING (true);
+GRANT SELECT (id,school_id) ON app.campuses TO schoolos_authz_reader;
+CREATE POLICY d1_academic_year_lock_input ON app.academic_years
+  FOR SELECT TO schoolos_academic_executor USING (true);
+GRANT SELECT (id,school_id,state),UPDATE(id) ON app.academic_years TO schoolos_academic_executor;
+CREATE POLICY d1_academic_room_lock_input ON app.rooms
+  FOR SELECT TO schoolos_academic_executor USING (true);
+GRANT SELECT (id,campus_id,state),UPDATE(id) ON app.rooms TO schoolos_academic_executor;
+CREATE POLICY d1_academic_capacity_enrollment_read ON app_private.enrollments
+  FOR SELECT TO schoolos_academic_executor USING (true);
+GRANT SELECT (section_offering_id,placement_kind,effective_from,effective_until)
+  ON app_private.enrollments TO schoolos_academic_executor;
+-- Academic business executors never receive arbitrary immutable-evidence DML.
+-- Fixed evidence-writer helpers below own this append boundary.
 GRANT USAGE ON SCHEMA app_private TO schoolos_academic_executor, schoolos_student_executor, schoolos_family_executor, schoolos_employee_executor, schoolos_teaching_executor;
 CREATE POLICY d1_01_schema_maintenance ON app_private.academic_classes
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -2463,7 +2466,10 @@ GRANT SELECT (id, school_id, code, label, display_order, stage_label, state, arc
 CREATE POLICY d1_01_executor_read ON app_private.academic_classes FOR SELECT TO schoolos_academic_executor USING (true);
 CREATE POLICY d1_01_executor_insert ON app_private.academic_classes FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
 CREATE POLICY d1_01_executor_update ON app_private.academic_classes FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT ON app_private.academic_classes TO schoolos_academic_executor;
+GRANT SELECT (id,created_at,created_by,row_version,updated_at,school_id,code,label,
+  display_order,stage_label,state,archived_at,archived_by),
+  INSERT (id,school_id,code,label,display_order,stage_label,created_by)
+  ON app_private.academic_classes TO schoolos_academic_executor;
 GRANT UPDATE (label, display_order, stage_label, state, archived_at, archived_by) ON app_private.academic_classes TO schoolos_academic_executor;
 CREATE POLICY d1_02_schema_maintenance ON app_private.subjects
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -2476,7 +2482,10 @@ GRANT SELECT (id, school_id, code, label, display_order, state, archived_at, arc
 CREATE POLICY d1_02_executor_read ON app_private.subjects FOR SELECT TO schoolos_academic_executor USING (true);
 CREATE POLICY d1_02_executor_insert ON app_private.subjects FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
 CREATE POLICY d1_02_executor_update ON app_private.subjects FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT ON app_private.subjects TO schoolos_academic_executor;
+GRANT SELECT (id,created_at,created_by,row_version,updated_at,school_id,code,label,
+  display_order,state,archived_at,archived_by),
+  INSERT (id,school_id,code,label,display_order,created_by)
+  ON app_private.subjects TO schoolos_academic_executor;
 GRANT UPDATE (label, display_order, state, archived_at, archived_by) ON app_private.subjects TO schoolos_academic_executor;
 CREATE POLICY d1_03_schema_maintenance ON app_private.class_offerings
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -2489,7 +2498,10 @@ GRANT SELECT (id, school_id, class_id, campus_id, academic_year_id, capacity, st
 CREATE POLICY d1_03_executor_read ON app_private.class_offerings FOR SELECT TO schoolos_academic_executor USING (true);
 CREATE POLICY d1_03_executor_insert ON app_private.class_offerings FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
 CREATE POLICY d1_03_executor_update ON app_private.class_offerings FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT ON app_private.class_offerings TO schoolos_academic_executor;
+GRANT SELECT (id,created_at,created_by,row_version,updated_at,school_id,class_id,
+  campus_id,academic_year_id,capacity,state,archived_at,archived_by),
+  INSERT (id,school_id,class_id,campus_id,academic_year_id,capacity,state,created_by)
+  ON app_private.class_offerings TO schoolos_academic_executor;
 GRANT UPDATE (capacity, state, archived_at, archived_by) ON app_private.class_offerings TO schoolos_academic_executor;
 CREATE POLICY d1_04_schema_maintenance ON app_private.section_offerings
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -2502,7 +2514,10 @@ GRANT SELECT (id, class_offering_id, campus_id, code, label, display_order, capa
 CREATE POLICY d1_04_executor_read ON app_private.section_offerings FOR SELECT TO schoolos_academic_executor USING (true);
 CREATE POLICY d1_04_executor_insert ON app_private.section_offerings FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
 CREATE POLICY d1_04_executor_update ON app_private.section_offerings FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT ON app_private.section_offerings TO schoolos_academic_executor;
+GRANT SELECT (id,created_at,created_by,row_version,updated_at,class_offering_id,
+  campus_id,code,label,display_order,capacity,state,archived_at,archived_by),
+  INSERT (id,class_offering_id,campus_id,code,label,display_order,capacity,state,created_by)
+  ON app_private.section_offerings TO schoolos_academic_executor;
 GRANT UPDATE (label, display_order, capacity, state, archived_at, archived_by) ON app_private.section_offerings TO schoolos_academic_executor;
 CREATE POLICY d1_05_schema_maintenance ON app_private.section_room_assignments
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
@@ -2512,8 +2527,12 @@ GRANT SELECT (id, section_offering_id, room_id, effective_from, effective_until,
 CREATE POLICY d1_05_executor_read ON app_private.section_room_assignments FOR SELECT TO schoolos_academic_executor USING (true);
 CREATE POLICY d1_05_executor_insert ON app_private.section_room_assignments FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
 CREATE POLICY d1_05_executor_update ON app_private.section_room_assignments FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT ON app_private.section_room_assignments TO schoolos_academic_executor;
-GRANT UPDATE (effective_until, ended_at, ended_by) ON app_private.section_room_assignments TO schoolos_academic_executor;
+GRANT SELECT (id,created_at,created_by,ended_at,ended_by,section_offering_id,
+  room_id,effective_from,effective_until,reason,supersedes_id),
+  INSERT (id,section_offering_id,room_id,effective_from,effective_until,reason,
+    supersedes_id,created_by)
+  ON app_private.section_room_assignments TO schoolos_academic_executor;
+GRANT UPDATE (effective_until) ON app_private.section_room_assignments TO schoolos_academic_executor;
 CREATE POLICY d1_06_schema_maintenance ON app_private.capacity_revisions
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
 CREATE POLICY d1_06_checked_read ON app_private.capacity_revisions
@@ -2521,8 +2540,11 @@ CREATE POLICY d1_06_checked_read ON app_private.capacity_revisions
 GRANT SELECT (id, class_offering_id, section_offering_id, old_capacity, new_capacity, effective_on, reason, supersedes_id, command_receipt_id) ON app_private.capacity_revisions TO schoolos_read_executor;
 CREATE POLICY d1_06_executor_read ON app_private.capacity_revisions FOR SELECT TO schoolos_academic_executor USING (true);
 CREATE POLICY d1_06_executor_insert ON app_private.capacity_revisions FOR INSERT TO schoolos_academic_executor WITH CHECK (true);
-CREATE POLICY d1_06_executor_update ON app_private.capacity_revisions FOR UPDATE TO schoolos_academic_executor USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT ON app_private.capacity_revisions TO schoolos_academic_executor;
+GRANT SELECT (id,created_at,created_by,class_offering_id,section_offering_id,
+  old_capacity,new_capacity,effective_on,reason,supersedes_id,command_receipt_id),
+  INSERT (id,class_offering_id,section_offering_id,old_capacity,new_capacity,
+    effective_on,reason,supersedes_id,command_receipt_id,created_by)
+  ON app_private.capacity_revisions TO schoolos_academic_executor;
 CREATE POLICY d1_07_schema_maintenance ON app_private.student_id_allocator_states
   FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
 CREATE POLICY d1_07_checked_read ON app_private.student_id_allocator_states
@@ -2924,6 +2946,10 @@ BEGIN
     target_employee := target_id;
     target_campus := target_subject_id;
     employee_self := actor_kind='INDIVIDUAL' AND actor_person=target_person;
+  ELSIF target_kind = 'CAMPUS' THEN
+    SELECT c.id,c.school_id INTO target_campus,target_school
+      FROM app.campuses c WHERE c.id=target_id;
+    IF target_campus IS NULL THEN RETURN false; END IF;
   ELSIF target_kind = 'CLASS' THEN
     target_class := target_id;
   ELSIF target_kind = 'SECTION' OR target_kind = 'SUBJECT' THEN
@@ -3530,9 +3556,19 @@ BEGIN
      OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array' THEN
     RAISE EXCEPTION 'D1 command idempotency input invalid';
   END IF;
-  IF NOT ((p_operation_code='academic.class.change'
-           AND p_command_kind='academic.class.change'
-           AND pg_catalog.jsonb_array_length(p_intent)=8)
+  IF NOT ((p_operation_code=p_command_kind AND (
+           (p_operation_code='academic.class.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=8)
+        OR (p_operation_code='academic.subject.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=7)
+        OR (p_operation_code='academic.offering.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=9)
+        OR (p_operation_code='academic.section.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=10)
+        OR (p_operation_code='academic.section_room.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=8)
+        OR (p_operation_code='academic.capacity.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=6)))
        OR (p_operation_code IN ('student.profile.update','employee.profile.update')
            AND ((p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=4)
              OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=5)
@@ -5047,8 +5083,177 @@ GRANT EXECUTE ON FUNCTION app.d1_read_subject_teacher_assignment_history(uuid) T
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
 
--- First fixed P0 command pattern. The remaining operation families are still
--- absent; this does not make the migration or D1C1B execution-ready.
+-- Fixed Academic evidence boundary. Academic command owners can request only
+-- one of the six frozen P0 receipt/audit/outbox tuples; they cannot append
+-- arbitrary rows to the broad Foundation evidence tables.
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_academic_evidence_receipt_read ON app_private.command_receipts
+  FOR SELECT TO schoolos_evidence_writer USING (true);
+CREATE POLICY d1_academic_evidence_receipt_insert ON app_private.command_receipts
+  FOR INSERT TO schoolos_evidence_writer WITH CHECK (true);
+CREATE POLICY d1_academic_evidence_audit_insert ON app_private.audit_events
+  FOR INSERT TO schoolos_evidence_writer WITH CHECK (true);
+CREATE POLICY d1_academic_evidence_outbox_insert ON app_private.outbox_events
+  FOR INSERT TO schoolos_evidence_writer WITH CHECK (true);
+CREATE POLICY d1_academic_evidence_operation_read ON app_private.operation_contracts
+  FOR SELECT TO schoolos_evidence_writer USING (true);
+GRANT SELECT, INSERT ON app_private.command_receipts TO schoolos_evidence_writer;
+GRANT SELECT (id,code,contract_version,handler_key,enabled)
+  ON app_private.operation_contracts TO schoolos_evidence_writer;
+GRANT INSERT ON app_private.audit_events,app_private.outbox_events
+  TO schoolos_evidence_writer;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+RESET ROLE;
+
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_academic_receipt(
+  p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+  p_expected_version bigint,p_result_kind text,p_result_ref uuid,p_summary jsonb
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE new_id uuid:=pg_catalog.gen_random_uuid(); op_code text;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o
+   WHERE o.id=p_operation AND o.contract_version=1 AND o.enabled
+     AND o.handler_key=o.code;
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR op_code NOT IN ('academic.class.change','academic.subject.change',
+       'academic.offering.change','academic.section.change',
+       'academic.section_room.change','academic.capacity.change')
+     OR p_key IS NULL OR pg_catalog.length(p_key) NOT BETWEEN 1 AND 200
+     OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+     OR p_result_ref IS NULL OR p_summary IS NULL
+     OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR NOT (p_summary ? 'state')
+     OR (op_code='academic.section_room.change' AND
+       ((SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>1
+        OR p_summary->>'state' NOT IN ('ACTIVE','ENDED')))
+     OR (op_code<>'academic.section_room.change' AND
+       ((SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>2
+        OR NOT (p_summary ? 'row_version')
+        OR pg_catalog.jsonb_typeof(p_summary->'row_version')<>'number'))
+     OR (op_code IN ('academic.class.change','academic.subject.change')
+         AND p_summary->>'state' NOT IN ('ACTIVE','ARCHIVED'))
+     OR (op_code IN ('academic.offering.change','academic.section.change')
+         AND p_summary->>'state' NOT IN ('PLANNED','OPEN','CLOSED','ARCHIVED'))
+     OR (op_code='academic.capacity.change'
+         AND p_summary->>'state'<>'CHANGED')
+     OR p_result_kind IS DISTINCT FROM CASE op_code
+       WHEN 'academic.class.change' THEN 'D1_CLASS'
+       WHEN 'academic.subject.change' THEN 'D1_SUBJECT'
+       WHEN 'academic.offering.change' THEN 'D1_CLASS_OFFERING'
+       WHEN 'academic.section.change' THEN 'D1_SECTION_OFFERING'
+       WHEN 'academic.section_room.change' THEN 'D1_SECTION_ROOM_ASSIGNMENT'
+       WHEN 'academic.capacity.change' THEN 'D1_CAPACITY_REVISION' END THEN
+    RAISE EXCEPTION 'D1 Academic receipt intent denied';
+  END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,
+     canonical_payload_hash,canonicalization_version,expected_target_version,
+     state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES (new_id,p_actor,p_operation,op_code,p_key,p_hash,1,
+    p_expected_version,'SUCCEEDED',p_result_kind,p_result_ref,p_summary,
+    pg_catalog.transaction_timestamp(),p_actor);
+  RETURN new_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_academic_receipt(
+  uuid,uuid,text,bytea,bigint,text,uuid,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_academic_receipt(
+  uuid,uuid,text,bytea,bigint,text,uuid,jsonb)
+  TO schoolos_academic_executor;
+
+CREATE FUNCTION app_private.d1_academic_audit(
+  p_actor uuid,p_operation text,p_target_kind text,p_target uuid,
+  p_campus uuid,p_receipt uuid,p_version bigint,p_state text,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR NOT ((p_operation='academic.class.change' AND p_target_kind='CLASS')
+       OR (p_operation='academic.subject.change' AND p_target_kind='SUBJECT')
+       OR (p_operation='academic.offering.change' AND p_target_kind='CLASS_OFFERING')
+       OR (p_operation='academic.section.change' AND p_target_kind='SECTION')
+       OR (p_operation='academic.section_room.change' AND p_target_kind='SECTION_ROOM')
+       OR (p_operation='academic.capacity.change'
+           AND p_target_kind IN ('CLASS_OFFERING','SECTION')))
+     OR p_target IS NULL OR p_receipt IS NULL OR p_state IS NULL
+     OR p_correlation IS NULL
+     OR (p_operation IN ('academic.class.change','academic.subject.change')
+         AND p_state NOT IN ('ACTIVE','ARCHIVED'))
+     OR (p_operation IN ('academic.offering.change','academic.section.change')
+         AND p_state NOT IN ('PLANNED','OPEN','CLOSED','ARCHIVED'))
+     OR (p_operation='academic.section_room.change'
+         AND p_state NOT IN ('ACTIVE','ENDED'))
+     OR (p_operation='academic.capacity.change' AND p_state<>'CHANGED') THEN
+    RAISE EXCEPTION 'D1 Academic audit intent denied';
+  END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,
+     event_type,target_kind,target_ref,campus_id,command_receipt_id,
+     source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL','SUCCEEDED',
+    pg_catalog.jsonb_build_object('operation',p_operation),p_version,
+    p_operation,p_target_kind,p_target,p_campus,p_receipt,'API',p_correlation,
+    pg_catalog.jsonb_build_object('state',p_state),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_academic_audit(
+  uuid,text,text,uuid,uuid,uuid,bigint,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_academic_audit(
+  uuid,text,text,uuid,uuid,uuid,bigint,text,uuid)
+  TO schoolos_academic_executor;
+
+CREATE FUNCTION app_private.d1_academic_event(
+  p_actor uuid,p_operation text,p_target uuid,p_version bigint,
+  p_receipt uuid,p_correlation uuid,p_state text
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE event_code text; aggregate_kind text;
+BEGIN
+  event_code:=CASE p_operation
+    WHEN 'academic.class.change' THEN 'academic.class_changed'
+    WHEN 'academic.subject.change' THEN 'academic.subject_changed'
+    WHEN 'academic.offering.change' THEN 'academic.offering_changed'
+    WHEN 'academic.section.change' THEN 'academic.section_changed'
+    WHEN 'academic.section_room.change' THEN 'academic.section_room_changed'
+    WHEN 'academic.capacity.change' THEN 'academic.capacity_changed' END;
+  aggregate_kind:=CASE p_operation
+    WHEN 'academic.class.change' THEN 'ACADEMIC_CLASS'
+    WHEN 'academic.subject.change' THEN 'SUBJECT'
+    WHEN 'academic.offering.change' THEN 'CLASS_OFFERING'
+    WHEN 'academic.section.change' THEN 'SECTION'
+    WHEN 'academic.section_room.change' THEN 'SECTION_ROOM_ASSIGNMENT'
+    WHEN 'academic.capacity.change' THEN 'ACADEMIC_CAPACITY' END;
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR event_code IS NULL OR p_target IS NULL OR p_version IS NULL
+     OR p_version<1 OR p_receipt IS NULL OR p_correlation IS NULL
+     OR p_state IS NULL
+     OR (p_operation IN ('academic.class.change','academic.subject.change')
+         AND p_state NOT IN ('ACTIVE','ARCHIVED'))
+     OR (p_operation IN ('academic.offering.change','academic.section.change')
+         AND p_state NOT IN ('PLANNED','OPEN','CLOSED','ARCHIVED'))
+     OR (p_operation='academic.section_room.change'
+         AND p_state NOT IN ('ACTIVE','ENDED'))
+     OR (p_operation='academic.capacity.change' AND p_state<>'CHANGED') THEN
+    RAISE EXCEPTION 'D1 Academic outbox intent denied';
+  END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,
+     command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES (event_code,aggregate_kind,p_target,p_version,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('target_id',p_target,'state',p_state),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_academic_event(
+  uuid,text,uuid,bigint,uuid,uuid,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_academic_event(
+  uuid,text,uuid,bigint,uuid,uuid,text)
+  TO schoolos_academic_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+-- Six fixed P0 Academic commands. D1C1B remains incomplete after this family.
 GRANT USAGE, CREATE ON SCHEMA app TO schoolos_academic_executor;
 SET ROLE schoolos_academic_executor;
 CREATE FUNCTION app.d1_change_academic_class(
@@ -5064,7 +5269,7 @@ DECLARE
   v_id uuid;
   v_version bigint;
   v_state text;
-  v_receipt_id uuid := pg_catalog.gen_random_uuid();
+  v_receipt_id uuid;
   v_correlation_id uuid := pg_catalog.gen_random_uuid();
 BEGIN
   IF p_action NOT IN ('CREATE','UPDATE','ARCHIVE') OR p_school_id IS NULL
@@ -5090,7 +5295,7 @@ BEGIN
   v_hash := v_context.intent_hash;
   PERFORM app_private.d1_lock_current_principal(v_context.actor_id);
 
-  PERFORM 1 FROM app_private.school_profiles s WHERE s.id=p_school_id FOR SHARE;
+  PERFORM 1 FROM app_private.school_profiles s WHERE s.id=p_school_id FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'D1 school target missing'; END IF;
   IF p_action<>'CREATE' THEN
     SELECT c.* INTO v_old FROM app_private.academic_classes c
@@ -5143,36 +5348,565 @@ BEGIN
     END IF;
   END IF;
 
-  INSERT INTO app_private.command_receipts
-    (id,principal_id,operation_id,command_kind,idempotency_key,
-     canonical_payload_hash,canonicalization_version,expected_target_version,
-     state,result_kind,result_ref,result_summary,completed_at,created_by)
-  VALUES (v_receipt_id,v_context.actor_id,v_context.operation_id,
-          'academic.class.change',p_idempotency_key,v_hash,1,p_expected_version,
-          'SUCCEEDED','D1_CLASS',v_id,
-          pg_catalog.jsonb_build_object('row_version',v_version,'state',v_state),
-          pg_catalog.transaction_timestamp(),v_context.actor_id);
-  INSERT INTO app_private.audit_events
-    (actor_id,actor_kind,outcome,authority_evidence,target_version,
-     event_type,target_kind,target_ref,command_receipt_id,source_kind,
-     correlation_id,details,created_by)
-  VALUES (v_context.actor_id,'INDIVIDUAL','SUCCEEDED',
-          pg_catalog.jsonb_build_object('permission','academic.class.manage'),
-          v_version,'academic.class.change','CLASS',v_id,v_receipt_id,'API',
-          v_correlation_id,pg_catalog.jsonb_build_object('state',v_state),
-          v_context.actor_id);
-  INSERT INTO app_private.outbox_events
-    (event_type,aggregate_kind,aggregate_ref,aggregate_version,
-     command_receipt_id,event_ordinal,correlation_id,payload,created_by)
-  VALUES ('academic.class_changed','ACADEMIC_CLASS',v_id,v_version,
-          v_receipt_id,1,v_correlation_id,
-          pg_catalog.jsonb_build_object('class_id',v_id,'state',v_state),
-          v_context.actor_id);
+  v_receipt_id:=app_private.d1_academic_receipt(v_context.actor_id,
+    v_context.operation_id,p_idempotency_key,v_hash,p_expected_version,
+    'D1_CLASS',v_id,
+    pg_catalog.jsonb_build_object('row_version',v_version,'state',v_state));
+  PERFORM app_private.d1_academic_audit(v_context.actor_id,
+    'academic.class.change','CLASS',v_id,NULL,v_receipt_id,v_version,
+    v_state,v_correlation_id);
+  PERFORM app_private.d1_academic_event(v_context.actor_id,
+    'academic.class.change',v_id,v_version,v_receipt_id,v_correlation_id,v_state);
   RETURN QUERY SELECT v_id,v_version;
 END $body$;
 REVOKE ALL ON FUNCTION app.d1_change_academic_class(text,uuid,uuid,text,text,integer,text,bigint,text)
   FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION app.d1_change_academic_class(text,uuid,uuid,text,text,integer,text,bigint,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_change_academic_subject(
+  p_action text,p_subject_id uuid,p_school_id uuid,p_code text,
+  p_label text,p_display_order integer,p_expected_version bigint,
+  p_idempotency_key text
+) RETURNS TABLE (subject_id uuid,row_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; old_row app_private.subjects%ROWTYPE; new_id uuid;
+  new_version bigint; new_state text; receipt uuid; correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_action NOT IN ('CREATE','UPDATE','ARCHIVE') OR p_school_id IS NULL
+     OR p_code IS NULL OR pg_catalog.length(pg_catalog.btrim(p_code))=0
+     OR (p_action='CREATE' AND (p_subject_id IS NOT NULL OR p_expected_version IS NOT NULL))
+     OR (p_action<>'CREATE' AND (p_subject_id IS NULL OR p_expected_version IS NULL OR p_expected_version<1))
+     OR (p_action='ARCHIVE' AND (p_label IS NOT NULL OR p_display_order IS NOT NULL))
+     OR (p_action<>'ARCHIVE' AND (p_label IS NULL OR p_display_order IS NULL)) THEN
+    RAISE EXCEPTION 'D1 Academic Subject intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'academic.subject.change','academic.subject.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_action,p_subject_id,p_school_id,p_code,
+      p_label,p_display_order,p_expected_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  PERFORM 1 FROM app_private.school_profiles s WHERE s.id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 school target missing'; END IF;
+  IF p_action<>'CREATE' THEN
+    SELECT * INTO old_row FROM app_private.subjects s WHERE s.id=p_subject_id FOR UPDATE;
+    IF NOT FOUND OR old_row.school_id IS DISTINCT FROM p_school_id
+       OR old_row.code IS DISTINCT FROM p_code THEN
+      RAISE EXCEPTION 'D1 Academic Subject target/ancestry changed';
+    END IF;
+  END IF;
+  IF NOT app_private.d1_authorized('academic.subject.manage','SCHOOL',p_school_id) THEN
+    RAISE EXCEPTION 'D1 Academic Subject authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL THEN
+      RAISE EXCEPTION 'D1 prior terminal Subject command was not successful';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'row_version')::bigint;
+    RETURN;
+  END IF;
+  IF p_action='CREATE' THEN
+    new_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.subjects(id,school_id,code,label,display_order,created_by)
+      VALUES(new_id,p_school_id,p_code,p_label,p_display_order,ctx.actor_id);
+    new_version:=1; new_state:='ACTIVE';
+  ELSE
+    IF old_row.row_version<>p_expected_version OR old_row.state<>'ACTIVE' THEN
+      RAISE EXCEPTION 'D1 Academic Subject stale version/state';
+    END IF;
+    new_id:=old_row.id;
+    IF p_action='UPDATE' THEN
+      UPDATE app_private.subjects s SET label=p_label,display_order=p_display_order
+       WHERE s.id=new_id RETURNING s.row_version INTO new_version;
+      new_state:='ACTIVE';
+    ELSE
+      UPDATE app_private.subjects s SET state='ARCHIVED',
+        archived_at=pg_catalog.statement_timestamp(),archived_by=ctx.actor_id
+       WHERE s.id=new_id RETURNING s.row_version INTO new_version;
+      new_state:='ARCHIVED';
+    END IF;
+  END IF;
+  receipt:=app_private.d1_academic_receipt(ctx.actor_id,ctx.operation_id,
+    p_idempotency_key,ctx.intent_hash,p_expected_version,'D1_SUBJECT',new_id,
+    pg_catalog.jsonb_build_object('row_version',new_version,'state',new_state));
+  PERFORM app_private.d1_academic_audit(ctx.actor_id,'academic.subject.change',
+    'SUBJECT',new_id,NULL,receipt,new_version,new_state,correlation);
+  PERFORM app_private.d1_academic_event(ctx.actor_id,'academic.subject.change',
+    new_id,new_version,receipt,correlation,new_state);
+  RETURN QUERY SELECT new_id,new_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_academic_subject(text,uuid,uuid,text,text,integer,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_academic_subject(text,uuid,uuid,text,text,integer,bigint,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_change_academic_offering(
+  p_action text,p_offering_id uuid,p_school_id uuid,p_class_id uuid,
+  p_campus_id uuid,p_academic_year_id uuid,p_capacity integer,p_state text,
+  p_expected_version bigint,p_idempotency_key text
+) RETURNS TABLE (offering_id uuid,row_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; old_row app_private.class_offerings%ROWTYPE; new_id uuid;
+  new_version bigint; new_state text; receipt uuid; revision_id uuid;
+  correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_action NOT IN ('CREATE','UPDATE','ARCHIVE') OR p_school_id IS NULL
+     OR p_class_id IS NULL OR p_campus_id IS NULL OR p_academic_year_id IS NULL
+     OR (p_action='CREATE' AND (p_offering_id IS NOT NULL OR p_expected_version IS NOT NULL
+          OR p_capacity IS NULL OR p_capacity<0 OR p_state NOT IN ('PLANNED','OPEN','CLOSED')))
+     OR (p_action='UPDATE' AND (p_offering_id IS NULL OR p_expected_version IS NULL
+          OR p_expected_version<1 OR p_capacity IS NOT NULL
+          OR p_state NOT IN ('PLANNED','OPEN','CLOSED')))
+     OR (p_action='ARCHIVE' AND (p_offering_id IS NULL OR p_expected_version IS NULL
+          OR p_expected_version<1 OR p_capacity IS NOT NULL OR p_state IS NOT NULL)) THEN
+    RAISE EXCEPTION 'D1 Academic Offering intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'academic.offering.change','academic.offering.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_action,p_offering_id,p_school_id,p_class_id,
+      p_campus_id,p_academic_year_id,p_capacity,p_state,p_expected_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  PERFORM 1 FROM app_private.school_profiles s WHERE s.id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 school target missing'; END IF;
+  PERFORM 1 FROM app_private.academic_classes c
+   WHERE c.id=p_class_id AND c.school_id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Offering Class ancestry missing'; END IF;
+  PERFORM 1 FROM app.campuses c
+   WHERE c.id=p_campus_id AND c.school_id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Offering Campus ancestry missing'; END IF;
+  PERFORM 1 FROM app.academic_years y
+   WHERE y.id=p_academic_year_id AND y.school_id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Offering Academic Year ancestry missing'; END IF;
+  IF p_action<>'CREATE' THEN
+    SELECT * INTO old_row FROM app_private.class_offerings o
+     WHERE o.id=p_offering_id FOR UPDATE;
+    IF NOT FOUND OR old_row.school_id IS DISTINCT FROM p_school_id
+       OR old_row.class_id IS DISTINCT FROM p_class_id
+       OR old_row.campus_id IS DISTINCT FROM p_campus_id
+       OR old_row.academic_year_id IS DISTINCT FROM p_academic_year_id THEN
+      RAISE EXCEPTION 'D1 Academic Offering target/ancestry changed';
+    END IF;
+  END IF;
+  IF NOT app_private.d1_authorized('academic.offering.manage',
+      CASE WHEN p_action='CREATE' THEN 'CAMPUS' ELSE 'CLASS' END,
+      CASE WHEN p_action='CREATE' THEN p_campus_id ELSE p_offering_id END) THEN
+    RAISE EXCEPTION 'D1 Academic Offering authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL THEN
+      RAISE EXCEPTION 'D1 prior terminal Offering command was not successful';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'row_version')::bigint;
+    RETURN;
+  END IF;
+  IF p_action='CREATE' THEN
+    new_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.class_offerings
+      (id,school_id,class_id,campus_id,academic_year_id,capacity,state,created_by)
+    VALUES(new_id,p_school_id,p_class_id,p_campus_id,p_academic_year_id,
+      p_capacity,p_state,ctx.actor_id);
+    new_version:=1; new_state:=p_state;
+  ELSE
+    IF old_row.row_version<>p_expected_version OR old_row.state='ARCHIVED' THEN
+      RAISE EXCEPTION 'D1 Academic Offering stale version/state';
+    END IF;
+    new_id:=old_row.id;
+    IF p_action='UPDATE' THEN
+      UPDATE app_private.class_offerings o SET state=p_state WHERE o.id=new_id
+       RETURNING o.row_version INTO new_version;
+      new_state:=p_state;
+    ELSE
+      IF EXISTS (SELECT 1 FROM app_private.section_offerings s
+                  WHERE s.class_offering_id=new_id AND s.state<>'ARCHIVED') THEN
+        RAISE EXCEPTION 'D1 Academic Offering has nonarchived Sections';
+      END IF;
+      UPDATE app_private.class_offerings o SET state='ARCHIVED',
+        archived_at=pg_catalog.statement_timestamp(),archived_by=ctx.actor_id
+       WHERE o.id=new_id RETURNING o.row_version INTO new_version;
+      new_state:='ARCHIVED';
+    END IF;
+  END IF;
+  receipt:=app_private.d1_academic_receipt(ctx.actor_id,ctx.operation_id,
+    p_idempotency_key,ctx.intent_hash,p_expected_version,'D1_CLASS_OFFERING',new_id,
+    pg_catalog.jsonb_build_object('row_version',new_version,'state',new_state));
+  IF p_action='CREATE' THEN
+    revision_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.capacity_revisions
+      (id,class_offering_id,old_capacity,new_capacity,effective_on,reason,
+       command_receipt_id,created_by)
+    VALUES(revision_id,new_id,NULL,p_capacity,pg_catalog.current_date,
+      'INITIAL_CONFIGURATION',receipt,ctx.actor_id);
+  END IF;
+  PERFORM app_private.d1_academic_audit(ctx.actor_id,'academic.offering.change',
+    'CLASS_OFFERING',new_id,p_campus_id,receipt,new_version,new_state,correlation);
+  PERFORM app_private.d1_academic_event(ctx.actor_id,'academic.offering.change',
+    new_id,new_version,receipt,correlation,new_state);
+  RETURN QUERY SELECT new_id,new_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_academic_offering(text,uuid,uuid,uuid,uuid,uuid,integer,text,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_academic_offering(text,uuid,uuid,uuid,uuid,uuid,integer,text,bigint,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_change_academic_section(
+  p_action text,p_section_id uuid,p_class_offering_id uuid,p_campus_id uuid,
+  p_code text,p_label text,p_display_order integer,p_capacity integer,p_state text,
+  p_expected_version bigint,p_idempotency_key text
+) RETURNS TABLE (section_id uuid,row_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; parent app_private.class_offerings%ROWTYPE;
+  old_row app_private.section_offerings%ROWTYPE; new_id uuid; new_version bigint;
+  new_state text; receipt uuid; revision_id uuid;
+  correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_action NOT IN ('CREATE','UPDATE','ARCHIVE') OR p_class_offering_id IS NULL
+     OR p_campus_id IS NULL OR p_code IS NULL OR pg_catalog.length(pg_catalog.btrim(p_code))=0
+     OR (p_action='CREATE' AND (p_section_id IS NOT NULL OR p_expected_version IS NOT NULL
+          OR p_label IS NULL OR p_display_order IS NULL OR p_capacity IS NULL OR p_capacity<0
+          OR p_state NOT IN ('PLANNED','OPEN','CLOSED')))
+     OR (p_action='UPDATE' AND (p_section_id IS NULL OR p_expected_version IS NULL
+          OR p_expected_version<1 OR p_label IS NULL OR p_display_order IS NULL
+          OR p_capacity IS NOT NULL OR p_state NOT IN ('PLANNED','OPEN','CLOSED')))
+     OR (p_action='ARCHIVE' AND (p_section_id IS NULL OR p_expected_version IS NULL
+          OR p_expected_version<1 OR p_label IS NOT NULL OR p_display_order IS NOT NULL
+          OR p_capacity IS NOT NULL OR p_state IS NOT NULL)) THEN
+    RAISE EXCEPTION 'D1 Academic Section intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'academic.section.change','academic.section.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_action,p_section_id,p_class_offering_id,
+      p_campus_id,p_code,p_label,p_display_order,p_capacity,p_state,
+      p_expected_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT * INTO parent FROM app_private.class_offerings o
+   WHERE o.id=p_class_offering_id;
+  IF NOT FOUND OR parent.campus_id IS DISTINCT FROM p_campus_id THEN
+    RAISE EXCEPTION 'D1 Section parent ancestry missing';
+  END IF;
+  PERFORM 1 FROM app_private.school_profiles s WHERE s.id=parent.school_id FOR UPDATE;
+  PERFORM 1 FROM app_private.academic_classes c WHERE c.id=parent.class_id FOR UPDATE;
+  PERFORM 1 FROM app.campuses c WHERE c.id=parent.campus_id FOR UPDATE;
+  PERFORM 1 FROM app.academic_years y WHERE y.id=parent.academic_year_id FOR UPDATE;
+  SELECT * INTO parent FROM app_private.class_offerings o
+   WHERE o.id=p_class_offering_id FOR UPDATE;
+  IF parent.campus_id IS DISTINCT FROM p_campus_id THEN
+    RAISE EXCEPTION 'D1 Section parent ancestry changed';
+  END IF;
+  IF p_action<>'CREATE' THEN
+    SELECT * INTO old_row FROM app_private.section_offerings s
+     WHERE s.id=p_section_id FOR UPDATE;
+    IF NOT FOUND OR old_row.class_offering_id IS DISTINCT FROM p_class_offering_id
+       OR old_row.campus_id IS DISTINCT FROM p_campus_id
+       OR old_row.code IS DISTINCT FROM p_code THEN
+      RAISE EXCEPTION 'D1 Academic Section target/ancestry changed';
+    END IF;
+  END IF;
+  IF NOT app_private.d1_authorized('academic.section.manage',
+      CASE WHEN p_action='CREATE' THEN 'CLASS' ELSE 'SECTION' END,
+      CASE WHEN p_action='CREATE' THEN p_class_offering_id ELSE p_section_id END) THEN
+    RAISE EXCEPTION 'D1 Academic Section authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL THEN
+      RAISE EXCEPTION 'D1 prior terminal Section command was not successful';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'row_version')::bigint;
+    RETURN;
+  END IF;
+  IF p_action='CREATE' THEN
+    IF parent.state='ARCHIVED' THEN RAISE EXCEPTION 'D1 Section parent is archived'; END IF;
+    new_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.section_offerings
+      (id,class_offering_id,campus_id,code,label,display_order,capacity,state,created_by)
+    VALUES(new_id,p_class_offering_id,p_campus_id,p_code,p_label,p_display_order,
+      p_capacity,p_state,ctx.actor_id);
+    new_version:=1; new_state:=p_state;
+  ELSE
+    IF old_row.row_version<>p_expected_version OR old_row.state='ARCHIVED' THEN
+      RAISE EXCEPTION 'D1 Academic Section stale version/state';
+    END IF;
+    new_id:=old_row.id;
+    IF p_action='UPDATE' THEN
+      UPDATE app_private.section_offerings s
+       SET label=p_label,display_order=p_display_order,state=p_state
+       WHERE s.id=new_id RETURNING s.row_version INTO new_version;
+      new_state:=p_state;
+    ELSE
+      IF EXISTS (SELECT 1 FROM app_private.section_room_assignments r
+                  WHERE r.section_offering_id=new_id
+                    AND (r.effective_until IS NULL
+                      OR r.effective_until>pg_catalog.current_date)) THEN
+        RAISE EXCEPTION 'D1 Academic Section has current/future Room assignment';
+      END IF;
+      IF EXISTS (SELECT 1 FROM app_private.enrollments e
+                  WHERE e.section_offering_id=new_id
+                    AND (e.effective_until IS NULL
+                      OR e.effective_until>pg_catalog.current_date)) THEN
+        RAISE EXCEPTION 'D1 Academic Section has current/future placements';
+      END IF;
+      UPDATE app_private.section_offerings s SET state='ARCHIVED',
+        archived_at=pg_catalog.statement_timestamp(),archived_by=ctx.actor_id
+       WHERE s.id=new_id RETURNING s.row_version INTO new_version;
+      new_state:='ARCHIVED';
+    END IF;
+  END IF;
+  receipt:=app_private.d1_academic_receipt(ctx.actor_id,ctx.operation_id,
+    p_idempotency_key,ctx.intent_hash,p_expected_version,'D1_SECTION_OFFERING',new_id,
+    pg_catalog.jsonb_build_object('row_version',new_version,'state',new_state));
+  IF p_action='CREATE' THEN
+    revision_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.capacity_revisions
+      (id,section_offering_id,old_capacity,new_capacity,effective_on,reason,
+       command_receipt_id,created_by)
+    VALUES(revision_id,new_id,NULL,p_capacity,pg_catalog.current_date,
+      'INITIAL_CONFIGURATION',receipt,ctx.actor_id);
+  END IF;
+  PERFORM app_private.d1_academic_audit(ctx.actor_id,'academic.section.change',
+    'SECTION',new_id,p_campus_id,receipt,new_version,new_state,correlation);
+  PERFORM app_private.d1_academic_event(ctx.actor_id,'academic.section.change',
+    new_id,new_version,receipt,correlation,new_state);
+  RETURN QUERY SELECT new_id,new_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_academic_section(text,uuid,uuid,uuid,text,text,integer,integer,text,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_academic_section(text,uuid,uuid,uuid,text,text,integer,integer,text,bigint,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_change_academic_section_room(
+  p_action text,p_assignment_id uuid,p_section_id uuid,p_room_id uuid,
+  p_effective_from date,p_effective_until date,p_reason text,
+  p_supersedes_id uuid,p_idempotency_key text
+) RETURNS TABLE (assignment_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; section_row app_private.section_offerings%ROWTYPE;
+  offering_row app_private.class_offerings%ROWTYPE;
+  old_row app_private.section_room_assignments%ROWTYPE; new_id uuid;
+  receipt uuid; correlation uuid:=pg_catalog.gen_random_uuid(); lock_room uuid;
+  result_state text;
+BEGIN
+  IF p_action NOT IN ('ADD','END','CORRECT') OR p_section_id IS NULL
+     OR p_room_id IS NULL OR p_effective_from IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR (p_effective_until IS NOT NULL AND p_effective_until<=p_effective_from)
+     OR (p_action='ADD' AND (p_assignment_id IS NOT NULL OR p_supersedes_id IS NOT NULL))
+     OR (p_action='END' AND (p_assignment_id IS NULL OR p_effective_until IS NULL
+          OR p_supersedes_id IS NOT NULL))
+     OR (p_action='CORRECT' AND (p_assignment_id IS NULL
+          OR p_supersedes_id IS DISTINCT FROM p_assignment_id)) THEN
+    RAISE EXCEPTION 'D1 Academic Section Room intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'academic.section_room.change','academic.section_room.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_action,p_assignment_id,p_section_id,p_room_id,
+      p_effective_from::text,p_effective_until::text,p_reason,p_supersedes_id));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT * INTO section_row FROM app_private.section_offerings s WHERE s.id=p_section_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Section Room target missing'; END IF;
+  SELECT * INTO offering_row FROM app_private.class_offerings o
+   WHERE o.id=section_row.class_offering_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Section Room Offering missing'; END IF;
+  PERFORM 1 FROM app_private.academic_classes c WHERE c.id=offering_row.class_id FOR UPDATE;
+  PERFORM 1 FROM app.campuses c WHERE c.id=offering_row.campus_id FOR UPDATE;
+  PERFORM 1 FROM app.academic_years y WHERE y.id=offering_row.academic_year_id FOR UPDATE;
+  SELECT * INTO offering_row FROM app_private.class_offerings o
+   WHERE o.id=section_row.class_offering_id FOR UPDATE;
+  SELECT * INTO section_row FROM app_private.section_offerings s
+   WHERE s.id=p_section_id FOR UPDATE;
+  IF section_row.class_offering_id IS DISTINCT FROM offering_row.id
+     OR section_row.campus_id IS DISTINCT FROM offering_row.campus_id THEN
+    RAISE EXCEPTION 'D1 Section Room ancestry changed';
+  END IF;
+  IF p_action<>'ADD' THEN
+    SELECT * INTO old_row FROM app_private.section_room_assignments a
+     WHERE a.id=p_assignment_id;
+    IF NOT FOUND OR old_row.section_offering_id IS DISTINCT FROM p_section_id
+       OR (p_action='END' AND (old_row.room_id IS DISTINCT FROM p_room_id
+         OR old_row.effective_from IS DISTINCT FROM p_effective_from)) THEN
+      RAISE EXCEPTION 'D1 Section Room retained target changed';
+    END IF;
+  END IF;
+  FOR lock_room IN SELECT x FROM (VALUES
+      (CASE WHEN p_action<>'ADD' THEN old_row.room_id END),(p_room_id)) AS r(x)
+      WHERE x IS NOT NULL GROUP BY x ORDER BY x
+  LOOP
+    PERFORM 1 FROM app.rooms r WHERE r.id=lock_room FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Section Room Room missing'; END IF;
+  END LOOP;
+  IF p_action<>'ADD' THEN
+    SELECT * INTO old_row FROM app_private.section_room_assignments a
+     WHERE a.id=p_assignment_id FOR UPDATE;
+    IF NOT FOUND OR old_row.section_offering_id IS DISTINCT FROM p_section_id
+       OR (p_action='END' AND (old_row.room_id IS DISTINCT FROM p_room_id
+         OR old_row.effective_from IS DISTINCT FROM p_effective_from)) THEN
+      RAISE EXCEPTION 'D1 Section Room retained target changed after lock';
+    END IF;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM app.rooms r WHERE r.id=p_room_id
+                   AND r.campus_id=section_row.campus_id AND r.state='ACTIVE') THEN
+    RAISE EXCEPTION 'D1 Section Room destination Room unusable';
+  END IF;
+  IF NOT app_private.d1_authorized('academic.section_room.change','SECTION',p_section_id) THEN
+    RAISE EXCEPTION 'D1 Academic Section Room authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL THEN
+      RAISE EXCEPTION 'D1 prior terminal Section Room command was not successful';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref; RETURN;
+  END IF;
+  IF p_action='ADD' THEN
+    IF section_row.state='ARCHIVED' OR offering_row.state='ARCHIVED' THEN
+      RAISE EXCEPTION 'D1 Section Room target is archived';
+    END IF;
+    new_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.section_room_assignments
+      (id,section_offering_id,room_id,effective_from,effective_until,reason,created_by)
+    VALUES(new_id,p_section_id,p_room_id,p_effective_from,p_effective_until,
+      p_reason,ctx.actor_id);
+    result_state:=CASE WHEN p_effective_until IS NULL THEN 'ACTIVE' ELSE 'ENDED' END;
+  ELSIF p_action='END' THEN
+    IF old_row.effective_until IS NOT NULL THEN
+      RAISE EXCEPTION 'D1 Section Room assignment already ended';
+    END IF;
+    UPDATE app_private.section_room_assignments a
+       SET effective_until=p_effective_until
+     WHERE a.id=old_row.id;
+    new_id:=old_row.id; result_state:='ENDED';
+  ELSE
+    IF old_row.effective_until IS NOT NULL OR p_effective_from<=old_row.effective_from THEN
+      RAISE EXCEPTION 'D1 Section Room correction predecessor invalid';
+    END IF;
+    UPDATE app_private.section_room_assignments a
+       SET effective_until=p_effective_from WHERE a.id=old_row.id;
+    new_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.section_room_assignments
+      (id,section_offering_id,room_id,effective_from,effective_until,reason,
+       supersedes_id,created_by)
+    VALUES(new_id,p_section_id,p_room_id,p_effective_from,p_effective_until,
+      p_reason,old_row.id,ctx.actor_id);
+    result_state:=CASE WHEN p_effective_until IS NULL THEN 'ACTIVE' ELSE 'ENDED' END;
+  END IF;
+  receipt:=app_private.d1_academic_receipt(ctx.actor_id,ctx.operation_id,
+    p_idempotency_key,ctx.intent_hash,NULL,'D1_SECTION_ROOM_ASSIGNMENT',new_id,
+    pg_catalog.jsonb_build_object('state',result_state));
+  PERFORM app_private.d1_academic_audit(ctx.actor_id,
+    'academic.section_room.change','SECTION_ROOM',new_id,section_row.campus_id,
+    receipt,NULL,result_state,correlation);
+  PERFORM app_private.d1_academic_event(ctx.actor_id,
+    'academic.section_room.change',new_id,1,receipt,correlation,result_state);
+  RETURN QUERY SELECT new_id;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_academic_section_room(text,uuid,uuid,uuid,date,date,text,uuid,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_academic_section_room(text,uuid,uuid,uuid,date,date,text,uuid,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_change_academic_capacity(
+  p_target_kind text,p_target_id uuid,p_new_capacity integer,p_effective_on date,
+  p_reason text,p_expected_version bigint,p_idempotency_key text
+) RETURNS TABLE (revision_id uuid,row_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; offering_row app_private.class_offerings%ROWTYPE;
+  section_row app_private.section_offerings%ROWTYPE; old_capacity integer;
+  new_version bigint; new_revision uuid:=pg_catalog.gen_random_uuid();
+  prior_revision uuid; receipt uuid; correlation uuid:=pg_catalog.gen_random_uuid();
+  campus uuid; auth_kind text;
+BEGIN
+  IF p_target_kind NOT IN ('CLASS_OFFERING','SECTION') OR p_target_id IS NULL
+     OR p_new_capacity IS NULL OR p_new_capacity<0 OR p_effective_on IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR p_expected_version IS NULL OR p_expected_version<1 THEN
+    RAISE EXCEPTION 'D1 Academic Capacity intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'academic.capacity.change','academic.capacity.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_target_kind,p_target_id,p_new_capacity,
+      p_effective_on::text,p_reason,p_expected_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF p_target_kind='CLASS_OFFERING' THEN
+    SELECT * INTO offering_row FROM app_private.class_offerings o WHERE o.id=p_target_id;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Capacity Offering missing'; END IF;
+  ELSE
+    SELECT * INTO section_row FROM app_private.section_offerings s WHERE s.id=p_target_id;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Capacity Section missing'; END IF;
+    SELECT * INTO offering_row FROM app_private.class_offerings o
+     WHERE o.id=section_row.class_offering_id;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Capacity parent Offering missing'; END IF;
+  END IF;
+  PERFORM 1 FROM app_private.academic_classes c WHERE c.id=offering_row.class_id FOR UPDATE;
+  PERFORM 1 FROM app.campuses c WHERE c.id=offering_row.campus_id FOR UPDATE;
+  PERFORM 1 FROM app.academic_years y WHERE y.id=offering_row.academic_year_id FOR UPDATE;
+  SELECT * INTO offering_row FROM app_private.class_offerings o
+   WHERE o.id=offering_row.id FOR UPDATE;
+  campus:=offering_row.campus_id;
+  IF p_target_kind='CLASS_OFFERING' THEN
+    old_capacity:=offering_row.capacity; new_version:=offering_row.row_version;
+    auth_kind:='CLASS';
+  ELSE
+    SELECT * INTO section_row FROM app_private.section_offerings s
+     WHERE s.id=p_target_id FOR UPDATE;
+    IF section_row.class_offering_id IS DISTINCT FROM offering_row.id
+       OR section_row.campus_id IS DISTINCT FROM offering_row.campus_id THEN
+      RAISE EXCEPTION 'D1 Capacity Section ancestry changed';
+    END IF;
+    old_capacity:=section_row.capacity; new_version:=section_row.row_version;
+    auth_kind:='SECTION';
+  END IF;
+  IF NOT app_private.d1_authorized('academic.capacity.change',auth_kind,p_target_id) THEN
+    RAISE EXCEPTION 'D1 Academic Capacity authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL THEN
+      RAISE EXCEPTION 'D1 prior terminal Capacity command was not successful';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'row_version')::bigint;
+    RETURN;
+  END IF;
+  IF new_version<>p_expected_version OR offering_row.state='ARCHIVED'
+     OR (p_target_kind='SECTION' AND section_row.state='ARCHIVED') THEN
+    RAISE EXCEPTION 'D1 Academic Capacity stale version/state';
+  END IF;
+  IF old_capacity=p_new_capacity THEN RAISE EXCEPTION 'D1 Capacity value unchanged'; END IF;
+  -- The retained placement scan runs under both aggregate locks. A reduction
+  -- preserves every accepted commitment; it never writes an override or
+  -- changes an Enrollment merely because the new projection is lower.
+  IF p_new_capacity<old_capacity THEN
+    PERFORM count(*) FROM app_private.enrollments e
+      JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+     WHERE e.placement_kind='PRIMARY'
+       AND ((p_target_kind='CLASS_OFFERING' AND s.class_offering_id=p_target_id)
+         OR (p_target_kind='SECTION' AND s.id=p_target_id));
+  END IF;
+  IF p_target_kind='CLASS_OFFERING' THEN
+    UPDATE app_private.class_offerings o SET capacity=p_new_capacity
+     WHERE o.id=p_target_id RETURNING o.row_version INTO new_version;
+    SELECT r.id INTO prior_revision FROM app_private.capacity_revisions r
+     WHERE r.class_offering_id=p_target_id ORDER BY r.created_at DESC,r.id DESC LIMIT 1;
+  ELSE
+    UPDATE app_private.section_offerings s SET capacity=p_new_capacity
+     WHERE s.id=p_target_id RETURNING s.row_version INTO new_version;
+    SELECT r.id INTO prior_revision FROM app_private.capacity_revisions r
+     WHERE r.section_offering_id=p_target_id ORDER BY r.created_at DESC,r.id DESC LIMIT 1;
+  END IF;
+  receipt:=app_private.d1_academic_receipt(ctx.actor_id,ctx.operation_id,
+    p_idempotency_key,ctx.intent_hash,p_expected_version,'D1_CAPACITY_REVISION',
+    new_revision,pg_catalog.jsonb_build_object('row_version',new_version,
+      'state','CHANGED'));
+  INSERT INTO app_private.capacity_revisions
+    (id,class_offering_id,section_offering_id,old_capacity,new_capacity,
+     effective_on,reason,supersedes_id,command_receipt_id,created_by)
+  VALUES(new_revision,CASE WHEN p_target_kind='CLASS_OFFERING' THEN p_target_id END,
+    CASE WHEN p_target_kind='SECTION' THEN p_target_id END,old_capacity,
+    p_new_capacity,p_effective_on,p_reason,prior_revision,receipt,ctx.actor_id);
+  PERFORM app_private.d1_academic_audit(ctx.actor_id,'academic.capacity.change',
+    p_target_kind,p_target_id,campus,receipt,new_version,'CHANGED',correlation);
+  PERFORM app_private.d1_academic_event(ctx.actor_id,'academic.capacity.change',
+    p_target_id,new_version,receipt,correlation,'CHANGED');
+  RETURN QUERY SELECT new_revision,new_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_academic_capacity(text,uuid,integer,date,text,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_academic_capacity(text,uuid,integer,date,text,bigint,text)
   TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_academic_executor;
@@ -5263,22 +5997,6 @@ GRANT SELECT (id,step_id,reviewer_assignment_id,reviewer_id,decision)
   ON app_private.approval_reviews TO schoolos_authz_reader;
 GRANT SELECT (id) ON app_private.approval_step_reviewers
   TO schoolos_authz_reader;
-CREATE POLICY d1_profile_evidence_receipt_read ON app_private.command_receipts
-  FOR SELECT TO schoolos_evidence_writer USING (true);
-CREATE POLICY d1_profile_evidence_receipt_insert ON app_private.command_receipts
-  FOR INSERT TO schoolos_evidence_writer WITH CHECK (true);
-CREATE POLICY d1_profile_evidence_audit_insert ON app_private.audit_events
-  FOR INSERT TO schoolos_evidence_writer WITH CHECK (true);
-CREATE POLICY d1_profile_evidence_outbox_insert ON app_private.outbox_events
-  FOR INSERT TO schoolos_evidence_writer WITH CHECK (true);
-CREATE POLICY d1_profile_evidence_operation_read ON app_private.operation_contracts
-  FOR SELECT TO schoolos_evidence_writer USING (true);
-GRANT SELECT, INSERT ON app_private.command_receipts TO schoolos_evidence_writer;
-GRANT SELECT (id,code,contract_version,handler_key,enabled) ON app_private.operation_contracts
-  TO schoolos_evidence_writer;
-GRANT INSERT ON app_private.audit_events,app_private.outbox_events
-  TO schoolos_evidence_writer;
-GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
 RESET ROLE;
 GRANT EXECUTE ON FUNCTION app_private.current_principal_id()
   TO schoolos_evidence_writer,schoolos_workflow_executor,
@@ -5485,6 +6203,7 @@ GRANT EXECUTE ON FUNCTION app_private.d1_profile_participant(uuid,uuid)
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
 
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
 SET ROLE schoolos_evidence_writer;
 -- Fixed Profile evidence boundary. Caller-owned command functions cannot
 -- insert directly into the three broad immutable evidence tables.
