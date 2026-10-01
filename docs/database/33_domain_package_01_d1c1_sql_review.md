@@ -266,3 +266,26 @@ The correction's source-only checks returned
 `STAGING_VALIDATE_PASS`. `git diff --check` found no whitespace error. These
 checks do not establish PostgreSQL parse or runtime correctness; the draft was
 not executed and no Supabase project was contacted.
+
+## Immediate-only Academic capacity effective date
+
+The product owner subsequently froze `academic.capacity.change` as an
+immediate-only P0 command. Its initial typed-input validation now requires
+`p_effective_on IS NOT DISTINCT FROM CURRENT_DATE`; the implemented
+fail-closed predicate is `p_effective_on IS DISTINCT FROM CURRENT_DATE`.
+Consequently NULL, past and future dates all deny. There is no backdated,
+scheduled or alternate approval path, and the command does not normalize a
+caller-supplied date to the server date.
+
+The accepted `p_effective_on` remains in the Canonicalization V1 positional
+intent and is inserted unchanged into `capacity_revisions.effective_on` in
+the same transaction that changes the parent capacity projection. A replay
+with a different supplied date therefore remains a different intent and
+cannot reuse the frozen receipt contract. The reduction path still evaluates
+the current date plus every retained accepted PRIMARY Enrollment start/end
+breakpoint from that date forward, preserves half-open interval semantics and
+does not rewrite or invalidate existing commitments when occupancy exceeds
+the lower projection. No operation, table, queue, job or workflow was added.
+
+D1C1B remains incomplete. Migration 10 remains a non-executable `.sql.draft`;
+this clarification does not authorize D1C2 or migration application.

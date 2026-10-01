@@ -412,8 +412,9 @@ discriminator and exact selected outbox mapping before appending Foundation
 evidence. `schoolos_academic_executor` has no broad evidence-table INSERT.
 Its domain DML grants are explicit by relation and column; immutable capacity
 history has no UPDATE grant. Lock-only UPDATE(id) privileges on Foundation
-School/Campus/Year/Room anchors have SELECT-only RLS and cannot perform an
-application update. The authorization evaluator remains owned by
+School/Campus/Year/Room anchors have matching SELECT and UPDATE lock policies;
+no mutable Foundation business column is granted and the fixed Academic RPCs
+issue no Foundation UPDATE. The authorization evaluator remains owned by
 `schoolos_authz_reader`, the Principal lock remains owned by
 `schoolos_identity_executor`, and no membership chain or executor role was
 added.
@@ -497,6 +498,15 @@ Enrollment, emits no capacity override, and leaves later placement commands
 to enforce the new projection. The Academic role receives only the additional
 `placement_state` SELECT column needed by this scan and receives no Enrollment
 INSERT or UPDATE.
+
+The product-owner-approved capacity contract is immediate-only. Initial typed
+validation denies unless `p_effective_on` equals the transaction's server
+`CURRENT_DATE`, using `IS DISTINCT FROM` so NULL also denies. No backdated,
+scheduled, correction, queue, job or approval authorization path exists. The
+accepted date remains part of the canonical receipt intent and the retained
+capacity revision, while the current capacity projection changes in that same
+transaction. Immediate application does not remove the future Enrollment
+commitment scan or change its preservation semantics.
 
 The six public APIs, Canonicalization V1, Profile workflow, HE Section Room
 behavior, stable audit/outbox codes and evidence-writer ownership remain
