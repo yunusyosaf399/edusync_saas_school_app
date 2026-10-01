@@ -786,6 +786,11 @@ reviewer who still holds the applicable `employee.state.approve` role/scope.
 Requester/reviewer person separation is enforced and no role-name or generic
 administrator fallback exists. No new base-table SELECT is granted.
 
+The checked request read takes Foundation `(71001,1)` SHARED before resolving
+the current Principal, checking requester/reviewer participation, or disclosing
+the bounded projection. Authority administration retains its existing EXCLUSIVE
+lock contract.
+
 The trigger-only schema-owner application guard requires a successful
 `request.apply` receipt for the same request and operation, fixed
 `D1_EMPLOYEE_STATE_APPLY` result kind, an existing Employee target and the

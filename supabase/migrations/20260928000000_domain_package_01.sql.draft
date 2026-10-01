@@ -8417,6 +8417,7 @@ RETURNS TABLE(request_id uuid,request_version bigint,request_state text,
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE actor uuid; participant text; req record;
 BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
   actor:=app_private.current_principal_id();
   IF actor IS NULL THEN RAISE EXCEPTION 'D1 Employee state request unavailable'; END IF;
   participant:=app_private.d1_employee_state_participant(p_request_id,actor);
