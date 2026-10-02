@@ -1,0 +1,386 @@
+-- D1C1B effect 18/36: Employee Restricted Identity correction, core helpers.
+-- Static non-executable continuation for Migration 10 review only.
+-- Approved contract: P2 only; first snapshot allowed; effective instant is
+-- server apply-time; reviewed CLEAR (both values NULL) is allowed; exact no-op denied.
+
+SET ROLE schoolos_schema_owner;
+REVOKE SELECT, INSERT ON app_private.employee_identity_details FROM schoolos_employee_executor;
+GRANT SELECT (id,created_at,created_by,ended_at,ended_by,employee_id,
+  identity_type_code,national_identity_number,effective_from,effective_until,
+  supersedes_id,reason),
+  INSERT (id,created_by,employee_id,identity_type_code,national_identity_number,
+    effective_from,effective_until,supersedes_id,reason)
+  ON app_private.employee_identity_details TO schoolos_employee_executor;
+GRANT UPDATE (effective_until,ended_at,ended_by)
+  ON app_private.employee_identity_details TO schoolos_employee_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_employee_identity_payload_valid(p_payload jsonb)
+RETURNS boolean
+LANGUAGE sql IMMUTABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT p_payload IS NOT NULL
+    AND pg_catalog.jsonb_typeof(p_payload)='object'
+    AND (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_payload))=2
+    AND (p_payload ?& ARRAY['identity_type_code','national_identity_number'])
+    AND (
+      (p_payload->'identity_type_code'='null'::jsonb
+       AND p_payload->'national_identity_number'='null'::jsonb)
+      OR (
+        pg_catalog.jsonb_typeof(p_payload->'identity_type_code')='string'
+        AND pg_catalog.length(pg_catalog.btrim(p_payload->>'identity_type_code'))>0
+        AND pg_catalog.jsonb_typeof(p_payload->'national_identity_number')='string'
+        AND pg_catalog.length(pg_catalog.btrim(p_payload->>'national_identity_number'))>0
+      )
+    );
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_payload_valid(jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_payload_valid(jsonb)
+  TO schoolos_employee_executor,schoolos_workflow_executor,
+     schoolos_read_executor,schoolos_evidence_writer;
+
+CREATE FUNCTION app_private.d1_employee_identity_request_payload_valid(
+  p_old jsonb,p_requested jsonb
+) RETURNS boolean
+LANGUAGE sql IMMUTABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT p_old IS NOT NULL AND pg_catalog.jsonb_typeof(p_old)='object'
+    AND (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_old))=6
+    AND (p_old ?& ARRAY['source_snapshot_id','source_identity_type_code',
+      'source_national_identity_number','source_effective_from',
+      'source_supersedes_id','source_present'])
+    AND pg_catalog.jsonb_typeof(p_old->'source_present')='boolean'
+    AND app_private.d1_employee_identity_payload_valid(p_requested)
+    AND (
+      (p_old->>'source_present'='false'
+       AND p_old->'source_snapshot_id'='null'::jsonb
+       AND p_old->'source_identity_type_code'='null'::jsonb
+       AND p_old->'source_national_identity_number'='null'::jsonb
+       AND p_old->'source_effective_from'='null'::jsonb
+       AND p_old->'source_supersedes_id'='null'::jsonb)
+      OR
+      (p_old->>'source_present'='true'
+       AND pg_catalog.jsonb_typeof(p_old->'source_snapshot_id')='string'
+       AND pg_catalog.jsonb_typeof(p_old->'source_effective_from')='string'
+       AND (
+         (p_old->'source_identity_type_code'='null'::jsonb
+          AND p_old->'source_national_identity_number'='null'::jsonb)
+         OR
+         (pg_catalog.jsonb_typeof(p_old->'source_identity_type_code')='string'
+          AND pg_catalog.length(pg_catalog.btrim(p_old->>'source_identity_type_code'))>0
+          AND pg_catalog.jsonb_typeof(p_old->'source_national_identity_number')='string'
+          AND pg_catalog.length(pg_catalog.btrim(p_old->>'source_national_identity_number'))>0)
+       )
+       AND (p_old->'source_supersedes_id'='null'::jsonb
+            OR pg_catalog.jsonb_typeof(p_old->'source_supersedes_id')='string'))
+    );
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_request_payload_valid(jsonb,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_request_payload_valid(jsonb,jsonb)
+  TO schoolos_workflow_executor,schoolos_read_executor,schoolos_evidence_writer;
+
+CREATE FUNCTION app_private.d1_employee_identity_authorized(
+  p_principal uuid,p_permission text,p_employee uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp();
+BEGIN
+  IF p_principal IS NULL OR p_employee IS NULL
+     OR p_permission NOT IN ('employee.identity.correct','employee.identity.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.employees e WHERE e.id=p_employee)
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+        WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+          AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+     WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+       AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at))
+  THEN RETURN false; END IF;
+
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes s
+    JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+    JOIN app_private.permissions p ON p.id=s.permission_id
+    JOIN app_private.roles r ON r.id=s.role_id
+     WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL'
+       AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+       AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+       AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+       AND c.resolver_key=s.resolver_key AND c.enabled
+       AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+       AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+       AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+       AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+       AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until)
+       AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+       AND s.resolver_key='DIRECT'
+       AND (
+         (s.scope_kind='ALL' AND s.campus_id IS NULL)
+         OR (s.scope_kind='CAMPUS' AND s.campus_id IS NOT NULL AND EXISTS (
+           SELECT 1 FROM app_private.employee_campus_affiliations ca
+            WHERE ca.employee_id=p_employee AND ca.campus_id=s.campus_id
+              AND ca.effective_from<=at_time::date
+              AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until)
+         ))
+       )
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_authorized(uuid,text,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_authorized(uuid,text,uuid,uuid)
+  TO schoolos_workflow_executor,schoolos_read_executor,schoolos_employee_executor;
+
+CREATE FUNCTION app_private.d1_employee_identity_p2_policy(p_employee uuid)
+RETURNS TABLE(policy_id uuid,campus_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  at_time timestamptz:=pg_catalog.clock_timestamp();
+  campus_row record; campus_count bigint; school_count bigint; specific_count bigint;
+  school_policy uuid; candidate uuid; chosen uuid; chosen_campus uuid;
+  steps bigint; invalid bigint; first_no int; last_no int;
+BEGIN
+  IF p_employee IS NULL OR NOT EXISTS (
+    SELECT 1 FROM app_private.employees e WHERE e.id=p_employee) THEN RETURN; END IF;
+
+  SELECT count(DISTINCT ca.campus_id) INTO campus_count
+    FROM app_private.employee_campus_affiliations ca
+   WHERE ca.employee_id=p_employee
+     AND ca.effective_from<=at_time::date
+     AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until);
+
+  SELECT count(*),min(p.id::text)::uuid INTO school_count,school_policy
+    FROM app_private.approval_policy_versions p
+    JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='employee.identity.correct' AND o.contract_version=1 AND o.enabled
+     AND p.state='ACTIVE' AND p.campus_id IS NULL
+     AND p.d1_route_mode IS DISTINCT FROM 'DIRECT'
+     AND p.effective_from<=at_time
+     AND (p.effective_until IS NULL OR at_time<p.effective_until);
+
+  IF campus_count=0 THEN
+    IF school_count<>1 OR school_policy IS NULL THEN RETURN; END IF;
+    chosen:=school_policy;
+  ELSE
+    FOR campus_row IN
+      SELECT DISTINCT ca.campus_id
+        FROM app_private.employee_campus_affiliations ca
+       WHERE ca.employee_id=p_employee
+         AND ca.effective_from<=at_time::date
+         AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until)
+       ORDER BY ca.campus_id
+    LOOP
+      SELECT count(*),min(p.id::text)::uuid INTO specific_count,candidate
+        FROM app_private.approval_policy_versions p
+        JOIN app_private.operation_contracts o ON o.id=p.operation_id
+       WHERE o.code='employee.identity.correct' AND o.contract_version=1 AND o.enabled
+         AND p.state='ACTIVE' AND p.campus_id=campus_row.campus_id
+         AND p.d1_route_mode IS DISTINCT FROM 'DIRECT'
+         AND p.effective_from<=at_time
+         AND (p.effective_until IS NULL OR at_time<p.effective_until);
+      IF specific_count>1 THEN RETURN;
+      ELSIF specific_count=0 THEN
+        IF school_count<>1 OR school_policy IS NULL THEN RETURN; END IF;
+        candidate:=school_policy;
+      END IF;
+      IF chosen IS NULL THEN chosen:=candidate;
+      ELSIF chosen IS DISTINCT FROM candidate THEN RETURN;
+      END IF;
+    END LOOP;
+  END IF;
+
+  IF chosen IS NULL THEN RETURN; END IF;
+  SELECT p.campus_id INTO chosen_campus
+    FROM app_private.approval_policy_versions p WHERE p.id=chosen;
+
+  SELECT count(*),
+         count(*) FILTER (WHERE r.id IS NULL OR r.state<>'ACTIVE'
+           OR t.required_reviews<>1
+           OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'),
+         min(t.step_number),max(t.step_number)
+    INTO steps,invalid,first_no,last_no
+    FROM app_private.approval_step_templates t
+    LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id
+   WHERE t.policy_id=chosen;
+  IF steps=0 OR invalid<>0 OR first_no<>1 OR last_no::bigint<>steps THEN RETURN; END IF;
+
+  RETURN QUERY SELECT chosen,chosen_campus;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_p2_policy(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_p2_policy(uuid)
+  TO schoolos_workflow_executor;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_employee_executor;
+SET ROLE schoolos_employee_executor;
+
+CREATE FUNCTION app_private.d1_employee_identity_lock_context(
+  p_employee uuid,p_expected_employee_version bigint DEFAULT NULL
+) RETURNS TABLE(employee_version bigint,source_snapshot_id uuid,
+  source_identity_type_code text,source_national_identity_number text,
+  source_effective_from timestamptz,source_supersedes_id uuid,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE e_version bigint; open_count bigint; history_count bigint; src record;
+BEGIN
+  SELECT e.row_version INTO e_version FROM app_private.employees e
+   WHERE e.id=p_employee FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT NULL::bigint,NULL::uuid,NULL::text,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_IDENTITY_EMPLOYEE_MISSING'::text;
+    RETURN;
+  END IF;
+  IF p_expected_employee_version IS NOT NULL
+     AND e_version IS DISTINCT FROM p_expected_employee_version THEN
+    RETURN QUERY SELECT e_version,NULL::uuid,NULL::text,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_IDENTITY_EMPLOYEE_VERSION_STALE'::text;
+    RETURN;
+  END IF;
+
+  SELECT count(*) INTO open_count FROM app_private.employee_identity_details d
+   WHERE d.employee_id=p_employee AND d.effective_until IS NULL;
+  SELECT count(*) INTO history_count FROM app_private.employee_identity_details d
+   WHERE d.employee_id=p_employee;
+  IF open_count>1 THEN
+    RETURN QUERY SELECT e_version,NULL::uuid,NULL::text,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_IDENTITY_OPEN_AMBIGUOUS'::text;
+    RETURN;
+  END IF;
+  IF open_count=0 AND history_count>0 THEN
+    RETURN QUERY SELECT e_version,NULL::uuid,NULL::text,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_IDENTITY_HISTORY_GAP'::text;
+    RETURN;
+  END IF;
+  IF open_count=1 THEN
+    SELECT d.id,d.identity_type_code,d.national_identity_number,d.effective_from,d.supersedes_id
+      INTO src FROM app_private.employee_identity_details d
+     WHERE d.employee_id=p_employee AND d.effective_until IS NULL FOR UPDATE;
+    IF src.effective_from>pg_catalog.statement_timestamp() THEN
+      RETURN QUERY SELECT e_version,src.id,src.identity_type_code,
+        src.national_identity_number,src.effective_from,src.supersedes_id,
+        'D1_EMPLOYEE_IDENTITY_FUTURE_SOURCE'::text;
+      RETURN;
+    END IF;
+    RETURN QUERY SELECT e_version,src.id,src.identity_type_code,
+      src.national_identity_number,src.effective_from,src.supersedes_id,NULL::text;
+    RETURN;
+  END IF;
+  RETURN QUERY SELECT e_version,NULL::uuid,NULL::text,NULL::text,
+    NULL::timestamptz,NULL::uuid,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_lock_context(uuid,bigint)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_lock_context(uuid,bigint)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_identity_preflight(
+  p_employee uuid,p_expected_employee_version bigint,
+  p_source_snapshot_id uuid,p_source_identity_type_code text,
+  p_source_national_identity_number text,p_source_effective_from timestamptz,
+  p_source_supersedes_id uuid,p_identity_type_code text,p_national_identity_number text
+) RETURNS TABLE(eligible boolean,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; requested jsonb;
+BEGIN
+  requested:=pg_catalog.jsonb_build_object(
+    'identity_type_code',p_identity_type_code,
+    'national_identity_number',p_national_identity_number);
+  IF app_private.d1_employee_identity_payload_valid(requested) IS DISTINCT FROM true THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_IDENTITY_PAYLOAD_INVALID'::text; RETURN;
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_employee_identity_lock_context(
+    p_employee,p_expected_employee_version);
+  IF ctx.error_code IS NOT NULL THEN
+    RETURN QUERY SELECT false,ctx.error_code; RETURN;
+  END IF;
+  IF p_source_snapshot_id IS NULL THEN
+    IF ctx.source_snapshot_id IS NOT NULL THEN
+      RETURN QUERY SELECT false,'D1_EMPLOYEE_IDENTITY_SOURCE_STALE'::text; RETURN;
+    END IF;
+    IF p_identity_type_code IS NULL AND p_national_identity_number IS NULL THEN
+      RETURN QUERY SELECT false,'D1_EMPLOYEE_IDENTITY_NOOP'::text; RETURN;
+    END IF;
+  ELSE
+    IF ctx.source_snapshot_id IS DISTINCT FROM p_source_snapshot_id
+       OR ctx.source_identity_type_code IS DISTINCT FROM p_source_identity_type_code
+       OR ctx.source_national_identity_number IS DISTINCT FROM p_source_national_identity_number
+       OR ctx.source_effective_from IS DISTINCT FROM p_source_effective_from
+       OR ctx.source_supersedes_id IS DISTINCT FROM p_source_supersedes_id THEN
+      RETURN QUERY SELECT false,'D1_EMPLOYEE_IDENTITY_SOURCE_STALE'::text; RETURN;
+    END IF;
+    IF ctx.source_identity_type_code IS NOT DISTINCT FROM p_identity_type_code
+       AND ctx.source_national_identity_number IS NOT DISTINCT FROM p_national_identity_number THEN
+      RETURN QUERY SELECT false,'D1_EMPLOYEE_IDENTITY_NOOP'::text; RETURN;
+    END IF;
+  END IF;
+  RETURN QUERY SELECT true,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_preflight(
+  uuid,bigint,uuid,text,text,timestamptz,uuid,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_preflight(
+  uuid,bigint,uuid,text,text,timestamptz,uuid,text,text)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_identity_effect(
+  p_employee uuid,p_expected_employee_version bigint,
+  p_source_snapshot_id uuid,p_source_identity_type_code text,
+  p_source_national_identity_number text,p_source_effective_from timestamptz,
+  p_source_supersedes_id uuid,p_identity_type_code text,p_national_identity_number text,
+  p_reason text
+) RETURNS TABLE(identity_snapshot_id uuid,employee_version bigint,
+  effective_from timestamptz,cleared boolean)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; new_id uuid:=pg_catalog.gen_random_uuid();
+  applied_at timestamptz:=pg_catalog.statement_timestamp(); actor uuid;
+BEGIN
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Employee identity effect intent invalid'; END IF;
+  SELECT * INTO pre FROM app_private.d1_employee_identity_preflight(
+    p_employee,p_expected_employee_version,p_source_snapshot_id,
+    p_source_identity_type_code,p_source_national_identity_number,
+    p_source_effective_from,p_source_supersedes_id,p_identity_type_code,
+    p_national_identity_number);
+  IF NOT FOUND OR pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee identity effect preflight changed'; END IF;
+  IF p_source_snapshot_id IS NOT NULL THEN
+    IF applied_at<=p_source_effective_from THEN
+      RAISE EXCEPTION 'D1 Employee identity apply instant invalid'; END IF;
+    UPDATE app_private.employee_identity_details d SET effective_until=applied_at
+     WHERE d.id=p_source_snapshot_id;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee identity source disappeared'; END IF;
+  END IF;
+  INSERT INTO app_private.employee_identity_details
+    (id,employee_id,identity_type_code,national_identity_number,effective_from,
+     supersedes_id,reason,created_by)
+  VALUES(new_id,p_employee,p_identity_type_code,p_national_identity_number,
+    applied_at,p_source_snapshot_id,p_reason,actor);
+  RETURN QUERY SELECT new_id,p_expected_employee_version,applied_at,
+    (p_identity_type_code IS NULL AND p_national_identity_number IS NULL);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_effect(
+  uuid,bigint,uuid,text,text,timestamptz,uuid,text,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_effect(
+  uuid,bigint,uuid,text,text,timestamptz,uuid,text,text,text)
+  TO schoolos_workflow_executor;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_employee_executor;

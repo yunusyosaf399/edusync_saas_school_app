@@ -1,0 +1,78 @@
+-- D1C1B effect 18/36 final receipt hardening.
+-- Exact per-phase result kinds and minimized summary schemas; no restricted value
+-- can be stored in a broad command-receipt result summary.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE OR REPLACE FUNCTION app_private.d1_employee_identity_receipt(
+  p_phase text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+  p_target_version bigint,p_request uuid,p_request_version bigint,
+  p_state text,p_result_kind text,p_result_ref uuid,p_summary jsonb,p_error text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid(); op text;
+BEGIN
+  SELECT o.code INTO op FROM app_private.operation_contracts o
+   WHERE o.id=p_operation AND o.code='employee.identity.correct'
+     AND o.contract_version=1 AND o.enabled;
+  IF op IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN ('request.submit','request.review','request.apply')
+     OR p_key IS NULL OR pg_catalog.length(p_key) NOT BETWEEN 1 AND 200
+     OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+     OR p_target_version IS NULL OR p_target_version<1 OR p_request IS NULL
+     OR p_state NOT IN ('SUCCEEDED','REJECTED')
+     OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (p_phase='request.submit' AND (
+        p_state<>'SUCCEEDED' OR p_result_kind<>'D1_EMPLOYEE_IDENTITY_REQUEST'
+        OR p_result_ref IS DISTINCT FROM p_request OR p_error IS NOT NULL
+        OR p_request_version IS NOT NULL
+        OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>2
+        OR NOT (p_summary ?& ARRAY['request_version','state'])
+        OR pg_catalog.jsonb_typeof(p_summary->'request_version')<>'number'
+        OR p_summary->>'state'<>'PENDING'))
+     OR (p_phase='request.review' AND (
+        p_state<>'SUCCEEDED' OR p_result_kind<>'D1_EMPLOYEE_IDENTITY_REVIEW'
+        OR p_result_ref IS DISTINCT FROM p_request OR p_error IS NOT NULL
+        OR p_request_version IS NULL OR p_request_version<1
+        OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>2
+        OR NOT (p_summary ?& ARRAY['request_version','state'])
+        OR pg_catalog.jsonb_typeof(p_summary->'request_version')<>'number'
+        OR p_summary->>'state' NOT IN ('PENDING','APPROVED','REJECTED')))
+     OR (p_phase='request.apply' AND p_state='SUCCEEDED' AND (
+        p_result_kind<>'D1_EMPLOYEE_IDENTITY_APPLY' OR p_result_ref IS NULL
+        OR p_error IS NOT NULL OR p_request_version IS NULL OR p_request_version<1
+        OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>6
+        OR NOT (p_summary ?& ARRAY['request_version','state','identity_snapshot_id',
+             'employee_version','effective_from','cleared'])
+        OR pg_catalog.jsonb_typeof(p_summary->'request_version')<>'number'
+        OR pg_catalog.jsonb_typeof(p_summary->'identity_snapshot_id')<>'string'
+        OR pg_catalog.jsonb_typeof(p_summary->'employee_version')<>'number'
+        OR pg_catalog.jsonb_typeof(p_summary->'effective_from')<>'string'
+        OR pg_catalog.jsonb_typeof(p_summary->'cleared')<>'boolean'
+        OR p_summary->>'state'<>'EXECUTED'))
+     OR (p_phase='request.apply' AND p_state='REJECTED' AND (
+        p_result_kind IS NOT NULL OR p_result_ref IS NOT NULL OR p_error IS NULL
+        OR p_request_version IS NULL OR p_request_version<1
+        OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>2
+        OR NOT (p_summary ?& ARRAY['request_version','state'])
+        OR pg_catalog.jsonb_typeof(p_summary->'request_version')<>'number'
+        OR p_summary->>'state'<>'INVALIDATED'))
+  THEN RAISE EXCEPTION 'D1 Employee identity receipt intent denied'; END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,
+     canonical_payload_hash,canonicalization_version,expected_target_version,
+     request_id,expected_request_version,state,result_kind,result_ref,
+     result_summary,error_code,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,p_phase,p_key,p_hash,1,p_target_version,
+    p_request,p_request_version,p_state,p_result_kind,p_result_ref,p_summary,p_error,
+    pg_catalog.transaction_timestamp(),p_actor);
+  RETURN rid;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_receipt(
+  text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_receipt(
+  text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;

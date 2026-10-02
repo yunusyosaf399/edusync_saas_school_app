@@ -1,0 +1,87 @@
+-- D1C1B effect 18/36 P2 contract hardening.
+-- The fixed operation manifest marks employee.identity.correct requires_approval=true;
+-- policy resolution must fail closed if that frozen operation contract changes.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE OR REPLACE FUNCTION app_private.d1_employee_identity_p2_policy(p_employee uuid)
+RETURNS TABLE(policy_id uuid,campus_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  at_time timestamptz:=pg_catalog.clock_timestamp();
+  campus_row record; campus_count bigint; school_count bigint; specific_count bigint;
+  school_policy uuid; candidate uuid; chosen uuid; chosen_campus uuid;
+  steps bigint; invalid bigint; first_no int; last_no int;
+BEGIN
+  IF p_employee IS NULL OR NOT EXISTS (
+    SELECT 1 FROM app_private.employees e WHERE e.id=p_employee) THEN RETURN; END IF;
+
+  SELECT count(DISTINCT ca.campus_id) INTO campus_count
+    FROM app_private.employee_campus_affiliations ca
+   WHERE ca.employee_id=p_employee
+     AND ca.effective_from<=at_time::date
+     AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until);
+
+  SELECT count(*),min(p.id::text)::uuid INTO school_count,school_policy
+    FROM app_private.approval_policy_versions p
+    JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='employee.identity.correct' AND o.contract_version=1 AND o.enabled
+     AND o.requires_approval AND p.state='ACTIVE' AND p.campus_id IS NULL
+     AND p.d1_route_mode IS DISTINCT FROM 'DIRECT'
+     AND p.effective_from<=at_time
+     AND (p.effective_until IS NULL OR at_time<p.effective_until);
+
+  IF campus_count=0 THEN
+    IF school_count<>1 OR school_policy IS NULL THEN RETURN; END IF;
+    chosen:=school_policy;
+  ELSE
+    FOR campus_row IN
+      SELECT DISTINCT ca.campus_id
+        FROM app_private.employee_campus_affiliations ca
+       WHERE ca.employee_id=p_employee
+         AND ca.effective_from<=at_time::date
+         AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until)
+       ORDER BY ca.campus_id
+    LOOP
+      SELECT count(*),min(p.id::text)::uuid INTO specific_count,candidate
+        FROM app_private.approval_policy_versions p
+        JOIN app_private.operation_contracts o ON o.id=p.operation_id
+       WHERE o.code='employee.identity.correct' AND o.contract_version=1 AND o.enabled
+         AND o.requires_approval AND p.state='ACTIVE' AND p.campus_id=campus_row.campus_id
+         AND p.d1_route_mode IS DISTINCT FROM 'DIRECT'
+         AND p.effective_from<=at_time
+         AND (p.effective_until IS NULL OR at_time<p.effective_until);
+      IF specific_count>1 THEN RETURN;
+      ELSIF specific_count=0 THEN
+        IF school_count<>1 OR school_policy IS NULL THEN RETURN; END IF;
+        candidate:=school_policy;
+      END IF;
+      IF chosen IS NULL THEN chosen:=candidate;
+      ELSIF chosen IS DISTINCT FROM candidate THEN RETURN;
+      END IF;
+    END LOOP;
+  END IF;
+
+  IF chosen IS NULL THEN RETURN; END IF;
+  SELECT p.campus_id INTO chosen_campus
+    FROM app_private.approval_policy_versions p WHERE p.id=chosen;
+
+  SELECT count(*),
+         count(*) FILTER (WHERE r.id IS NULL OR r.state<>'ACTIVE'
+           OR t.required_reviews<>1
+           OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'),
+         min(t.step_number),max(t.step_number)
+    INTO steps,invalid,first_no,last_no
+    FROM app_private.approval_step_templates t
+    LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id
+   WHERE t.policy_id=chosen;
+  IF steps=0 OR invalid<>0 OR first_no<>1 OR last_no::bigint<>steps THEN RETURN; END IF;
+
+  RETURN QUERY SELECT chosen,chosen_campus;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_p2_policy(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_p2_policy(uuid)
+  TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;

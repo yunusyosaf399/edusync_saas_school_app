@@ -1,0 +1,463 @@
+-- D1C1B effect 18/36: Employee Restricted Identity P2 public workflow.
+-- Ordered after effect18_02. Static non-executable continuation only.
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+
+CREATE FUNCTION app.d1_submit_employee_identity_correction(
+  p_employee_id uuid,p_identity_type_code text,p_national_identity_number text,
+  p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  ctx record; lock_row record; policy_row record; pre record; template_row record;
+  normalized_type text:=NULLIF(pg_catalog.btrim(p_identity_type_code),'');
+  normalized_number text:=NULLIF(pg_catalog.btrim(p_national_identity_number),'');
+  requested jsonb; old_snapshot jsonb; new_request uuid:=pg_catalog.gen_random_uuid();
+  first_step uuid; candidate_count bigint; final_version bigint; receipt uuid;
+  req record;
+BEGIN
+  requested:=pg_catalog.jsonb_build_object(
+    'identity_type_code',normalized_type,'national_identity_number',normalized_number);
+  IF p_employee_id IS NULL OR p_reason IS NULL
+     OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR ((normalized_type IS NULL) <> (normalized_number IS NULL))
+     OR app_private.d1_employee_identity_payload_valid(requested) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee identity request intent invalid'; END IF;
+
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'employee.identity.correct','request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_employee_id,normalized_type,normalized_number,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+
+  SELECT * INTO lock_row FROM app_private.d1_employee_identity_lock_context(
+    p_employee_id,NULL);
+  IF NOT app_private.d1_employee_identity_authorized(
+      ctx.actor_id,'employee.identity.correct',p_employee_id,NULL) THEN
+    RAISE EXCEPTION 'D1 Employee identity request authority denied'; END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    SELECT r.requester_id,r.target_ref,r.expected_target_version
+      INTO req FROM app_private.approval_requests r
+     WHERE r.id=ctx.result_ref AND r.operation_id=ctx.operation_id;
+    IF NOT FOUND OR req.requester_id IS DISTINCT FROM ctx.actor_id
+       OR req.target_ref IS DISTINCT FROM p_employee_id
+       OR ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR ctx.result_summary->>'state'<>'PENDING' THEN
+      RAISE EXCEPTION 'D1 Employee identity request receipt is not replayable'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,
+      (ctx.result_summary->>'request_version')::bigint;
+    RETURN;
+  END IF;
+
+  IF lock_row.employee_version IS NULL OR lock_row.error_code IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Employee identity target/history unavailable'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_employee_identity_p2_policy(p_employee_id);
+  IF policy_row.policy_id IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee identity approval policy unavailable'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM app_private.operation_contracts o
+    JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+     WHERE o.id=ctx.operation_id AND o.code='employee.identity.correct'
+       AND o.contract_version=1 AND o.enabled
+       AND rp.code='employee.identity.approve' AND rp.state='ENABLED'
+       AND NOT rp.family_safe) THEN
+    RAISE EXCEPTION 'D1 Employee identity review permission unavailable'; END IF;
+
+  SELECT * INTO pre FROM app_private.d1_employee_identity_preflight(
+    p_employee_id,lock_row.employee_version,lock_row.source_snapshot_id,
+    lock_row.source_identity_type_code,lock_row.source_national_identity_number,
+    lock_row.source_effective_from,lock_row.source_supersedes_id,
+    normalized_type,normalized_number);
+  IF NOT FOUND OR pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee identity request denied: %',
+      pg_catalog.coalesce(pre.error_code,'D1_EMPLOYEE_IDENTITY_PREFLIGHT_UNAVAILABLE');
+  END IF;
+
+  old_snapshot:=pg_catalog.jsonb_build_object(
+    'source_snapshot_id',lock_row.source_snapshot_id,
+    'source_identity_type_code',lock_row.source_identity_type_code,
+    'source_national_identity_number',lock_row.source_national_identity_number,
+    'source_effective_from',lock_row.source_effective_from,
+    'source_supersedes_id',lock_row.source_supersedes_id,
+    'source_present',(lock_row.source_snapshot_id IS NOT NULL));
+
+  INSERT INTO app_private.approval_requests
+    (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,
+     target_ref,expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,
+    policy_row.campus_id,p_employee_id,lock_row.employee_version,p_reason,
+    old_snapshot,requested,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',
+    submitted_at=pg_catalog.statement_timestamp() WHERE id=new_request;
+
+  FOR template_row IN
+    SELECT t.id,t.step_number,t.required_reviews
+      FROM app_private.approval_step_templates t
+     WHERE t.policy_id=policy_row.policy_id ORDER BY t.step_number
+  LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps
+      (id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step
+                 ELSE pg_catalog.gen_random_uuid() END,
+      new_request,policy_row.policy_id,template_row.id,template_row.step_number,
+      template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Employee identity policy has no first step'; END IF;
+
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request
+   RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',
+    opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  INSERT INTO app_private.approval_step_reviewers
+    (step_id,reviewer_id,assignment_reason,created_by)
+  SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+    FROM app_private.d1_employee_identity_candidates(new_request,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT;
+  IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Employee identity step has no reviewer'; END IF;
+
+  receipt:=app_private.d1_employee_identity_receipt(
+    'request.submit',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    lock_row.employee_version,new_request,NULL,'SUCCEEDED',
+    'D1_EMPLOYEE_IDENTITY_REQUEST',new_request,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),NULL);
+  INSERT INTO app_private.approval_transitions
+    (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+  VALUES (new_request,1,NULL,'DRAFT','D1_EMPLOYEE_IDENTITY_DRAFT',receipt,ctx.actor_id),
+    (new_request,2,'DRAFT','SUBMITTED','D1_EMPLOYEE_IDENTITY_SUBMIT',receipt,ctx.actor_id),
+    (new_request,3,'SUBMITTED','PENDING','D1_EMPLOYEE_IDENTITY_OPEN',receipt,ctx.actor_id);
+  PERFORM app_private.d1_employee_identity_audit(ctx.actor_id,'SUBMIT',p_employee_id,
+    lock_row.source_snapshot_id,receipt,new_request,lock_row.employee_version,
+    'PENDING',NULL,(normalized_type IS NULL),pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT new_request,final_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_submit_employee_identity_correction(uuid,text,text,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_employee_identity_correction(uuid,text,text,text,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_review_employee_identity_request(
+  p_request_id uuid,p_decision text,p_expected_request_version bigint,
+  p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  ctx record; req record; step_row record; next_step record; policy_row record;
+  pre record; assignment_id uuid; n bigint; candidate_count bigint;
+  final_version bigint; final_state text; receipt uuid; sequence_no bigint;
+  reviewer_role uuid; source_id uuid; source_type text; source_number text;
+  source_from timestamptz; source_supersedes uuid; requested_type text; requested_number text;
+BEGIN
+  IF p_request_id IS NULL OR p_decision NOT IN ('APPROVE','REJECT')
+     OR p_expected_request_version IS NULL OR p_expected_request_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Employee identity review intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'employee.identity.correct','request.review',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_decision,
+      p_expected_request_version::text,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT r.* INTO req FROM app_private.approval_requests r
+   WHERE r.id=p_request_id AND r.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND OR app_private.d1_employee_identity_request_payload_valid(
+      req.old_snapshot,req.requested_payload) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee identity request unavailable'; END IF;
+  PERFORM s.id FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id ORDER BY s.step_number FOR UPDATE;
+
+  source_id:=NULLIF(req.old_snapshot->>'source_snapshot_id','')::uuid;
+  source_type:=NULLIF(req.old_snapshot->>'source_identity_type_code','');
+  source_number:=NULLIF(req.old_snapshot->>'source_national_identity_number','');
+  source_from:=NULLIF(req.old_snapshot->>'source_effective_from','')::timestamptz;
+  source_supersedes:=NULLIF(req.old_snapshot->>'source_supersedes_id','')::uuid;
+  requested_type:=NULLIF(req.requested_payload->>'identity_type_code','');
+  requested_number:=NULLIF(req.requested_payload->>'national_identity_number','');
+
+  SELECT * INTO pre FROM app_private.d1_employee_identity_preflight(
+    req.target_ref,req.expected_target_version,source_id,source_type,source_number,
+    source_from,source_supersedes,requested_type,requested_number);
+  IF NOT FOUND OR pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee identity request facts changed'; END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    SELECT count(*),min(t.reviewer_role_id::text)::uuid INTO n,reviewer_role
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t ON t.id=s.template_id
+     WHERE s.request_id=p_request_id AND v.reviewer_id=ctx.actor_id
+       AND v.decision=p_decision AND v.expected_request_version=p_expected_request_version;
+    IF n<>1 OR reviewer_role IS NULL
+       OR NOT app_private.d1_employee_identity_authorized(
+         ctx.actor_id,'employee.identity.approve',req.target_ref,reviewer_role)
+       OR ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS DISTINCT FROM p_request_id
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state']) THEN
+      RAISE EXCEPTION 'D1 Employee identity review receipt invalid'; END IF;
+    RETURN QUERY SELECT p_request_id,
+      (ctx.result_summary->>'request_version')::bigint,ctx.result_summary->>'state';
+    RETURN;
+  END IF;
+
+  SELECT count(*) INTO n FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id AND s.state='OPEN';
+  SELECT s.* INTO step_row FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id AND s.state='OPEN' ORDER BY s.step_number;
+  IF req.state<>'PENDING' OR req.row_version<>p_expected_request_version
+     OR step_row.id IS NULL OR n<>1 THEN
+    RAISE EXCEPTION 'D1 Employee identity review state changed'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_employee_identity_p2_policy(req.target_ref);
+  IF policy_row.policy_id IS DISTINCT FROM req.policy_id
+     OR policy_row.campus_id IS DISTINCT FROM req.campus_id THEN
+    RAISE EXCEPTION 'D1 Employee identity policy no longer applies'; END IF;
+
+  SELECT count(*),min(a.id::text)::uuid INTO n,assignment_id
+    FROM app_private.approval_step_reviewers a
+   WHERE a.step_id=step_row.id AND a.reviewer_id=ctx.actor_id
+     AND a.withdrawn_at IS NULL AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+  IF n<>1 OR NOT EXISTS (
+      SELECT 1 FROM app_private.d1_employee_identity_candidates(p_request_id,step_row.id) c
+       WHERE c.candidate_principal_id=ctx.actor_id) THEN
+    RAISE EXCEPTION 'D1 Employee identity reviewer authority denied'; END IF;
+
+  INSERT INTO app_private.approval_reviews
+    (reviewer_assignment_id,step_id,reviewer_id,decision,reason,
+     expected_request_version,created_by)
+  VALUES (assignment_id,step_row.id,ctx.actor_id,p_decision,p_reason,
+    p_expected_request_version,ctx.actor_id);
+  UPDATE app_private.approval_request_steps SET
+    state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+
+  IF p_decision='REJECT' THEN
+    UPDATE app_private.approval_request_steps SET state='CANCELLED',
+      closed_at=pg_catalog.statement_timestamp()
+     WHERE request_id=p_request_id AND state='WAITING';
+    final_state:='REJECTED';
+  ELSE
+    SELECT s.* INTO next_step FROM app_private.approval_request_steps s
+     WHERE s.request_id=p_request_id AND s.step_number=step_row.step_number+1
+       AND s.state='WAITING' FOR UPDATE;
+    IF FOUND THEN
+      UPDATE app_private.approval_request_steps SET state='OPEN',
+        opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+      INSERT INTO app_private.approval_step_reviewers
+        (step_id,reviewer_id,assignment_reason,created_by)
+      SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+       FROM app_private.d1_employee_identity_candidates(p_request_id,next_step.id) c;
+      GET DIAGNOSTICS candidate_count=ROW_COUNT;
+      IF candidate_count=0 THEN
+        RAISE EXCEPTION 'D1 Employee identity next step has no reviewer'; END IF;
+      final_state:='PENDING';
+    ELSE
+      IF EXISTS (SELECT 1 FROM app_private.approval_request_steps s
+         WHERE s.request_id=p_request_id AND s.state<>'APPROVED') THEN
+        RAISE EXCEPTION 'D1 Employee identity approval sequence incomplete'; END IF;
+      final_state:='APPROVED';
+    END IF;
+  END IF;
+  UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
+   RETURNING row_version INTO final_version;
+  receipt:=app_private.d1_employee_identity_receipt(
+    'request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
+    'D1_EMPLOYEE_IDENTITY_REVIEW',p_request_id,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+    FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  IF final_state IN ('APPROVED','REJECTED') THEN
+    INSERT INTO app_private.approval_transitions
+      (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+    VALUES (p_request_id,sequence_no+1,'PENDING',final_state,
+      'D1_EMPLOYEE_IDENTITY_REVIEW_'||final_state,receipt,ctx.actor_id);
+  END IF;
+  PERFORM app_private.d1_employee_identity_audit(ctx.actor_id,'REVIEW',req.target_ref,
+    source_id,receipt,p_request_id,req.expected_target_version,final_state,NULL,
+    (requested_type IS NULL),pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_review_employee_identity_request(uuid,text,bigint,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_review_employee_identity_request(uuid,text,bigint,text,text)
+  TO authenticated;
+
+CREATE FUNCTION app.d1_apply_employee_identity_request(
+  p_request_id uuid,p_expected_request_version bigint,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  ctx record; req record; policy_row record; pre record; effect_row record;
+  participant text; source_id uuid; source_type text; source_number text;
+  source_from timestamptz; source_supersedes uuid; requested_type text; requested_number text;
+  invalidation_code text; final_state text; final_version bigint; receipt uuid;
+  sequence_no bigint; correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_request_id IS NULL OR p_expected_request_version IS NULL
+     OR p_expected_request_version<1 THEN
+    RAISE EXCEPTION 'D1 Employee identity apply intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'employee.identity.correct','request.apply',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_expected_request_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT r.* INTO req FROM app_private.approval_requests r
+   WHERE r.id=p_request_id AND r.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND OR app_private.d1_employee_identity_request_payload_valid(
+      req.old_snapshot,req.requested_payload) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee identity request unavailable'; END IF;
+  PERFORM s.id FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id ORDER BY s.step_number FOR UPDATE;
+
+  participant:=app_private.d1_employee_identity_participant(p_request_id,ctx.actor_id);
+  IF participant IS NULL OR participant NOT IN ('REQUESTER','FINAL_APPROVER') THEN
+    RAISE EXCEPTION 'D1 Employee identity request unavailable'; END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state NOT IN ('SUCCEEDED','REJECTED')
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR (ctx.receipt_state='SUCCEEDED' AND (
+         ctx.result_ref IS NULL
+         OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>6
+         OR NOT (ctx.result_summary ?& ARRAY['identity_snapshot_id','employee_version',
+              'effective_from','cleared'])
+         OR ctx.result_summary->>'state'<>'EXECUTED'))
+       OR (ctx.receipt_state='REJECTED' AND (
+         ctx.result_ref IS NOT NULL
+         OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+         OR ctx.result_summary->>'state'<>'INVALIDATED')) THEN
+      RAISE EXCEPTION 'D1 Employee identity apply receipt invalid'; END IF;
+    RETURN QUERY SELECT p_request_id,
+      (ctx.result_summary->>'request_version')::bigint,ctx.result_summary->>'state';
+    RETURN;
+  END IF;
+
+  IF req.state<>'APPROVED' OR req.row_version<>p_expected_request_version THEN
+    RAISE EXCEPTION 'D1 Employee identity approved request changed'; END IF;
+
+  source_id:=NULLIF(req.old_snapshot->>'source_snapshot_id','')::uuid;
+  source_type:=NULLIF(req.old_snapshot->>'source_identity_type_code','');
+  source_number:=NULLIF(req.old_snapshot->>'source_national_identity_number','');
+  source_from:=NULLIF(req.old_snapshot->>'source_effective_from','')::timestamptz;
+  source_supersedes:=NULLIF(req.old_snapshot->>'source_supersedes_id','')::uuid;
+  requested_type:=NULLIF(req.requested_payload->>'identity_type_code','');
+  requested_number:=NULLIF(req.requested_payload->>'national_identity_number','');
+
+  SELECT * INTO policy_row FROM app_private.d1_employee_identity_p2_policy(req.target_ref);
+  IF policy_row.policy_id IS DISTINCT FROM req.policy_id
+     OR policy_row.campus_id IS DISTINCT FROM req.campus_id THEN
+    invalidation_code:='D1_EMPLOYEE_IDENTITY_POLICY_STALE';
+  ELSIF NOT app_private.d1_employee_identity_authorized(
+      req.requester_id,'employee.identity.correct',req.target_ref,NULL) THEN
+    invalidation_code:='D1_EMPLOYEE_IDENTITY_REQUESTER_AUTHORITY_STALE';
+  ELSIF NOT app_private.d1_employee_identity_reviews_live(p_request_id) THEN
+    invalidation_code:='D1_EMPLOYEE_IDENTITY_REVIEWER_AUTHORITY_STALE';
+  ELSE
+    SELECT * INTO pre FROM app_private.d1_employee_identity_preflight(
+      req.target_ref,req.expected_target_version,source_id,source_type,source_number,
+      source_from,source_supersedes,requested_type,requested_number);
+    IF NOT FOUND OR pre.eligible IS NULL THEN
+      RAISE EXCEPTION 'D1 Employee identity preflight result unavailable';
+    ELSIF pre.eligible IS FALSE THEN
+      IF pre.error_code IS NULL OR pg_catalog.length(pg_catalog.btrim(pre.error_code))=0 THEN
+        RAISE EXCEPTION 'D1 Employee identity preflight denial lacks error code'; END IF;
+      invalidation_code:=pre.error_code;
+    END IF;
+  END IF;
+
+  IF invalidation_code IS NOT NULL THEN
+    final_state:='INVALIDATED';
+    UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
+     RETURNING row_version INTO final_version;
+    receipt:=app_private.d1_employee_identity_receipt(
+      'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+      req.expected_target_version,p_request_id,p_expected_request_version,'REJECTED',
+      NULL,NULL,pg_catalog.jsonb_build_object(
+        'request_version',final_version,'state',final_state),invalidation_code);
+    PERFORM app_private.d1_employee_identity_audit(ctx.actor_id,'APPLY',req.target_ref,
+      source_id,receipt,p_request_id,req.expected_target_version,final_state,NULL,
+      (requested_type IS NULL),correlation);
+  ELSE
+    SELECT * INTO effect_row FROM app_private.d1_employee_identity_effect(
+      req.target_ref,req.expected_target_version,source_id,source_type,source_number,
+      source_from,source_supersedes,requested_type,requested_number,req.reason);
+    final_state:='EXECUTED';
+    UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
+     RETURNING row_version INTO final_version;
+    receipt:=app_private.d1_employee_identity_receipt(
+      'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+      req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
+      'D1_EMPLOYEE_IDENTITY_APPLY',effect_row.identity_snapshot_id,
+      pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state,
+        'identity_snapshot_id',effect_row.identity_snapshot_id,
+        'employee_version',effect_row.employee_version,
+        'effective_from',effect_row.effective_from,'cleared',effect_row.cleared),NULL);
+    INSERT INTO app_private.approval_applications
+      (request_id,command_receipt_id,operation_id,applied_target_version,result_ref,created_by)
+    VALUES (p_request_id,receipt,ctx.operation_id,effect_row.employee_version,
+      effect_row.identity_snapshot_id,ctx.actor_id);
+    PERFORM app_private.d1_employee_identity_audit(ctx.actor_id,'APPLY',req.target_ref,
+      effect_row.identity_snapshot_id,receipt,p_request_id,effect_row.employee_version,
+      final_state,effect_row.effective_from,effect_row.cleared,correlation);
+    PERFORM app_private.d1_employee_identity_event(ctx.actor_id,req.target_ref,
+      effect_row.identity_snapshot_id,receipt,effect_row.employee_version,
+      effect_row.effective_from,effect_row.cleared,correlation);
+  END IF;
+
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+    FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  INSERT INTO app_private.approval_transitions
+    (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+  VALUES (p_request_id,sequence_no+1,'APPROVED',final_state,
+    CASE WHEN final_state='EXECUTED' THEN 'D1_EMPLOYEE_IDENTITY_APPLIED'
+         ELSE invalidation_code END,receipt,ctx.actor_id);
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_apply_employee_identity_request(uuid,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_employee_identity_request(uuid,bigint,text)
+  TO authenticated;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+
+CREATE FUNCTION app.d1_read_employee_identity_request(p_request_id uuid)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,
+  employee_id uuid,source_present boolean,source_identity_type_code text,
+  source_national_identity_number text,requested_identity_type_code text,
+  requested_national_identity_number text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; participant text; req record;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1 Employee identity request unavailable'; END IF;
+  participant:=app_private.d1_employee_identity_participant(p_request_id,actor);
+  IF participant IS NULL THEN RAISE EXCEPTION 'D1 Employee identity request unavailable'; END IF;
+  SELECT r.id,r.row_version,r.state,r.target_ref,r.old_snapshot,r.requested_payload
+    INTO req FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+   WHERE r.id=p_request_id AND o.code='employee.identity.correct';
+  IF NOT FOUND OR app_private.d1_employee_identity_request_payload_valid(
+      req.old_snapshot,req.requested_payload) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Employee identity request unavailable'; END IF;
+  RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,
+    (req.old_snapshot->>'source_present')::boolean,
+    NULLIF(req.old_snapshot->>'source_identity_type_code',''),
+    NULLIF(req.old_snapshot->>'source_national_identity_number',''),
+    NULLIF(req.requested_payload->>'identity_type_code',''),
+    NULLIF(req.requested_payload->>'national_identity_number','');
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_read_employee_identity_request(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_employee_identity_request(uuid)
+  TO authenticated;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;

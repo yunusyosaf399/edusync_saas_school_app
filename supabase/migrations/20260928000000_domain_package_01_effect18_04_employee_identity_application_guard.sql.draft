@@ -1,0 +1,105 @@
+-- D1C1B effect 18/36: successful application binding for Employee Restricted Identity.
+-- Static non-executable continuation only.
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_employee_identity_application_receipt_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  op_code text; receipt app_private.command_receipts%ROWTYPE;
+  req app_private.approval_requests%ROWTYPE;
+  result app_private.employee_identity_details%ROWTYPE;
+  predecessor app_private.employee_identity_details%ROWTYPE;
+  source_id uuid; source_type text; source_number text;
+  source_from timestamptz; source_supersedes uuid;
+  requested_type text; requested_number text;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o
+   WHERE o.id=NEW.operation_id;
+  IF op_code<>'employee.identity.correct' THEN RETURN NEW; END IF;
+
+  SELECT r.* INTO receipt FROM app_private.command_receipts r
+   WHERE r.id=NEW.command_receipt_id AND r.operation_id=NEW.operation_id
+     AND r.request_id=NEW.request_id AND r.command_kind='request.apply'
+     AND r.state='SUCCEEDED' AND r.result_kind='D1_EMPLOYEE_IDENTITY_APPLY'
+     AND r.result_ref=NEW.result_ref;
+  SELECT q.* INTO req FROM app_private.approval_requests q
+   WHERE q.id=NEW.request_id AND q.operation_id=NEW.operation_id
+     AND q.state='EXECUTED';
+  SELECT d.* INTO result FROM app_private.employee_identity_details d
+   WHERE d.id=NEW.result_ref;
+
+  IF receipt.id IS NULL OR req.id IS NULL OR result.id IS NULL
+     OR result.employee_id IS DISTINCT FROM req.target_ref
+     OR NEW.applied_target_version IS NULL
+     OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR receipt.expected_target_version IS DISTINCT FROM req.expected_target_version
+     OR app_private.d1_employee_identity_request_payload_valid(
+          req.old_snapshot,req.requested_payload) IS DISTINCT FROM true
+     OR receipt.result_summary IS NULL
+     OR pg_catalog.jsonb_typeof(receipt.result_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(receipt.result_summary))<>6
+     OR NOT (receipt.result_summary ?& ARRAY['request_version','state',
+       'identity_snapshot_id','employee_version','effective_from','cleared'])
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'request_version')<>'number'
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'identity_snapshot_id')<>'string'
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'employee_version')<>'number'
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'effective_from')<>'string'
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'cleared')<>'boolean'
+     OR receipt.result_summary->>'state'<>'EXECUTED'
+     OR (receipt.result_summary->>'request_version')::bigint<>req.row_version
+     OR (receipt.result_summary->>'identity_snapshot_id')::uuid IS DISTINCT FROM NEW.result_ref
+     OR (receipt.result_summary->>'employee_version')::bigint IS DISTINCT FROM NEW.applied_target_version
+     OR (receipt.result_summary->>'effective_from')::timestamptz IS DISTINCT FROM result.effective_from
+     OR (receipt.result_summary->>'cleared')::boolean IS DISTINCT FROM
+          (result.identity_type_code IS NULL AND result.national_identity_number IS NULL)
+  THEN
+    RAISE EXCEPTION 'D1 Employee identity application requires successful bound apply receipt';
+  END IF;
+
+  source_id:=NULLIF(req.old_snapshot->>'source_snapshot_id','')::uuid;
+  source_type:=NULLIF(req.old_snapshot->>'source_identity_type_code','');
+  source_number:=NULLIF(req.old_snapshot->>'source_national_identity_number','');
+  source_from:=NULLIF(req.old_snapshot->>'source_effective_from','')::timestamptz;
+  source_supersedes:=NULLIF(req.old_snapshot->>'source_supersedes_id','')::uuid;
+  requested_type:=NULLIF(req.requested_payload->>'identity_type_code','');
+  requested_number:=NULLIF(req.requested_payload->>'national_identity_number','');
+
+  IF source_id IS NULL THEN
+    IF (req.old_snapshot->>'source_present')::boolean
+       OR result.supersedes_id IS NOT NULL THEN
+      RAISE EXCEPTION 'D1 Employee identity initial application lineage invalid';
+    END IF;
+  ELSE
+    SELECT d.* INTO predecessor FROM app_private.employee_identity_details d
+     WHERE d.id=source_id;
+    IF predecessor.id IS NULL
+       OR predecessor.employee_id IS DISTINCT FROM req.target_ref
+       OR predecessor.identity_type_code IS DISTINCT FROM source_type
+       OR predecessor.national_identity_number IS DISTINCT FROM source_number
+       OR predecessor.effective_from IS DISTINCT FROM source_from
+       OR predecessor.supersedes_id IS DISTINCT FROM source_supersedes
+       OR predecessor.effective_until IS DISTINCT FROM result.effective_from
+       OR predecessor.ended_at IS NULL OR predecessor.ended_by IS NULL
+       OR result.supersedes_id IS DISTINCT FROM source_id THEN
+      RAISE EXCEPTION 'D1 Employee identity predecessor binding invalid';
+    END IF;
+  END IF;
+
+  IF result.employee_id IS DISTINCT FROM req.target_ref
+     OR result.identity_type_code IS DISTINCT FROM requested_type
+     OR result.national_identity_number IS DISTINCT FROM requested_number
+     OR result.reason IS DISTINCT FROM req.reason
+     OR result.effective_until IS NOT NULL
+     OR result.ended_at IS NOT NULL OR result.ended_by IS NOT NULL
+  THEN
+    RAISE EXCEPTION 'D1 Employee identity successor binding invalid';
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_application_receipt_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER d1_employee_identity_application_receipt_guard
+  BEFORE INSERT ON app_private.approval_applications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_employee_identity_application_receipt_guard();
+RESET ROLE;

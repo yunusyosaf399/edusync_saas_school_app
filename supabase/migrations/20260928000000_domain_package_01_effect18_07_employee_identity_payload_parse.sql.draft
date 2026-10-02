@@ -1,0 +1,64 @@
+-- D1C1B effect 18/36 stored-payload parse hardening.
+-- Exact UUID/timestamp source facts must parse before participant/read/workflow use.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE OR REPLACE FUNCTION app_private.d1_employee_identity_request_payload_valid(
+  p_old jsonb,p_requested jsonb
+) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE source_present boolean; parsed_id uuid; parsed_from timestamptz; parsed_parent uuid;
+BEGIN
+  IF p_old IS NULL OR pg_catalog.jsonb_typeof(p_old)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_old))<>6
+     OR NOT (p_old ?& ARRAY['source_snapshot_id','source_identity_type_code',
+       'source_national_identity_number','source_effective_from',
+       'source_supersedes_id','source_present'])
+     OR pg_catalog.jsonb_typeof(p_old->'source_present')<>'boolean'
+     OR app_private.d1_employee_identity_payload_valid(p_requested) IS DISTINCT FROM true
+  THEN RETURN false; END IF;
+
+  source_present:=(p_old->>'source_present')::boolean;
+  IF NOT source_present THEN
+    RETURN p_old->'source_snapshot_id'='null'::jsonb
+       AND p_old->'source_identity_type_code'='null'::jsonb
+       AND p_old->'source_national_identity_number'='null'::jsonb
+       AND p_old->'source_effective_from'='null'::jsonb
+       AND p_old->'source_supersedes_id'='null'::jsonb;
+  END IF;
+
+  IF pg_catalog.jsonb_typeof(p_old->'source_snapshot_id')<>'string'
+     OR pg_catalog.length(pg_catalog.btrim(p_old->>'source_snapshot_id'))=0
+     OR pg_catalog.jsonb_typeof(p_old->'source_effective_from')<>'string'
+     OR pg_catalog.length(pg_catalog.btrim(p_old->>'source_effective_from'))=0
+     OR NOT (
+       (p_old->'source_identity_type_code'='null'::jsonb
+        AND p_old->'source_national_identity_number'='null'::jsonb)
+       OR
+       (pg_catalog.jsonb_typeof(p_old->'source_identity_type_code')='string'
+        AND pg_catalog.length(pg_catalog.btrim(p_old->>'source_identity_type_code'))>0
+        AND pg_catalog.jsonb_typeof(p_old->'source_national_identity_number')='string'
+        AND pg_catalog.length(pg_catalog.btrim(p_old->>'source_national_identity_number'))>0)
+     )
+     OR NOT (p_old->'source_supersedes_id'='null'::jsonb
+       OR (pg_catalog.jsonb_typeof(p_old->'source_supersedes_id')='string'
+           AND pg_catalog.length(pg_catalog.btrim(p_old->>'source_supersedes_id'))>0))
+  THEN RETURN false; END IF;
+
+  BEGIN
+    parsed_id:=(p_old->>'source_snapshot_id')::uuid;
+    parsed_from:=(p_old->>'source_effective_from')::timestamptz;
+    IF p_old->'source_supersedes_id'<>'null'::jsonb THEN
+      parsed_parent:=(p_old->>'source_supersedes_id')::uuid;
+    END IF;
+  EXCEPTION WHEN others THEN
+    RETURN false;
+  END;
+  RETURN parsed_id IS NOT NULL AND parsed_from IS NOT NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_request_payload_valid(jsonb,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_request_payload_valid(jsonb,jsonb)
+  TO schoolos_workflow_executor,schoolos_read_executor,schoolos_evidence_writer;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
