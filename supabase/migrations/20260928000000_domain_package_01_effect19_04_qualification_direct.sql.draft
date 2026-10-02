@@ -1,0 +1,87 @@
+-- Reviewer candidates are policy-step role holders who also have current complete
+-- approval authority across every affected Employee campus and are Person-distinct
+-- from the requester.
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_employee_qualification_candidates(p_request uuid,p_step uuid)
+RETURNS TABLE(candidate_principal_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; templ record; requester_person uuid;
+BEGIN
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=p_request;
+  SELECT t.* INTO templ FROM app_private.approval_request_steps s
+    JOIN app_private.approval_step_templates t ON t.id=s.template_id
+   WHERE s.id=p_step AND s.request_id=p_request;
+  IF req.id IS NULL OR templ.id IS NULL OR templ.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'
+  THEN RETURN; END IF;
+  SELECT p.person_id INTO requester_person FROM app_private.principals p WHERE p.id=req.requester_id;
+  RETURN QUERY SELECT p.id FROM app_private.principals p
+    WHERE p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL
+      AND p.id<>req.requester_id AND p.person_id<>requester_person
+      AND app_private.d1_employee_qualification_authorized(
+        p.id,'employee.qualification.approve',req.target_ref,templ.reviewer_role_id)
+    ORDER BY p.id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_qualification_candidates(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_qualification_candidates(uuid,uuid)
+  TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+-- DIRECT route. Replay checks current authority/policy first, then returns the durable result without requiring the predecessor to remain open.
+GRANT CREATE ON SCHEMA app TO schoolos_employee_executor;
+SET ROLE schoolos_employee_executor;
+CREATE FUNCTION app.d1_change_employee_qualification(
+  p_employee_id uuid,p_expected_employee_version bigint,p_action text,p_source_snapshot_id uuid,
+  p_expected_qualification_record_id uuid,p_qualification_type text,p_title text,p_institution text,
+  p_specialization text,p_awarded_on date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(snapshot_id uuid,qualification_record_id uuid,action text,effective_from timestamptz,
+  effective_until timestamptz,employee_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy_row record; pre record; effect_row record; receipt uuid;
+  correlation uuid:=pg_catalog.gen_random_uuid(); employee_version bigint;
+BEGIN
+  SELECT * INTO ctx FROM app_private.d1_employee_qualification_command_context(
+    'employee.qualification.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_employee_id,p_expected_employee_version::text,p_action,p_source_snapshot_id,
+      p_expected_qualification_record_id,p_qualification_type,p_title,p_institution,p_specialization,p_awarded_on,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF NOT app_private.d1_employee_qualification_authorized(ctx.actor_id,'employee.qualification.change',p_employee_id,NULL)
+  THEN RAISE EXCEPTION 'D1 Employee qualification authority denied'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_employee_qualification_policy(p_employee_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'DIRECT' THEN
+    RAISE EXCEPTION 'D1 Employee qualification requires approval request'; END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR NOT (ctx.result_summary ?& ARRAY['snapshot_id','qualification_record_id','action','effective_from','effective_until','employee_version'])
+       OR ctx.result_summary->>'action' IS DISTINCT FROM p_action THEN
+      RAISE EXCEPTION 'D1 Employee qualification replay receipt invalid'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'qualification_record_id')::uuid,p_action,
+      (ctx.result_summary->>'effective_from')::timestamptz,
+      CASE WHEN ctx.result_summary->>'effective_until' IS NULL THEN NULL::timestamptz ELSE (ctx.result_summary->>'effective_until')::timestamptz END,
+      (ctx.result_summary->>'employee_version')::bigint; RETURN;
+  END IF;
+  SELECT e.row_version INTO employee_version FROM app_private.employees e WHERE e.id=p_employee_id FOR UPDATE;
+  IF employee_version IS DISTINCT FROM p_expected_employee_version THEN RAISE EXCEPTION 'D1 Employee qualification employee version changed'; END IF;
+  SELECT * INTO pre FROM app_private.d1_employee_qualification_preflight(p_employee_id,p_expected_employee_version,p_action,
+    p_source_snapshot_id,p_expected_qualification_record_id,p_qualification_type,p_title,p_institution,p_specialization,p_awarded_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Employee qualification preflight denied: %',pre.error_code; END IF;
+  SELECT * INTO effect_row FROM app_private.d1_employee_qualification_effect(ctx.actor_id,p_employee_id,p_expected_employee_version,
+    p_action,p_source_snapshot_id,p_expected_qualification_record_id,p_qualification_type,p_title,p_institution,p_specialization,p_awarded_on,p_reason);
+  receipt:=app_private.d1_employee_qualification_receipt('employee.qualification.change',ctx.actor_id,ctx.operation_id,
+    p_idempotency_key,ctx.intent_hash,p_expected_employee_version,NULL,NULL,'SUCCEEDED','D1_EMPLOYEE_QUALIFICATION_CHANGE',
+    effect_row.snapshot_id,pg_catalog.jsonb_build_object('snapshot_id',effect_row.snapshot_id,'qualification_record_id',effect_row.qualification_record_id,
+      'action',p_action,'effective_from',effect_row.effective_from,'effective_until',effect_row.effective_until,'employee_version',employee_version),NULL);
+  PERFORM app_private.d1_employee_qualification_audit(ctx.actor_id,'employee.qualification.change',p_action,p_employee_id,
+    effect_row.snapshot_id,effect_row.qualification_record_id,p_source_snapshot_id,receipt,NULL,employee_version,'SUCCEEDED',correlation);
+  PERFORM app_private.d1_employee_qualification_event(ctx.actor_id,p_action,p_employee_id,effect_row.snapshot_id,
+    effect_row.qualification_record_id,p_source_snapshot_id,receipt,employee_version,correlation);
+  RETURN QUERY SELECT effect_row.snapshot_id,effect_row.qualification_record_id,p_action,effect_row.effective_from,effect_row.effective_until,employee_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_employee_qualification(uuid,bigint,text,uuid,uuid,text,text,text,text,date,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_employee_qualification(uuid,bigint,text,uuid,uuid,text,text,text,text,date,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_employee_executor;

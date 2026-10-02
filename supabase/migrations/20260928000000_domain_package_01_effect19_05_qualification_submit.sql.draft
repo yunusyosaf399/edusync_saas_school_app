@@ -1,0 +1,65 @@
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_submit_employee_qualification_change(
+  p_employee_id uuid,p_expected_employee_version bigint,p_action text,p_source_snapshot_id uuid,
+  p_expected_qualification_record_id uuid,p_qualification_type text,p_title text,p_institution text,
+  p_specialization text,p_awarded_on date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy_row record; pre record; template_row record; src record;
+  new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid; candidate_count bigint;
+  final_version bigint; receipt uuid; old_snapshot jsonb; requested_payload jsonb;
+BEGIN
+  SELECT * INTO ctx FROM app_private.d1_employee_qualification_command_context('request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_employee_id,p_expected_employee_version::text,p_action,p_source_snapshot_id,
+      p_expected_qualification_record_id,p_qualification_type,p_title,p_institution,p_specialization,p_awarded_on,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF NOT app_private.d1_employee_qualification_authorized(ctx.actor_id,'employee.qualification.change',p_employee_id,NULL)
+  THEN RAISE EXCEPTION 'D1 Employee qualification request authority denied'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_employee_qualification_policy(p_employee_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' THEN
+    RAISE EXCEPTION 'D1 Employee qualification policy selects direct command'; END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR ctx.result_summary->>'state'<>'PENDING' THEN RAISE EXCEPTION 'D1 Employee qualification submit receipt invalid'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint; RETURN;
+  END IF;
+  SELECT * INTO pre FROM app_private.d1_employee_qualification_preflight(p_employee_id,p_expected_employee_version,p_action,
+    p_source_snapshot_id,p_expected_qualification_record_id,p_qualification_type,p_title,p_institution,p_specialization,p_awarded_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Employee qualification request preflight denied: %',pre.error_code; END IF;
+  SELECT q.id,q.qualification_record_id,q.qualification_type,q.title,q.institution,q.specialization,q.awarded_on,q.effective_from,q.supersedes_id INTO src
+    FROM app_private.employee_qualifications q WHERE q.id=p_source_snapshot_id;
+  old_snapshot:=pg_catalog.jsonb_build_object('source_snapshot_id',p_source_snapshot_id,'qualification_record_id',p_expected_qualification_record_id,
+    'qualification_type',src.qualification_type,'title',src.title,'institution',src.institution,'specialization',src.specialization,
+    'awarded_on',src.awarded_on,'effective_from',src.effective_from,'supersedes_id',src.supersedes_id);
+  requested_payload:=pg_catalog.jsonb_build_object('action',p_action,'qualification_type',p_qualification_type,'title',p_title,
+    'institution',p_institution,'specialization',p_specialization,'awarded_on',p_awarded_on);
+  INSERT INTO app_private.approval_requests
+    (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,NULL,p_employee_id,p_expected_employee_version,p_reason,old_snapshot,requested_payload,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp() WHERE id=new_request;
+  FOR template_row IN SELECT t.id,t.step_number,t.required_reviews FROM app_private.approval_step_templates t
+    WHERE t.policy_id=policy_row.policy_id ORDER BY t.step_number LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps(id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step ELSE pg_catalog.gen_random_uuid() END,new_request,policy_row.policy_id,
+      template_row.id,template_row.step_number,template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Employee qualification policy has no first step'; END IF;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+  SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+    FROM app_private.d1_employee_qualification_candidates(new_request,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT;
+  IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Employee qualification step has no reviewer'; END IF;
+  receipt:=app_private.d1_employee_qualification_receipt('request.submit',ctx.actor_id,ctx.operation_id,p_idempotency_key,
+    ctx.intent_hash,p_expected_employee_version,new_request,NULL,'SUCCEEDED','D1_EMPLOYEE_QUALIFICATION_REQUEST',new_request,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),NULL);
+  PERFORM app_private.d1_employee_qualification_audit(ctx.actor_id,'request.submit',p_action,p_employee_id,NULL,
+    p_expected_qualification_record_id,p_source_snapshot_id,receipt,new_request,p_expected_employee_version,'SUCCEEDED',pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT new_request,final_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_submit_employee_qualification_change(uuid,bigint,text,uuid,uuid,text,text,text,text,date,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_employee_qualification_change(uuid,bigint,text,uuid,uuid,text,text,text,text,date,text,text) TO authenticated;

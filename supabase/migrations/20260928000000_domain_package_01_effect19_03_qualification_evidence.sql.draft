@@ -1,0 +1,119 @@
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_employee_qualification_command_context(
+  p_command_kind text,p_idempotency_key text,p_intent jsonb
+) RETURNS TABLE(actor_id uuid,operation_id uuid,receipt_id uuid,result_ref uuid,
+  result_summary jsonb,receipt_state text,intent_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v_actor uuid; v_operation uuid; v_hash bytea; v_digest bytea; v_resource bigint;
+  v_receipt app_private.command_receipts%ROWTYPE;
+BEGIN
+  IF p_command_kind NOT IN ('employee.qualification.change','request.submit','request.review','request.apply')
+     OR p_idempotency_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_idempotency_key))=0
+     OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array'
+     OR NOT ((p_command_kind IN ('employee.qualification.change','request.submit') AND pg_catalog.jsonb_array_length(p_intent)=11)
+          OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+          OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2))
+  THEN RAISE EXCEPTION 'D1 Employee qualification receipt operation phase or shape unsupported'; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor:=app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 Employee qualification command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code='employee.qualification.change' AND o.contract_version=1
+     AND o.handler_key='employee.qualification.change' AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 Employee qualification operation is not enabled'; END IF;
+  v_hash:=pg_catalog.sha256(pg_catalog.convert_to(
+    app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+      'canonicalization_version',1,'operation_code','employee.qualification.change',
+      'operation_contract_version','1','operation_id',v_operation::text,
+      'command_kind',p_command_kind,'principal_id',v_actor::text,
+      'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+  v_digest:=pg_catalog.sha256(pg_catalog.convert_to(v_actor::text||'|'||v_operation::text||'|'||p_idempotency_key,'UTF8'));
+  v_resource:=pg_catalog.get_byte(v_digest,0)::bigint*16777216+pg_catalog.get_byte(v_digest,1)::bigint*65536
+    +pg_catalog.get_byte(v_digest,2)::bigint*256+pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource>2147483647 THEN v_resource:=v_resource-4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1 OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
+      RAISE EXCEPTION 'D1 Employee qualification idempotency key conflicts with prior intent'; END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,v_receipt.result_summary,v_receipt.state,v_hash; RETURN;
+  END IF;
+  RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,NULL::text,v_hash;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_qualification_command_context(text,text,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_qualification_command_context(text,text,jsonb)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_qualification_receipt(
+  p_phase text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_expected bigint,
+  p_request uuid,p_request_version bigint,p_state text,p_result_kind text,p_result_ref uuid,
+  p_summary jsonb,p_error text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_phase NOT IN ('employee.qualification.change','request.submit','request.review','request.apply')
+     OR p_actor IS NULL OR p_operation IS NULL OR p_key IS NULL OR p_hash IS NULL
+     OR p_state NOT IN ('SUCCEEDED','REJECTED') OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (p_state='REJECTED' AND (p_phase<>'request.apply' OR p_error IS NULL OR p_result_ref IS NOT NULL))
+  THEN RAISE EXCEPTION 'D1 Employee qualification receipt intent denied'; END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+     expected_target_version,request_id,expected_request_version,state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,p_phase,p_key,p_hash,1,p_expected,p_request,p_request_version,p_state,p_result_kind,
+    p_result_ref,p_summary,p_error,pg_catalog.statement_timestamp(),p_actor);
+  RETURN rid;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_qualification_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_qualification_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_qualification_audit(
+  p_actor uuid,p_phase text,p_action text,p_employee uuid,p_snapshot uuid,p_lineage uuid,p_source uuid,
+  p_receipt uuid,p_request uuid,p_employee_version bigint,p_outcome text,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_employee IS NULL OR p_receipt IS NULL OR p_action NOT IN ('ADD','CORRECT','ARCHIVE')
+     OR p_outcome NOT IN ('SUCCEEDED','REJECTED') OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee qualification audit intent denied'; END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+     command_receipt_id,approval_request_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',p_outcome,pg_catalog.jsonb_build_object('operation','employee.qualification.change','phase',p_phase),
+    p_employee_version,'employee.qualification.change','EMPLOYEE',p_employee,p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'snapshot_id',p_snapshot,'qualification_record_id',p_lineage,'source_snapshot_id',p_source),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_qualification_audit(uuid,text,text,uuid,uuid,uuid,uuid,uuid,uuid,bigint,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_qualification_audit(uuid,text,text,uuid,uuid,uuid,uuid,uuid,uuid,bigint,text,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_qualification_event(
+  p_actor uuid,p_action text,p_employee uuid,p_snapshot uuid,p_lineage uuid,p_source uuid,
+  p_receipt uuid,p_employee_version bigint,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_employee IS NULL OR p_snapshot IS NULL OR p_lineage IS NULL
+     OR p_receipt IS NULL OR p_correlation IS NULL OR p_action NOT IN ('ADD','CORRECT','ARCHIVE') THEN
+    RAISE EXCEPTION 'D1 Employee qualification event intent denied'; END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('employee.qualification_changed','EMPLOYEE_QUALIFICATION',p_snapshot,1,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'employee_id',p_employee,'qualification_snapshot_id',p_snapshot,
+      'qualification_record_id',p_lineage,'source_snapshot_id',p_source),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_qualification_event(uuid,text,uuid,uuid,uuid,uuid,uuid,bigint,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_qualification_event(uuid,text,uuid,uuid,uuid,uuid,uuid,bigint,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;

@@ -1,0 +1,160 @@
+GRANT CREATE ON SCHEMA app_private TO schoolos_employee_executor;
+SET ROLE schoolos_employee_executor;
+
+CREATE FUNCTION app_private.d1_employee_qualification_payload_valid(
+  p_action text,p_source uuid,p_expected_lineage uuid,
+  p_qualification_type text,p_title text,p_institution text,p_specialization text,
+  p_awarded_on date,p_reason text
+) RETURNS boolean
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT p_action IN ('ADD','CORRECT','ARCHIVE')
+    AND p_reason IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_reason))>0
+    AND ((p_action='ADD' AND p_source IS NULL AND p_expected_lineage IS NULL
+       AND p_qualification_type IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_qualification_type))>0
+       AND p_title IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_title))>0)
+      OR (p_action='CORRECT' AND p_source IS NOT NULL AND p_expected_lineage IS NOT NULL
+       AND p_qualification_type IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_qualification_type))>0
+       AND p_title IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_title))>0)
+      OR (p_action='ARCHIVE' AND p_source IS NOT NULL AND p_expected_lineage IS NOT NULL
+       AND p_qualification_type IS NULL AND p_title IS NULL AND p_institution IS NULL
+       AND p_specialization IS NULL AND p_awarded_on IS NULL))
+    AND (p_institution IS NULL OR pg_catalog.length(pg_catalog.btrim(p_institution))>0)
+    AND (p_specialization IS NULL OR pg_catalog.length(pg_catalog.btrim(p_specialization))>0)
+    AND (p_awarded_on IS NULL OR p_awarded_on<=pg_catalog.statement_timestamp()::date);
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_qualification_payload_valid(text,uuid,uuid,text,text,text,text,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_qualification_payload_valid(text,uuid,uuid,text,text,text,text,date,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_employee_qualification_lock_context(
+  p_employee uuid,p_expected_employee_version bigint,p_check_version boolean,
+  p_action text,p_source uuid,p_expected_lineage uuid
+) RETURNS TABLE(employee_version bigint,source_snapshot_id uuid,qualification_record_id uuid,
+  source_qualification_type text,source_title text,source_institution text,
+  source_specialization text,source_awarded_on date,source_effective_from timestamptz,
+  source_supersedes_id uuid,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE school_count bigint; e_version bigint; src app_private.employee_qualifications%ROWTYPE;
+BEGIN
+  SELECT count(*) INTO school_count FROM app_private.school_profiles sp;
+  IF school_count<>1 THEN
+    RETURN QUERY SELECT NULL::bigint,NULL::uuid,NULL::uuid,NULL::text,NULL::text,NULL::text,
+      NULL::text,NULL::date,NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_QUALIFICATION_SCHOOL_AMBIGUOUS'; RETURN;
+  END IF;
+  PERFORM 1 FROM app_private.school_profiles sp ORDER BY sp.id LIMIT 1 FOR UPDATE;
+  SELECT e.row_version INTO e_version FROM app_private.employees e WHERE e.id=p_employee FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT NULL::bigint,NULL::uuid,NULL::uuid,NULL::text,NULL::text,NULL::text,
+      NULL::text,NULL::date,NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_QUALIFICATION_EMPLOYEE_MISSING'; RETURN;
+  END IF;
+  IF p_check_version AND e_version IS DISTINCT FROM p_expected_employee_version THEN
+    RETURN QUERY SELECT e_version,NULL::uuid,NULL::uuid,NULL::text,NULL::text,NULL::text,
+      NULL::text,NULL::date,NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_QUALIFICATION_EMPLOYEE_VERSION_STALE'; RETURN;
+  END IF;
+  IF p_action='ADD' THEN
+    RETURN QUERY SELECT e_version,NULL::uuid,NULL::uuid,NULL::text,NULL::text,NULL::text,
+      NULL::text,NULL::date,NULL::timestamptz,NULL::uuid,NULL::text; RETURN;
+  END IF;
+  SELECT q.* INTO src FROM app_private.employee_qualifications q WHERE q.id=p_source FOR UPDATE;
+  IF NOT FOUND OR src.employee_id IS DISTINCT FROM p_employee THEN
+    RETURN QUERY SELECT e_version,p_source,NULL::uuid,NULL::text,NULL::text,NULL::text,
+      NULL::text,NULL::date,NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_QUALIFICATION_SOURCE_MISSING'; RETURN;
+  END IF;
+  IF src.qualification_record_id IS DISTINCT FROM p_expected_lineage THEN
+    RETURN QUERY SELECT e_version,src.id,src.qualification_record_id,src.qualification_type,src.title,
+      src.institution,src.specialization,src.awarded_on,src.effective_from,src.supersedes_id,
+      'D1_EMPLOYEE_QUALIFICATION_LINEAGE_STALE'; RETURN;
+  END IF;
+  IF src.effective_until IS NOT NULL THEN
+    RETURN QUERY SELECT e_version,src.id,src.qualification_record_id,src.qualification_type,src.title,
+      src.institution,src.specialization,src.awarded_on,src.effective_from,src.supersedes_id,
+      'D1_EMPLOYEE_QUALIFICATION_SOURCE_CLOSED'; RETURN;
+  END IF;
+  IF EXISTS (SELECT 1 FROM app_private.employee_qualifications q
+      WHERE q.qualification_record_id=src.qualification_record_id AND q.employee_id<>p_employee) THEN
+    RETURN QUERY SELECT e_version,src.id,src.qualification_record_id,src.qualification_type,src.title,
+      src.institution,src.specialization,src.awarded_on,src.effective_from,src.supersedes_id,
+      'D1_EMPLOYEE_QUALIFICATION_LINEAGE_CROSS_EMPLOYEE'; RETURN;
+  END IF;
+  RETURN QUERY SELECT e_version,src.id,src.qualification_record_id,src.qualification_type,src.title,
+    src.institution,src.specialization,src.awarded_on,src.effective_from,src.supersedes_id,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_qualification_lock_context(uuid,bigint,boolean,text,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_qualification_lock_context(uuid,bigint,boolean,text,uuid,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_qualification_preflight(
+  p_employee uuid,p_expected_employee_version bigint,p_action text,p_source uuid,
+  p_expected_lineage uuid,p_qualification_type text,p_title text,p_institution text,
+  p_specialization text,p_awarded_on date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record;
+BEGIN
+  IF app_private.d1_employee_qualification_payload_valid(p_action,p_source,p_expected_lineage,
+      p_qualification_type,p_title,p_institution,p_specialization,p_awarded_on,p_reason)
+      IS DISTINCT FROM true THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_QUALIFICATION_PAYLOAD_INVALID'; RETURN;
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_employee_qualification_lock_context(
+    p_employee,p_expected_employee_version,true,p_action,p_source,p_expected_lineage);
+  IF ctx.error_code IS NOT NULL THEN RETURN QUERY SELECT false,ctx.error_code; RETURN; END IF;
+  IF p_action='CORRECT' AND ctx.source_qualification_type IS NOT DISTINCT FROM p_qualification_type
+     AND ctx.source_title IS NOT DISTINCT FROM p_title
+     AND ctx.source_institution IS NOT DISTINCT FROM p_institution
+     AND ctx.source_specialization IS NOT DISTINCT FROM p_specialization
+     AND ctx.source_awarded_on IS NOT DISTINCT FROM p_awarded_on THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_QUALIFICATION_NOOP'; RETURN;
+  END IF;
+  RETURN QUERY SELECT true,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_qualification_preflight(uuid,bigint,text,uuid,uuid,text,text,text,text,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_qualification_preflight(uuid,bigint,text,uuid,uuid,text,text,text,text,date,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_qualification_effect(
+  p_actor uuid,p_employee uuid,p_expected_employee_version bigint,p_action text,p_source uuid,
+  p_expected_lineage uuid,p_qualification_type text,p_title text,p_institution text,
+  p_specialization text,p_awarded_on date,p_reason text
+) RETURNS TABLE(snapshot_id uuid,qualification_record_id uuid,effective_from timestamptz,effective_until timestamptz)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; src app_private.employee_qualifications%ROWTYPE;
+  accepted_at timestamptz:=pg_catalog.statement_timestamp(); new_id uuid:=pg_catalog.gen_random_uuid(); lineage uuid;
+BEGIN
+  SELECT * INTO pre FROM app_private.d1_employee_qualification_preflight(
+    p_employee,p_expected_employee_version,p_action,p_source,p_expected_lineage,
+    p_qualification_type,p_title,p_institution,p_specialization,p_awarded_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Employee qualification effect denied: %',pre.error_code; END IF;
+  IF p_awarded_on IS NOT NULL AND p_awarded_on>accepted_at::date THEN RAISE EXCEPTION 'D1 Employee qualification award date is in the future'; END IF;
+  IF p_action='ADD' THEN
+    lineage:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.employee_qualifications
+      (id,created_by,employee_id,qualification_record_id,qualification_type,title,institution,specialization,awarded_on,effective_from,reason)
+    VALUES (new_id,p_actor,p_employee,lineage,pg_catalog.btrim(p_qualification_type),pg_catalog.btrim(p_title),
+      CASE WHEN p_institution IS NULL THEN NULL ELSE pg_catalog.btrim(p_institution) END,
+      CASE WHEN p_specialization IS NULL THEN NULL ELSE pg_catalog.btrim(p_specialization) END,p_awarded_on,accepted_at,p_reason);
+    RETURN QUERY SELECT new_id,lineage,accepted_at,NULL::timestamptz; RETURN;
+  END IF;
+  SELECT * INTO src FROM app_private.employee_qualifications q WHERE q.id=p_source FOR UPDATE;
+  UPDATE app_private.employee_qualifications SET effective_until=accepted_at,ended_at=accepted_at,ended_by=p_actor
+   WHERE id=src.id AND effective_until IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee qualification source changed'; END IF;
+  IF p_action='ARCHIVE' THEN
+    RETURN QUERY SELECT src.id,src.qualification_record_id,src.effective_from,accepted_at; RETURN;
+  END IF;
+  INSERT INTO app_private.employee_qualifications
+    (id,created_by,employee_id,qualification_record_id,qualification_type,title,institution,specialization,awarded_on,effective_from,supersedes_id,reason)
+  VALUES (new_id,p_actor,p_employee,src.qualification_record_id,pg_catalog.btrim(p_qualification_type),pg_catalog.btrim(p_title),
+    CASE WHEN p_institution IS NULL THEN NULL ELSE pg_catalog.btrim(p_institution) END,
+    CASE WHEN p_specialization IS NULL THEN NULL ELSE pg_catalog.btrim(p_specialization) END,p_awarded_on,accepted_at,src.id,p_reason);
+  RETURN QUERY SELECT new_id,src.qualification_record_id,accepted_at,NULL::timestamptz;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_qualification_effect(uuid,uuid,bigint,text,uuid,uuid,text,text,text,text,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_qualification_effect(uuid,uuid,bigint,text,uuid,uuid,text,text,text,text,date,text)
+  TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_employee_executor;
