@@ -1,0 +1,19 @@
+-- Effect 19 corrective ACL/ownership continuation.
+-- The qualification lock helper follows the frozen School -> Employee -> history
+-- order. SELECT ... FOR UPDATE on the singleton School anchor requires the same
+-- narrow SELECT(id) + UPDATE(id) lock privilege pattern used by other D1
+-- executors. The public apply RPC is transferred by its outer migration owner
+-- to the reviewed workflow executor after fragment 07 creates it.
+
+SET ROLE schoolos_schema_owner;
+GRANT SELECT (id), UPDATE (id)
+  ON app_private.school_profiles TO schoolos_employee_executor;
+RESET ROLE;
+
+ALTER FUNCTION app.d1_apply_employee_qualification_request(uuid,bigint,text)
+  OWNER TO schoolos_workflow_executor;
+
+REVOKE ALL ON FUNCTION app.d1_apply_employee_qualification_request(uuid,bigint,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_employee_qualification_request(uuid,bigint,text)
+  TO authenticated;

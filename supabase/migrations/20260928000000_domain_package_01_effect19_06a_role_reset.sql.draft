@@ -1,0 +1,8 @@
+-- Effect 19 corrective packaging boundary.
+-- The preceding APPROVAL review fragment intentionally owns its RPC as
+-- schoolos_workflow_executor. Restore the outer migration role before the
+-- authorization-reader/apply/read/trigger fragment so executor ownership does
+-- not leak across ordered continuation files.
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
