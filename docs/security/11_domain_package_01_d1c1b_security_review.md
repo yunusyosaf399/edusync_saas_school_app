@@ -856,3 +856,7 @@ Corrected commit `9bd51d4f1b0a3768d8f4039cd3fbbcc933ac626a` passed independent a
 ### Effect 16 concurrency correction
 
 A follow-up command-path review found and corrected one lock inversion in d1_teaching_class_assignment_lock_context: after UUID-sorted Employee locks, Academic Class now precedes Campus and Academic Year, matching the frozen global teaching lock order and the existing structural academic-path helper. No permission, scope, reviewer, disclosure or workflow semantics changed. The corrected effect-16 SHA remains pending CI revalidation before refreezing.
+
+### Effect 16 corrected re-freeze
+
+Corrected implementation `df6d8c3422ef0c9fa4532f9d399062e9b4265fa4` passed GitHub Actions run `36907934919` (121/121 tooling; 220/220 frozen Foundation). The correction changes lock acquisition order only and does not alter authorization, reviewer, disclosure, idempotency or workflow semantics. Effect **16/36** is re-frozen at that implementation SHA.

@@ -549,3 +549,7 @@ Independent review of corrected commit `9bd51d4f1b0a3768d8f4039cd3fbbcc933ac626a
 ### Effect 16 concurrency correction
 
 Follow-up reuse review before effect 17 found that the protected effect-16 lock helper acquired Campus → Academic Year → Academic Class after the sorted Employee locks, contrary to the already-approved global teaching order. The helper is corrected to Employee(s) → Academic Class → Campus → Academic Year → Class Offering → Section Offering → history. This is a concurrency-order correction only; the frozen effect-16 product semantics, authorization, retained history and event contract are unchanged. Effect 16 must be revalidated by CI before the corrected SHA replaces the prior implementation freeze point.
+
+### Effect 16 corrected re-freeze
+
+GitHub Actions run `36907934919` passed on corrected implementation `df6d8c3422ef0c9fa4532f9d399062e9b4265fa4`: 121/121 tooling tests and 220/220 frozen Foundation pgTAP assertions. Independent follow-up confirms the only SQL change from the prior frozen implementation is the approved lock-order correction. `teaching.class_assignment.change` is re-frozen as effect **16/36** at `df6d8c3422ef0c9fa4532f9d399062e9b4265fa4`. Migration 10 remains `.sql.draft` and unexecuted.
