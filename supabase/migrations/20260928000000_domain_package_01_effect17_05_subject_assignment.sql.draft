@@ -1,0 +1,159 @@
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE actor END,
+      p_section,p_subject,p_employee,p_kind,p_effective_from,p_effective_until,
+      p_reason,source_row.id);
+    result_employee:=p_employee; result_kind:=p_kind;
+    result_from:=p_effective_from; result_until:=p_effective_until;
+  END IF;
+
+  RETURN QUERY SELECT result_id,p_section,p_subject,p_action,
+    CASE WHEN p_action='ADD' THEN NULL::uuid ELSE p_expected_source_employee END,
+    CASE WHEN p_action='ADD' THEN NULL::text ELSE p_expected_source_kind END,
+    result_employee,result_kind,result_from,result_until,preflight.section_version;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_effect(
+  uuid,uuid,bigint,text,uuid,uuid,text,date,uuid,uuid,text,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_effect(
+  uuid,uuid,bigint,text,uuid,uuid,text,date,uuid,uuid,text,date,date,text)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_teaching_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_authorized(
+  p_principal uuid,p_permission text,p_section uuid,p_subject uuid,
+  p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  at_time timestamptz:=pg_catalog.clock_timestamp();
+  target_campus uuid; offering_school uuid; subject_school uuid;
+BEGIN
+  SELECT co.campus_id,co.school_id,su.school_id
+    INTO target_campus,offering_school,subject_school
+    FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    JOIN app_private.subjects su ON su.id=p_subject
+   WHERE so.id=p_section;
+
+  IF p_principal IS NULL OR target_campus IS NULL
+     OR offering_school IS DISTINCT FROM subject_school
+     OR p_permission NOT IN ('teaching.subject_assignment.change','teaching.assignment.approve')
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+        WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+          AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+     WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+       AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at))
+  THEN RETURN false; END IF;
+
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes s
+    JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+    JOIN app_private.permissions p ON p.id=s.permission_id
+    JOIN app_private.roles r ON r.id=s.role_id
+     WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL'
+       AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+       AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+       AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+       AND c.resolver_key=s.resolver_key AND c.enabled
+       AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+       AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+       AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+       AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+       AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until)
+       AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+       AND s.resolver_key='DIRECT'
+       AND (
+         (s.scope_kind='ALL' AND s.campus_id IS NULL)
+         OR (s.scope_kind='CAMPUS' AND s.campus_id=target_campus)
+         OR (s.scope_kind='SECTION' AND s.section_offering_id=p_section)
+         OR (s.scope_kind='SUBJECT' AND s.section_offering_id=p_section
+             AND s.subject_id=p_subject)
+       )
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_authorized(
+  uuid,text,uuid,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_authorized(
+  uuid,text,uuid,uuid,uuid)
+  TO schoolos_teaching_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_not_self(
+  p_principal uuid,p_employee uuid
+) RETURNS boolean
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT p_principal IS NOT NULL AND p_employee IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principals p
+    JOIN app_private.employees e ON e.person_id=p.person_id
+     WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+       AND e.id=p_employee
+  );
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_not_self(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_not_self(uuid,uuid)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_p2_policy(p_section uuid)
+RETURNS TABLE(policy_id uuid,campus_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  target_campus uuid; n bigint; selected uuid; selected_campus uuid;
+  steps bigint; invalid bigint; first_no int; last_no int;
+  at_time timestamptz:=pg_catalog.clock_timestamp();
+BEGIN
+  SELECT co.campus_id INTO target_campus
+    FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+   WHERE so.id=p_section;
+  IF target_campus IS NULL THEN RETURN; END IF;
+
+  SELECT count(*),min(p.id::text)::uuid,min(p.campus_id::text)::uuid
+    INTO n,selected,selected_campus
+    FROM app_private.approval_policy_versions p
+    JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='teaching.subject_assignment.change' AND o.contract_version=1
+     AND o.enabled AND NOT o.requires_approval AND p.state='ACTIVE'
+     AND (p.campus_id IS NULL OR p.campus_id=target_campus)
+     AND p.d1_route_mode IS DISTINCT FROM 'DIRECT'
+     AND p.effective_from<=at_time
+     AND (p.effective_until IS NULL OR at_time<p.effective_until);
+  IF n<>1 OR selected IS NULL THEN RETURN; END IF;
+
+  SELECT count(*),
+         count(*) FILTER (
+           WHERE r.id IS NULL OR r.state<>'ACTIVE'
+              OR t.required_reviews<>1
+              OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'),
+         min(t.step_number),max(t.step_number)
+    INTO steps,invalid,first_no,last_no
+    FROM app_private.approval_step_templates t
+    LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id
+   WHERE t.policy_id=selected;
+  IF steps=0 OR invalid<>0 OR first_no<>1 OR last_no::bigint<>steps THEN RETURN; END IF;
+  RETURN QUERY SELECT selected,selected_campus;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_p2_policy(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_p2_policy(uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_candidates(
+  p_request uuid,p_step uuid

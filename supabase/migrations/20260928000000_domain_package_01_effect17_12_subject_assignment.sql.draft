@@ -1,0 +1,163 @@
+  UPDATE app_private.approval_request_steps SET
+    state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+    closed_at=pg_catalog.statement_timestamp()
+   WHERE id=step_row.id;
+
+  IF p_decision='REJECT' THEN
+    UPDATE app_private.approval_request_steps SET
+      state='CANCELLED',closed_at=pg_catalog.statement_timestamp()
+     WHERE request_id=p_request_id AND state='WAITING';
+    final_state:='REJECTED';
+  ELSE
+    SELECT * INTO next_step FROM app_private.approval_request_steps s
+     WHERE s.request_id=p_request_id
+       AND s.step_number=step_row.step_number+1 AND s.state='WAITING' FOR UPDATE;
+    IF FOUND THEN
+      UPDATE app_private.approval_request_steps SET
+        state='OPEN',opened_at=pg_catalog.statement_timestamp()
+       WHERE id=next_step.id;
+      INSERT INTO app_private.approval_step_reviewers
+        (step_id,reviewer_id,assignment_reason,created_by)
+      SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+        FROM app_private.d1_teaching_subject_assignment_candidates(
+          p_request_id,next_step.id) c;
+      GET DIAGNOSTICS candidate_count=ROW_COUNT;
+      IF candidate_count=0 THEN
+        RAISE EXCEPTION 'D1 Subject assignment next step has no reviewer';
+      END IF;
+      final_state:='PENDING';
+    ELSE
+      final_state:='APPROVED';
+    END IF;
+  END IF;
+
+  UPDATE app_private.approval_requests SET state=final_state
+   WHERE id=p_request_id RETURNING row_version INTO final_version;
+
+  receipt:=app_private.d1_teaching_subject_assignment_receipt(
+    'request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
+    'D1_TEACHING_SUBJECT_ASSIGNMENT_REVIEW',p_request_id,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
+
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+    FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  IF final_state IN ('APPROVED','REJECTED') THEN
+    INSERT INTO app_private.approval_transitions
+      (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+    VALUES (
+      p_request_id,sequence_no+1,'PENDING',final_state,
+      'D1_TEACHING_SUBJECT_ASSIGNMENT_REVIEW_'||final_state,receipt,ctx.actor_id);
+  END IF;
+
+  PERFORM app_private.d1_teaching_subject_assignment_audit(
+    ctx.actor_id,'REVIEW','CORRECT',req.target_ref,subject_id,NULL,source_id,
+    source_employee,source_kind,employee,kind,receipt,p_request_id,
+    req.expected_target_version,effect_from,effect_until,'SUCCEEDED',
+    pg_catalog.gen_random_uuid());
+
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_review_subject_teacher_assignment_request(
+  uuid,text,bigint,text,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_review_subject_teacher_assignment_request(
+  uuid,text,bigint,text,text) TO authenticated;
+
+CREATE FUNCTION app.d1_apply_subject_teacher_assignment_request(
+  p_request_id uuid,p_expected_request_version bigint,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  ctx record; req record; lock_row record; policy_row record; preflight record;
+  effect_row record; payload jsonb; participant text; payload_valid boolean;
+  subject_id uuid; source_id uuid; source_employee uuid; source_kind text;
+  source_from date; source_supersedes uuid; employee uuid; kind text;
+  effect_from date; effect_until date; invalidation_code text; final_state text;
+  final_version bigint; receipt uuid; sequence_no bigint;
+  correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_request_id IS NULL OR p_expected_request_version IS NULL
+     OR p_expected_request_version<1
+  THEN RAISE EXCEPTION 'D1 Subject assignment apply intent invalid'; END IF;
+
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'teaching.subject_assignment.change','request.apply',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_expected_request_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+
+  SELECT q.* INTO req FROM app_private.approval_requests q
+   WHERE q.id=p_request_id AND q.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Subject assignment request unavailable'; END IF;
+
+  PERFORM s.id FROM app_private.approval_request_steps s
+   WHERE s.request_id=p_request_id ORDER BY s.step_number FOR UPDATE;
+
+  payload_valid:=app_private.d1_teaching_subject_assignment_request_payload_valid(
+    req.old_snapshot,req.requested_payload);
+  IF payload_valid THEN
+    participant:=app_private.d1_teaching_subject_assignment_participant(
+      p_request_id,ctx.actor_id);
+  ELSIF req.requester_id=ctx.actor_id THEN
+    participant:='REQUESTER';
+  ELSE
+    participant:=NULL;
+  END IF;
+  IF participant IS NULL OR participant NOT IN ('REQUESTER','FINAL_APPROVER') THEN
+    RAISE EXCEPTION 'D1 Subject assignment request unavailable';
+  END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state NOT IN ('SUCCEEDED','REJECTED')
+       OR ctx.result_summary IS NULL
+       OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR (ctx.receipt_state='SUCCEEDED' AND (
+         ctx.result_ref IS NULL
+         OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>13
+         OR ctx.result_summary->>'state'<>'EXECUTED'))
+       OR (ctx.receipt_state='REJECTED' AND (
+         ctx.result_ref IS NOT NULL
+         OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+         OR ctx.result_summary->>'state'<>'INVALIDATED'))
+    THEN RAISE EXCEPTION 'D1 Subject assignment apply receipt invalid'; END IF;
+    RETURN QUERY SELECT p_request_id,
+      (ctx.result_summary->>'request_version')::bigint,ctx.result_summary->>'state';
+    RETURN;
+  END IF;
+
+  IF req.state<>'APPROVED' OR req.row_version<>p_expected_request_version THEN
+    RAISE EXCEPTION 'D1 Subject assignment approved request changed';
+  END IF;
+
+  IF NOT payload_valid THEN
+    invalidation_code:='D1_SUBJECT_ASSIGNMENT_REQUEST_PAYLOAD_INVALID';
+  ELSE
+    payload:=req.old_snapshot||req.requested_payload;
+    subject_id:=NULLIF(payload->>'subject_id','')::uuid;
+    source_id:=NULLIF(payload->>'source_assignment_id','')::uuid;
+    source_employee:=NULLIF(payload->>'source_employee_id','')::uuid;
+    source_kind:=NULLIF(payload->>'source_assignment_kind','');
+    source_from:=NULLIF(payload->>'source_effective_from','')::date;
+    source_supersedes:=NULLIF(payload->>'source_supersedes_id','')::uuid;
+    employee:=NULLIF(payload->>'employee_id','')::uuid;
+    kind:=NULLIF(payload->>'assignment_kind','');
+    effect_from:=NULLIF(payload->>'effective_from','')::date;
+    effect_until:=NULLIF(payload->>'effective_until','')::date;
+    IF payload->>'action'<>'CORRECT' OR effect_from>=CURRENT_DATE THEN
+      invalidation_code:='D1_SUBJECT_ASSIGNMENT_P2_ROUTE_STALE';
+    END IF;
+  END IF;
+
+  IF invalidation_code IS NULL THEN
+    SELECT * INTO lock_row FROM app_private.d1_teaching_subject_assignment_lock_context(
+      req.target_ref,subject_id,req.expected_target_version,true,source_id,source_employee,
+      source_kind,source_from,source_supersedes,employee,NULL);
+    IF lock_row.error_code IS NOT NULL THEN invalidation_code:=lock_row.error_code; END IF;
+  END IF;
+
+  IF invalidation_code IS NULL THEN
+    SELECT * INTO policy_row
+      FROM app_private.d1_teaching_subject_assignment_p2_policy(req.target_ref);
+    IF policy_row.policy_id IS DISTINCT FROM req.policy_id
+       OR policy_row.campus_id IS DISTINCT FROM req.campus_id THEN
+      invalidation_code:='D1_SUBJECT_ASSIGNMENT_POLICY_STALE';

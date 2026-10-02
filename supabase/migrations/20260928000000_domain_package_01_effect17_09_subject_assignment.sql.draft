@@ -1,0 +1,136 @@
+  ctx record; lock_row record; preflight record; effect_row record; receipt uuid;
+  correlation uuid:=pg_catalog.gen_random_uuid(); payload jsonb; route text;
+BEGIN
+  payload:=pg_catalog.jsonb_build_object(
+    'action',p_action,'subject_id',p_subject_id,
+    'source_assignment_id',p_source_assignment_id,
+    'source_employee_id',p_expected_source_employee_id,
+    'source_assignment_kind',p_expected_source_assignment_kind,
+    'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
+    'source_supersedes_id',p_expected_source_supersedes_id,
+    'employee_id',p_employee_id,'assignment_kind',p_assignment_kind,
+    'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,
+    'effective_until',CASE WHEN p_effective_until IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_until,'YYYY-MM-DD') END);
+
+  IF p_section_offering_id IS NULL OR p_subject_id IS NULL
+     OR p_expected_section_version IS NULL OR p_expected_section_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR NOT app_private.d1_teaching_subject_assignment_payload_valid(payload)
+  THEN RAISE EXCEPTION 'D1 Subject assignment intent invalid'; END IF;
+
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'teaching.subject_assignment.change','teaching.subject_assignment.change',
+    p_idempotency_key,pg_catalog.jsonb_build_array(
+      p_section_offering_id,p_subject_id,p_expected_section_version::text,p_action,
+      p_source_assignment_id,p_expected_source_employee_id,p_expected_source_assignment_kind,
+      p_expected_source_effective_from,p_expected_source_supersedes_id,
+      p_employee_id,p_assignment_kind,p_effective_from,p_effective_until,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+
+  SELECT * INTO lock_row FROM app_private.d1_teaching_subject_assignment_lock_context(
+    p_section_offering_id,p_subject_id,p_expected_section_version,ctx.receipt_id IS NULL,
+    p_source_assignment_id,p_expected_source_employee_id,p_expected_source_assignment_kind,
+    p_expected_source_effective_from,p_expected_source_supersedes_id,
+    p_employee_id,ctx.result_ref);
+
+  IF NOT app_private.d1_teaching_subject_assignment_authorized(
+      ctx.actor_id,'teaching.subject_assignment.change',
+      p_section_offering_id,p_subject_id,NULL)
+  THEN RAISE EXCEPTION 'D1 Subject assignment authority denied'; END IF;
+
+  IF p_action IN ('ADD','CORRECT')
+     AND NOT app_private.d1_teaching_subject_assignment_not_self(ctx.actor_id,p_employee_id)
+  THEN RAISE EXCEPTION 'D1 Subject assignment self-assignment denied'; END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL
+       OR ctx.result_summary IS NULL
+       OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>11
+       OR NOT (ctx.result_summary ?& ARRAY[
+         'action','assignment_id','section_version','subject_id','source_assignment_id',
+         'source_employee_id','source_assignment_kind','employee_id','assignment_kind',
+         'effective_from','effective_until'])
+       OR pg_catalog.jsonb_typeof(ctx.result_summary->'section_version')<>'number'
+       OR ctx.result_summary->>'action' IS DISTINCT FROM p_action
+       OR NULLIF(ctx.result_summary->>'subject_id','')::uuid IS DISTINCT FROM p_subject_id
+       OR NOT app_private.d1_teaching_subject_assignment_result_matches(
+         p_action,p_section_offering_id,p_subject_id,ctx.result_ref,p_source_assignment_id,
+         p_expected_source_employee_id,p_expected_source_assignment_kind,
+         p_expected_source_effective_from,p_expected_source_supersedes_id,
+         p_employee_id,p_assignment_kind,p_effective_from,p_effective_until)
+    THEN RAISE EXCEPTION 'D1 Subject assignment receipt is not replayable'; END IF;
+
+    RETURN QUERY SELECT
+      (ctx.result_summary->>'assignment_id')::uuid,p_section_offering_id,p_subject_id,p_action,
+      NULLIF(ctx.result_summary->>'source_employee_id','')::uuid,
+      NULLIF(ctx.result_summary->>'source_assignment_kind',''),
+      (ctx.result_summary->>'employee_id')::uuid,
+      ctx.result_summary->>'assignment_kind',
+      (ctx.result_summary->>'effective_from')::date,
+      NULLIF(ctx.result_summary->>'effective_until','')::date,
+      (ctx.result_summary->>'section_version')::bigint;
+    RETURN;
+  END IF;
+
+  IF lock_row.error_code IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Subject assignment preflight denied: %',lock_row.error_code;
+  END IF;
+
+  route:=CASE
+    WHEN p_action='ADD' AND p_effective_from>=CURRENT_DATE THEN 'P0'
+    WHEN p_action='END' AND p_effective_until>=CURRENT_DATE THEN 'P0'
+    WHEN p_action='CORRECT' AND p_effective_from>=CURRENT_DATE THEN 'P0'
+    WHEN p_action='CORRECT' AND p_effective_from<CURRENT_DATE THEN 'P2'
+    ELSE NULL END;
+  IF route IS DISTINCT FROM 'P0' THEN
+    RAISE EXCEPTION 'D1 Subject assignment retroactive correction requires approval';
+  END IF;
+
+  SELECT * INTO preflight FROM app_private.d1_teaching_subject_assignment_preflight(
+    p_section_offering_id,p_subject_id,p_expected_section_version,p_action,
+    p_source_assignment_id,p_expected_source_employee_id,p_expected_source_assignment_kind,
+    p_expected_source_effective_from,p_expected_source_supersedes_id,
+    p_employee_id,p_assignment_kind,p_effective_from,p_effective_until,p_reason);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Subject assignment preflight denied: %',preflight.error_code;
+  END IF;
+
+  SELECT * INTO effect_row FROM app_private.d1_teaching_subject_assignment_effect(
+    p_section_offering_id,p_subject_id,p_expected_section_version,p_action,
+    p_source_assignment_id,p_expected_source_employee_id,p_expected_source_assignment_kind,
+    p_expected_source_effective_from,p_expected_source_supersedes_id,
+    p_employee_id,p_assignment_kind,p_effective_from,p_effective_until,p_reason);
+
+  receipt:=app_private.d1_teaching_subject_assignment_receipt(
+    'teaching.subject_assignment.change',ctx.actor_id,ctx.operation_id,p_idempotency_key,
+    ctx.intent_hash,p_expected_section_version,NULL,NULL,'SUCCEEDED',
+    'D1_TEACHING_SUBJECT_ASSIGNMENT',effect_row.assignment_id,
+    pg_catalog.jsonb_build_object(
+      'action',p_action,'assignment_id',effect_row.assignment_id,
+      'section_version',effect_row.section_version,'subject_id',p_subject_id,
+      'source_assignment_id',p_source_assignment_id,
+      'source_employee_id',effect_row.source_employee_id,
+      'source_assignment_kind',effect_row.source_assignment_kind,
+      'employee_id',effect_row.employee_id,'assignment_kind',effect_row.assignment_kind,
+      'effective_from',pg_catalog.to_char(effect_row.effective_from,'YYYY-MM-DD'),
+      'effective_until',CASE WHEN effect_row.effective_until IS NULL THEN NULL
+        ELSE pg_catalog.to_char(effect_row.effective_until,'YYYY-MM-DD') END),
+    NULL);
+
+  PERFORM app_private.d1_teaching_subject_assignment_audit(
+    ctx.actor_id,'DIRECT',p_action,p_section_offering_id,p_subject_id,
+    effect_row.assignment_id,p_source_assignment_id,effect_row.source_employee_id,
+    effect_row.source_assignment_kind,effect_row.employee_id,effect_row.assignment_kind,
+    receipt,NULL,effect_row.section_version,effect_row.effective_from,
+    effect_row.effective_until,'SUCCEEDED',correlation);
+  PERFORM app_private.d1_teaching_subject_assignment_event(
+    ctx.actor_id,p_action,p_section_offering_id,p_subject_id,effect_row.assignment_id,
+    p_source_assignment_id,effect_row.source_employee_id,effect_row.source_assignment_kind,
+    effect_row.employee_id,effect_row.assignment_kind,receipt,effect_row.section_version,
+    effect_row.effective_from,effect_row.effective_until,correlation);
+
+  RETURN QUERY SELECT

@@ -1,0 +1,150 @@
+  IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_SUBJECT_ASSIGNMENT_SUBJECT_MISSING'); END IF;
+
+  IF p_enforce_version AND locked_version IS DISTINCT FROM p_expected_section_version THEN
+    error_code:=COALESCE(error_code,'D1_SUBJECT_ASSIGNMENT_SECTION_VERSION_STALE');
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE so.id=p_section AND so.class_offering_id=pre_offering
+       AND co.campus_id=pre_campus AND co.academic_year_id=pre_year
+       AND co.class_id=pre_class AND co.school_id=offering_school)
+  THEN error_code:=COALESCE(error_code,'D1_SUBJECT_ASSIGNMENT_ANCESTRY_STALE'); END IF;
+  IF subject_school IS DISTINCT FROM offering_school THEN
+    error_code:=COALESCE(error_code,'D1_SUBJECT_ASSIGNMENT_SUBJECT_SCHOOL_MISMATCH');
+  END IF;
+
+  FOR r IN
+    SELECT ep.id FROM app_private.employment_periods ep
+     WHERE ep.employee_id=ANY(COALESCE(employee_ids,'{}'::uuid[]))
+     ORDER BY ep.id FOR UPDATE
+  LOOP NULL; END LOOP;
+  FOR r IN
+    SELECT tc.id FROM app_private.teacher_capabilities tc
+     WHERE tc.employee_id=ANY(COALESCE(employee_ids,'{}'::uuid[]))
+     ORDER BY tc.id FOR UPDATE
+  LOOP NULL; END LOOP;
+  FOR r IN
+    SELECT a.id FROM app_private.subject_teacher_assignments a
+     WHERE a.section_offering_id=p_section AND a.subject_id=p_subject
+     ORDER BY a.id FOR UPDATE
+  LOOP NULL; END LOOP;
+
+  IF p_source_assignment IS NOT NULL THEN
+    SELECT * INTO source_row FROM app_private.subject_teacher_assignments a
+     WHERE a.id=p_source_assignment AND a.section_offering_id=p_section
+       AND a.subject_id=p_subject;
+    IF NOT FOUND THEN
+      error_code:=COALESCE(error_code,'D1_SUBJECT_ASSIGNMENT_SOURCE_MISSING');
+      source_snapshot:='{}'::jsonb;
+    ELSE
+      IF source_row.employee_id IS DISTINCT FROM p_expected_source_employee
+         OR source_row.assignment_kind IS DISTINCT FROM p_expected_source_kind
+         OR source_row.effective_from IS DISTINCT FROM p_expected_source_from
+         OR source_row.supersedes_id IS DISTINCT FROM p_expected_source_supersedes THEN
+        error_code:=COALESCE(error_code,'D1_SUBJECT_ASSIGNMENT_SOURCE_FACTS_STALE');
+      END IF;
+      source_snapshot:=pg_catalog.jsonb_build_object(
+        'assignment_id',source_row.id,
+        'section_offering_id',source_row.section_offering_id,
+        'subject_id',source_row.subject_id,
+        'employee_id',source_row.employee_id,
+        'assignment_kind',source_row.assignment_kind,
+        'effective_from',pg_catalog.to_char(source_row.effective_from,'YYYY-MM-DD'),
+        'effective_until',CASE WHEN source_row.effective_until IS NULL THEN NULL
+          ELSE pg_catalog.to_char(source_row.effective_until,'YYYY-MM-DD') END,
+        'supersedes_id',source_row.supersedes_id);
+    END IF;
+  ELSE source_snapshot:='{}'::jsonb; END IF;
+
+  RETURN QUERY SELECT locked_version,error_code,pre_campus,pre_offering,pre_year,
+    subject_state,source_snapshot;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_lock_context(
+  uuid,uuid,bigint,boolean,uuid,uuid,text,date,uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_lock_context(
+  uuid,uuid,bigint,boolean,uuid,uuid,text,date,uuid,uuid,uuid)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_preflight(
+  p_section uuid,p_subject uuid,p_expected_section_version bigint,p_action text,
+  p_source_assignment uuid,p_expected_source_employee uuid,p_expected_source_kind text,
+  p_expected_source_from date,p_expected_source_supersedes uuid,
+  p_employee uuid,p_kind text,p_effective_from date,p_effective_until date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text,section_version bigint,campus_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  context record; source_row app_private.subject_teacher_assignments%ROWTYPE;
+  year_start date; year_end date; year_state text; section_state text;
+  offering_state text; campus_state text; class_state text; horizon date;
+BEGIN
+  IF p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_REASON_INVALID'::text,
+      NULL::bigint,NULL::uuid; RETURN;
+  END IF;
+
+  SELECT * INTO context FROM app_private.d1_teaching_subject_assignment_lock_context(
+    p_section,p_subject,p_expected_section_version,true,p_source_assignment,
+    p_expected_source_employee,p_expected_source_kind,p_expected_source_from,
+    p_expected_source_supersedes,p_employee,NULL);
+  IF context.error_code IS NOT NULL THEN
+    RETURN QUERY SELECT false,context.error_code,context.section_version,context.campus_id; RETURN;
+  END IF;
+
+  IF p_action NOT IN ('ADD','END','CORRECT') THEN
+    RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_ACTION_INVALID'::text,
+      context.section_version,context.campus_id; RETURN;
+  END IF;
+  IF (p_action='ADD' AND (
+       p_source_assignment IS NOT NULL OR p_expected_source_employee IS NOT NULL
+       OR p_expected_source_kind IS NOT NULL OR p_expected_source_from IS NOT NULL
+       OR p_expected_source_supersedes IS NOT NULL OR p_employee IS NULL OR p_kind IS NULL
+       OR p_effective_from IS NULL
+       OR (p_effective_until IS NOT NULL AND p_effective_until<=p_effective_from)))
+     OR (p_action='END' AND (
+       p_source_assignment IS NULL OR p_expected_source_employee IS NULL
+       OR p_expected_source_kind IS NULL OR p_expected_source_from IS NULL
+       OR p_employee IS NOT NULL OR p_kind IS NOT NULL
+       OR p_effective_from IS NOT NULL OR p_effective_until IS NULL))
+     OR (p_action='CORRECT' AND (
+       p_source_assignment IS NULL OR p_expected_source_employee IS NULL
+       OR p_expected_source_kind IS NULL OR p_expected_source_from IS NULL
+       OR p_employee IS NULL OR p_kind IS NULL OR p_effective_from IS NULL
+       OR (p_effective_until IS NOT NULL AND p_effective_until<=p_effective_from)))
+     OR (p_action IN ('ADD','CORRECT') AND p_kind NOT IN ('PRIMARY','CO_TEACHER','SUBSTITUTE'))
+     OR (p_action IN ('ADD','CORRECT') AND p_kind='SUBSTITUTE' AND p_effective_until IS NULL)
+  THEN
+    RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_ACTION_SHAPE_INVALID'::text,
+      context.section_version,context.campus_id; RETURN;
+  END IF;
+
+  SELECT ay.starts_on,ay.ends_on,ay.state,so.state,co.state,c.state,cl.state
+    INTO year_start,year_end,year_state,section_state,offering_state,campus_state,class_state
+    FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    JOIN app_private.academic_classes cl ON cl.id=co.class_id
+    JOIN app.academic_years ay ON ay.id=co.academic_year_id
+    JOIN app.campuses c ON c.id=co.campus_id
+   WHERE so.id=p_section;
+  IF year_start IS NULL THEN
+    RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_ANCESTRY_MISSING'::text,
+      context.section_version,context.campus_id; RETURN;
+  END IF;
+
+  IF p_action IN ('END','CORRECT') THEN
+    SELECT * INTO source_row FROM app_private.subject_teacher_assignments a
+     WHERE a.id=p_source_assignment AND a.section_offering_id=p_section
+       AND a.subject_id=p_subject;
+    IF NOT FOUND OR source_row.effective_until IS NOT NULL
+       OR source_row.ended_at IS NOT NULL OR source_row.ended_by IS NOT NULL THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_SOURCE_NOT_OPEN'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM app_private.subject_teacher_assignments successor
+       WHERE successor.supersedes_id=source_row.id) THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_SOURCE_ALREADY_SUPERSEDED'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF p_action='END' AND (

@@ -1,0 +1,150 @@
+       p_effective_until<=source_row.effective_from OR p_effective_until>year_end+1) THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_END_BOUND_INVALID'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF p_action='CORRECT' AND p_effective_from<=source_row.effective_from THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_CORRECTION_BOUND_INVALID'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF p_action='CORRECT'
+       AND p_employee=source_row.employee_id
+       AND p_kind=source_row.assignment_kind
+       AND pg_catalog.btrim(p_reason)=pg_catalog.btrim(source_row.reason)
+       AND p_effective_until IS NULL THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_CORRECTION_NO_CHANGE'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+  END IF;
+
+  IF p_action IN ('ADD','CORRECT') THEN
+    IF class_state IS DISTINCT FROM 'ACTIVE'
+       OR section_state NOT IN ('PLANNED','OPEN')
+       OR offering_state NOT IN ('PLANNED','OPEN')
+       OR campus_state NOT IN ('PLANNED','ACTIVE')
+       OR year_state NOT IN ('PLANNED','ACTIVE')
+       OR context.subject_state IS DISTINCT FROM 'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_TARGET_UNUSABLE'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+
+    horizon:=COALESCE(p_effective_until,year_end+1);
+    IF p_effective_from<year_start OR p_effective_from>=year_end+1
+       OR horizon>year_end+1 OR horizon<=p_effective_from THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_OUTSIDE_YEAR'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM app_private.employment_periods ep
+       WHERE ep.employee_id=p_employee AND ep.state='ACTIVE'
+         AND ep.effective_from<=p_effective_from
+         AND (ep.effective_until IS NULL OR ep.effective_until>=horizon)) THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_EMPLOYMENT_COVERAGE_MISSING'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+    IF NOT app_private.d1_teacher_capability_covers_interval(
+        p_employee,p_effective_from,horizon) THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_CAPABILITY_COVERAGE_MISSING'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+
+    IF EXISTS (
+      SELECT 1 FROM app_private.subject_teacher_assignments a
+       WHERE a.section_offering_id=p_section AND a.subject_id=p_subject
+         AND a.employee_id=p_employee AND a.assignment_kind=p_kind
+         AND (p_action<>'CORRECT' OR a.id<>source_row.id)
+         AND (a.effective_until IS NULL OR a.effective_until>p_effective_from)
+         AND (p_effective_until IS NULL OR a.effective_from<p_effective_until)) THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_DUPLICATE_OVERLAP'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+
+    IF p_kind='PRIMARY' AND EXISTS (
+      SELECT 1 FROM app_private.subject_teacher_assignments a
+       WHERE a.section_offering_id=p_section AND a.subject_id=p_subject
+         AND a.assignment_kind='PRIMARY'
+         AND (p_action<>'CORRECT' OR a.id<>source_row.id)
+         AND (a.effective_until IS NULL OR a.effective_until>p_effective_from)
+         AND (p_effective_until IS NULL OR a.effective_from<p_effective_until)) THEN
+      RETURN QUERY SELECT false,'D1_SUBJECT_ASSIGNMENT_PRIMARY_OVERLAP'::text,
+        context.section_version,context.campus_id; RETURN;
+    END IF;
+  END IF;
+
+  RETURN QUERY SELECT true,NULL::text,context.section_version,context.campus_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_preflight(
+  uuid,uuid,bigint,text,uuid,uuid,text,date,uuid,uuid,text,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_preflight(
+  uuid,uuid,bigint,text,uuid,uuid,text,date,uuid,uuid,text,date,date,text)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_effect(
+  p_section uuid,p_subject uuid,p_expected_section_version bigint,p_action text,
+  p_source_assignment uuid,p_expected_source_employee uuid,p_expected_source_kind text,
+  p_expected_source_from date,p_expected_source_supersedes uuid,
+  p_employee uuid,p_kind text,p_effective_from date,p_effective_until date,p_reason text
+) RETURNS TABLE(
+  assignment_id uuid,section_offering_id uuid,subject_id uuid,action text,
+  source_employee_id uuid,source_assignment_kind text,employee_id uuid,
+  assignment_kind text,effective_from date,effective_until date,section_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  actor uuid; preflight record; source_row app_private.subject_teacher_assignments%ROWTYPE;
+  result_id uuid; result_employee uuid; result_kind text; result_from date;
+  result_until date; closed uuid;
+BEGIN
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1 Subject assignment actor unavailable'; END IF;
+
+  SELECT * INTO preflight FROM app_private.d1_teaching_subject_assignment_preflight(
+    p_section,p_subject,p_expected_section_version,p_action,p_source_assignment,
+    p_expected_source_employee,p_expected_source_kind,p_expected_source_from,
+    p_expected_source_supersedes,p_employee,p_kind,p_effective_from,p_effective_until,p_reason);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Subject assignment deterministic preflight failed: %',
+      preflight.error_code;
+  END IF;
+
+  IF p_action='ADD' THEN
+    result_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.subject_teacher_assignments
+      (id,created_by,ended_at,ended_by,section_offering_id,subject_id,employee_id,
+       assignment_kind,effective_from,effective_until,reason,supersedes_id)
+    VALUES (
+      result_id,actor,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE pg_catalog.statement_timestamp() END,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE actor END,
+      p_section,p_subject,p_employee,p_kind,p_effective_from,p_effective_until,p_reason,NULL);
+    result_employee:=p_employee; result_kind:=p_kind;
+    result_from:=p_effective_from; result_until:=p_effective_until;
+
+  ELSIF p_action='END' THEN
+    UPDATE app_private.subject_teacher_assignments a SET
+      effective_until=p_effective_until,
+      ended_at=pg_catalog.statement_timestamp(),ended_by=actor
+     WHERE a.id=p_source_assignment AND a.section_offering_id=p_section
+       AND a.subject_id=p_subject AND a.effective_until IS NULL
+     RETURNING a.id,a.employee_id,a.assignment_kind,a.effective_from,a.effective_until
+      INTO result_id,result_employee,result_kind,result_from,result_until;
+    IF result_id IS NULL THEN RAISE EXCEPTION 'D1 Subject assignment END source close failed'; END IF;
+
+  ELSE
+    SELECT * INTO source_row FROM app_private.subject_teacher_assignments a
+     WHERE a.id=p_source_assignment AND a.section_offering_id=p_section
+       AND a.subject_id=p_subject FOR UPDATE;
+    UPDATE app_private.subject_teacher_assignments a SET
+      effective_until=p_effective_from,
+      ended_at=pg_catalog.statement_timestamp(),ended_by=actor
+     WHERE a.id=source_row.id AND a.effective_until IS NULL
+     RETURNING a.id INTO closed;
+    IF closed IS NULL THEN RAISE EXCEPTION 'D1 Subject assignment CORRECT source close failed'; END IF;
+
+    result_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.subject_teacher_assignments
+      (id,created_by,ended_at,ended_by,section_offering_id,subject_id,employee_id,
+       assignment_kind,effective_from,effective_until,reason,supersedes_id)
+    VALUES (
+      result_id,actor,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE pg_catalog.statement_timestamp() END,

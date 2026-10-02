@@ -1,0 +1,145 @@
+    effect_row.assignment_id,p_section_offering_id,p_subject_id,p_action,
+    effect_row.source_employee_id,effect_row.source_assignment_kind,
+    effect_row.employee_id,effect_row.assignment_kind,effect_row.effective_from,
+    effect_row.effective_until,effect_row.section_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_subject_teacher_assignment(
+  uuid,uuid,bigint,text,uuid,uuid,text,date,uuid,uuid,text,date,date,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_subject_teacher_assignment(
+  uuid,uuid,bigint,text,uuid,uuid,text,date,uuid,uuid,text,date,date,text,text)
+  TO authenticated;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_teaching_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+
+CREATE FUNCTION app.d1_submit_subject_teacher_assignment_correction(
+  p_section_offering_id uuid,p_subject_id uuid,p_expected_section_version bigint,
+  p_source_assignment_id uuid,p_expected_source_employee_id uuid,
+  p_expected_source_assignment_kind text,p_expected_source_effective_from date,
+  p_expected_source_supersedes_id uuid,p_employee_id uuid,p_assignment_kind text,
+  p_effective_from date,p_effective_until date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  ctx record; lock_row record; policy_row record; preflight record; template_row record;
+  old_snapshot jsonb; requested_payload jsonb; payload jsonb;
+  new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid;
+  candidate_count bigint; final_version bigint; receipt uuid;
+BEGIN
+  old_snapshot:=pg_catalog.jsonb_build_object(
+    'source_assignment_id',p_source_assignment_id,
+    'source_employee_id',p_expected_source_employee_id,
+    'source_assignment_kind',p_expected_source_assignment_kind,
+    'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
+    'source_supersedes_id',p_expected_source_supersedes_id);
+  requested_payload:=pg_catalog.jsonb_build_object(
+    'action','CORRECT','subject_id',p_subject_id,'employee_id',p_employee_id,
+    'assignment_kind',p_assignment_kind,
+    'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,
+    'effective_until',CASE WHEN p_effective_until IS NULL THEN NULL
+      ELSE pg_catalog.to_char(p_effective_until,'YYYY-MM-DD') END);
+  payload:=old_snapshot||requested_payload;
+
+  IF p_section_offering_id IS NULL OR p_subject_id IS NULL
+     OR p_expected_section_version IS NULL OR p_expected_section_version<1
+     OR p_effective_from IS NULL OR p_effective_from>=CURRENT_DATE
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR NOT app_private.d1_teaching_subject_assignment_payload_valid(payload)
+  THEN RAISE EXCEPTION 'D1 Subject assignment retroactive correction intent invalid'; END IF;
+
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'teaching.subject_assignment.change','request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(
+      p_section_offering_id,p_subject_id,p_expected_section_version::text,'CORRECT',
+      p_source_assignment_id,p_expected_source_employee_id,p_expected_source_assignment_kind,
+      p_expected_source_effective_from,p_expected_source_supersedes_id,
+      p_employee_id,p_assignment_kind,p_effective_from,p_effective_until,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+
+  SELECT * INTO lock_row FROM app_private.d1_teaching_subject_assignment_lock_context(
+    p_section_offering_id,p_subject_id,p_expected_section_version,ctx.receipt_id IS NULL,
+    p_source_assignment_id,p_expected_source_employee_id,p_expected_source_assignment_kind,
+    p_expected_source_effective_from,p_expected_source_supersedes_id,p_employee_id,NULL);
+
+  IF NOT app_private.d1_teaching_subject_assignment_authorized(
+      ctx.actor_id,'teaching.subject_assignment.change',
+      p_section_offering_id,p_subject_id,NULL)
+     OR NOT app_private.d1_teaching_subject_assignment_not_self(ctx.actor_id,p_employee_id)
+  THEN RAISE EXCEPTION 'D1 Subject assignment correction authority denied'; END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR pg_catalog.jsonb_typeof(ctx.result_summary->'request_version')<>'number'
+       OR ctx.result_summary->>'state'<>'PENDING'
+       OR NOT EXISTS (
+         SELECT 1 FROM app_private.approval_requests q
+          WHERE q.id=ctx.result_ref AND q.operation_id=ctx.operation_id
+            AND q.target_ref=p_section_offering_id
+            AND q.expected_target_version=p_expected_section_version
+            AND q.old_snapshot IS NOT DISTINCT FROM old_snapshot
+            AND q.requested_payload IS NOT DISTINCT FROM requested_payload)
+    THEN RAISE EXCEPTION 'D1 Subject assignment correction receipt is not replayable'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint;
+    RETURN;
+  END IF;
+
+  IF lock_row.error_code IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Subject assignment correction preflight denied: %',lock_row.error_code;
+  END IF;
+
+  SELECT * INTO policy_row
+    FROM app_private.d1_teaching_subject_assignment_p2_policy(p_section_offering_id);
+  IF policy_row.policy_id IS NULL THEN
+    RAISE EXCEPTION 'D1 Subject assignment retroactive correction policy unavailable';
+  END IF;
+
+  SELECT * INTO preflight FROM app_private.d1_teaching_subject_assignment_preflight(
+    p_section_offering_id,p_subject_id,p_expected_section_version,'CORRECT',
+    p_source_assignment_id,p_expected_source_employee_id,p_expected_source_assignment_kind,
+    p_expected_source_effective_from,p_expected_source_supersedes_id,
+    p_employee_id,p_assignment_kind,p_effective_from,p_effective_until,p_reason);
+  IF preflight.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Subject assignment correction preflight denied: %',preflight.error_code;
+  END IF;
+
+  INSERT INTO app_private.approval_requests
+    (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
+     expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (
+    new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,
+    policy_row.campus_id,p_section_offering_id,p_expected_section_version,p_reason,
+    old_snapshot,requested_payload,ctx.actor_id);
+
+  UPDATE app_private.approval_requests SET
+    state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
+   WHERE id=new_request;
+
+  FOR template_row IN
+    SELECT t.id,t.step_number,t.required_reviews
+      FROM app_private.approval_step_templates t
+     WHERE t.policy_id=policy_row.policy_id ORDER BY t.step_number
+  LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps
+      (id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (
+      CASE WHEN template_row.step_number=1 THEN first_step ELSE pg_catalog.gen_random_uuid() END,
+      new_request,policy_row.policy_id,template_row.id,template_row.step_number,
+      template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN
+    RAISE EXCEPTION 'D1 Subject assignment policy has no first step';
+  END IF;
+
+  UPDATE app_private.approval_requests SET state='PENDING'
+   WHERE id=new_request RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET

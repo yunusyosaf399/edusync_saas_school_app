@@ -1,0 +1,140 @@
+-- D1C1B effect 17/36 static continuation: Subject Teacher assignment.
+-- This file is a non-executable companion to 20260928000000_domain_package_01.sql.draft.
+-- It must be reviewed/folded with that draft before any later execution authorization.
+-- Product-owner semantics frozen in chat: current/future ADD/END/CORRECT P0;
+-- retroactive CORRECT P2; exact Section+Subject context; kind may change on CORRECT;
+-- PRIMARY uniqueness, CO_TEACHER coexistence, bounded SUBSTITUTE; no self-assignment.
+
+-- Relation 34 overlap identity remains Employee+Section+Subject+kind, but correction
+-- lineage retains Section+Subject only so an approved CORRECT may change kind.
+SET ROLE schoolos_schema_owner;
+DROP TRIGGER ab_d1_integrity ON app_private.subject_teacher_assignments;
+CREATE TRIGGER ab_d1_integrity BEFORE INSERT OR UPDATE ON app_private.subject_teacher_assignments
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_effective_history(
+    'employees','employee_id',
+    'section_offering_id,subject_id,employee_id,assignment_kind',
+    'section_offering_id,subject_id');
+RESET ROLE;
+
+-- Replace the provisional broad relation-34 teaching grants with retained-history
+-- columns plus the existing one-way HE close privilege.
+REVOKE SELECT, INSERT ON app_private.subject_teacher_assignments
+  FROM schoolos_teaching_executor;
+GRANT SELECT (
+    id,created_at,created_by,ended_at,ended_by,section_offering_id,subject_id,
+    employee_id,assignment_kind,effective_from,effective_until,reason,supersedes_id),
+  INSERT (
+    id,created_by,ended_at,ended_by,section_offering_id,subject_id,employee_id,
+    assignment_kind,effective_from,effective_until,reason,supersedes_id)
+  ON app_private.subject_teacher_assignments TO schoolos_teaching_executor;
+
+GRANT SELECT (person_id) ON app_private.employees TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state) ON app.campuses TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state,starts_on,ends_on) ON app.academic_years
+  TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state) ON app_private.academic_classes
+  TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state) ON app_private.class_offerings
+  TO schoolos_teaching_executor;
+GRANT SELECT (row_version,campus_id,state,class_offering_id)
+  ON app_private.section_offerings TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state) ON app_private.subjects TO schoolos_teaching_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_teaching_executor;
+SET ROLE schoolos_teaching_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_payload_valid(p jsonb)
+RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  action text; subject text; source_id text; source_employee text; source_kind text;
+  source_from text; source_supersedes text; employee text; kind text;
+  effect_from text; effect_until text; source_start date; start_on date; end_on date;
+BEGIN
+  IF p IS NULL OR pg_catalog.jsonb_typeof(p)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p))<>11
+     OR NOT (p ?& ARRAY[
+       'action','subject_id','source_assignment_id','source_employee_id',
+       'source_assignment_kind','source_effective_from','source_supersedes_id',
+       'employee_id','assignment_kind','effective_from','effective_until'])
+  THEN RETURN false; END IF;
+
+  action:=p->>'action'; subject:=p->>'subject_id'; source_id:=p->>'source_assignment_id';
+  source_employee:=p->>'source_employee_id'; source_kind:=p->>'source_assignment_kind';
+  source_from:=p->>'source_effective_from'; source_supersedes:=p->>'source_supersedes_id';
+  employee:=p->>'employee_id'; kind:=p->>'assignment_kind';
+  effect_from:=p->>'effective_from'; effect_until:=p->>'effective_until';
+
+  IF pg_catalog.jsonb_typeof(p->'action')<>'string'
+     OR action NOT IN ('ADD','END','CORRECT')
+     OR pg_catalog.jsonb_typeof(p->'subject_id')<>'string'
+     OR subject !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  THEN RETURN false; END IF;
+
+  IF pg_catalog.jsonb_typeof(p->'source_assignment_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_employee_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_assignment_kind') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_effective_from') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'source_supersedes_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'employee_id') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'assignment_kind') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'effective_from') NOT IN ('string','null')
+     OR pg_catalog.jsonb_typeof(p->'effective_until') NOT IN ('string','null')
+  THEN RETURN false; END IF;
+
+  IF (source_id IS NOT NULL AND source_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_employee IS NOT NULL AND source_employee !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_supersedes IS NOT NULL AND source_supersedes !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (employee IS NOT NULL AND employee !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+     OR (source_kind IS NOT NULL AND source_kind NOT IN ('PRIMARY','CO_TEACHER','SUBSTITUTE'))
+     OR (kind IS NOT NULL AND kind NOT IN ('PRIMARY','CO_TEACHER','SUBSTITUTE'))
+     OR (source_from IS NOT NULL AND source_from !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+     OR (effect_from IS NOT NULL AND effect_from !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+     OR (effect_until IS NOT NULL AND effect_until !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+  THEN RETURN false; END IF;
+
+  IF action='ADD' AND (
+       source_id IS NOT NULL OR source_employee IS NOT NULL OR source_kind IS NOT NULL
+       OR source_from IS NOT NULL OR source_supersedes IS NOT NULL
+       OR employee IS NULL OR kind IS NULL OR effect_from IS NULL)
+  THEN RETURN false; END IF;
+
+  IF action='END' AND (
+       source_id IS NULL OR source_employee IS NULL OR source_kind IS NULL
+       OR source_from IS NULL OR employee IS NOT NULL OR kind IS NOT NULL
+       OR effect_from IS NOT NULL OR effect_until IS NULL)
+  THEN RETURN false; END IF;
+
+  IF action='CORRECT' AND (
+       source_id IS NULL OR source_employee IS NULL OR source_kind IS NULL
+       OR source_from IS NULL OR employee IS NULL OR kind IS NULL OR effect_from IS NULL)
+  THEN RETURN false; END IF;
+
+  BEGIN
+    IF source_from IS NOT NULL THEN source_start:=source_from::date; END IF;
+    IF effect_from IS NOT NULL THEN start_on:=effect_from::date; END IF;
+    IF effect_until IS NOT NULL THEN end_on:=effect_until::date; END IF;
+  EXCEPTION WHEN invalid_datetime_format OR datetime_field_overflow THEN RETURN false;
+  END;
+
+  IF action='ADD' AND end_on IS NOT NULL AND end_on<=start_on THEN RETURN false; END IF;
+  IF action='END' AND end_on<=source_start THEN RETURN false; END IF;
+  IF action='CORRECT' AND (start_on<=source_start OR (end_on IS NOT NULL AND end_on<=start_on))
+  THEN RETURN false; END IF;
+  IF action IN ('ADD','CORRECT') AND kind='SUBSTITUTE' AND end_on IS NULL THEN RETURN false; END IF;
+  RETURN true;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_payload_valid(jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_payload_valid(jsonb)
+  TO schoolos_teaching_executor,schoolos_workflow_executor,schoolos_read_executor,
+     schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_request_payload_valid(
+  p_old jsonb,p_requested jsonb
+) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_old IS NULL OR p_requested IS NULL
+     OR pg_catalog.jsonb_typeof(p_old)<>'object'
+     OR pg_catalog.jsonb_typeof(p_requested)<>'object'

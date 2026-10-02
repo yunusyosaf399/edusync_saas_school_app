@@ -1,0 +1,141 @@
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_old))<>5
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_requested))<>6
+     OR NOT (p_old ?& ARRAY[
+       'source_assignment_id','source_employee_id','source_assignment_kind',
+       'source_effective_from','source_supersedes_id'])
+     OR NOT (p_requested ?& ARRAY[
+       'action','subject_id','employee_id','assignment_kind',
+       'effective_from','effective_until'])
+  THEN RETURN false; END IF;
+  RETURN app_private.d1_teaching_subject_assignment_payload_valid(p_old||p_requested);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_request_payload_valid(jsonb,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_request_payload_valid(jsonb,jsonb)
+  TO schoolos_teaching_executor,schoolos_workflow_executor,schoolos_read_executor,
+     schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_result_matches(
+  p_action text,p_section uuid,p_subject uuid,p_assignment uuid,p_source uuid,
+  p_source_employee uuid,p_source_kind text,p_source_from date,p_source_supersedes uuid,
+  p_employee uuid,p_kind text,p_effective_from date,p_effective_until date
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE result app_private.subject_teacher_assignments%ROWTYPE;
+BEGIN
+  IF p_action NOT IN ('ADD','END','CORRECT') OR p_section IS NULL
+     OR p_subject IS NULL OR p_assignment IS NULL THEN RETURN false; END IF;
+  SELECT * INTO result FROM app_private.subject_teacher_assignments a
+   WHERE a.id=p_assignment AND a.section_offering_id=p_section AND a.subject_id=p_subject;
+  IF NOT FOUND THEN RETURN false; END IF;
+
+  IF p_action='ADD' THEN
+    RETURN result.employee_id IS NOT DISTINCT FROM p_employee
+      AND result.assignment_kind IS NOT DISTINCT FROM p_kind
+      AND result.effective_from IS NOT DISTINCT FROM p_effective_from
+      AND result.effective_until IS NOT DISTINCT FROM p_effective_until
+      AND result.supersedes_id IS NULL
+      AND ((p_effective_until IS NULL AND result.ended_at IS NULL AND result.ended_by IS NULL)
+        OR (p_effective_until IS NOT NULL AND result.ended_at IS NOT NULL AND result.ended_by IS NOT NULL));
+  ELSIF p_action='END' THEN
+    RETURN result.id IS NOT DISTINCT FROM p_source
+      AND result.employee_id IS NOT DISTINCT FROM p_source_employee
+      AND result.assignment_kind IS NOT DISTINCT FROM p_source_kind
+      AND result.effective_from IS NOT DISTINCT FROM p_source_from
+      AND result.supersedes_id IS NOT DISTINCT FROM p_source_supersedes
+      AND result.effective_until IS NOT DISTINCT FROM p_effective_until
+      AND result.ended_at IS NOT NULL AND result.ended_by IS NOT NULL;
+  ELSE
+    RETURN result.employee_id IS NOT DISTINCT FROM p_employee
+      AND result.assignment_kind IS NOT DISTINCT FROM p_kind
+      AND result.effective_from IS NOT DISTINCT FROM p_effective_from
+      AND result.effective_until IS NOT DISTINCT FROM p_effective_until
+      AND result.supersedes_id IS NOT DISTINCT FROM p_source
+      AND ((p_effective_until IS NULL AND result.ended_at IS NULL AND result.ended_by IS NULL)
+        OR (p_effective_until IS NOT NULL AND result.ended_at IS NOT NULL AND result.ended_by IS NOT NULL))
+      AND EXISTS (
+        SELECT 1 FROM app_private.subject_teacher_assignments predecessor
+         WHERE predecessor.id=p_source
+           AND predecessor.section_offering_id=p_section
+           AND predecessor.subject_id=p_subject
+           AND predecessor.employee_id=p_source_employee
+           AND predecessor.assignment_kind=p_source_kind
+           AND predecessor.effective_from=p_source_from
+           AND predecessor.supersedes_id IS NOT DISTINCT FROM p_source_supersedes
+           AND predecessor.effective_until=p_effective_from
+           AND predecessor.ended_at IS NOT NULL AND predecessor.ended_by IS NOT NULL);
+  END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_result_matches(
+  text,uuid,uuid,uuid,uuid,uuid,text,date,uuid,uuid,text,date,date)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_result_matches(
+  text,uuid,uuid,uuid,uuid,uuid,text,date,uuid,uuid,text,date,date)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_lock_context(
+  p_section uuid,p_subject uuid,p_expected_section_version bigint,p_enforce_version boolean,
+  p_source_assignment uuid,p_expected_source_employee uuid,p_expected_source_kind text,
+  p_expected_source_from date,p_expected_source_supersedes uuid,
+  p_destination_employee uuid,p_additional_assignment uuid
+) RETURNS TABLE(
+  section_version bigint,error_code text,campus_id uuid,class_offering_id uuid,
+  academic_year_id uuid,subject_state text,source_snapshot jsonb)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  pre_offering uuid; pre_campus uuid; pre_year uuid; pre_class uuid;
+  offering_school uuid; subject_school uuid; locked_version bigint;
+  source_row app_private.subject_teacher_assignments%ROWTYPE;
+  actual_source_employee uuid; additional_employee uuid; employee_ids uuid[]; r record;
+BEGIN
+  SELECT so.class_offering_id,co.campus_id,co.academic_year_id,co.class_id,co.school_id
+    INTO pre_offering,pre_campus,pre_year,pre_class,offering_school
+    FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+   WHERE so.id=p_section;
+  IF pre_offering IS NULL THEN
+    RETURN QUERY SELECT NULL::bigint,'D1_SUBJECT_ASSIGNMENT_SECTION_MISSING'::text,
+      NULL::uuid,NULL::uuid,NULL::uuid,NULL::text,'{}'::jsonb; RETURN;
+  END IF;
+
+  IF p_source_assignment IS NOT NULL THEN
+    SELECT a.employee_id INTO actual_source_employee
+      FROM app_private.subject_teacher_assignments a
+     WHERE a.id=p_source_assignment AND a.section_offering_id=p_section
+       AND a.subject_id=p_subject;
+  END IF;
+  IF p_additional_assignment IS NOT NULL THEN
+    SELECT a.employee_id INTO additional_employee
+      FROM app_private.subject_teacher_assignments a
+     WHERE a.id=p_additional_assignment AND a.section_offering_id=p_section
+       AND a.subject_id=p_subject;
+  END IF;
+
+  SELECT pg_catalog.array_agg(DISTINCT x ORDER BY x) INTO employee_ids
+    FROM pg_catalog.unnest(ARRAY[
+      p_expected_source_employee,p_destination_employee,
+      actual_source_employee,additional_employee]::uuid[]) x
+   WHERE x IS NOT NULL;
+  FOR r IN
+    SELECT e.id FROM app_private.employees e
+     WHERE e.id=ANY(COALESCE(employee_ids,'{}'::uuid[]))
+     ORDER BY e.id FOR UPDATE
+  LOOP NULL; END LOOP;
+
+  -- Approved global teaching order after sorted Employee anchors.
+  PERFORM 1 FROM app_private.academic_classes c WHERE c.id=pre_class FOR UPDATE;
+  IF NOT FOUND THEN error_code:='D1_SUBJECT_ASSIGNMENT_CLASS_MISSING'; END IF;
+  PERFORM 1 FROM app.campuses c WHERE c.id=pre_campus FOR UPDATE;
+  IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_SUBJECT_ASSIGNMENT_CAMPUS_MISSING'); END IF;
+  PERFORM 1 FROM app.academic_years ay WHERE ay.id=pre_year FOR UPDATE;
+  IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_SUBJECT_ASSIGNMENT_YEAR_MISSING'); END IF;
+  PERFORM 1 FROM app_private.class_offerings co WHERE co.id=pre_offering FOR UPDATE;
+  IF NOT FOUND THEN error_code:=COALESCE(error_code,'D1_SUBJECT_ASSIGNMENT_OFFERING_MISSING'); END IF;
+  SELECT so.row_version INTO locked_version FROM app_private.section_offerings so
+   WHERE so.id=p_section FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT NULL::bigint,'D1_SUBJECT_ASSIGNMENT_SECTION_MISSING'::text,
+      pre_campus,pre_offering,pre_year,NULL::text,'{}'::jsonb; RETURN;
+  END IF;
+  SELECT s.school_id,s.state INTO subject_school,subject_state
+    FROM app_private.subjects s WHERE s.id=p_subject FOR UPDATE;

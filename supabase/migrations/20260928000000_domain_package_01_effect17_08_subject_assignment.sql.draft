@@ -1,0 +1,138 @@
+      'action',p_action,'section_offering_id',p_section,'subject_id',p_subject,
+      'assignment_id',p_assignment,'source_assignment_id',p_source,
+      'source_employee_id',p_source_employee,'source_assignment_kind',p_source_kind,
+      'employee_id',p_employee,'assignment_kind',p_kind,
+      'effective_from',p_effective_from,'effective_until',p_effective_until,
+      'section_version',p_section_version),
+    p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_event(
+  uuid,text,uuid,uuid,uuid,uuid,uuid,text,uuid,text,uuid,bigint,date,date,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_event(
+  uuid,text,uuid,uuid,uuid,uuid,uuid,text,uuid,text,uuid,bigint,date,date,uuid)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_application_receipt_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  op_code text; receipt app_private.command_receipts%ROWTYPE;
+  req app_private.approval_requests%ROWTYPE;
+  result app_private.subject_teacher_assignments%ROWTYPE;
+  predecessor app_private.subject_teacher_assignments%ROWTYPE;
+  action text; subject_id uuid; source_id uuid; source_employee uuid; source_kind text;
+  source_from date; source_supersedes uuid; employee uuid; kind text;
+  effect_from date; effect_until date;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o
+   WHERE o.id=NEW.operation_id;
+  IF op_code<>'teaching.subject_assignment.change' THEN RETURN NEW; END IF;
+
+  SELECT r.* INTO receipt FROM app_private.command_receipts r
+   WHERE r.id=NEW.command_receipt_id AND r.operation_id=NEW.operation_id
+     AND r.request_id=NEW.request_id AND r.command_kind='request.apply'
+     AND r.state='SUCCEEDED'
+     AND r.result_kind='D1_TEACHING_SUBJECT_ASSIGNMENT_APPLY'
+     AND r.result_ref=NEW.result_ref;
+  SELECT q.* INTO req FROM app_private.approval_requests q
+   WHERE q.id=NEW.request_id AND q.operation_id=NEW.operation_id AND q.state='EXECUTED';
+  SELECT a.* INTO result FROM app_private.subject_teacher_assignments a
+   WHERE a.id=NEW.result_ref;
+
+  IF receipt.id IS NULL OR req.id IS NULL OR result.id IS NULL
+     OR result.section_offering_id IS DISTINCT FROM req.target_ref
+     OR NEW.applied_target_version IS NULL
+     OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR NOT app_private.d1_teaching_subject_assignment_request_payload_valid(
+       req.old_snapshot,req.requested_payload)
+     OR receipt.result_summary IS NULL
+     OR pg_catalog.jsonb_typeof(receipt.result_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(receipt.result_summary))<>13
+     OR NOT (receipt.result_summary ?& ARRAY[
+       'request_version','state','action','assignment_id','section_version','subject_id',
+       'source_assignment_id','source_employee_id','source_assignment_kind',
+       'employee_id','assignment_kind','effective_from','effective_until'])
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'request_version')<>'number'
+     OR pg_catalog.jsonb_typeof(receipt.result_summary->'section_version')<>'number'
+     OR (receipt.result_summary->>'request_version')::bigint<>req.row_version
+     OR (receipt.result_summary->>'section_version')::bigint<>NEW.applied_target_version
+     OR receipt.expected_target_version IS DISTINCT FROM req.expected_target_version
+     OR receipt.result_summary->>'state'<>'EXECUTED'
+     OR receipt.result_summary->>'action'<>'CORRECT'
+     OR (receipt.result_summary->>'assignment_id')::uuid IS DISTINCT FROM NEW.result_ref
+  THEN
+    RAISE EXCEPTION 'D1 Subject assignment application requires successful apply receipt';
+  END IF;
+
+  action:=req.requested_payload->>'action';
+  subject_id:=NULLIF(req.requested_payload->>'subject_id','')::uuid;
+  source_id:=NULLIF(req.old_snapshot->>'source_assignment_id','')::uuid;
+  source_employee:=NULLIF(req.old_snapshot->>'source_employee_id','')::uuid;
+  source_kind:=NULLIF(req.old_snapshot->>'source_assignment_kind','');
+  source_from:=NULLIF(req.old_snapshot->>'source_effective_from','')::date;
+  source_supersedes:=NULLIF(req.old_snapshot->>'source_supersedes_id','')::uuid;
+  employee:=NULLIF(req.requested_payload->>'employee_id','')::uuid;
+  kind:=NULLIF(req.requested_payload->>'assignment_kind','');
+  effect_from:=NULLIF(req.requested_payload->>'effective_from','')::date;
+  effect_until:=NULLIF(req.requested_payload->>'effective_until','')::date;
+
+  SELECT a.* INTO predecessor FROM app_private.subject_teacher_assignments a
+   WHERE a.id=source_id;
+
+  IF action<>'CORRECT' OR effect_from>=CURRENT_DATE OR source_id IS NULL
+     OR predecessor.id IS NULL
+     OR predecessor.section_offering_id IS DISTINCT FROM req.target_ref
+     OR predecessor.subject_id IS DISTINCT FROM subject_id
+     OR predecessor.employee_id IS DISTINCT FROM source_employee
+     OR predecessor.assignment_kind IS DISTINCT FROM source_kind
+     OR predecessor.effective_from IS DISTINCT FROM source_from
+     OR predecessor.supersedes_id IS DISTINCT FROM source_supersedes
+     OR predecessor.effective_until IS DISTINCT FROM effect_from
+     OR result.section_offering_id IS DISTINCT FROM req.target_ref
+     OR result.subject_id IS DISTINCT FROM subject_id
+     OR result.supersedes_id IS DISTINCT FROM source_id
+     OR result.employee_id IS DISTINCT FROM employee
+     OR result.assignment_kind IS DISTINCT FROM kind
+     OR result.effective_from IS DISTINCT FROM effect_from
+     OR result.effective_until IS DISTINCT FROM effect_until
+     OR result.reason IS DISTINCT FROM req.reason
+     OR NULLIF(receipt.result_summary->>'subject_id','')::uuid IS DISTINCT FROM subject_id
+     OR NULLIF(receipt.result_summary->>'source_assignment_id','')::uuid IS DISTINCT FROM source_id
+     OR NULLIF(receipt.result_summary->>'source_employee_id','')::uuid IS DISTINCT FROM source_employee
+     OR NULLIF(receipt.result_summary->>'source_assignment_kind','') IS DISTINCT FROM source_kind
+     OR (receipt.result_summary->>'employee_id')::uuid IS DISTINCT FROM employee
+     OR receipt.result_summary->>'assignment_kind' IS DISTINCT FROM kind
+     OR (receipt.result_summary->>'effective_from')::date IS DISTINCT FROM effect_from
+     OR NULLIF(receipt.result_summary->>'effective_until','')::date IS DISTINCT FROM effect_until
+  THEN
+    RAISE EXCEPTION 'D1 Subject assignment application request/receipt binding invalid';
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_application_receipt_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER d1_teaching_subject_assignment_application_receipt_guard
+  BEFORE INSERT ON app_private.approval_applications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_teaching_subject_assignment_application_receipt_guard();
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app TO schoolos_teaching_executor;
+SET ROLE schoolos_teaching_executor;
+
+CREATE FUNCTION app.d1_change_subject_teacher_assignment(
+  p_section_offering_id uuid,p_subject_id uuid,p_expected_section_version bigint,p_action text,
+  p_source_assignment_id uuid,p_expected_source_employee_id uuid,
+  p_expected_source_assignment_kind text,p_expected_source_effective_from date,
+  p_expected_source_supersedes_id uuid,p_employee_id uuid,p_assignment_kind text,
+  p_effective_from date,p_effective_until date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(
+  assignment_id uuid,section_offering_id uuid,subject_id uuid,action text,
+  source_employee_id uuid,source_assignment_kind text,employee_id uuid,
+  assignment_kind text,effective_from date,effective_until date,section_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE

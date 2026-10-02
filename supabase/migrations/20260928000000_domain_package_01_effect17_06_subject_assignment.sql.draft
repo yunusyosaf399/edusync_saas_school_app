@@ -1,0 +1,156 @@
+) RETURNS TABLE(candidate_principal_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; requester_person uuid; payload jsonb; subject_id uuid;
+BEGIN
+  SELECT r.requester_id,r.target_ref,r.old_snapshot,r.requested_payload,t.reviewer_role_id
+    INTO ctx
+    FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+    JOIN app_private.approval_request_steps s ON s.request_id=r.id AND s.id=p_step
+    JOIN app_private.approval_step_templates t
+      ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+   WHERE r.id=p_request AND r.state='PENDING' AND s.state='OPEN'
+     AND o.code='teaching.subject_assignment.change' AND o.contract_version=1 AND o.enabled
+     AND t.required_reviews=1 AND s.required_reviews=1
+     AND rp.code='teaching.assignment.approve' AND rp.state='ENABLED'
+     AND NOT rp.family_safe AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE';
+  IF NOT FOUND OR NOT app_private.d1_teaching_subject_assignment_request_payload_valid(
+      ctx.old_snapshot,ctx.requested_payload) THEN RETURN; END IF;
+
+  payload:=ctx.old_snapshot||ctx.requested_payload;
+  subject_id:=NULLIF(payload->>'subject_id','')::uuid;
+  SELECT p.person_id INTO requester_person FROM app_private.principals p
+   WHERE p.id=ctx.requester_id;
+  IF requester_person IS NULL OR subject_id IS NULL THEN RETURN; END IF;
+
+  RETURN QUERY
+  SELECT p.id FROM app_private.principals p
+   WHERE p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL
+     AND p.id<>ctx.requester_id AND p.person_id<>requester_person
+     AND app_private.d1_teaching_subject_assignment_authorized(
+       p.id,'teaching.assignment.approve',ctx.target_ref,subject_id,ctx.reviewer_role_id)
+   ORDER BY p.id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_candidates(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_candidates(uuid,uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_reviews_live(p_request uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  req record; s record; reviewer uuid; reviewer_person uuid; requester_person uuid;
+  subject_id uuid; payload jsonb; n bigint; steps bigint:=0;
+BEGIN
+  SELECT r.requester_id,r.target_ref,r.old_snapshot,r.requested_payload,
+         requester.person_id AS requester_person_id
+    INTO req
+    FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+    JOIN app_private.principals requester ON requester.id=r.requester_id
+   WHERE r.id=p_request AND r.state='APPROVED'
+     AND o.code='teaching.subject_assignment.change'
+     AND rp.code='teaching.assignment.approve' AND rp.state='ENABLED'
+     AND NOT rp.family_safe;
+  IF NOT FOUND OR req.requester_person_id IS NULL
+     OR NOT app_private.d1_teaching_subject_assignment_request_payload_valid(
+       req.old_snapshot,req.requested_payload) THEN RETURN false; END IF;
+
+  payload:=req.old_snapshot||req.requested_payload;
+  subject_id:=NULLIF(payload->>'subject_id','')::uuid;
+  IF subject_id IS NULL THEN RETURN false; END IF;
+  requester_person:=req.requester_person_id;
+
+  FOR s IN
+    SELECT x.id,x.state,t.reviewer_role_id,t.selection_resolver_key
+      FROM app_private.approval_request_steps x
+      JOIN app_private.approval_step_templates t
+        ON t.id=x.template_id AND t.policy_id=x.policy_id
+       AND t.step_number=x.step_number
+     WHERE x.request_id=p_request ORDER BY x.step_number
+  LOOP
+    steps:=steps+1;
+    IF s.state<>'APPROVED' OR s.selection_resolver_key<>'D1_REVIEWER_ROLE_SCOPE' THEN
+      RETURN false;
+    END IF;
+    SELECT count(*),min(v.reviewer_id::text)::uuid INTO n,reviewer
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=v.step_id
+       AND a.reviewer_id=v.reviewer_id
+     WHERE v.step_id=s.id AND v.decision='APPROVE'
+       AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+    SELECT p.person_id INTO reviewer_person FROM app_private.principals p
+     WHERE p.id=reviewer AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+    IF n<>1 OR reviewer_person IS NULL OR reviewer_person=requester_person
+       OR NOT app_private.d1_teaching_subject_assignment_authorized(
+         reviewer,'teaching.assignment.approve',req.target_ref,subject_id,s.reviewer_role_id)
+    THEN RETURN false; END IF;
+  END LOOP;
+  RETURN steps>0;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_reviews_live(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_reviews_live(uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_participant(
+  p_request uuid,p_actor uuid
+) RETURNS text
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  req record; actor_person uuid; requester_person uuid; final_step integer;
+  subject_id uuid; payload jsonb; decided record;
+BEGIN
+  IF p_request IS NULL OR p_actor IS NULL
+     OR app_private.current_principal_id() IS DISTINCT FROM p_actor THEN RETURN NULL; END IF;
+
+  SELECT r.requester_id,r.target_ref,r.old_snapshot,r.requested_payload,
+         requester.person_id AS requester_person_id
+    INTO req
+    FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.principals requester ON requester.id=r.requester_id
+   WHERE r.id=p_request AND o.code='teaching.subject_assignment.change';
+  IF NOT FOUND OR NOT app_private.d1_teaching_subject_assignment_request_payload_valid(
+      req.old_snapshot,req.requested_payload) THEN RETURN NULL; END IF;
+
+  payload:=req.old_snapshot||req.requested_payload;
+  subject_id:=NULLIF(payload->>'subject_id','')::uuid;
+  IF subject_id IS NULL THEN RETURN NULL; END IF;
+
+  IF req.requester_id=p_actor
+     AND app_private.d1_teaching_subject_assignment_authorized(
+       p_actor,'teaching.subject_assignment.change',req.target_ref,subject_id,NULL)
+  THEN RETURN 'REQUESTER'; END IF;
+
+  SELECT p.person_id INTO actor_person FROM app_private.principals p
+   WHERE p.id=p_actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+  requester_person:=req.requester_person_id;
+  IF actor_person IS NULL OR requester_person IS NULL OR p_actor=req.requester_id
+     OR actor_person=requester_person THEN RETURN NULL; END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM app_private.approval_request_steps s
+    JOIN app_private.approval_step_templates t
+      ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+    JOIN app_private.approval_step_reviewers a ON a.step_id=s.id
+     WHERE s.request_id=p_request AND s.state='OPEN'
+       AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+       AND a.reviewer_id=p_actor AND a.withdrawn_at IS NULL
+       AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+       AND (SELECT count(*) FROM app_private.approval_step_reviewers exactly_one
+             WHERE exactly_one.step_id=s.id AND exactly_one.reviewer_id=p_actor
+               AND exactly_one.withdrawn_at IS NULL
+               AND exactly_one.assignment_reason='D1_REVIEWER_ROLE_SCOPE')=1
+       AND app_private.d1_teaching_subject_assignment_authorized(
+         p_actor,'teaching.assignment.approve',req.target_ref,subject_id,t.reviewer_role_id)
+       AND EXISTS (
+         SELECT 1 FROM app_private.d1_teaching_subject_assignment_candidates(
+           p_request,s.id) c WHERE c.candidate_principal_id=p_actor)
+  ) THEN RETURN 'OPEN_REVIEWER'; END IF;
+
+  SELECT max(s.step_number) INTO final_step

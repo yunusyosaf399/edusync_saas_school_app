@@ -1,0 +1,5 @@
+GRANT EXECUTE ON FUNCTION app.d1_read_subject_teacher_assignment_request(uuid)
+  TO authenticated;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;

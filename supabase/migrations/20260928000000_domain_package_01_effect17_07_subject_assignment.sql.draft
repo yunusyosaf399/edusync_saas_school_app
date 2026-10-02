@@ -1,0 +1,143 @@
+    FROM app_private.approval_request_steps s WHERE s.request_id=p_request;
+  FOR decided IN
+    SELECT s.step_number,s.state,t.reviewer_role_id,t.selection_resolver_key,
+           v.decision,a.assignment_reason
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t
+        ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=s.id
+       AND a.reviewer_id=v.reviewer_id
+     WHERE s.request_id=p_request AND v.reviewer_id=p_actor
+  LOOP
+    IF decided.state IN ('APPROVED','REJECTED')
+       AND decided.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+       AND decided.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+       AND app_private.d1_teaching_subject_assignment_authorized(
+         p_actor,'teaching.assignment.approve',req.target_ref,subject_id,
+         decided.reviewer_role_id) THEN
+      IF decided.step_number=final_step AND decided.decision='APPROVE'
+         AND decided.state='APPROVED' THEN RETURN 'FINAL_APPROVER'; END IF;
+      RETURN 'DECIDED_REVIEWER';
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_participant(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_participant(uuid,uuid)
+  TO schoolos_workflow_executor,schoolos_read_executor;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_receipt(
+  p_phase text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+  p_expected_section_version bigint,p_request uuid,p_request_version bigint,
+  p_state text,p_result_kind text,p_result_ref uuid,p_summary jsonb,p_error text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE new_id uuid:=pg_catalog.gen_random_uuid(); op_code text;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o
+   WHERE o.id=p_operation AND o.code='teaching.subject_assignment.change'
+     AND o.contract_version=1 AND o.enabled;
+  IF op_code IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN (op_code,'request.submit','request.review','request.apply')
+     OR p_key IS NULL OR pg_catalog.length(p_key) NOT BETWEEN 1 AND 200
+     OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+     OR p_expected_section_version IS NULL OR p_expected_section_version<1
+     OR (p_phase=op_code AND (p_request IS NOT NULL OR p_request_version IS NOT NULL))
+     OR (p_phase<>op_code AND p_request IS NULL)
+     OR p_state NOT IN ('SUCCEEDED','REJECTED')
+     OR (p_state='SUCCEEDED' AND (
+       p_result_kind IS NULL OR p_result_ref IS NULL OR p_error IS NOT NULL))
+     OR (p_state='REJECTED' AND (
+       p_phase<>'request.apply' OR p_error IS NULL OR p_result_ref IS NOT NULL))
+     OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+  THEN RAISE EXCEPTION 'D1 Subject assignment receipt intent denied'; END IF;
+
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,
+     canonicalization_version,expected_target_version,request_id,expected_request_version,
+     state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (
+    new_id,p_actor,p_operation,p_phase,p_key,p_hash,1,p_expected_section_version,
+    p_request,p_request_version,p_state,p_result_kind,p_result_ref,p_summary,p_error,
+    pg_catalog.transaction_timestamp(),p_actor);
+  RETURN new_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_receipt(
+  text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_receipt(
+  text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_audit(
+  p_actor uuid,p_phase text,p_action text,p_section uuid,p_subject uuid,
+  p_assignment uuid,p_source uuid,p_source_employee uuid,p_source_kind text,
+  p_employee uuid,p_kind text,p_receipt uuid,p_request uuid,p_section_version bigint,
+  p_effective_from date,p_effective_until date,p_outcome text,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN ('DIRECT','SUBMIT','REVIEW','APPLY')
+     OR (p_action IS NOT NULL AND p_action NOT IN ('ADD','END','CORRECT'))
+     OR p_section IS NULL OR p_receipt IS NULL
+     OR (p_subject IS NULL AND NOT (p_phase='APPLY' AND p_outcome='REJECTED'))
+     OR p_section_version IS NULL OR p_section_version<1
+     OR p_outcome NOT IN ('SUCCEEDED','REJECTED') OR p_correlation IS NULL
+  THEN RAISE EXCEPTION 'D1 Subject assignment audit intent denied'; END IF;
+
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
+     target_kind,target_ref,command_receipt_id,approval_request_id,source_kind,
+     correlation_id,details,created_by)
+  VALUES (
+    p_actor,'INDIVIDUAL',p_outcome,
+    pg_catalog.jsonb_build_object(
+      'operation','teaching.subject_assignment.change','phase',p_phase),
+    p_section_version,'teaching.subject_assignment.change','SECTION',p_section,
+    p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object(
+      'action',p_action,'section_offering_id',p_section,'subject_id',p_subject,
+      'assignment_id',p_assignment,'source_assignment_id',p_source,
+      'source_employee_id',p_source_employee,'source_assignment_kind',p_source_kind,
+      'employee_id',p_employee,'assignment_kind',p_kind,
+      'effective_from',p_effective_from,'effective_until',p_effective_until),
+    p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_teaching_subject_assignment_audit(
+  uuid,text,text,uuid,uuid,uuid,uuid,uuid,text,uuid,text,uuid,uuid,bigint,date,date,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_audit(
+  uuid,text,text,uuid,uuid,uuid,uuid,uuid,text,uuid,text,uuid,uuid,bigint,date,date,text,uuid)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_teaching_subject_assignment_event(
+  p_actor uuid,p_action text,p_section uuid,p_subject uuid,p_assignment uuid,p_source uuid,
+  p_source_employee uuid,p_source_kind text,p_employee uuid,p_kind text,p_receipt uuid,
+  p_section_version bigint,p_effective_from date,p_effective_until date,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_action NOT IN ('ADD','END','CORRECT') OR p_section IS NULL OR p_subject IS NULL
+     OR p_assignment IS NULL OR p_employee IS NULL OR p_kind IS NULL OR p_receipt IS NULL
+     OR p_section_version IS NULL OR p_section_version<1
+     OR p_effective_from IS NULL OR p_correlation IS NULL
+  THEN RAISE EXCEPTION 'D1 Subject assignment outbox intent denied'; END IF;
+
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+     event_ordinal,correlation_id,payload,created_by)
+  VALUES (
+    'teaching.subject_assignment_changed','SUBJECT_TEACHER_ASSIGNMENT',p_assignment,1,
+    p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object(
