@@ -1,0 +1,36 @@
+-- D1C1B effect 18/36 Employee Restricted Identity outbox aggregate correction.
+-- Static non-executable continuation only.
+-- Retained-history effects publish the newly created history object as the aggregate
+-- at version 1; the parent Employee row is only the business target/concurrency anchor.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE OR REPLACE FUNCTION app_private.d1_employee_identity_event(
+  p_actor uuid,p_employee uuid,p_snapshot uuid,p_receipt uuid,
+  p_employee_version bigint,p_effective_from timestamptz,p_cleared boolean,
+  p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_employee IS NULL OR p_snapshot IS NULL OR p_receipt IS NULL
+     OR p_employee_version IS NULL OR p_employee_version<1
+     OR p_effective_from IS NULL OR p_cleared IS NULL OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Employee identity event intent denied'; END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+     event_ordinal,correlation_id,payload,created_by)
+  VALUES ('employee.identity_corrected','EMPLOYEE_IDENTITY',p_snapshot,1,
+    p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('employee_id',p_employee,
+      'identity_snapshot_id',p_snapshot,'effective_from',p_effective_from,
+      'cleared',p_cleared),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_identity_event(
+  uuid,uuid,uuid,uuid,bigint,timestamptz,boolean,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_event(
+  uuid,uuid,uuid,uuid,bigint,timestamptz,boolean,uuid)
+  TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
