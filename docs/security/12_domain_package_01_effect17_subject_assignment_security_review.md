@@ -1,6 +1,6 @@
 # D1C1B Effect 17/36 — Subject Teacher Assignment Security Review
 
-Status: **candidate pending independent review and CI**.
+Status: **FROZEN after corrective independent review and CI; see freeze note below.**
 
 Baseline: `6b60fb5d93ab13359682837cfb948a16234e0ede`.
 
@@ -79,5 +79,13 @@ EXECUTE and are granted only to the narrow NOLOGIN executor roles that need them
 Relation-34 broad provisional SELECT/INSERT is replaced with explicit retained
 history columns; the previously reviewed one-way history end update remains.
 
-The 14 ordered continuations are `.sql.draft` files and are not executed. They do not change the 97/322/36
+The 15 ordered continuations are `.sql.draft` files and are not executed. They do not change the 97/322/36
 catalog manifests and do not authorize D1C2 or any remote Supabase action.
+
+The independent audit of `60fc799629971e70004499762505f7b1377042f5` found one current-authority flaw in P2 apply: malformed stored request payload could fall back to original requester identity before exact Subject authority was resolved. Correction commit `af916100936b33c71b0ce4711389e6ada108a086` removes that fallback. A malformed stored request now fails closed before participant resolution or receipt replay and causes no workflow/domain/evidence mutation. Valid deterministic business/state failures retain the approved APPROVED→INVALIDATED + REJECTED `request.apply` behavior. The same audit records that the older TS structural catalog still contains a CLASS alternative, but the later product-approved protected effect intentionally rejects CLASS for both mutation and review; no registrar-count rewrite occurs in effect 17.
+
+## Independent freeze note — effect 17/36
+
+Correction commit `af916100936b33c71b0ce4711389e6ada108a086` passed independent authorization/ACL/workflow review and GitHub Actions run `36976293526` / run **#41**. Actions checked out the exact correction SHA. The run passed **121/121** tooling tests, frozen Foundation source/config gates, all nine frozen Foundation migrations, lint error/warning gates and **220/220** frozen Foundation pgTAP assertions. Final review rechecked complete live ALL/matching-CAMPUS/exact-SECTION/exact-SUBJECT authorization with CLASS alone denied, configured reviewer role plus `teaching.assignment.approve`, requester/reviewer Person separation, no-self-assignment, UUID-sorted Employee locking and frozen academic-path lock order, full-interval eligibility, open-lineage/no-op/overlap rules, malformed-request fail-closed handling, current-authority replay/apply checks, application/receipt binding, bounded checked request disclosure, reason redaction and one successful `teaching.subject_assignment_changed` event.
+
+`teaching.subject_assignment.change` is frozen as effect **17/36** at implementation SHA `af916100936b33c71b0ce4711389e6ada108a086`; corrective audit documentation is at `b7ed5c7e83cc8b803258796a74b6f81990d102cb`. Migration 10 and all effect-17 continuations remain static, unexecuted `.sql.draft` artifacts. This freeze does not authorize D1C2, Migration 10 application, staging/remote Supabase execution, or effect-18 implementation.

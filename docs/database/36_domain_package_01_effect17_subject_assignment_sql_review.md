@@ -1,6 +1,6 @@
 # D1C1B Effect 17/36 — Subject Teacher Assignment SQL Review
 
-Status: **implementation candidate; not frozen until independent review and CI gate pass**.
+Status: **FROZEN after corrective independent review and CI; see freeze note below.**
 
 Baseline: `6b60fb5d93ab13359682837cfb948a16234e0ede` (effect 16 corrected re-freeze).
 Operation: `teaching.subject_assignment.change`.
@@ -18,15 +18,16 @@ Static SQL continuations, in exact concatenation/review order:
 11. `supabase/migrations/20260928000000_domain_package_01_effect17_11_subject_assignment.sql.draft`
 12. `supabase/migrations/20260928000000_domain_package_01_effect17_12_subject_assignment.sql.draft`
 13. `supabase/migrations/20260928000000_domain_package_01_effect17_13_subject_assignment.sql.draft`
-14. `supabase/migrations/20260928000000_domain_package_01_effect17_14_subject_assignment.sql.draft`.
+14. `supabase/migrations/20260928000000_domain_package_01_effect17_14_subject_assignment.sql.draft`
+15. `supabase/migrations/20260928000000_domain_package_01_effect17_15_subject_assignment_apply_correction.sql.draft`.
 
 ## Packaging
 
 The repository's Migration 10 remains the non-executable
 `20260928000000_domain_package_01.sql.draft`. Because the connected GitHub write
 surface cannot safely patch the very large frozen draft in place, effect 17 is
-stored as **14 ordered non-executable continuation drafts**. It is not an independently
-authorized migration. Static review treats the original Migration-10 draft followed by these 14 ordered continuations as one unit. Before any future D1C2/runtime
+stored as **15 ordered non-executable continuation drafts**. It is not an independently
+authorized migration. Static review treats the original Migration-10 draft followed by these 15 ordered continuations as one unit. Before any future D1C2/runtime
 authorization, the continuation must be folded/reconciled into the executable
 migration package and validated as a whole.
 
@@ -126,4 +127,10 @@ Authenticated RPCs:
 - No executable `.sql` file, D1C2 artifact, remote deployment action, or manifest row
   is introduced by this candidate.
 
-CI for the pushed candidate remains a gate, not evidence available at authoring time.
+The independent audit of candidate `60fc799629971e70004499762505f7b1377042f5` found the malformed-P2-payload participant fallback and recorded the older TS/CLASS structural-catalog conflict. Correction commit `af916100936b33c71b0ce4711389e6ada108a086` removes the payload fallback; `b7ed5c7e83cc8b803258796a74b6f81990d102cb` records the operation-specific CLASS denial without changing the frozen 97/322/36 registrar counts.
+
+## Independent freeze note — effect 17/36
+
+Correction commit `af916100936b33c71b0ce4711389e6ada108a086` passed independent source review and GitHub Actions run `36976293526` / run **#41**. The run checked out that exact SHA and completed **121/121** Supabase tooling unit tests, `FOUNDATION_SOURCE_PASS 9 migrations + 9 tests`, `LOCAL_CONFIG_PASS`, lint error/warning gates, all nine frozen Foundation migrations, and **220/220** frozen Foundation pgTAP assertions. Final review confirmed the approved P0/P2 date routing, same Section+Subject retained lineage, kind-changing correction, open-head/no-op rules, full-interval employment and Teacher-Capability coverage, PRIMARY uniqueness, CO_TEACHER coexistence, bounded SUBSTITUTE behavior, no-self-assignment, UUID-ordered Employee locks followed by Academic Class → Campus → Academic Year → Class Offering → Section Offering → Subject → history, ALL/matching-CAMPUS/exact-SECTION/exact-SUBJECT authorization with CLASS alone denied, current requester/reviewer authority, Person separation, deterministic valid-request invalidation, malformed-request fail-closed behavior, receipt/application binding, checked-read minimization and single `teaching.subject_assignment_changed` success event.
+
+`teaching.subject_assignment.change` is therefore frozen as effect **17/36** at implementation SHA `af916100936b33c71b0ce4711389e6ada108a086`, with the corrective audit record at `b7ed5c7e83cc8b803258796a74b6f81990d102cb`. Migration 10 and all 15 continuations remain static `.sql.draft` artifacts and unexecuted; this freeze does not authorize D1C2, Migration 10 application, staging/remote Supabase execution, or any effect-18 implementation.
