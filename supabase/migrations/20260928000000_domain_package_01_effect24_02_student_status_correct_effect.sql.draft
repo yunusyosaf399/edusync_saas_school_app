@@ -1,0 +1,118 @@
+-- Effect 24 factual supersession, full-chain validation and projection recomputation.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+
+CREATE FUNCTION app_private.d1_student_status_correct_preflight(
+  p_student uuid,p_expected_version bigint,p_source uuid,p_expected_source_status text,p_expected_source_effective_on date,
+  p_new_status text,p_new_effective_on date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text,derived_previous_status text,next_sequence bigint,resulting_current_status text,scope_date date)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE s app_private.students%ROWTYPE; src app_private.student_status_transitions%ROWTYPE; r record; prev text:=NULL; seq bigint; current_result text:=NULL;
+  source_is_authoritative boolean; status_ok boolean:=true; source_date date; source_status text; enrollment_conflict boolean:=false;
+BEGIN
+  IF p_student IS NULL OR p_expected_version IS NULL OR p_expected_version<1 OR p_source IS NULL
+     OR p_expected_source_status NOT IN ('ACTIVE','SUSPENDED','WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED','ALUMNI')
+     OR p_new_status NOT IN ('ACTIVE','SUSPENDED','WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED','ALUMNI')
+     OR p_expected_source_effective_on IS NULL OR p_new_effective_on IS NULL OR p_new_effective_on>pg_catalog.statement_timestamp()::date
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+  THEN RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_PAYLOAD_INVALID',NULL::text,NULL::bigint,NULL::text,NULL::date; RETURN; END IF;
+  SELECT * INTO s FROM app_private.students WHERE id=p_student FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_STUDENT_MISSING',NULL::text,NULL::bigint,NULL::text,NULL::date; RETURN; END IF;
+  IF s.row_version IS DISTINCT FROM p_expected_version THEN RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_VERSION_STALE',NULL::text,NULL::bigint,NULL::text,NULL::date; RETURN; END IF;
+  PERFORM 1 FROM app_private.student_status_transitions t WHERE t.student_id=p_student ORDER BY t.sequence_number FOR UPDATE;
+  SELECT * INTO src FROM app_private.student_status_transitions t WHERE t.id=p_source AND t.student_id=p_student;
+  IF NOT FOUND THEN RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_SOURCE_MISSING',NULL::text,NULL::bigint,NULL::text,NULL::date; RETURN; END IF;
+  source_date:=src.effective_on; source_status:=src.new_status;
+  IF src.new_status IS DISTINCT FROM p_expected_source_status OR src.effective_on IS DISTINCT FROM p_expected_source_effective_on THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_SOURCE_STALE',NULL::text,NULL::bigint,NULL::text,NULL::date; RETURN; END IF;
+  source_is_authoritative:=NOT EXISTS (SELECT 1 FROM app_private.student_status_transitions x WHERE x.student_id=p_student AND x.supersedes_id=src.id);
+  IF NOT source_is_authoritative THEN RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_SOURCE_SUPERSEDED',NULL::text,NULL::bigint,NULL::text,NULL::date; RETURN; END IF;
+  IF p_new_status IS NOT DISTINCT FROM src.new_status AND p_new_effective_on IS NOT DISTINCT FROM src.effective_on THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_NOOP',NULL::text,NULL::bigint,NULL::text,NULL::date; RETURN; END IF;
+  SELECT pg_catalog.coalesce(pg_catalog.max(t.sequence_number),0)+1 INTO seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
+
+  -- Rebuild the authoritative chain: existing non-superseded events except source, plus candidate correction.
+  prev:=NULL; current_result:=NULL;
+  FOR r IN
+    WITH authoritative AS (
+      SELECT t.id,t.previous_status,t.new_status,t.effective_on,t.sequence_number,false AS candidate
+      FROM app_private.student_status_transitions t
+      WHERE t.student_id=p_student AND t.id<>p_source
+        AND NOT EXISTS (SELECT 1 FROM app_private.student_status_transitions x WHERE x.student_id=p_student AND x.supersedes_id=t.id)
+      UNION ALL
+      SELECT NULL::uuid,NULL::text,p_new_status,p_new_effective_on,seq,true
+    ) SELECT * FROM authoritative ORDER BY effective_on,sequence_number
+  LOOP
+    IF prev IS NULL THEN
+      IF r.candidate IS false AND r.previous_status IS NOT NULL THEN status_ok:=false; EXIT; END IF;
+    ELSE
+      IF app_private.d1_student_status_edge_valid(prev,r.new_status) IS DISTINCT FROM true THEN status_ok:=false; EXIT; END IF;
+      IF r.candidate IS false AND r.previous_status IS DISTINCT FROM prev THEN status_ok:=false; EXIT; END IF;
+    END IF;
+    IF r.candidate THEN derived_previous_status:=prev; END IF;
+    prev:=r.new_status; current_result:=r.new_status;
+  END LOOP;
+  IF status_ok IS DISTINCT FROM true OR current_result IS NULL THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_CHAIN_INVALID',derived_previous_status,seq,current_result,p_new_effective_on; RETURN; END IF;
+
+  -- Correction never rewrites enrollment/roll facts. Detect the approved cross-domain contradictions instead.
+  IF p_new_status IN ('WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED') THEN
+    enrollment_conflict:=EXISTS (SELECT 1 FROM app_private.enrollments e WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+      AND e.effective_from<p_new_effective_on AND (e.effective_until IS NULL OR p_new_effective_on<e.effective_until));
+  ELSIF p_new_status IN ('ACTIVE','SUSPENDED') AND src.new_status IN ('WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED') THEN
+    enrollment_conflict:=EXISTS (SELECT 1 FROM app_private.enrollments e WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+      AND e.effective_until=src.effective_on AND NOT EXISTS (SELECT 1 FROM app_private.enrollments c WHERE c.student_id=p_student AND c.placement_kind='PRIMARY'
+        AND c.effective_from<=p_new_effective_on AND (c.effective_until IS NULL OR p_new_effective_on<c.effective_until)));
+  END IF;
+  IF enrollment_conflict THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_ENROLLMENT_CONFLICT',derived_previous_status,seq,current_result,p_new_effective_on; RETURN; END IF;
+  RETURN QUERY SELECT true,NULL::text,derived_previous_status,seq,current_result,p_new_effective_on;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_correct_preflight(uuid,bigint,uuid,text,date,text,date,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_correct_preflight(uuid,bigint,uuid,text,date,text,date,text) TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_status_correct_effect(
+  p_actor uuid,p_student uuid,p_expected_version bigint,p_source uuid,p_expected_source_status text,p_expected_source_effective_on date,
+  p_new_status text,p_new_effective_on date,p_reason text,p_command_receipt uuid DEFAULT NULL
+) RETURNS TABLE(transition_id uuid,sequence_number bigint,student_version bigint,previous_status text,resulting_status text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; tid uuid:=pg_catalog.gen_random_uuid(); new_version bigint;
+BEGIN
+  SELECT * INTO pre FROM app_private.d1_student_status_correct_preflight(p_student,p_expected_version,p_source,p_expected_source_status,
+    p_expected_source_effective_on,p_new_status,p_new_effective_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Student status correction effect denied: %',pre.error_code; END IF;
+  INSERT INTO app_private.student_status_transitions
+    (id,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id)
+  VALUES (tid,p_actor,p_student,pre.derived_previous_status,p_new_status,p_new_effective_on,pre.next_sequence,pg_catalog.btrim(p_reason),p_source,p_command_receipt);
+  UPDATE app_private.students SET current_status=pre.resulting_current_status,row_version=row_version+1,updated_at=pg_catalog.statement_timestamp()
+    WHERE id=p_student AND row_version=p_expected_version RETURNING row_version INTO new_version;
+  IF new_version IS NULL THEN RAISE EXCEPTION 'D1 Student status correction Student changed'; END IF;
+  RETURN QUERY SELECT tid,pre.next_sequence,new_version,pre.derived_previous_status,pre.resulting_current_status;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_correct_effect(uuid,uuid,bigint,uuid,text,date,text,date,text,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_correct_effect(uuid,uuid,bigint,uuid,text,date,text,date,text,uuid) TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_student_status_correct_candidates(p_request uuid,p_step uuid)
+RETURNS TABLE(candidate_principal_id uuid) LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; templ record; requester_person uuid; affected date;
+BEGIN
+  SELECT q.* INTO req FROM app_private.approval_requests q JOIN app_private.operation_contracts o ON o.id=q.operation_id
+    WHERE q.id=p_request AND o.code='student.status.correct';
+  SELECT t.* INTO templ FROM app_private.approval_request_steps s JOIN app_private.approval_step_templates t ON t.id=s.template_id
+    WHERE s.id=p_step AND s.request_id=p_request;
+  IF req.id IS NULL OR templ.id IS NULL OR templ.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE' THEN RETURN; END IF;
+  BEGIN affected:=NULLIF(req.requested_payload->>'effective_on','')::date; EXCEPTION WHEN OTHERS THEN RETURN; END;
+  SELECT p.person_id INTO requester_person FROM app_private.principals p WHERE p.id=req.requester_id;
+  RETURN QUERY SELECT p.id FROM app_private.principals p WHERE p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL
+    AND p.id<>req.requester_id AND p.person_id<>requester_person
+    AND app_private.d1_student_status_correct_authorized(p.id,'student.status.approve',req.target_ref,affected,templ.reviewer_role_id)
+    ORDER BY p.id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_correct_candidates(uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_correct_candidates(uuid,uuid) TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
