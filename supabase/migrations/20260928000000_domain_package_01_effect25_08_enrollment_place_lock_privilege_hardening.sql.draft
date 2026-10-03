@@ -1,0 +1,37 @@
+-- Effect 25 audit correction: do not widen Student executor access to frozen Foundation school_profiles.
+-- Roll policy + allocator are the S anchors; destination school ancestry is revalidated after those locks.
+
+SET ROLE schoolos_schema_owner;
+REVOKE UPDATE (id) ON app_private.school_profiles FROM schoolos_student_executor;
+REVOKE SELECT (id) ON app_private.school_profiles FROM schoolos_student_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_place_prelock_roll(p_section uuid,p_effective_from date)
+RETURNS TABLE(school_id uuid,class_offering_id uuid,policy_revision_id uuid,policy_mode text,allocator_id uuid,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE d record; pol app_private.roll_policy_revisions%ROWTYPE; a app_private.roll_allocator_states%ROWTYPE; n bigint;
+BEGIN
+  IF p_section IS NULL OR p_effective_from IS NULL THEN
+    RETURN QUERY SELECT NULL::uuid,NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,'D1_ENROLLMENT_PLACE_ROLL_PRELOCK_INVALID'; RETURN; END IF;
+  SELECT co.school_id,co.id class_offering_id INTO d FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_section;
+  IF NOT FOUND THEN RETURN QUERY SELECT NULL::uuid,NULL::uuid,NULL::uuid,NULL::text,NULL::uuid,'D1_ENROLLMENT_PLACE_DESTINATION_MISSING'; RETURN; END IF;
+  SELECT count(*) INTO n FROM app_private.roll_policy_revisions r WHERE r.school_id=d.school_id
+    AND r.effective_from<=p_effective_from AND (r.effective_until IS NULL OR p_effective_from<r.effective_until);
+  IF n<>1 THEN RETURN QUERY SELECT d.school_id,d.class_offering_id,NULL::uuid,NULL::text,NULL::uuid,'D1_ENROLLMENT_PLACE_ROLL_POLICY_AMBIGUOUS'; RETURN; END IF;
+  SELECT * INTO pol FROM app_private.roll_policy_revisions r WHERE r.school_id=d.school_id
+    AND r.effective_from<=p_effective_from AND (r.effective_until IS NULL OR p_effective_from<r.effective_until) FOR UPDATE;
+  IF pol.mode='PERSISTENT_STUDENT' THEN
+    SELECT * INTO a FROM app_private.roll_allocator_states x WHERE x.policy_revision_id=pol.id AND x.class_offering_id IS NULL FOR UPDATE;
+  ELSIF pol.mode='ACADEMIC_CONTEXT' THEN
+    SELECT * INTO a FROM app_private.roll_allocator_states x WHERE x.policy_revision_id=pol.id AND x.class_offering_id=d.class_offering_id FOR UPDATE;
+  ELSE
+    RETURN QUERY SELECT d.school_id,d.class_offering_id,pol.id,pol.mode,NULL::uuid,'D1_ENROLLMENT_PLACE_ROLL_POLICY_MALFORMED'; RETURN;
+  END IF;
+  IF NOT FOUND THEN RETURN QUERY SELECT d.school_id,d.class_offering_id,pol.id,pol.mode,NULL::uuid,'D1_ENROLLMENT_PLACE_ROLL_ALLOCATOR_MISSING'; RETURN; END IF;
+  RETURN QUERY SELECT d.school_id,d.class_offering_id,pol.id,pol.mode,a.id,NULL::text;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
