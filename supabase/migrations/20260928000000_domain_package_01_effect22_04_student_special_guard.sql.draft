@@ -1,0 +1,44 @@
+-- Effect 22 application binding guard.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_student_special_application_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE op text; r app_private.command_receipts%ROWTYPE;
+  q app_private.approval_requests%ROWTYPE; x app_private.student_special_details%ROWTYPE;
+  p app_private.student_special_details%ROWTYPE; source_id uuid;
+BEGIN
+  SELECT code INTO op FROM app_private.operation_contracts WHERE id=NEW.operation_id;
+  IF op IS DISTINCT FROM 'student.special.correct' THEN RETURN NEW; END IF;
+  SELECT * INTO r FROM app_private.command_receipts
+   WHERE id=NEW.command_receipt_id AND operation_id=NEW.operation_id
+     AND request_id=NEW.request_id AND command_kind='request.apply'
+     AND state='SUCCEEDED' AND result_kind='D1_STUDENT_SPECIAL_APPLY'
+     AND result_ref=NEW.result_ref;
+  SELECT * INTO q FROM app_private.approval_requests
+   WHERE id=NEW.request_id AND operation_id=NEW.operation_id AND state='EXECUTED';
+  SELECT * INTO x FROM app_private.student_special_details WHERE id=NEW.result_ref;
+  IF r.id IS NULL OR q.id IS NULL OR x.id IS NULL
+     OR x.student_id IS DISTINCT FROM q.target_ref
+     OR NEW.applied_target_version IS DISTINCT FROM q.expected_target_version
+     OR r.expected_target_version IS DISTINCT FROM q.expected_target_version
+     OR r.result_summary->>'state'<>'EXECUTED'
+     OR (r.result_summary->>'special_snapshot_id')::uuid IS DISTINCT FROM x.id
+     OR (r.result_summary->>'effective_from')::timestamptz IS DISTINCT FROM x.effective_from THEN
+    RAISE EXCEPTION 'D1 Student special application binding invalid'; END IF;
+  source_id:=NULLIF(q.old_snapshot->>'source_snapshot_id','')::uuid;
+  SELECT * INTO p FROM app_private.student_special_details WHERE id=source_id;
+  IF source_id IS NULL OR p.id IS NULL OR p.student_id IS DISTINCT FROM q.target_ref
+     OR x.supersedes_id IS DISTINCT FROM source_id
+     OR p.effective_until IS DISTINCT FROM x.effective_from
+     OR p.ended_at IS NULL OR p.ended_by IS NULL
+     OR x.reason IS DISTINCT FROM q.reason OR x.effective_until IS NOT NULL
+     OR x.ended_at IS NOT NULL OR x.ended_by IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Student special lineage binding invalid'; END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_special_application_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER d1_student_special_application_guard
+  BEFORE INSERT ON app_private.approval_applications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_student_special_application_guard();
+RESET ROLE;
