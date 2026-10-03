@@ -1,0 +1,92 @@
+-- Effect 28 interval-effective ACS correction.
+-- A future committed move may label its predecessor ENDED before its exclusive end date;
+-- authorization therefore resolves accepted PRIMARY placement by interval, not label alone.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE OR REPLACE FUNCTION app_private.d1_student_emergency_contact_authorized(
+  p_principal uuid,p_permission text,p_student uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date:=at_time::date; placement record; n bigint;
+BEGIN
+  IF p_principal IS NULL OR p_student IS NULL
+     OR p_permission NOT IN ('student.emergency_contact.change','student.emergency_contact.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a JOIN app_private.roles r ON r.id=a.role_id
+     WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role AND a.principal_kind='INDIVIDUAL'
+       AND a.context_kind='INDIVIDUAL' AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  SELECT count(*) INTO n FROM app_private.enrollments e
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+     AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  IF n>1 THEN RETURN false; END IF;
+  IF n=1 THEN
+    SELECT so.id section_id,co.id class_id,co.campus_id INTO placement
+      FROM app_private.enrollments e JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+       AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id JOIN app_private.roles r ON r.id=sc.role_id
+     WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+       AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key AND c.enabled
+       AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+       AND (p_reviewer_role IS NULL OR sc.role_id=p_reviewer_role)
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+       AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+       AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until) AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+       AND sc.resolver_key='DIRECT'
+       AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+         OR (n=1 AND sc.scope_kind='CAMPUS' AND sc.campus_id=placement.campus_id)
+         OR (n=1 AND sc.scope_kind='CLASS' AND sc.class_offering_id=placement.class_id)
+         OR (n=1 AND sc.scope_kind='SECTION' AND sc.section_offering_id=placement.section_id)));
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.d1_student_emergency_contact_policy(p_student uuid)
+RETURNS TABLE(policy_id uuid,route_mode text,campus_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date:=at_time::date; target_campus uuid; n bigint;
+  school_n bigint; campus_n bigint; school_p uuid; school_r text; campus_p uuid; campus_r text; chosen uuid; route text; steps bigint; invalid bigint;
+BEGIN
+  SELECT count(*) INTO n FROM app_private.enrollments e WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+    AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED') AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  IF n>1 THEN RETURN; END IF;
+  IF n=1 THEN SELECT co.campus_id INTO target_campus FROM app_private.enrollments e
+    JOIN app_private.section_offerings so ON so.id=e.section_offering_id JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+      AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until); END IF;
+  SELECT count(*),min(v.id::text)::uuid,min(v.d1_route_mode) INTO school_n,school_p,school_r
+    FROM app_private.approval_policy_versions v JOIN app_private.operation_contracts o ON o.id=v.operation_id
+   WHERE o.code='student.emergency_contact.change' AND o.contract_version=1 AND o.enabled AND v.state='ACTIVE' AND v.campus_id IS NULL
+     AND v.d1_route_mode IN ('DIRECT','APPROVAL') AND v.effective_from<=at_time AND (v.effective_until IS NULL OR at_time<v.effective_until);
+  IF target_campus IS NULL THEN IF school_n<>1 THEN RETURN; END IF; chosen:=school_p; route:=school_r;
+  ELSE
+    SELECT count(*),min(v.id::text)::uuid,min(v.d1_route_mode) INTO campus_n,campus_p,campus_r
+      FROM app_private.approval_policy_versions v JOIN app_private.operation_contracts o ON o.id=v.operation_id
+     WHERE o.code='student.emergency_contact.change' AND o.contract_version=1 AND o.enabled AND v.state='ACTIVE' AND v.campus_id=target_campus
+       AND v.d1_route_mode IN ('DIRECT','APPROVAL') AND v.effective_from<=at_time AND (v.effective_until IS NULL OR at_time<v.effective_until);
+    IF campus_n>1 OR school_n>1 THEN RETURN; END IF;
+    IF campus_n=1 THEN chosen:=campus_p; route:=campus_r; ELSIF school_n=1 THEN chosen:=school_p; route:=school_r; ELSE RETURN; END IF;
+  END IF;
+  IF route='APPROVAL' THEN
+    SELECT count(*),count(*) FILTER (WHERE r.id IS NULL OR r.state<>'ACTIVE' OR t.required_reviews<>1
+      OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE') INTO steps,invalid
+      FROM app_private.approval_step_templates t LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id WHERE t.policy_id=chosen;
+    IF steps=0 OR invalid<>0 THEN RETURN; END IF;
+  END IF;
+  RETURN QUERY SELECT chosen,route,target_campus;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
