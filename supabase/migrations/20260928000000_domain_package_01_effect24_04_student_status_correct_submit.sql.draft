@@ -1,0 +1,74 @@
+-- Effect 24 mandatory-P2 submit.
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_submit_student_status_correction(
+ p_student_id uuid,p_expected_student_version bigint,p_source_transition_id uuid,p_expected_source_status text,
+ p_expected_source_effective_on date,p_new_status text,p_new_effective_on date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; pre record; ps record; pn record; template_row record; src record; new_request uuid:=pg_catalog.gen_random_uuid();
+ first_step uuid; candidate_count bigint; final_version bigint; receipt uuid; old_snapshot jsonb; requested jsonb;
+BEGIN
+  IF p_student_id IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1 OR p_source_transition_id IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN RAISE EXCEPTION 'D1 Student status correction submit intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_student_status_correct_command_context('request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_source_transition_id,p_expected_source_status,
+      p_expected_source_effective_on,p_new_status,p_new_effective_on,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL OR ctx.result_summary->>'state'<>'PENDING'
+      THEN RAISE EXCEPTION 'D1 Student status correction submit receipt invalid'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint; RETURN; END IF;
+  IF app_private.d1_student_status_correct_authorized_pair(ctx.actor_id,'student.status.correct',p_student_id,
+       p_expected_source_effective_on,p_new_effective_on,NULL) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Student status correction authority denied'; END IF;
+  SELECT * INTO pre FROM app_private.d1_student_status_correct_preflight(p_student_id,p_expected_student_version,p_source_transition_id,
+    p_expected_source_status,p_expected_source_effective_on,p_new_status,p_new_effective_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Student status correction denied: %',pre.error_code; END IF;
+  SELECT * INTO ps FROM app_private.d1_student_status_correct_policy(p_student_id,p_expected_source_effective_on);
+  SELECT * INTO pn FROM app_private.d1_student_status_correct_policy(p_student_id,p_new_effective_on);
+  IF ps.policy_id IS NULL OR pn.policy_id IS NULL OR ps.policy_id IS DISTINCT FROM pn.policy_id OR ps.campus_id IS DISTINCT FROM pn.campus_id THEN
+    RAISE EXCEPTION 'D1 Student status correction approval policy does not converge'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM app_private.operation_contracts o JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+    WHERE o.id=ctx.operation_id AND o.code='student.status.correct' AND o.contract_version=1 AND o.enabled
+      AND rp.code='student.status.approve' AND rp.state='ENABLED' AND NOT rp.family_safe) THEN
+    RAISE EXCEPTION 'D1 Student status correction review permission unavailable'; END IF;
+  SELECT t.previous_status,t.new_status,t.effective_on,t.sequence_number,t.supersedes_id INTO src
+    FROM app_private.student_status_transitions t WHERE t.id=p_source_transition_id AND t.student_id=p_student_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Student status correction source unavailable'; END IF;
+  old_snapshot:=pg_catalog.jsonb_build_object('source_transition_id',p_source_transition_id,'previous_status',src.previous_status,
+    'new_status',src.new_status,'effective_on',src.effective_on,'sequence_number',src.sequence_number,'supersedes_id',src.supersedes_id);
+  requested:=pg_catalog.jsonb_build_object('new_status',p_new_status,'effective_on',p_new_effective_on);
+  INSERT INTO app_private.approval_requests(id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
+    expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (new_request,ctx.operation_id,1,ps.policy_id,ctx.actor_id,ps.campus_id,p_student_id,p_expected_student_version,
+    pg_catalog.btrim(p_reason),old_snapshot,requested,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp() WHERE id=new_request;
+  FOR template_row IN SELECT t.id,t.step_number,t.required_reviews FROM app_private.approval_step_templates t
+    WHERE t.policy_id=ps.policy_id ORDER BY t.step_number LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps(id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step ELSE pg_catalog.gen_random_uuid() END,new_request,ps.policy_id,
+      template_row.id,template_row.step_number,template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Student status correction policy has no first step'; END IF;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+    SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id FROM app_private.d1_student_status_correct_candidates(new_request,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT; IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Student status correction step has no reviewer'; END IF;
+  receipt:=app_private.d1_student_status_correct_receipt('request.submit',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    p_expected_student_version,new_request,NULL,'SUCCEEDED','D1_STUDENT_STATUS_CORRECT_REQUEST',new_request,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),NULL);
+  INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+  VALUES (new_request,1,NULL,'DRAFT','D1_STUDENT_STATUS_CORRECT_DRAFT',receipt,ctx.actor_id),
+    (new_request,2,'DRAFT','SUBMITTED','D1_STUDENT_STATUS_CORRECT_SUBMIT',receipt,ctx.actor_id),
+    (new_request,3,'SUBMITTED','PENDING','D1_STUDENT_STATUS_CORRECT_OPEN',receipt,ctx.actor_id);
+  PERFORM app_private.d1_student_status_correct_audit(ctx.actor_id,'SUBMIT',p_student_id,p_source_transition_id,NULL,receipt,new_request,
+    p_expected_student_version,p_new_status,p_new_effective_on,'PENDING',pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT new_request,final_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_submit_student_status_correction(uuid,bigint,uuid,text,date,text,date,text,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_student_status_correction(uuid,bigint,uuid,text,date,text,date,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
