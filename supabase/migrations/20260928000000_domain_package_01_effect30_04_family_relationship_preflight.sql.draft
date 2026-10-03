@@ -1,0 +1,149 @@
+-- Effect 30 Student -> Family locked preflight.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app_private.d1_family_relationship_preflight(
+  p_student uuid,p_expected_student_version bigint,p_family uuid,p_expected_family_version bigint,
+  p_action text,p_source uuid,p_adult_person uuid,p_relationship_kind text,p_display_name text,
+  p_relationship_contact text,p_effective_on date,p_reason text,p_primary_replacement uuid
+) RETURNS TABLE(eligible boolean,error_code text,source_effective_from date,replacement_family_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE sver bigint; fam app_private.families%ROWTYPE; src app_private.family_relationships%ROWTYPE;
+  repl app_private.family_relationships%ROWTYPE; family_lock uuid; repl_family uuid; dup bigint;
+  ctx record; a record; normalized_name text; normalized_contact text; first_gap date;
+BEGIN
+  IF p_student IS NULL OR p_family IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1
+     OR p_expected_family_version IS NULL OR p_expected_family_version<1
+     OR p_action NOT IN ('ADD','END','CORRECT') OR p_effective_on IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_INTENT_INVALID',NULL::date,NULL::uuid; RETURN;
+  END IF;
+  IF p_primary_replacement IS NOT NULL THEN
+    SELECT r.family_id INTO repl_family FROM app_private.family_relationships r
+     WHERE r.id=p_primary_replacement AND r.student_id=p_student;
+    IF repl_family IS NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_REPLACEMENT_MISSING',NULL::date,NULL::uuid; RETURN;
+    END IF;
+  END IF;
+  SELECT s.row_version INTO sver FROM app_private.students s WHERE s.id=p_student FOR UPDATE;
+  IF sver IS NULL THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_STUDENT_MISSING',NULL::date,repl_family; RETURN;
+  END IF;
+  FOR family_lock IN
+    SELECT x FROM (VALUES (p_family),(repl_family)) AS f(x)
+     WHERE x IS NOT NULL GROUP BY x ORDER BY x
+  LOOP
+    PERFORM 1 FROM app_private.families f WHERE f.id=family_lock FOR UPDATE;
+    IF NOT FOUND THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_FAMILY_MISSING',NULL::date,repl_family; RETURN;
+    END IF;
+  END LOOP;
+  SELECT * INTO fam FROM app_private.families f WHERE f.id=p_family;
+  IF sver IS DISTINCT FROM p_expected_student_version OR fam.row_version IS DISTINCT FROM p_expected_family_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_VERSION_STALE',NULL::date,repl_family; RETURN;
+  END IF;
+
+  IF p_action='ADD' THEN
+    IF p_source IS NOT NULL OR p_primary_replacement IS NOT NULL OR fam.state<>'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_ADD_SHAPE_INVALID',NULL::date,repl_family; RETURN;
+    END IF;
+  ELSIF p_action='END' THEN
+    IF p_source IS NULL OR p_adult_person IS NOT NULL OR p_relationship_kind IS NOT NULL
+       OR p_display_name IS NOT NULL OR p_relationship_contact IS NOT NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_END_SHAPE_INVALID',NULL::date,repl_family; RETURN;
+    END IF;
+  ELSE
+    IF p_source IS NULL OR p_primary_replacement IS NOT NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_CORRECT_SHAPE_INVALID',NULL::date,repl_family; RETURN;
+    END IF;
+  END IF;
+  IF p_action<>'END' THEN
+    IF p_relationship_kind NOT IN ('FATHER','MOTHER','GUARDIAN')
+       OR (p_adult_person IS NULL AND (p_display_name IS NULL OR pg_catalog.length(pg_catalog.btrim(p_display_name))=0))
+       OR (p_display_name IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_display_name))=0)
+       OR (p_relationship_contact IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_relationship_contact))=0)
+       OR (p_adult_person IS NOT NULL AND NOT EXISTS (SELECT 1 FROM app_private.people p WHERE p.id=p_adult_person)) THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_FACTS_INVALID',NULL::date,repl_family; RETURN;
+    END IF;
+  END IF;
+
+  IF p_source IS NOT NULL THEN
+    SELECT * INTO src FROM app_private.family_relationships r
+     WHERE r.id=p_source AND r.student_id=p_student AND r.family_id=p_family FOR UPDATE;
+    IF NOT FOUND OR src.effective_until IS NOT NULL
+       OR EXISTS (SELECT 1 FROM app_private.family_relationships z WHERE z.supersedes_id=src.id) THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_SOURCE_STALE',NULL::date,repl_family; RETURN;
+    END IF;
+    IF p_effective_on<=src.effective_from THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_DATE_INVALID',src.effective_from,repl_family; RETURN;
+    END IF;
+    IF p_action='CORRECT'
+       AND src.adult_person_id IS NOT DISTINCT FROM p_adult_person
+       AND src.relationship_kind IS NOT DISTINCT FROM p_relationship_kind
+       AND src.display_name IS NOT DISTINCT FROM CASE WHEN p_display_name IS NULL THEN NULL ELSE pg_catalog.btrim(p_display_name) END
+       AND src.relationship_contact IS NOT DISTINCT FROM CASE WHEN p_relationship_contact IS NULL THEN NULL ELSE pg_catalog.btrim(p_relationship_contact) END THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_NOOP',src.effective_from,repl_family; RETURN;
+    END IF;
+  END IF;
+
+  IF p_action<>'END' THEN
+    normalized_name:=CASE WHEN p_display_name IS NULL THEN NULL ELSE pg_catalog.lower(pg_catalog.btrim(p_display_name)) END;
+    normalized_contact:=CASE WHEN p_relationship_contact IS NULL THEN NULL ELSE pg_catalog.btrim(p_relationship_contact) END;
+    SELECT count(*) INTO dup FROM app_private.family_relationships r
+     WHERE r.family_id=p_family AND r.student_id=p_student AND (p_source IS NULL OR r.id<>p_source)
+       AND p_effective_on<pg_catalog.coalesce(r.effective_until,'infinity'::date)
+       AND r.relationship_kind=p_relationship_kind
+       AND ((p_adult_person IS NOT NULL AND r.adult_person_id=p_adult_person)
+         OR (p_adult_person IS NULL AND r.adult_person_id IS NULL
+           AND pg_catalog.lower(pg_catalog.btrim(r.display_name))=normalized_name
+           AND r.relationship_contact IS NOT DISTINCT FROM normalized_contact));
+    IF dup<>0 THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_DUPLICATE_FACT',CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,repl_family; RETURN;
+    END IF;
+  END IF;
+
+  IF p_action IN ('END','CORRECT') AND EXISTS (
+    SELECT 1 FROM app_private.student_primary_family_contexts c
+     WHERE c.student_id=p_student AND c.family_relationship_id=p_source
+       AND (c.effective_until IS NULL OR p_effective_on<c.effective_until)
+       AND c.effective_from>=p_effective_on) THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_FUTURE_PRIMARY_CONFLICT',src.effective_from,repl_family; RETURN;
+  END IF;
+
+  IF p_action='END' AND p_primary_replacement IS NOT NULL THEN
+    SELECT * INTO repl FROM app_private.family_relationships r
+     WHERE r.id=p_primary_replacement AND r.student_id=p_student FOR UPDATE;
+    IF NOT FOUND OR repl.id=p_source OR repl.effective_from>p_effective_on
+       OR (repl.effective_until IS NOT NULL AND p_effective_on>=repl.effective_until) THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_REPLACEMENT_INVALID',src.effective_from,repl_family; RETURN;
+    END IF;
+    FOR ctx IN SELECT c.* FROM app_private.student_primary_family_contexts c
+      WHERE c.student_id=p_student AND c.family_relationship_id=p_source
+        AND c.effective_from<p_effective_on AND (c.effective_until IS NULL OR p_effective_on<c.effective_until)
+    LOOP
+      IF repl.effective_until IS NOT NULL AND (ctx.effective_until IS NULL OR repl.effective_until<ctx.effective_until) THEN
+        RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_REPLACEMENT_NOT_CONTAINING',src.effective_from,repl_family; RETURN;
+      END IF;
+    END LOOP;
+  END IF;
+
+  IF p_action='END' THEN
+    FOR a IN SELECT x.* FROM app_private.family_student_access x
+      WHERE x.family_id=p_family AND x.student_id=p_student
+        AND (x.effective_until IS NULL OR p_effective_on<x.effective_until)
+    LOOP
+      first_gap:=app_private.d1_family_relationship_access_first_gap(
+        p_family,p_student,p_source,pg_catalog.greatest(a.effective_from,p_effective_on),a.effective_until);
+      IF first_gap IS NOT NULL AND first_gap<=a.effective_from THEN
+        RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_FUTURE_ACCESS_CONFLICT',src.effective_from,repl_family; RETURN;
+      END IF;
+    END LOOP;
+  END IF;
+  RETURN QUERY SELECT true,NULL::text,CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,repl_family;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_relationship_preflight(uuid,bigint,uuid,bigint,text,uuid,uuid,text,text,text,date,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_relationship_preflight(uuid,bigint,uuid,bigint,text,uuid,uuid,text,text,text,date,text,uuid)
+  TO schoolos_family_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
