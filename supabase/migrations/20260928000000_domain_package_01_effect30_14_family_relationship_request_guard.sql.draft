@@ -1,0 +1,65 @@
+-- Effect 30 protected approval-request shape guard.
+-- Blocks unsupported fixture/request payloads and meaningless primary replacement intent.
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_family_relationship_request_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; family_id uuid; source_id uuid; replacement_id uuid; replacement_family uuid;
+  effective_on date; family_version bigint; action text;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'family.relationship.change' THEN RETURN NEW; END IF;
+  IF NEW.target_ref IS NULL OR NEW.expected_target_version IS NULL OR NEW.expected_target_version<1
+     OR NEW.reason IS NULL OR pg_catalog.length(pg_catalog.btrim(NEW.reason))=0
+     OR NEW.old_snapshot IS NULL OR pg_catalog.jsonb_typeof(NEW.old_snapshot)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(NEW.old_snapshot))<>2
+     OR NOT (NEW.old_snapshot ?& ARRAY['family_id','source_relationship_id'])
+     OR NEW.requested_payload IS NULL OR pg_catalog.jsonb_typeof(NEW.requested_payload)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(NEW.requested_payload))<>11
+     OR NOT (NEW.requested_payload ?& ARRAY['family_id','expected_family_version','action','source_relationship_id',
+       'adult_person_id','relationship_kind','display_name','relationship_contact','effective_on',
+       'primary_replacement_relationship_id','replacement_family_id']) THEN
+    RAISE EXCEPTION 'D1 Family relationship approval request shape invalid';
+  END IF;
+  BEGIN
+    family_id:=NULLIF(NEW.requested_payload->>'family_id','')::uuid;
+    family_version:=(NEW.requested_payload->>'expected_family_version')::bigint;
+    action:=NEW.requested_payload->>'action';
+    source_id:=NULLIF(NEW.requested_payload->>'source_relationship_id','')::uuid;
+    effective_on:=NULLIF(NEW.requested_payload->>'effective_on','')::date;
+    replacement_id:=NULLIF(NEW.requested_payload->>'primary_replacement_relationship_id','')::uuid;
+    replacement_family:=NULLIF(NEW.requested_payload->>'replacement_family_id','')::uuid;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+    RAISE EXCEPTION 'D1 Family relationship approval request values invalid';
+  END;
+  IF family_id IS NULL OR family_version<1 OR action NOT IN ('ADD','END','CORRECT') OR effective_on IS NULL
+     OR NULLIF(NEW.old_snapshot->>'family_id','')::uuid IS DISTINCT FROM family_id
+     OR NULLIF(NEW.old_snapshot->>'source_relationship_id','')::uuid IS DISTINCT FROM source_id
+     OR (action='ADD' AND (source_id IS NOT NULL OR replacement_id IS NOT NULL))
+     OR (action IN ('END','CORRECT') AND source_id IS NULL)
+     OR (action='CORRECT' AND replacement_id IS NOT NULL) THEN
+    RAISE EXCEPTION 'D1 Family relationship approval request intent invalid';
+  END IF;
+  IF replacement_id IS NULL AND replacement_family IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Family relationship replacement ancestry invalid';
+  ELSIF replacement_id IS NOT NULL THEN
+    IF action<>'END' OR NOT EXISTS (
+      SELECT 1 FROM app_private.family_relationships r
+       WHERE r.id=replacement_id AND r.student_id=NEW.target_ref AND r.family_id=replacement_family)
+      OR NOT EXISTS (
+      SELECT 1 FROM app_private.student_primary_family_contexts c
+       WHERE c.student_id=NEW.target_ref AND c.family_relationship_id=source_id
+         AND c.effective_from<effective_on AND (c.effective_until IS NULL OR effective_on<c.effective_until)) THEN
+      RAISE EXCEPTION 'D1 Family relationship primary replacement intent invalid';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_relationship_request_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_family_relationship_request_guard ON app_private.approval_requests;
+CREATE TRIGGER d1_family_relationship_request_guard
+  BEFORE INSERT ON app_private.approval_requests
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_family_relationship_request_guard();
+RESET ROLE;
