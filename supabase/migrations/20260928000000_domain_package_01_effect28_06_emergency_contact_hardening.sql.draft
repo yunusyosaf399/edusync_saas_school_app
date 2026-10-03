@@ -1,0 +1,182 @@
+-- Effect 28 independent-audit hardening: corrected request shape, typed participant read,
+-- exact approval-application binding and final public ACL closure.
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE OR REPLACE FUNCTION app.d1_review_student_emergency_contact_change(
+ p_request_id uuid,p_decision text,p_expected_request_version bigint,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; req record; step_row record; next_step record; policy_row record; assignment_id uuid; reviewer_role uuid;
+  action text; source_contact uuid; n bigint; candidate_count bigint; final_version bigint; final_state text; receipt uuid;
+BEGIN
+  IF p_request_id IS NULL OR p_decision NOT IN ('APPROVE','REJECT') OR p_expected_request_version IS NULL OR p_expected_request_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN RAISE EXCEPTION 'D1 Emergency Contact review intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_student_emergency_contact_command_context('request.review',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_decision,p_expected_request_version::text,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=p_request_id AND q.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND OR req.expected_target_version IS NULL OR req.policy_id IS NULL OR req.requested_payload IS NULL OR req.old_snapshot IS NULL
+    THEN RAISE EXCEPTION 'D1 Emergency Contact request missing'; END IF;
+  IF pg_catalog.jsonb_typeof(req.requested_payload)<>'object' OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.requested_payload))<>7
+     OR NOT (req.requested_payload ?& ARRAY['action','person_id','contact_name','relationship_label','contact_phone','contact_email','effective_on'])
+     OR pg_catalog.jsonb_typeof(req.old_snapshot)<>'object' OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.old_snapshot))<>10
+     OR NOT (req.old_snapshot ?& ARRAY['source_contact_id','person_id','contact_name','relationship_label','contact_phone','contact_email','effective_from','effective_until','supersedes_id'])
+    THEN RAISE EXCEPTION 'D1 Emergency Contact stored request malformed'; END IF;
+  action:=req.requested_payload->>'action';
+  BEGIN source_contact:=NULLIF(req.old_snapshot->>'source_contact_id','')::uuid; EXCEPTION WHEN invalid_text_representation THEN RAISE EXCEPTION 'D1 Emergency Contact stored request malformed'; END;
+  IF action NOT IN ('ADD','END','CORRECT') THEN RAISE EXCEPTION 'D1 Emergency Contact stored request malformed'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_student_emergency_contact_policy(req.target_ref);
+  IF policy_row.policy_id IS DISTINCT FROM req.policy_id OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL'
+     OR policy_row.campus_id IS DISTINCT FROM req.campus_id THEN RAISE EXCEPTION 'D1 Emergency Contact request policy no longer applies'; END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    SELECT count(*),min(t.reviewer_role_id::text)::uuid INTO n,reviewer_role
+      FROM app_private.approval_reviews v JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t ON t.id=s.template_id
+     WHERE s.request_id=p_request_id AND v.reviewer_id=ctx.actor_id AND v.decision=p_decision AND v.expected_request_version=p_expected_request_version;
+    IF n<>1 OR reviewer_role IS NULL
+       OR NOT app_private.d1_student_emergency_contact_authorized(ctx.actor_id,'student.emergency_contact.approve',req.target_ref,reviewer_role)
+       OR ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS DISTINCT FROM p_request_id OR ctx.result_summary IS NULL
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state']) THEN RAISE EXCEPTION 'D1 Emergency Contact review replay invalid'; END IF;
+    RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,ctx.result_summary->>'state'; RETURN;
+  END IF;
+  SELECT s.* INTO step_row FROM app_private.approval_request_steps s WHERE s.request_id=p_request_id AND s.state='OPEN'
+    ORDER BY s.step_number LIMIT 1 FOR UPDATE;
+  IF req.state<>'PENDING' OR req.row_version<>p_expected_request_version OR step_row.id IS NULL THEN RAISE EXCEPTION 'D1 Emergency Contact review state changed'; END IF;
+  SELECT count(*),min(a.id::text)::uuid INTO n,assignment_id FROM app_private.approval_step_reviewers a
+   WHERE a.step_id=step_row.id AND a.reviewer_id=ctx.actor_id AND a.withdrawn_at IS NULL AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+  IF n<>1 OR NOT EXISTS (SELECT 1 FROM app_private.d1_student_emergency_contact_candidates(p_request_id,step_row.id) c WHERE c.candidate_principal_id=ctx.actor_id)
+    THEN RAISE EXCEPTION 'D1 Emergency Contact reviewer authority denied'; END IF;
+  INSERT INTO app_private.approval_reviews(reviewer_assignment_id,step_id,reviewer_id,decision,reason,expected_request_version,created_by)
+  VALUES (assignment_id,step_row.id,ctx.actor_id,p_decision,p_reason,p_expected_request_version,ctx.actor_id);
+  UPDATE app_private.approval_request_steps SET state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+  IF p_decision='REJECT' THEN
+    UPDATE app_private.approval_request_steps SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp() WHERE request_id=p_request_id AND state='WAITING';
+    final_state:='REJECTED'; UPDATE app_private.approval_requests SET state=final_state,decided_at=pg_catalog.statement_timestamp()
+      WHERE id=p_request_id RETURNING row_version INTO final_version;
+  ELSE
+    SELECT s.* INTO next_step FROM app_private.approval_request_steps s
+      WHERE s.request_id=p_request_id AND s.step_number=step_row.step_number+1 AND s.state='WAITING' FOR UPDATE;
+    IF next_step.id IS NOT NULL THEN
+      UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+      INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+      SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id FROM app_private.d1_student_emergency_contact_candidates(p_request_id,next_step.id) c;
+      GET DIAGNOSTICS candidate_count=ROW_COUNT; IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Emergency Contact next step has no reviewer'; END IF;
+      final_state:='PENDING'; UPDATE app_private.approval_requests SET row_version=row_version+1,updated_at=pg_catalog.statement_timestamp()
+        WHERE id=p_request_id RETURNING row_version INTO final_version;
+    ELSE
+      final_state:='APPROVED'; UPDATE app_private.approval_requests SET state=final_state,decided_at=pg_catalog.statement_timestamp()
+        WHERE id=p_request_id RETURNING row_version INTO final_version;
+    END IF;
+  END IF;
+  receipt:=app_private.d1_student_emergency_contact_receipt('request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_EMERGENCY_CONTACT_REVIEW',p_request_id,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
+  PERFORM app_private.d1_student_emergency_contact_audit(ctx.actor_id,'REVIEW',req.target_ref,source_contact,source_contact,action,receipt,p_request_id,
+    req.expected_target_version,'SUCCEEDED',NULL,pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_student_emergency_contact_participant_kind(p_request uuid,p_actor uuid)
+RETURNS text LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; role_id uuid; n bigint;
+BEGIN
+  SELECT q.* INTO req FROM app_private.approval_requests q JOIN app_private.operation_contracts o ON o.id=q.operation_id
+   WHERE q.id=p_request AND o.code='student.emergency_contact.change'; IF NOT FOUND THEN RETURN NULL; END IF;
+  IF p_actor=req.requester_id AND app_private.d1_student_emergency_contact_authorized(p_actor,'student.emergency_contact.change',req.target_ref,NULL) THEN RETURN 'REQUESTER'; END IF;
+  role_id:=app_private.d1_final_approver_role(p_request,p_actor);
+  IF role_id IS NOT NULL AND app_private.d1_student_emergency_contact_authorized(p_actor,'student.emergency_contact.approve',req.target_ref,role_id) THEN RETURN 'FINAL_APPROVER'; END IF;
+  SELECT count(*) INTO n FROM app_private.approval_request_steps s JOIN app_private.approval_step_reviewers a ON a.step_id=s.id
+    JOIN app_private.approval_step_templates t ON t.id=s.template_id
+   WHERE s.request_id=p_request AND s.state='OPEN' AND a.reviewer_id=p_actor AND a.withdrawn_at IS NULL
+     AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+     AND app_private.d1_student_emergency_contact_authorized(p_actor,'student.emergency_contact.approve',req.target_ref,t.reviewer_role_id);
+  IF n=1 THEN RETURN 'OPEN_REVIEWER'; ELSIF n>1 THEN RETURN NULL; END IF;
+  SELECT count(*) INTO n FROM app_private.approval_reviews v JOIN app_private.approval_request_steps s ON s.id=v.step_id
+    JOIN app_private.approval_step_templates t ON t.id=s.template_id
+   WHERE s.request_id=p_request AND v.reviewer_id=p_actor
+     AND app_private.d1_student_emergency_contact_authorized(p_actor,'student.emergency_contact.approve',req.target_ref,t.reviewer_role_id);
+  IF n=1 THEN RETURN 'DECIDED_REVIEWER'; END IF;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_emergency_contact_participant_kind(uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_emergency_contact_participant_kind(uuid,uuid) TO schoolos_read_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+CREATE FUNCTION app.d1_read_student_emergency_contact_request(p_request_id uuid)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,student_id uuid,action text,source_contact_id uuid,
+ person_id uuid,contact_name text,relationship_label text,contact_phone text,contact_email text,effective_on date,request_reason text,participant_kind text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; req record; kind text;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id(); IF actor IS NULL THEN RETURN; END IF;
+  PERFORM app_private.d1_lock_current_principal(actor);
+  SELECT q.* INTO req FROM app_private.approval_requests q JOIN app_private.operation_contracts o ON o.id=q.operation_id
+   WHERE q.id=p_request_id AND o.code='student.emergency_contact.change'; IF NOT FOUND THEN RETURN; END IF;
+  kind:=app_private.d1_student_emergency_contact_participant_kind(p_request_id,actor); IF kind IS NULL THEN RETURN; END IF;
+  IF req.old_snapshot IS NULL OR req.requested_payload IS NULL THEN RETURN; END IF;
+  BEGIN
+    RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,req.requested_payload->>'action',
+      NULLIF(req.old_snapshot->>'source_contact_id','')::uuid,NULLIF(req.requested_payload->>'person_id','')::uuid,
+      req.requested_payload->>'contact_name',req.requested_payload->>'relationship_label',req.requested_payload->>'contact_phone',
+      req.requested_payload->>'contact_email',NULLIF(req.requested_payload->>'effective_on','')::date,req.reason,kind;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RETURN; END;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_emergency_contact_request(uuid) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_emergency_contact_request(uuid) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
+
+SET ROLE schoolos_student_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_emergency_contact_result_rows_match(uuid,text,uuid,uuid,date,jsonb) TO schoolos_schema_owner;
+RESET ROLE;
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_student_emergency_contact_application_guard()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; req record; rec record; action text; source_contact uuid; effective_on date; base_summary jsonb;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'student.emergency_contact.change' THEN RETURN NEW; END IF;
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=NEW.request_id;
+  SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.id=NEW.command_receipt_id;
+  IF req.id IS NULL OR rec.id IS NULL OR req.operation_id IS DISTINCT FROM NEW.operation_id OR rec.operation_id IS DISTINCT FROM NEW.operation_id
+     OR rec.request_id IS DISTINCT FROM NEW.request_id OR rec.command_kind IS DISTINCT FROM 'request.apply' OR rec.state IS DISTINCT FROM 'SUCCEEDED'
+     OR req.state IS DISTINCT FROM 'EXECUTED' OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR NEW.result_ref IS DISTINCT FROM rec.result_ref OR rec.result_ref IS NULL OR rec.result_summary IS NULL
+     OR rec.result_summary->>'state' IS DISTINCT FROM 'EXECUTED' OR rec.result_summary->>'request_version' IS NULL
+  THEN RAISE EXCEPTION 'D1 Emergency Contact approval application evidence invalid'; END IF;
+  BEGIN
+    action:=req.requested_payload->>'action'; source_contact:=NULLIF(req.old_snapshot->>'source_contact_id','')::uuid;
+    effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RAISE EXCEPTION 'D1 Emergency Contact approval application request malformed'; END;
+  base_summary:=rec.result_summary-'request_version'-'state';
+  IF app_private.d1_student_emergency_contact_result_rows_match(req.target_ref,action,source_contact,rec.result_ref,effective_on,base_summary) IS DISTINCT FROM true
+    THEN RAISE EXCEPTION 'D1 Emergency Contact approval application result invalid'; END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_emergency_contact_application_guard() FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_student_emergency_contact_application_guard ON app_private.approval_applications;
+CREATE TRIGGER d1_student_emergency_contact_application_guard
+  BEFORE INSERT ON app_private.approval_applications FOR EACH ROW EXECUTE FUNCTION app_private.d1_student_emergency_contact_application_guard();
+RESET ROLE;
+
+-- Final explicit client ACL closure.
+REVOKE ALL ON FUNCTION app.d1_change_student_emergency_contact(uuid,bigint,text,uuid,uuid,text,text,text,text,date,text,text) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_student_emergency_contact(uuid,bigint,text,uuid,uuid,text,text,text,text,date,text,text) TO authenticated;
+REVOKE ALL ON FUNCTION app.d1_submit_student_emergency_contact_change(uuid,bigint,text,uuid,uuid,text,text,text,text,date,text,text) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_student_emergency_contact_change(uuid,bigint,text,uuid,uuid,text,text,text,text,date,text,text) TO authenticated;
+REVOKE ALL ON FUNCTION app.d1_review_student_emergency_contact_change(uuid,text,bigint,text,text) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_review_student_emergency_contact_change(uuid,text,bigint,text,text) TO authenticated;
+REVOKE ALL ON FUNCTION app.d1_apply_student_emergency_contact_change(uuid,bigint,text) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_student_emergency_contact_change(uuid,bigint,text) TO authenticated;
