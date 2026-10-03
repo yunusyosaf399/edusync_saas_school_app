@@ -1,0 +1,85 @@
+-- Effect 30 retained-history replay hardening.
+-- Verify every receipt summary field and retained dependent-effect evidence without
+-- requiring the successful result to remain the current open lineage head.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_family_relationship_result_rows_match(
+ p_student uuid,p_family uuid,p_action text,p_source uuid,p_result uuid,p_effective_on date,p_summary jsonb
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE sver bigint; fver bigint; summary_from date; summary_until date;
+  primary_id uuid; access_count bigint;
+BEGIN
+  IF p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>9
+     OR NOT (p_summary ?& ARRAY['relationship_id','source_relationship_id','action','effective_from','effective_until',
+       'student_version','family_version','primary_context_id','access_closed_count']) THEN RETURN false; END IF;
+  BEGIN
+    sver:=(p_summary->>'student_version')::bigint;
+    fver:=(p_summary->>'family_version')::bigint;
+    summary_from:=NULLIF(p_summary->>'effective_from','')::date;
+    summary_until:=NULLIF(p_summary->>'effective_until','')::date;
+    primary_id:=NULLIF(p_summary->>'primary_context_id','')::uuid;
+    access_count:=(p_summary->>'access_closed_count')::bigint;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+    RETURN false;
+  END;
+  IF sver<1 OR fver<1 OR access_count<0
+     OR p_summary->>'action' IS DISTINCT FROM p_action
+     OR NULLIF(p_summary->>'relationship_id','')::uuid IS DISTINCT FROM p_result
+     OR NULLIF(p_summary->>'source_relationship_id','')::uuid IS DISTINCT FROM p_source
+     OR summary_from IS NULL THEN RETURN false; END IF;
+  IF p_action IN ('ADD','CORRECT') THEN
+    IF summary_from IS DISTINCT FROM p_effective_on OR summary_until IS NOT NULL OR access_count<>0 THEN RETURN false; END IF;
+  ELSIF p_action='END' THEN
+    IF summary_until IS DISTINCT FROM p_effective_on THEN RETURN false; END IF;
+  ELSE RETURN false; END IF;
+
+  IF p_action='ADD' THEN
+    IF primary_id IS NOT NULL THEN RETURN false; END IF;
+    RETURN EXISTS (
+      SELECT 1 FROM app_private.family_relationships r
+       WHERE r.id=p_result AND r.student_id=p_student AND r.family_id=p_family
+         AND r.supersedes_id IS NULL AND r.effective_from=p_effective_on);
+  ELSIF p_action='CORRECT' THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM app_private.family_relationships r
+       WHERE r.id=p_result AND r.student_id=p_student AND r.family_id=p_family
+         AND r.supersedes_id=p_source AND r.effective_from=p_effective_on)
+       OR NOT EXISTS (
+      SELECT 1 FROM app_private.family_relationships s
+       WHERE s.id=p_source AND s.student_id=p_student AND s.family_id=p_family
+         AND s.effective_until=p_effective_on AND s.ended_at IS NOT NULL AND s.ended_by IS NOT NULL)
+    THEN RETURN false; END IF;
+    IF primary_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM app_private.student_primary_family_contexts c
+       WHERE c.id=primary_id AND c.student_id=p_student AND c.family_relationship_id=p_result
+         AND c.effective_from=p_effective_on AND c.supersedes_id IS NOT NULL) THEN
+      RETURN false;
+    END IF;
+    RETURN true;
+  ELSE
+    IF p_result IS DISTINCT FROM p_source OR NOT EXISTS (
+      SELECT 1 FROM app_private.family_relationships s
+       WHERE s.id=p_source AND s.student_id=p_student AND s.family_id=p_family
+         AND s.effective_from=summary_from AND s.effective_until=p_effective_on
+         AND s.ended_at IS NOT NULL AND s.ended_by IS NOT NULL) THEN RETURN false; END IF;
+    IF primary_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM app_private.student_primary_family_contexts c
+       WHERE c.id=primary_id AND c.student_id=p_student AND c.effective_from=p_effective_on
+         AND c.supersedes_id IS NOT NULL) THEN RETURN false; END IF;
+    IF access_count<>0 AND access_count<>(
+      SELECT count(*) FROM app_private.family_student_access a
+       WHERE a.family_id=p_family AND a.student_id=p_student
+         AND a.ended_at IS NOT NULL AND a.ended_by IS NOT NULL
+         AND a.effective_until IS NOT NULL AND a.effective_until>=p_effective_on) THEN
+      RETURN false;
+    END IF;
+    RETURN true;
+  END IF;
+EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN
+  RETURN false;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
