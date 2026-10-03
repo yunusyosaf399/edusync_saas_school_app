@@ -1,0 +1,8 @@
+-- Effect 29 privilege correction: Family commands must take the frozen current-
+-- Principal identity row lock immediately after receipt/idempotency lookup.
+-- Extend only the private helper EXECUTE allowlist; no Foundation rows/grants are mutated.
+
+SET ROLE schoolos_identity_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_lock_current_principal(uuid)
+  TO schoolos_family_executor;
+RESET ROLE;
