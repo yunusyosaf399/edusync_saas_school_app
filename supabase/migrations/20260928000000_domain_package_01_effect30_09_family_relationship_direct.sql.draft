@@ -1,0 +1,73 @@
+-- Effect 30 P1 DIRECT entry point.
+
+GRANT CREATE ON SCHEMA app TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app.d1_change_family_relationship(
+ p_student_id uuid,p_expected_student_version bigint,p_family_id uuid,p_expected_family_version bigint,
+ p_action text,p_source_relationship_id uuid,p_adult_person_id uuid,p_relationship_kind text,p_display_name text,
+ p_relationship_contact text,p_effective_on date,p_reason text,p_primary_replacement_relationship_id uuid,p_idempotency_key text
+) RETURNS TABLE(relationship_id uuid,source_relationship_id uuid,action text,effective_from date,effective_until date,
+ student_version bigint,family_version bigint,primary_context_id uuid,access_closed_count bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; locks record; policy_row record; pre record; eff record; receipt uuid;
+  summary jsonb; corr uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'family.relationship.change','family.relationship.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_family_id,p_expected_family_version::text,
+      p_action,p_source_relationship_id,p_adult_person_id,p_relationship_kind,p_display_name,p_relationship_contact,
+      p_effective_on,p_reason,p_primary_replacement_relationship_id));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT * INTO locks FROM app_private.d1_family_relationship_lock_targets(
+    p_student_id,p_family_id,p_source_relationship_id,p_adult_person_id,p_primary_replacement_relationship_id);
+  IF locks.student_version IS NULL OR locks.family_version IS NULL THEN RAISE EXCEPTION 'D1 Family relationship target missing'; END IF;
+  IF NOT app_private.d1_family_relationship_authorized(ctx.actor_id,'family.relationship.change',p_student_id,NULL) THEN
+    RAISE EXCEPTION 'D1 Family relationship authority denied';
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_family_relationship_policy(p_student_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'DIRECT' THEN
+    RAISE EXCEPTION 'D1 Family relationship requires approval request';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR app_private.d1_family_relationship_result_rows_match(
+         p_student_id,p_family_id,p_action,p_source_relationship_id,ctx.result_ref,p_effective_on,ctx.result_summary) IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'D1 Family relationship receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,NULLIF(ctx.result_summary->>'source_relationship_id','')::uuid,p_action,
+      NULLIF(ctx.result_summary->>'effective_from','')::date,NULLIF(ctx.result_summary->>'effective_until','')::date,
+      (ctx.result_summary->>'student_version')::bigint,(ctx.result_summary->>'family_version')::bigint,
+      NULLIF(ctx.result_summary->>'primary_context_id','')::uuid,(ctx.result_summary->>'access_closed_count')::bigint;
+    RETURN;
+  END IF;
+  IF locks.student_version IS DISTINCT FROM p_expected_student_version OR locks.family_version IS DISTINCT FROM p_expected_family_version THEN
+    RAISE EXCEPTION 'D1 Family relationship target version changed';
+  END IF;
+  SELECT * INTO pre FROM app_private.d1_family_relationship_preflight(
+    p_student_id,p_expected_student_version,p_family_id,p_expected_family_version,p_action,p_source_relationship_id,
+    p_adult_person_id,p_relationship_kind,p_display_name,p_relationship_contact,p_effective_on,p_reason,p_primary_replacement_relationship_id);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Family relationship preflight denied: %',pre.error_code; END IF;
+  SELECT * INTO eff FROM app_private.d1_family_relationship_effect(
+    ctx.actor_id,p_student_id,p_expected_student_version,p_family_id,p_expected_family_version,p_action,p_source_relationship_id,
+    p_adult_person_id,p_relationship_kind,p_display_name,p_relationship_contact,p_effective_on,p_reason,p_primary_replacement_relationship_id);
+  summary:=pg_catalog.jsonb_build_object(
+    'relationship_id',eff.relationship_id,'source_relationship_id',eff.source_relationship_id,'action',p_action,
+    'effective_from',eff.effective_from,'effective_until',eff.effective_until,'student_version',eff.student_version,
+    'family_version',eff.family_version,'primary_context_id',eff.primary_context_id,'access_closed_count',eff.access_closed_count);
+  receipt:=app_private.d1_family_relationship_receipt(
+    'family.relationship.change',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,p_expected_student_version,
+    NULL,NULL,'SUCCEEDED','D1_FAMILY_RELATIONSHIP_CHANGE',eff.relationship_id,summary,NULL);
+  PERFORM app_private.d1_family_relationship_audit(
+    ctx.actor_id,'DIRECT',p_student_id,p_family_id,eff.relationship_id,p_source_relationship_id,p_action,receipt,NULL,
+    eff.student_version,eff.family_version,'SUCCEEDED',NULL,corr);
+  PERFORM app_private.d1_family_relationship_event(
+    ctx.actor_id,p_student_id,p_family_id,eff.relationship_id,p_source_relationship_id,p_action,receipt,corr);
+  RETURN QUERY SELECT eff.relationship_id,eff.source_relationship_id,p_action,eff.effective_from,eff.effective_until,
+    eff.student_version,eff.family_version,eff.primary_context_id,eff.access_closed_count;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_family_relationship(uuid,bigint,uuid,bigint,text,uuid,uuid,text,text,text,date,text,uuid,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_family_relationship(uuid,bigint,uuid,bigint,text,uuid,uuid,text,text,text,date,text,uuid,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_family_executor;
