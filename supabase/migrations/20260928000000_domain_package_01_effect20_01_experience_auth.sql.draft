@@ -1,0 +1,127 @@
+-- D1C1B effect 20/36: Employee external-experience change.
+-- Static non-executable continuation for Migration 10 review only.
+-- Approved contract: P1 policy-reviewed ADD/CORRECT/ARCHIVE; accepted instant is
+-- server apply-time; stable server lineage; overlapping independent experiences allowed;
+-- experience never grants teaching or authorization authority.
+
+SET ROLE schoolos_schema_owner;
+REVOKE SELECT, INSERT ON app_private.employee_experience_entries FROM schoolos_employee_executor;
+GRANT SELECT (id,created_at,created_by,ended_at,ended_by,employee_id,experience_record_id,
+  organization_name,role_title,starts_on,ends_on,summary,effective_from,effective_until,supersedes_id,reason),
+  INSERT (id,created_by,employee_id,experience_record_id,organization_name,role_title,starts_on,ends_on,
+    summary,effective_from,effective_until,supersedes_id,reason)
+  ON app_private.employee_experience_entries TO schoolos_employee_executor;
+GRANT UPDATE (effective_until,ended_at,ended_by)
+  ON app_private.employee_experience_entries TO schoolos_employee_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_employee_experience_authorized(
+  p_principal uuid,p_permission text,p_employee uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date:=at_time::date; campus_count bigint;
+BEGIN
+  IF p_principal IS NULL OR p_employee IS NULL
+     OR p_permission NOT IN ('employee.experience.change','employee.experience.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.employees e WHERE e.id=p_employee)
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a JOIN app_private.roles r ON r.id=a.role_id
+     WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role AND a.principal_kind='INDIVIDUAL'
+       AND a.context_kind='INDIVIDUAL' AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  IF EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes s
+    JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+    JOIN app_private.permissions p ON p.id=s.permission_id JOIN app_private.roles r ON r.id=s.role_id
+     WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND a.role_id=s.role_id AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+       AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind AND c.resolver_key=s.resolver_key AND c.enabled
+       AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+       AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+       AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until) AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+       AND s.resolver_key='DIRECT' AND s.scope_kind='ALL' AND s.campus_id IS NULL) THEN RETURN true; END IF;
+  SELECT count(DISTINCT ca.campus_id) INTO campus_count FROM app_private.employee_campus_affiliations ca
+   WHERE ca.employee_id=p_employee AND ca.effective_from<=on_date AND (ca.effective_until IS NULL OR on_date<ca.effective_until);
+  IF campus_count=0 THEN RETURN false; END IF;
+  RETURN NOT EXISTS (
+    SELECT 1 FROM (SELECT DISTINCT ca.campus_id FROM app_private.employee_campus_affiliations ca
+      WHERE ca.employee_id=p_employee AND ca.effective_from<=on_date AND (ca.effective_until IS NULL OR on_date<ca.effective_until)) ec
+    WHERE NOT EXISTS (
+      SELECT 1 FROM app_private.assignment_permission_scopes s
+      JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+      JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+      JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+      JOIN app_private.permissions p ON p.id=s.permission_id JOIN app_private.roles r ON r.id=s.role_id
+       WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+         AND a.role_id=s.role_id AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+         AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind AND c.resolver_key=s.resolver_key AND c.enabled
+         AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+         AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+         AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+         AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until) AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+         AND s.resolver_key='DIRECT' AND s.scope_kind='CAMPUS' AND s.campus_id=ec.campus_id));
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_authorized(uuid,text,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_experience_authorized(uuid,text,uuid,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_employee_experience_policy(p_employee uuid)
+RETURNS TABLE(policy_id uuid,route_mode text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date:=at_time::date;
+  campus_row record; campus_count bigint; school_count bigint; campus_specific_count bigint;
+  school_policy uuid; school_route text; candidate uuid; candidate_route text; selected uuid; selected_route text;
+  steps bigint; invalid bigint;
+BEGIN
+  IF p_employee IS NULL OR NOT EXISTS (SELECT 1 FROM app_private.employees e WHERE e.id=p_employee) THEN RETURN; END IF;
+  SELECT count(DISTINCT ca.campus_id) INTO campus_count FROM app_private.employee_campus_affiliations ca
+   WHERE ca.employee_id=p_employee AND ca.effective_from<=on_date AND (ca.effective_until IS NULL OR on_date<ca.effective_until);
+  SELECT count(*),min(p.id::text)::uuid,min(p.d1_route_mode) INTO school_count,school_policy,school_route
+   FROM app_private.approval_policy_versions p JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='employee.experience.change' AND o.contract_version=1 AND o.enabled AND p.state='ACTIVE' AND p.campus_id IS NULL
+     AND p.d1_route_mode IN ('DIRECT','APPROVAL') AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+  IF campus_count=0 THEN
+    IF school_count<>1 OR school_policy IS NULL OR school_route IS NULL THEN RETURN; END IF;
+    selected:=school_policy; selected_route:=school_route;
+  ELSE
+    FOR campus_row IN SELECT DISTINCT ca.campus_id FROM app_private.employee_campus_affiliations ca
+      WHERE ca.employee_id=p_employee AND ca.effective_from<=on_date AND (ca.effective_until IS NULL OR on_date<ca.effective_until)
+      ORDER BY ca.campus_id LOOP
+      SELECT count(*),min(p.id::text)::uuid,min(p.d1_route_mode) INTO campus_specific_count,candidate,candidate_route
+       FROM app_private.approval_policy_versions p JOIN app_private.operation_contracts o ON o.id=p.operation_id
+       WHERE o.code='employee.experience.change' AND o.contract_version=1 AND o.enabled AND p.state='ACTIVE'
+         AND p.campus_id=campus_row.campus_id AND p.d1_route_mode IN ('DIRECT','APPROVAL')
+         AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+      IF campus_specific_count>1 THEN RETURN; END IF;
+      IF campus_specific_count=0 THEN
+        IF school_count<>1 OR school_policy IS NULL OR school_route IS NULL THEN RETURN; END IF;
+        candidate:=school_policy; candidate_route:=school_route;
+      END IF;
+      IF selected IS NULL THEN selected:=candidate; selected_route:=candidate_route;
+      ELSIF selected_route IS DISTINCT FROM candidate_route THEN RETURN;
+      ELSIF selected_route='APPROVAL' AND selected IS DISTINCT FROM candidate THEN RETURN; END IF;
+    END LOOP;
+  END IF;
+  IF selected IS NULL OR selected_route IS NULL THEN RETURN; END IF;
+  IF selected_route='APPROVAL' THEN
+    SELECT count(*),count(*) FILTER (WHERE r.id IS NULL OR r.state<>'ACTIVE' OR t.required_reviews<>1
+      OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE') INTO steps,invalid
+      FROM app_private.approval_step_templates t LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id WHERE t.policy_id=selected;
+    IF steps=0 OR invalid<>0 THEN RETURN; END IF;
+  END IF;
+  RETURN QUERY SELECT selected,selected_route;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_policy(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_experience_policy(uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;

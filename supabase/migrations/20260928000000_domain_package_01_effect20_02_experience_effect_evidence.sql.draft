@@ -1,0 +1,235 @@
+GRANT CREATE ON SCHEMA app_private TO schoolos_employee_executor;
+SET ROLE schoolos_employee_executor;
+
+CREATE FUNCTION app_private.d1_employee_experience_payload_valid(
+  p_action text,p_source uuid,p_expected_lineage uuid,p_organization text,p_role text,
+  p_starts_on date,p_ends_on date,p_summary text,p_reason text
+) RETURNS boolean
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT p_action IN ('ADD','CORRECT','ARCHIVE')
+    AND p_reason IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_reason))>0
+    AND ((p_action='ADD' AND p_source IS NULL AND p_expected_lineage IS NULL
+       AND p_organization IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_organization))>0
+       AND p_role IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_role))>0
+       AND p_starts_on IS NOT NULL)
+      OR (p_action='CORRECT' AND p_source IS NOT NULL AND p_expected_lineage IS NOT NULL
+       AND p_organization IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_organization))>0
+       AND p_role IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(p_role))>0
+       AND p_starts_on IS NOT NULL)
+      OR (p_action='ARCHIVE' AND p_source IS NOT NULL AND p_expected_lineage IS NOT NULL
+       AND p_organization IS NULL AND p_role IS NULL AND p_starts_on IS NULL AND p_ends_on IS NULL AND p_summary IS NULL))
+    AND (p_summary IS NULL OR pg_catalog.length(pg_catalog.btrim(p_summary))>0)
+    AND (p_ends_on IS NULL OR p_ends_on>=p_starts_on)
+    AND (p_starts_on IS NULL OR p_starts_on<=pg_catalog.statement_timestamp()::date)
+    AND (p_ends_on IS NULL OR p_ends_on<=pg_catalog.statement_timestamp()::date);
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_payload_valid(text,uuid,uuid,text,text,date,date,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_experience_payload_valid(text,uuid,uuid,text,text,date,date,text,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_employee_experience_lock_context(
+  p_employee uuid,p_expected_employee_version bigint,p_check_version boolean,p_action text,p_source uuid,p_expected_lineage uuid
+) RETURNS TABLE(employee_version bigint,source_snapshot_id uuid,experience_record_id uuid,
+  source_organization text,source_role text,source_starts_on date,source_ends_on date,source_summary text,
+  source_effective_from timestamptz,source_supersedes_id uuid,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE school_count bigint; e_version bigint; src app_private.employee_experience_entries%ROWTYPE;
+BEGIN
+  SELECT count(*) INTO school_count FROM app_private.school_profiles;
+  IF school_count<>1 THEN
+    RETURN QUERY SELECT NULL::bigint,NULL::uuid,NULL::uuid,NULL::text,NULL::text,NULL::date,NULL::date,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_EXPERIENCE_SCHOOL_AMBIGUOUS'; RETURN; END IF;
+  PERFORM 1 FROM app_private.school_profiles ORDER BY id LIMIT 1 FOR UPDATE;
+  SELECT e.row_version INTO e_version FROM app_private.employees e WHERE e.id=p_employee FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT NULL::bigint,NULL::uuid,NULL::uuid,NULL::text,NULL::text,NULL::date,NULL::date,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_EXPERIENCE_EMPLOYEE_MISSING'; RETURN; END IF;
+  IF p_check_version AND e_version IS DISTINCT FROM p_expected_employee_version THEN
+    RETURN QUERY SELECT e_version,NULL::uuid,NULL::uuid,NULL::text,NULL::text,NULL::date,NULL::date,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_EXPERIENCE_EMPLOYEE_VERSION_STALE'; RETURN; END IF;
+  IF p_action='ADD' THEN
+    RETURN QUERY SELECT e_version,NULL::uuid,NULL::uuid,NULL::text,NULL::text,NULL::date,NULL::date,NULL::text,
+      NULL::timestamptz,NULL::uuid,NULL::text; RETURN; END IF;
+  SELECT x.* INTO src FROM app_private.employee_experience_entries x WHERE x.id=p_source FOR UPDATE;
+  IF NOT FOUND OR src.employee_id IS DISTINCT FROM p_employee THEN
+    RETURN QUERY SELECT e_version,p_source,NULL::uuid,NULL::text,NULL::text,NULL::date,NULL::date,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_EMPLOYEE_EXPERIENCE_SOURCE_MISSING'; RETURN; END IF;
+  IF src.experience_record_id IS DISTINCT FROM p_expected_lineage THEN
+    RETURN QUERY SELECT e_version,src.id,src.experience_record_id,src.organization_name,src.role_title,src.starts_on,src.ends_on,
+      src.summary,src.effective_from,src.supersedes_id,'D1_EMPLOYEE_EXPERIENCE_LINEAGE_STALE'; RETURN; END IF;
+  IF src.effective_until IS NOT NULL THEN
+    RETURN QUERY SELECT e_version,src.id,src.experience_record_id,src.organization_name,src.role_title,src.starts_on,src.ends_on,
+      src.summary,src.effective_from,src.supersedes_id,'D1_EMPLOYEE_EXPERIENCE_SOURCE_CLOSED'; RETURN; END IF;
+  IF EXISTS (SELECT 1 FROM app_private.employee_experience_entries x
+      WHERE x.experience_record_id=src.experience_record_id AND x.employee_id<>p_employee) THEN
+    RETURN QUERY SELECT e_version,src.id,src.experience_record_id,src.organization_name,src.role_title,src.starts_on,src.ends_on,
+      src.summary,src.effective_from,src.supersedes_id,'D1_EMPLOYEE_EXPERIENCE_LINEAGE_CROSS_EMPLOYEE'; RETURN; END IF;
+  RETURN QUERY SELECT e_version,src.id,src.experience_record_id,src.organization_name,src.role_title,src.starts_on,src.ends_on,
+    src.summary,src.effective_from,src.supersedes_id,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_lock_context(uuid,bigint,boolean,text,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_experience_lock_context(uuid,bigint,boolean,text,uuid,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_experience_preflight(
+  p_employee uuid,p_expected_employee_version bigint,p_action text,p_source uuid,p_expected_lineage uuid,
+  p_organization text,p_role text,p_starts_on date,p_ends_on date,p_summary text,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record;
+BEGIN
+  IF app_private.d1_employee_experience_payload_valid(p_action,p_source,p_expected_lineage,p_organization,p_role,
+       p_starts_on,p_ends_on,p_summary,p_reason) IS DISTINCT FROM true THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_EXPERIENCE_PAYLOAD_INVALID'; RETURN; END IF;
+  SELECT * INTO ctx FROM app_private.d1_employee_experience_lock_context(
+    p_employee,p_expected_employee_version,true,p_action,p_source,p_expected_lineage);
+  IF ctx.error_code IS NOT NULL THEN RETURN QUERY SELECT false,ctx.error_code; RETURN; END IF;
+  IF p_action='CORRECT' AND ctx.source_organization IS NOT DISTINCT FROM p_organization
+     AND ctx.source_role IS NOT DISTINCT FROM p_role AND ctx.source_starts_on IS NOT DISTINCT FROM p_starts_on
+     AND ctx.source_ends_on IS NOT DISTINCT FROM p_ends_on AND ctx.source_summary IS NOT DISTINCT FROM p_summary THEN
+    RETURN QUERY SELECT false,'D1_EMPLOYEE_EXPERIENCE_NOOP'; RETURN; END IF;
+  RETURN QUERY SELECT true,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_preflight(uuid,bigint,text,uuid,uuid,text,text,date,date,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_experience_preflight(uuid,bigint,text,uuid,uuid,text,text,date,date,text,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_experience_effect(
+  p_actor uuid,p_employee uuid,p_expected_employee_version bigint,p_action text,p_source uuid,p_expected_lineage uuid,
+  p_organization text,p_role text,p_starts_on date,p_ends_on date,p_summary text,p_reason text
+) RETURNS TABLE(snapshot_id uuid,experience_record_id uuid,effective_from timestamptz,effective_until timestamptz)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; src app_private.employee_experience_entries%ROWTYPE;
+  accepted_at timestamptz:=pg_catalog.statement_timestamp(); new_id uuid:=pg_catalog.gen_random_uuid(); lineage uuid;
+BEGIN
+  SELECT * INTO pre FROM app_private.d1_employee_experience_preflight(p_employee,p_expected_employee_version,p_action,p_source,
+    p_expected_lineage,p_organization,p_role,p_starts_on,p_ends_on,p_summary,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Employee experience effect denied: %',pre.error_code; END IF;
+  IF p_action='ADD' THEN
+    lineage:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.employee_experience_entries
+      (id,created_by,employee_id,experience_record_id,organization_name,role_title,starts_on,ends_on,summary,effective_from,reason)
+    VALUES (new_id,p_actor,p_employee,lineage,pg_catalog.btrim(p_organization),pg_catalog.btrim(p_role),p_starts_on,p_ends_on,
+      CASE WHEN p_summary IS NULL THEN NULL ELSE pg_catalog.btrim(p_summary) END,accepted_at,p_reason);
+    RETURN QUERY SELECT new_id,lineage,accepted_at,NULL::timestamptz; RETURN; END IF;
+  SELECT * INTO src FROM app_private.employee_experience_entries x WHERE x.id=p_source FOR UPDATE;
+  UPDATE app_private.employee_experience_entries SET effective_until=accepted_at,ended_at=accepted_at,ended_by=p_actor
+   WHERE id=src.id AND effective_until IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee experience source changed'; END IF;
+  IF p_action='ARCHIVE' THEN
+    RETURN QUERY SELECT src.id,src.experience_record_id,src.effective_from,accepted_at; RETURN; END IF;
+  INSERT INTO app_private.employee_experience_entries
+    (id,created_by,employee_id,experience_record_id,organization_name,role_title,starts_on,ends_on,summary,effective_from,supersedes_id,reason)
+  VALUES (new_id,p_actor,p_employee,src.experience_record_id,pg_catalog.btrim(p_organization),pg_catalog.btrim(p_role),p_starts_on,p_ends_on,
+    CASE WHEN p_summary IS NULL THEN NULL ELSE pg_catalog.btrim(p_summary) END,accepted_at,src.id,p_reason);
+  RETURN QUERY SELECT new_id,src.experience_record_id,accepted_at,NULL::timestamptz;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_effect(uuid,uuid,bigint,text,uuid,uuid,text,text,date,date,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_experience_effect(uuid,uuid,bigint,text,uuid,uuid,text,text,date,date,text,text)
+  TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_employee_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_employee_experience_command_context(p_command_kind text,p_idempotency_key text,p_intent jsonb)
+RETURNS TABLE(actor_id uuid,operation_id uuid,receipt_id uuid,result_ref uuid,result_summary jsonb,receipt_state text,intent_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v_actor uuid; v_operation uuid; v_hash bytea; v_digest bytea; v_resource bigint; v_receipt app_private.command_receipts%ROWTYPE;
+BEGIN
+  IF p_command_kind NOT IN ('employee.experience.change','request.submit','request.review','request.apply') OR p_idempotency_key IS NULL
+     OR pg_catalog.length(pg_catalog.btrim(p_idempotency_key))=0 OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array'
+     OR NOT ((p_command_kind IN ('employee.experience.change','request.submit') AND pg_catalog.jsonb_array_length(p_intent)=10)
+          OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+          OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2))
+  THEN RAISE EXCEPTION 'D1 Employee experience receipt operation phase or shape unsupported'; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor:=app_private.current_principal_id(); IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 Employee experience command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code='employee.experience.change' AND o.contract_version=1 AND o.handler_key='employee.experience.change' AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 Employee experience operation is not enabled'; END IF;
+  v_hash:=pg_catalog.sha256(pg_catalog.convert_to(app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+    'canonicalization_version',1,'operation_code','employee.experience.change','operation_contract_version','1',
+    'operation_id',v_operation::text,'command_kind',p_command_kind,'principal_id',v_actor::text,'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+  v_digest:=pg_catalog.sha256(pg_catalog.convert_to(v_actor::text||'|'||v_operation::text||'|'||p_idempotency_key,'UTF8'));
+  v_resource:=pg_catalog.get_byte(v_digest,0)::bigint*16777216+pg_catalog.get_byte(v_digest,1)::bigint*65536+
+    pg_catalog.get_byte(v_digest,2)::bigint*256+pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource>2147483647 THEN v_resource:=v_resource-4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1 OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
+      RAISE EXCEPTION 'D1 Employee experience idempotency key conflicts with prior intent'; END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,v_receipt.result_summary,v_receipt.state,v_hash; RETURN; END IF;
+  RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,NULL::text,v_hash;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_command_context(text,text,jsonb) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_experience_command_context(text,text,jsonb)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_experience_receipt(
+  p_phase text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_expected bigint,p_request uuid,p_request_version bigint,
+  p_state text,p_result_kind text,p_result_ref uuid,p_summary jsonb,p_error text
+) RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_phase NOT IN ('employee.experience.change','request.submit','request.review','request.apply') OR p_actor IS NULL OR p_operation IS NULL
+     OR p_key IS NULL OR p_hash IS NULL OR p_state NOT IN ('SUCCEEDED','REJECTED') OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (p_state='REJECTED' AND (p_phase<>'request.apply' OR p_error IS NULL OR p_result_ref IS NOT NULL))
+  THEN RAISE EXCEPTION 'D1 Employee experience receipt intent denied'; END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,expected_target_version,
+     request_id,expected_request_version,state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,p_phase,p_key,p_hash,1,p_expected,p_request,p_request_version,p_state,p_result_kind,p_result_ref,p_summary,
+    p_error,pg_catalog.statement_timestamp(),p_actor); RETURN rid;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_experience_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_experience_audit(
+  p_actor uuid,p_phase text,p_action text,p_employee uuid,p_snapshot uuid,p_lineage uuid,p_source uuid,p_receipt uuid,p_request uuid,
+  p_employee_version bigint,p_outcome text,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_employee IS NULL OR p_receipt IS NULL
+     OR p_action NOT IN ('ADD','CORRECT','ARCHIVE') OR p_outcome NOT IN ('SUCCEEDED','REJECTED') OR p_correlation IS NULL
+  THEN RAISE EXCEPTION 'D1 Employee experience audit intent denied'; END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,command_receipt_id,
+     approval_request_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',p_outcome,pg_catalog.jsonb_build_object('operation','employee.experience.change','phase',p_phase),
+    p_employee_version,'employee.experience.change','EMPLOYEE',p_employee,p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'snapshot_id',p_snapshot,'experience_record_id',p_lineage,'source_snapshot_id',p_source),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_audit(uuid,text,text,uuid,uuid,uuid,uuid,uuid,uuid,bigint,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_experience_audit(uuid,text,text,uuid,uuid,uuid,uuid,uuid,uuid,bigint,text,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_employee_experience_event(
+  p_actor uuid,p_action text,p_employee uuid,p_snapshot uuid,p_lineage uuid,p_source uuid,p_receipt uuid,p_employee_version bigint,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_employee IS NULL OR p_snapshot IS NULL OR p_lineage IS NULL
+     OR p_receipt IS NULL OR p_correlation IS NULL OR p_action NOT IN ('ADD','CORRECT','ARCHIVE') THEN
+    RAISE EXCEPTION 'D1 Employee experience event intent denied'; END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('employee.experience_changed','EMPLOYEE_EXPERIENCE',p_snapshot,1,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'employee_id',p_employee,'experience_snapshot_id',p_snapshot,
+      'experience_record_id',p_lineage,'source_snapshot_id',p_source),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_event(uuid,text,uuid,uuid,uuid,uuid,uuid,bigint,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_experience_event(uuid,text,uuid,uuid,uuid,uuid,uuid,bigint,uuid)
+  TO schoolos_employee_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;

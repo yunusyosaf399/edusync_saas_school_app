@@ -1,0 +1,36 @@
+-- Effect 20 application binding and packaging closure.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_employee_experience_application_receipt_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE op_code text; req record; receipt record; x record;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF op_code IS DISTINCT FROM 'employee.experience.change' THEN RETURN NEW; END IF;
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=NEW.request_id;
+  SELECT r.* INTO receipt FROM app_private.command_receipts r WHERE r.id=NEW.command_receipt_id;
+  SELECT e.id,e.employee_id,e.experience_record_id,e.effective_from,e.effective_until,e.supersedes_id INTO x
+    FROM app_private.employee_experience_entries e WHERE e.id=NEW.result_ref;
+  IF req.id IS NULL OR receipt.id IS NULL OR x.id IS NULL
+     OR req.operation_id IS DISTINCT FROM NEW.operation_id OR req.state IS DISTINCT FROM 'EXECUTED'
+     OR receipt.operation_id IS DISTINCT FROM NEW.operation_id OR receipt.request_id IS DISTINCT FROM NEW.request_id
+     OR receipt.command_kind IS DISTINCT FROM 'request.apply' OR receipt.state IS DISTINCT FROM 'SUCCEEDED'
+     OR receipt.result_ref IS DISTINCT FROM NEW.result_ref OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR x.employee_id IS DISTINCT FROM req.target_ref
+     OR receipt.result_summary IS NULL OR pg_catalog.jsonb_typeof(receipt.result_summary)<>'object'
+     OR receipt.result_summary->>'state' IS DISTINCT FROM 'EXECUTED'
+     OR NULLIF(receipt.result_summary->>'snapshot_id','')::uuid IS DISTINCT FROM NEW.result_ref
+     OR NULLIF(receipt.result_summary->>'experience_record_id','')::uuid IS DISTINCT FROM x.experience_record_id
+  THEN RAISE EXCEPTION 'D1 Employee experience application evidence invalid'; END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_experience_application_receipt_guard() FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_employee_experience_application_receipt_guard ON app_private.approval_applications;
+CREATE TRIGGER d1_employee_experience_application_receipt_guard BEFORE INSERT ON app_private.approval_applications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_employee_experience_application_receipt_guard();
+RESET ROLE;
+
+-- Public RPC ownership/ACL are explicit even if ordered fragments are assembled by a privileged migration role.
+ALTER FUNCTION app.d1_apply_employee_experience_request(uuid,bigint,text) OWNER TO schoolos_workflow_executor;
+REVOKE ALL ON FUNCTION app.d1_apply_employee_experience_request(uuid,bigint,text) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_employee_experience_request(uuid,bigint,text) TO authenticated;
