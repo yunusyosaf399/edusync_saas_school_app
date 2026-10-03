@@ -1,0 +1,229 @@
+-- D1C1B effect 21/36: Student Restricted Identity P2 reviewer/evidence helpers.
+-- Static non-executable continuation only.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_student_identity_candidates(p_request uuid,p_step uuid)
+RETURNS TABLE(candidate_principal_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; requester_person uuid;
+BEGIN
+  SELECT r.requester_id,r.target_ref,t.reviewer_role_id INTO ctx
+    FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+    JOIN app_private.approval_request_steps s ON s.request_id=r.id AND s.id=p_step
+    JOIN app_private.approval_step_templates t
+      ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+   WHERE r.id=p_request AND r.state='PENDING' AND s.state='OPEN'
+     AND o.code='student.identity.correct' AND o.contract_version=1 AND o.enabled
+     AND rp.code='student.identity.approve' AND rp.state='ENABLED' AND NOT rp.family_safe
+     AND t.required_reviews=1 AND s.required_reviews=1
+     AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE';
+  IF NOT FOUND THEN RETURN; END IF;
+  SELECT p.person_id INTO requester_person FROM app_private.principals p
+   WHERE p.id=ctx.requester_id AND p.kind='INDIVIDUAL';
+  IF requester_person IS NULL THEN RETURN; END IF;
+  RETURN QUERY
+  SELECT p.id FROM app_private.principals p
+   WHERE p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL
+     AND p.id<>ctx.requester_id AND p.person_id<>requester_person
+     AND app_private.d1_student_identity_authorized(
+       p.id,'student.identity.approve',ctx.target_ref,ctx.reviewer_role_id)
+   ORDER BY p.id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_candidates(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_candidates(uuid,uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_identity_reviews_live(p_request uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; s record; reviewer uuid; reviewer_person uuid; n bigint; steps bigint:=0;
+BEGIN
+  SELECT r.requester_id,r.target_ref,p.person_id AS requester_person INTO req
+    FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.permissions rp ON rp.id=o.review_permission_id
+    JOIN app_private.principals p ON p.id=r.requester_id
+   WHERE r.id=p_request AND r.state='APPROVED'
+     AND o.code='student.identity.correct' AND o.contract_version=1 AND o.enabled
+     AND rp.code='student.identity.approve' AND rp.state='ENABLED' AND NOT rp.family_safe;
+  IF NOT FOUND OR req.requester_person IS NULL THEN RETURN false; END IF;
+  FOR s IN
+    SELECT x.id,x.state,t.reviewer_role_id,t.selection_resolver_key
+      FROM app_private.approval_request_steps x
+      JOIN app_private.approval_step_templates t
+        ON t.id=x.template_id AND t.policy_id=x.policy_id AND t.step_number=x.step_number
+     WHERE x.request_id=p_request ORDER BY x.step_number
+  LOOP
+    steps:=steps+1;
+    IF s.state<>'APPROVED' OR s.selection_resolver_key<>'D1_REVIEWER_ROLE_SCOPE' THEN RETURN false; END IF;
+    SELECT count(*),min(v.reviewer_id::text)::uuid INTO n,reviewer
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=v.step_id AND a.reviewer_id=v.reviewer_id
+     WHERE v.step_id=s.id AND v.decision='APPROVE'
+       AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+    SELECT p.person_id INTO reviewer_person FROM app_private.principals p
+     WHERE p.id=reviewer AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+    IF n<>1 OR reviewer_person IS NULL OR reviewer_person=req.requester_person
+       OR NOT app_private.d1_student_identity_authorized(
+         reviewer,'student.identity.approve',req.target_ref,s.reviewer_role_id)
+    THEN RETURN false; END IF;
+  END LOOP;
+  RETURN steps>0;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_reviews_live(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_reviews_live(uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_identity_participant(p_request uuid,p_actor uuid)
+RETURNS text
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; actor_person uuid; decided record;
+BEGIN
+  IF p_request IS NULL OR p_actor IS NULL
+     OR app_private.current_principal_id() IS DISTINCT FROM p_actor THEN RETURN NULL; END IF;
+  SELECT r.requester_id,r.target_ref,r.old_snapshot,r.requested_payload,p.person_id AS requester_person
+    INTO req FROM app_private.approval_requests r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    JOIN app_private.principals p ON p.id=r.requester_id
+   WHERE r.id=p_request AND o.code='student.identity.correct';
+  IF NOT FOUND OR app_private.d1_student_identity_request_payload_valid(
+      req.old_snapshot,req.requested_payload) IS DISTINCT FROM true THEN RETURN NULL; END IF;
+  IF req.requester_id=p_actor AND app_private.d1_student_identity_authorized(
+      p_actor,'student.identity.correct',req.target_ref,NULL) THEN RETURN 'REQUESTER'; END IF;
+  SELECT p.person_id INTO actor_person FROM app_private.principals p
+   WHERE p.id=p_actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE';
+  IF actor_person IS NULL OR req.requester_person IS NULL OR actor_person=req.requester_person THEN RETURN NULL; END IF;
+  IF EXISTS (
+    SELECT 1 FROM app_private.approval_request_steps s
+    JOIN app_private.approval_step_templates t
+      ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+    JOIN app_private.approval_step_reviewers a ON a.step_id=s.id
+     WHERE s.request_id=p_request AND s.state='OPEN'
+       AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+       AND a.reviewer_id=p_actor AND a.withdrawn_at IS NULL
+       AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+       AND app_private.d1_student_identity_authorized(
+         p_actor,'student.identity.approve',req.target_ref,t.reviewer_role_id)
+       AND EXISTS (SELECT 1 FROM app_private.d1_student_identity_candidates(p_request,s.id) c
+         WHERE c.candidate_principal_id=p_actor)
+  ) THEN RETURN 'OPEN_REVIEWER'; END IF;
+  IF app_private.d1_final_approver_review_present(p_request,p_actor)
+     AND app_private.d1_student_identity_reviews_live(p_request) THEN RETURN 'FINAL_APPROVER'; END IF;
+  FOR decided IN
+    SELECT s.state,t.reviewer_role_id,t.selection_resolver_key,a.assignment_reason
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t
+        ON t.id=s.template_id AND t.policy_id=s.policy_id AND t.step_number=s.step_number
+      JOIN app_private.approval_step_reviewers a
+        ON a.id=v.reviewer_assignment_id AND a.step_id=s.id AND a.reviewer_id=v.reviewer_id
+     WHERE s.request_id=p_request AND v.reviewer_id=p_actor
+  LOOP
+    IF decided.state IN ('APPROVED','REJECTED')
+       AND decided.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+       AND decided.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+       AND app_private.d1_student_identity_authorized(
+         p_actor,'student.identity.approve',req.target_ref,decided.reviewer_role_id)
+    THEN RETURN 'DECIDED_REVIEWER'; END IF;
+  END LOOP;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_participant(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_participant(uuid,uuid)
+  TO schoolos_workflow_executor,schoolos_read_executor;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+
+CREATE FUNCTION app_private.d1_student_identity_receipt(
+  p_phase text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+  p_target_version bigint,p_request uuid,p_request_version bigint,
+  p_state text,p_result_kind text,p_result_ref uuid,p_summary jsonb,p_error text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid(); op text;
+BEGIN
+  SELECT o.code INTO op FROM app_private.operation_contracts o
+   WHERE o.id=p_operation AND o.code='student.identity.correct' AND o.contract_version=1 AND o.enabled;
+  IF op IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN ('request.submit','request.review','request.apply')
+     OR p_key IS NULL OR pg_catalog.length(p_key) NOT BETWEEN 1 AND 200
+     OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+     OR p_target_version IS NULL OR p_target_version<1 OR p_request IS NULL
+     OR p_state NOT IN ('SUCCEEDED','REJECTED')
+     OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (p_state='SUCCEEDED' AND (p_result_kind IS NULL OR p_result_ref IS NULL OR p_error IS NOT NULL))
+     OR (p_state='REJECTED' AND (p_phase<>'request.apply' OR p_result_ref IS NOT NULL OR p_error IS NULL))
+  THEN RAISE EXCEPTION 'D1 Student identity receipt intent denied'; END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,
+     canonicalization_version,expected_target_version,request_id,expected_request_version,
+     state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,p_phase,p_key,p_hash,1,p_target_version,p_request,p_request_version,
+    p_state,p_result_kind,p_result_ref,p_summary,p_error,pg_catalog.transaction_timestamp(),p_actor);
+  RETURN rid;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_identity_audit(
+  p_actor uuid,p_phase text,p_student uuid,p_snapshot uuid,p_receipt uuid,p_request uuid,
+  p_student_version bigint,p_state text,p_effective_from timestamptz,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase NOT IN ('SUBMIT','REVIEW','APPLY') OR p_student IS NULL
+     OR p_receipt IS NULL OR p_correlation IS NULL OR p_state IS NULL THEN
+    RAISE EXCEPTION 'D1 Student identity audit intent denied'; END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,
+     target_ref,command_receipt_id,approval_request_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',CASE WHEN p_state IN ('INVALIDATED','REJECTED') THEN 'REJECTED' ELSE 'SUCCEEDED' END,
+    pg_catalog.jsonb_build_object('operation','student.identity.correct','phase',p_phase),
+    p_student_version,'student.identity.correct','STUDENT',p_student,p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('state',p_state,'identity_snapshot_id',p_snapshot,
+      'effective_from',p_effective_from),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_audit(uuid,text,uuid,uuid,uuid,uuid,bigint,text,timestamptz,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_audit(uuid,text,uuid,uuid,uuid,uuid,bigint,text,timestamptz,uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_identity_event(
+  p_actor uuid,p_student uuid,p_snapshot uuid,p_source uuid,p_receipt uuid,
+  p_student_version bigint,p_effective_from timestamptz,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_student IS NULL OR p_snapshot IS NULL OR p_source IS NULL OR p_receipt IS NULL
+     OR p_student_version IS NULL OR p_effective_from IS NULL OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Student identity event intent denied'; END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+     event_ordinal,correlation_id,payload,created_by)
+  VALUES ('student.identity_corrected','STUDENT_IDENTITY',p_student,p_student_version,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('student_id',p_student,'identity_snapshot_id',p_snapshot,
+      'source_snapshot_id',p_source,'effective_from',p_effective_from),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_event(uuid,uuid,uuid,uuid,uuid,bigint,timestamptz,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_event(uuid,uuid,uuid,uuid,uuid,bigint,timestamptz,uuid)
+  TO schoolos_workflow_executor;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
