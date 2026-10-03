@@ -1,0 +1,329 @@
+-- D1C1B effect 21/36: Student Restricted Identity P2 core helpers.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+-- Approved contract: CORRECT existing effective snapshot only; no initial creation;
+-- P2 review required; apply-time successor; exact no-op denied; broad evidence minimized.
+
+SET ROLE schoolos_schema_owner;
+REVOKE SELECT, INSERT ON app_private.student_identity_details FROM schoolos_student_executor;
+GRANT SELECT (id,created_at,created_by,ended_at,ended_by,student_id,national_id,
+  birth_certificate_number,birth_certificate_file_id,private_address,city,
+  guardian_identity_text,guardian_contact,effective_from,effective_until,supersedes_id,reason),
+  INSERT (id,created_by,student_id,national_id,birth_certificate_number,
+    birth_certificate_file_id,private_address,city,guardian_identity_text,
+    guardian_contact,effective_from,effective_until,supersedes_id,reason)
+  ON app_private.student_identity_details TO schoolos_student_executor;
+GRANT UPDATE (effective_until,ended_at,ended_by)
+  ON app_private.student_identity_details TO schoolos_student_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_student_identity_payload_valid(p_payload jsonb)
+RETURNS boolean
+LANGUAGE sql IMMUTABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT p_payload IS NOT NULL
+    AND pg_catalog.jsonb_typeof(p_payload)='object'
+    AND (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_payload))=7
+    AND (p_payload ?& ARRAY['national_id','birth_certificate_number','birth_certificate_file_id',
+      'private_address','city','guardian_identity_text','guardian_contact'])
+    AND (p_payload->'national_id'='null'::jsonb OR
+      (pg_catalog.jsonb_typeof(p_payload->'national_id')='string' AND
+       pg_catalog.length(pg_catalog.btrim(p_payload->>'national_id'))>0))
+    AND (p_payload->'birth_certificate_number'='null'::jsonb OR
+      (pg_catalog.jsonb_typeof(p_payload->'birth_certificate_number')='string' AND
+       pg_catalog.length(pg_catalog.btrim(p_payload->>'birth_certificate_number'))>0))
+    AND (p_payload->'birth_certificate_file_id'='null'::jsonb OR
+      pg_catalog.jsonb_typeof(p_payload->'birth_certificate_file_id')='string')
+    AND (p_payload->'private_address'='null'::jsonb OR
+      (pg_catalog.jsonb_typeof(p_payload->'private_address')='string' AND
+       pg_catalog.length(pg_catalog.btrim(p_payload->>'private_address'))>0))
+    AND (p_payload->'city'='null'::jsonb OR
+      (pg_catalog.jsonb_typeof(p_payload->'city')='string' AND
+       pg_catalog.length(pg_catalog.btrim(p_payload->>'city'))>0))
+    AND (p_payload->'guardian_identity_text'='null'::jsonb OR
+      (pg_catalog.jsonb_typeof(p_payload->'guardian_identity_text')='string' AND
+       pg_catalog.length(pg_catalog.btrim(p_payload->>'guardian_identity_text'))>0))
+    AND (p_payload->'guardian_contact'='null'::jsonb OR
+      (pg_catalog.jsonb_typeof(p_payload->'guardian_contact')='string' AND
+       pg_catalog.length(pg_catalog.btrim(p_payload->>'guardian_contact'))>0));
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_payload_valid(jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_payload_valid(jsonb)
+  TO schoolos_student_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_student_identity_request_payload_valid(p_old jsonb,p_requested jsonb)
+RETURNS boolean
+LANGUAGE sql IMMUTABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT p_old IS NOT NULL AND pg_catalog.jsonb_typeof(p_old)='object'
+    AND (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_old))=11
+    AND (p_old ?& ARRAY['source_snapshot_id','national_id','birth_certificate_number',
+      'birth_certificate_file_id','private_address','city','guardian_identity_text',
+      'guardian_contact','source_effective_from','source_supersedes_id','source_present'])
+    AND p_old->>'source_present'='true'
+    AND pg_catalog.jsonb_typeof(p_old->'source_snapshot_id')='string'
+    AND pg_catalog.jsonb_typeof(p_old->'source_effective_from')='string'
+    AND (p_old->'source_supersedes_id'='null'::jsonb OR pg_catalog.jsonb_typeof(p_old->'source_supersedes_id')='string')
+    AND app_private.d1_student_identity_payload_valid(pg_catalog.jsonb_build_object(
+      'national_id',p_old->'national_id','birth_certificate_number',p_old->'birth_certificate_number',
+      'birth_certificate_file_id',p_old->'birth_certificate_file_id','private_address',p_old->'private_address',
+      'city',p_old->'city','guardian_identity_text',p_old->'guardian_identity_text',
+      'guardian_contact',p_old->'guardian_contact'))
+    AND app_private.d1_student_identity_payload_valid(p_requested);
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_request_payload_valid(jsonb,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_request_payload_valid(jsonb,jsonb)
+  TO schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_student_identity_authorized(
+  p_principal uuid,p_permission text,p_student uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); placement record; n bigint;
+BEGIN
+  IF p_principal IS NULL OR p_student IS NULL
+     OR p_permission NOT IN ('student.identity.correct','student.identity.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+        WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+          AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+
+  SELECT count(*) INTO n FROM app_private.enrollments e
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+     AND e.effective_from<=at_time::date
+     AND (e.effective_until IS NULL OR at_time::date<e.effective_until);
+  IF n<>1 THEN RETURN false; END IF;
+  SELECT so.id AS section_id,co.id AS class_id,co.campus_id
+    INTO placement
+    FROM app_private.enrollments e
+    JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+     AND e.effective_from<=at_time::date
+     AND (e.effective_until IS NULL OR at_time::date<e.effective_until);
+  IF placement.section_id IS NULL OR placement.class_id IS NULL OR placement.campus_id IS NULL THEN RETURN false; END IF;
+
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+     WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+       AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at))
+  THEN RETURN false; END IF;
+
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id
+    JOIN app_private.roles r ON r.id=sc.role_id
+     WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL'
+       AND a.context_kind='INDIVIDUAL' AND a.role_id=sc.role_id
+       AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+       AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind
+       AND c.resolver_key=sc.resolver_key AND c.enabled
+       AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+       AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+       AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+       AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+       AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until)
+       AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+       AND sc.resolver_key='DIRECT'
+       AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+         OR (sc.scope_kind='CAMPUS' AND sc.campus_id=placement.campus_id)
+         OR (sc.scope_kind='CLASS' AND sc.class_offering_id=placement.class_id)
+         OR (sc.scope_kind='SECTION' AND sc.section_offering_id=placement.section_id))
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_authorized(uuid,text,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_authorized(uuid,text,uuid,uuid)
+  TO schoolos_workflow_executor,schoolos_read_executor,schoolos_student_executor;
+
+CREATE FUNCTION app_private.d1_student_identity_p2_policy(p_student uuid)
+RETURNS TABLE(policy_id uuid,campus_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); target_campus uuid;
+  school_count bigint; campus_count bigint; school_policy uuid; campus_policy uuid; chosen uuid;
+  steps bigint; invalid bigint; first_no int; last_no int;
+BEGIN
+  SELECT co.campus_id INTO target_campus
+    FROM app_private.enrollments e
+    JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+     AND e.effective_from<=at_time::date
+     AND (e.effective_until IS NULL OR at_time::date<e.effective_until);
+  IF target_campus IS NULL THEN RETURN; END IF;
+  IF (SELECT count(*) FROM app_private.enrollments e
+       WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+         AND e.effective_from<=at_time::date
+         AND (e.effective_until IS NULL OR at_time::date<e.effective_until))<>1 THEN RETURN; END IF;
+
+  SELECT count(*),min(p.id::text)::uuid INTO school_count,school_policy
+    FROM app_private.approval_policy_versions p
+    JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='student.identity.correct' AND o.contract_version=1 AND o.enabled
+     AND p.state='ACTIVE' AND p.campus_id IS NULL
+     AND p.d1_route_mode IS DISTINCT FROM 'DIRECT'
+     AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+  SELECT count(*),min(p.id::text)::uuid INTO campus_count,campus_policy
+    FROM app_private.approval_policy_versions p
+    JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='student.identity.correct' AND o.contract_version=1 AND o.enabled
+     AND p.state='ACTIVE' AND p.campus_id=target_campus
+     AND p.d1_route_mode IS DISTINCT FROM 'DIRECT'
+     AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+  IF campus_count>1 OR school_count>1 THEN RETURN; END IF;
+  IF campus_count=1 THEN chosen:=campus_policy;
+  ELSIF school_count=1 THEN chosen:=school_policy;
+  ELSE RETURN; END IF;
+
+  SELECT count(*),count(*) FILTER (WHERE r.id IS NULL OR r.state<>'ACTIVE'
+      OR t.required_reviews<>1 OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'),
+      min(t.step_number),max(t.step_number)
+    INTO steps,invalid,first_no,last_no
+    FROM app_private.approval_step_templates t
+    LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id
+   WHERE t.policy_id=chosen;
+  IF steps=0 OR invalid<>0 OR first_no<>1 OR last_no::bigint<>steps THEN RETURN; END IF;
+  RETURN QUERY SELECT chosen,target_campus;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_p2_policy(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_p2_policy(uuid)
+  TO schoolos_workflow_executor;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+
+CREATE FUNCTION app_private.d1_student_identity_lock_context(p_student uuid,p_expected_student_version bigint DEFAULT NULL)
+RETURNS TABLE(student_version bigint,source_snapshot_id uuid,national_id text,
+  birth_certificate_number text,birth_certificate_file_id uuid,private_address text,city text,
+  guardian_identity_text text,guardian_contact text,source_effective_from timestamptz,
+  source_supersedes_id uuid,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v bigint; n bigint; src app_private.student_identity_details%ROWTYPE;
+BEGIN
+  SELECT s.row_version INTO v FROM app_private.students s WHERE s.id=p_student FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT NULL::bigint,NULL::uuid,NULL::text,NULL::text,NULL::uuid,
+    NULL::text,NULL::text,NULL::text,NULL::text,NULL::timestamptz,NULL::uuid,'D1_STUDENT_IDENTITY_STUDENT_MISSING'; RETURN; END IF;
+  IF p_expected_student_version IS NOT NULL AND v IS DISTINCT FROM p_expected_student_version THEN
+    RETURN QUERY SELECT v,NULL::uuid,NULL::text,NULL::text,NULL::uuid,NULL::text,NULL::text,NULL::text,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_STUDENT_IDENTITY_STUDENT_VERSION_STALE'; RETURN; END IF;
+  SELECT count(*) INTO n FROM app_private.student_identity_details d
+   WHERE d.student_id=p_student AND d.effective_until IS NULL;
+  IF n=0 THEN RETURN QUERY SELECT v,NULL::uuid,NULL::text,NULL::text,NULL::uuid,NULL::text,NULL::text,NULL::text,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_STUDENT_IDENTITY_SOURCE_REQUIRED'; RETURN; END IF;
+  IF n<>1 THEN RETURN QUERY SELECT v,NULL::uuid,NULL::text,NULL::text,NULL::uuid,NULL::text,NULL::text,NULL::text,NULL::text,
+      NULL::timestamptz,NULL::uuid,'D1_STUDENT_IDENTITY_OPEN_AMBIGUOUS'; RETURN; END IF;
+  SELECT * INTO src FROM app_private.student_identity_details d
+   WHERE d.student_id=p_student AND d.effective_until IS NULL FOR UPDATE;
+  IF src.effective_from>pg_catalog.statement_timestamp() THEN
+    RETURN QUERY SELECT v,src.id,src.national_id,src.birth_certificate_number,src.birth_certificate_file_id,
+      src.private_address,src.city,src.guardian_identity_text,src.guardian_contact,src.effective_from,src.supersedes_id,
+      'D1_STUDENT_IDENTITY_FUTURE_SOURCE'; RETURN; END IF;
+  RETURN QUERY SELECT v,src.id,src.national_id,src.birth_certificate_number,src.birth_certificate_file_id,
+    src.private_address,src.city,src.guardian_identity_text,src.guardian_contact,src.effective_from,src.supersedes_id,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_lock_context(uuid,bigint)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_lock_context(uuid,bigint)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_identity_preflight(
+  p_student uuid,p_expected_student_version bigint,p_source uuid,p_national_id text,
+  p_birth_number text,p_birth_file uuid,p_address text,p_city text,p_guardian_identity text,
+  p_guardian_contact text,p_source_from timestamptz,p_source_supersedes uuid,
+  p_new_national_id text,p_new_birth_number text,p_new_birth_file uuid,p_new_address text,
+  p_new_city text,p_new_guardian_identity text,p_new_guardian_contact text
+) RETURNS TABLE(eligible boolean,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c record; requested jsonb;
+BEGIN
+  requested:=pg_catalog.jsonb_build_object('national_id',p_new_national_id,
+    'birth_certificate_number',p_new_birth_number,'birth_certificate_file_id',p_new_birth_file,
+    'private_address',p_new_address,'city',p_new_city,'guardian_identity_text',p_new_guardian_identity,
+    'guardian_contact',p_new_guardian_contact);
+  IF app_private.d1_student_identity_payload_valid(requested) IS DISTINCT FROM true THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_IDENTITY_PAYLOAD_INVALID'; RETURN; END IF;
+  SELECT * INTO c FROM app_private.d1_student_identity_lock_context(p_student,p_expected_student_version);
+  IF c.error_code IS NOT NULL THEN RETURN QUERY SELECT false,c.error_code; RETURN; END IF;
+  IF c.source_snapshot_id IS DISTINCT FROM p_source OR c.national_id IS DISTINCT FROM p_national_id
+     OR c.birth_certificate_number IS DISTINCT FROM p_birth_number
+     OR c.birth_certificate_file_id IS DISTINCT FROM p_birth_file
+     OR c.private_address IS DISTINCT FROM p_address OR c.city IS DISTINCT FROM p_city
+     OR c.guardian_identity_text IS DISTINCT FROM p_guardian_identity
+     OR c.guardian_contact IS DISTINCT FROM p_guardian_contact
+     OR c.source_effective_from IS DISTINCT FROM p_source_from
+     OR c.source_supersedes_id IS DISTINCT FROM p_source_supersedes THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_IDENTITY_SOURCE_STALE'; RETURN; END IF;
+  IF p_birth_file IS DISTINCT FROM p_new_birth_file AND p_new_birth_file IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM app_private.file_objects f
+       WHERE f.id=p_new_birth_file AND f.purpose_code='BIRTH_CERTIFICATE' AND f.state='AVAILABLE') THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_IDENTITY_BIRTH_FILE_INVALID'; RETURN; END IF;
+  IF c.national_id IS NOT DISTINCT FROM p_new_national_id
+     AND c.birth_certificate_number IS NOT DISTINCT FROM p_new_birth_number
+     AND c.birth_certificate_file_id IS NOT DISTINCT FROM p_new_birth_file
+     AND c.private_address IS NOT DISTINCT FROM p_new_address
+     AND c.city IS NOT DISTINCT FROM p_new_city
+     AND c.guardian_identity_text IS NOT DISTINCT FROM p_new_guardian_identity
+     AND c.guardian_contact IS NOT DISTINCT FROM p_new_guardian_contact THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_IDENTITY_NOOP'; RETURN; END IF;
+  RETURN QUERY SELECT true,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_preflight(uuid,bigint,uuid,text,text,uuid,text,text,text,text,timestamptz,uuid,text,text,uuid,text,text,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_preflight(uuid,bigint,uuid,text,text,uuid,text,text,text,text,timestamptz,uuid,text,text,uuid,text,text,text,text)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_identity_effect(
+  p_student uuid,p_expected_student_version bigint,p_source uuid,p_national_id text,
+  p_birth_number text,p_birth_file uuid,p_address text,p_city text,p_guardian_identity text,
+  p_guardian_contact text,p_source_from timestamptz,p_source_supersedes uuid,
+  p_new_national_id text,p_new_birth_number text,p_new_birth_file uuid,p_new_address text,
+  p_new_city text,p_new_guardian_identity text,p_new_guardian_contact text,p_reason text
+) RETURNS TABLE(identity_snapshot_id uuid,student_version bigint,effective_from timestamptz)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; accepted timestamptz:=pg_catalog.statement_timestamp(); actor uuid; new_id uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Student identity effect intent invalid'; END IF;
+  SELECT * INTO pre FROM app_private.d1_student_identity_preflight(p_student,p_expected_student_version,p_source,
+    p_national_id,p_birth_number,p_birth_file,p_address,p_city,p_guardian_identity,p_guardian_contact,p_source_from,
+    p_source_supersedes,p_new_national_id,p_new_birth_number,p_new_birth_file,p_new_address,p_new_city,
+    p_new_guardian_identity,p_new_guardian_contact);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Student identity effect denied: %',pre.error_code; END IF;
+  UPDATE app_private.student_identity_details SET effective_until=accepted,ended_at=accepted,ended_by=actor
+   WHERE id=p_source AND effective_until IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Student identity source changed'; END IF;
+  INSERT INTO app_private.student_identity_details
+    (id,created_by,student_id,national_id,birth_certificate_number,birth_certificate_file_id,
+     private_address,city,guardian_identity_text,guardian_contact,effective_from,supersedes_id,reason)
+  VALUES (new_id,actor,p_student,NULLIF(pg_catalog.btrim(p_new_national_id),''),
+    NULLIF(pg_catalog.btrim(p_new_birth_number),''),p_new_birth_file,NULLIF(pg_catalog.btrim(p_new_address),''),
+    NULLIF(pg_catalog.btrim(p_new_city),''),NULLIF(pg_catalog.btrim(p_new_guardian_identity),''),
+    NULLIF(pg_catalog.btrim(p_new_guardian_contact),''),accepted,p_source,p_reason);
+  RETURN QUERY SELECT new_id,p_expected_student_version,accepted;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_effect(uuid,bigint,uuid,text,text,uuid,text,text,text,text,timestamptz,uuid,text,text,uuid,text,text,text,text,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_identity_effect(uuid,bigint,uuid,text,text,uuid,text,text,text,text,timestamptz,uuid,text,text,uuid,text,text,text,text,text)
+  TO schoolos_workflow_executor;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
