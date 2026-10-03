@@ -1,0 +1,153 @@
+-- D1C1B effect 26/36: Student PRIMARY enrollment move core.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+-- P1 operation: PROMOTION/REPEAT/CLASS_CHANGE/SECTION_CHANGE/CAMPUS_TRANSFER.
+-- Source and destination are both authorized; move atomically bounds predecessor and creates successor.
+
+SET ROLE schoolos_schema_owner;
+GRANT UPDATE (placement_state,effective_until,end_reason,ended_at,ended_by) ON app_private.enrollments TO schoolos_student_executor;
+GRANT UPDATE (effective_until,ended_at,ended_by) ON app_private.roll_allocations TO schoolos_student_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_academic_executor;
+SET ROLE schoolos_academic_executor;
+CREATE FUNCTION app_private.d1_enrollment_move_lock_paths(p_source_section uuid,p_destination_section uuid)
+RETURNS TABLE(school_id uuid,source_campus_id uuid,source_year_id uuid,source_class_offering_id uuid,source_class_id uuid,
+  source_section_id uuid,destination_campus_id uuid,destination_year_id uuid,destination_class_offering_id uuid,destination_class_id uuid,
+  destination_section_id uuid,destination_class_capacity integer,destination_section_capacity integer,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE src record; dst record;
+BEGIN
+  IF p_source_section IS NULL OR p_destination_section IS NULL OR p_source_section=p_destination_section THEN
+    RETURN QUERY SELECT NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::integer,NULL::integer,'D1_ENROLLMENT_MOVE_SECTION_INVALID'; RETURN;
+  END IF;
+  SELECT co.school_id,co.campus_id,co.academic_year_id,co.id class_offering_id,co.class_id,so.id section_id
+    INTO src FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_source_section;
+  SELECT co.school_id,co.campus_id,co.academic_year_id,co.id class_offering_id,co.class_id,so.id section_id
+    INTO dst FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_destination_section;
+  IF src.section_id IS NULL OR dst.section_id IS NULL OR src.school_id IS DISTINCT FROM dst.school_id THEN
+    RETURN QUERY SELECT NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,p_source_section,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,p_destination_section,NULL::integer,NULL::integer,'D1_ENROLLMENT_MOVE_ANCESTRY_INVALID'; RETURN;
+  END IF;
+  PERFORM 1 FROM app_private.academic_classes c WHERE c.id IN (src.class_id,dst.class_id) ORDER BY c.id FOR UPDATE;
+  PERFORM 1 FROM app.campuses c WHERE c.id IN (src.campus_id,dst.campus_id) ORDER BY c.id FOR UPDATE;
+  PERFORM 1 FROM app.academic_years y WHERE y.id IN (src.academic_year_id,dst.academic_year_id) ORDER BY y.id FOR UPDATE;
+  PERFORM 1 FROM app_private.class_offerings co WHERE co.id IN (src.class_offering_id,dst.class_offering_id) ORDER BY co.id FOR UPDATE;
+  PERFORM 1 FROM app_private.section_offerings so WHERE so.id IN (src.section_id,dst.section_id) ORDER BY so.id FOR UPDATE;
+  SELECT co.school_id,co.campus_id,co.academic_year_id,co.id class_offering_id,co.class_id,so.id section_id,
+         co.state class_state,so.state section_state,co.capacity class_capacity,so.capacity section_capacity,
+         ac.state academic_class_state,c.state campus_state,y.state year_state
+    INTO dst FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    JOIN app_private.academic_classes ac ON ac.id=co.class_id
+    JOIN app.campuses c ON c.id=co.campus_id
+    JOIN app.academic_years y ON y.id=co.academic_year_id
+   WHERE so.id=p_destination_section;
+  IF dst.section_id IS NULL OR dst.school_id IS DISTINCT FROM src.school_id THEN
+    RETURN QUERY SELECT src.school_id,src.campus_id,src.academic_year_id,src.class_offering_id,src.class_id,src.section_id,
+      NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,p_destination_section,NULL::integer,NULL::integer,'D1_ENROLLMENT_MOVE_DESTINATION_CHANGED'; RETURN;
+  END IF;
+  IF dst.academic_class_state<>'ACTIVE' OR dst.campus_state<>'ACTIVE' OR dst.year_state<>'ACTIVE'
+     OR dst.class_state<>'OPEN' OR dst.section_state<>'OPEN' THEN
+    RETURN QUERY SELECT src.school_id,src.campus_id,src.academic_year_id,src.class_offering_id,src.class_id,src.section_id,
+      dst.campus_id,dst.academic_year_id,dst.class_offering_id,dst.class_id,dst.section_id,dst.class_capacity,dst.section_capacity,'D1_ENROLLMENT_MOVE_DESTINATION_NOT_OPEN'; RETURN;
+  END IF;
+  RETURN QUERY SELECT src.school_id,src.campus_id,src.academic_year_id,src.class_offering_id,src.class_id,src.section_id,
+    dst.campus_id,dst.academic_year_id,dst.class_offering_id,dst.class_id,dst.section_id,dst.class_capacity,dst.section_capacity,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_lock_paths(uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_lock_paths(uuid,uuid) TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_academic_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_enrollment_move_authorized(
+  p_principal uuid,p_permission text,p_source_section uuid,p_destination_section uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); src record; dst record;
+BEGIN
+  IF p_principal IS NULL OR p_source_section IS NULL OR p_destination_section IS NULL
+     OR p_permission NOT IN ('student.enrollment.move','student.enrollment.approve','student.capacity_override') THEN RETURN false; END IF;
+  IF NOT EXISTS (SELECT 1 FROM app_private.principals p JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+      WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL) THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM app_private.principal_role_assignments a JOIN app_private.roles r ON r.id=a.role_id
+       WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+         AND r.state='ACTIVE' AND NOT r.family_only AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+         AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  SELECT so.id section_id,co.id class_offering_id,co.campus_id INTO src
+    FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_source_section;
+  SELECT so.id section_id,co.id class_offering_id,co.campus_id INTO dst
+    FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_destination_section;
+  IF src.section_id IS NULL OR dst.section_id IS NULL THEN RETURN false; END IF;
+  IF p_permission='student.capacity_override' THEN src:=dst; END IF;
+  RETURN NOT EXISTS (
+    SELECT 1 FROM (VALUES (src.campus_id,src.class_offering_id,src.section_id),(dst.campus_id,dst.class_offering_id,dst.section_id)) AS t(campus_id,class_offering_id,section_id)
+    WHERE NOT EXISTS (
+      SELECT 1 FROM app_private.assignment_permission_scopes sc
+      JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+      JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+      JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+      JOIN app_private.permissions p ON p.id=sc.permission_id JOIN app_private.roles r ON r.id=sc.role_id
+      WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+        AND (p_reviewer_role IS NULL OR a.role_id=p_reviewer_role)
+        AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+        AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key AND c.enabled
+        AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+        AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+        AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+        AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until) AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+        AND sc.resolver_key='DIRECT'
+        AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+          OR (sc.scope_kind='CAMPUS' AND sc.campus_id=t.campus_id)
+          OR (sc.scope_kind='CLASS' AND sc.class_offering_id=t.class_offering_id)
+          OR (sc.scope_kind='SECTION' AND sc.section_offering_id=t.section_id))));
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_authorized(uuid,text,uuid,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_authorized(uuid,text,uuid,uuid,uuid)
+  TO schoolos_student_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_enrollment_move_policy(p_source_section uuid,p_destination_section uuid)
+RETURNS TABLE(policy_id uuid,route_mode text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); campus_row record; school uuid; campus_count bigint;
+  school_count bigint; school_policy uuid; school_route text; specific_count bigint; candidate uuid; candidate_route text;
+  selected uuid; selected_route text; steps bigint; invalid bigint;
+BEGIN
+  SELECT co.school_id INTO school FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_source_section;
+  IF school IS NULL OR NOT EXISTS (SELECT 1 FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+      WHERE so.id=p_destination_section AND co.school_id=school) THEN RETURN; END IF;
+  SELECT count(*),min(p.id::text)::uuid,min(p.d1_route_mode) INTO school_count,school_policy,school_route
+    FROM app_private.approval_policy_versions p JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='student.enrollment.move' AND o.contract_version=1 AND o.enabled AND p.state='ACTIVE' AND p.campus_id IS NULL
+     AND p.d1_route_mode IN ('DIRECT','APPROVAL') AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+  FOR campus_row IN SELECT DISTINCT co.campus_id FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+      WHERE so.id IN (p_source_section,p_destination_section) ORDER BY co.campus_id LOOP
+    campus_count:=campus_count+1;
+    SELECT count(*),min(p.id::text)::uuid,min(p.d1_route_mode) INTO specific_count,candidate,candidate_route
+      FROM app_private.approval_policy_versions p JOIN app_private.operation_contracts o ON o.id=p.operation_id
+     WHERE o.code='student.enrollment.move' AND o.contract_version=1 AND o.enabled AND p.state='ACTIVE'
+       AND p.campus_id=campus_row.campus_id AND p.d1_route_mode IN ('DIRECT','APPROVAL')
+       AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+    IF specific_count>1 THEN RETURN; END IF;
+    IF specific_count=0 THEN
+      IF school_count<>1 OR school_policy IS NULL OR school_route IS NULL THEN RETURN; END IF;
+      candidate:=school_policy; candidate_route:=school_route;
+    END IF;
+    IF selected IS NULL THEN selected:=candidate; selected_route:=candidate_route;
+    ELSIF selected_route IS DISTINCT FROM candidate_route THEN RETURN;
+    ELSIF selected_route='APPROVAL' AND selected IS DISTINCT FROM candidate THEN RETURN; END IF;
+  END LOOP;
+  IF campus_count=0 OR selected IS NULL OR selected_route IS NULL THEN RETURN; END IF;
+  IF selected_route='APPROVAL' THEN
+    SELECT count(*),count(*) FILTER (WHERE r.id IS NULL OR r.state<>'ACTIVE' OR t.required_reviews<>1
+      OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE') INTO steps,invalid
+      FROM app_private.approval_step_templates t LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id WHERE t.policy_id=selected;
+    IF steps=0 OR invalid<>0 THEN RETURN; END IF;
+  END IF;
+  RETURN QUERY SELECT selected,selected_route;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_policy(uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_policy(uuid,uuid) TO schoolos_student_executor,schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
