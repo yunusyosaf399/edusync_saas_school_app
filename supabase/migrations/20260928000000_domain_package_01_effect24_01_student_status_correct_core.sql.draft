@@ -1,0 +1,116 @@
+-- D1C1B effect 24/36: Student factual status correction core.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+-- Approved contract: mandatory P2; append factual supersession; rebuild and validate
+-- authoritative status chain/projection; never mutate Enrollment/Roll history.
+
+SET ROLE schoolos_schema_owner;
+GRANT SELECT (id,row_version,current_status,updated_at) ON app_private.students TO schoolos_student_executor;
+GRANT UPDATE (current_status,row_version,updated_at) ON app_private.students TO schoolos_student_executor;
+GRANT SELECT (id,created_at,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id),
+  INSERT (id,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id)
+  ON app_private.student_status_transitions TO schoolos_student_executor;
+GRANT SELECT (id,student_id,section_offering_id,placement_kind,entry_kind,placement_state,effective_from,effective_until,predecessor_id,reason,end_reason,ended_at,ended_by)
+  ON app_private.enrollments TO schoolos_student_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_student_status_correct_command_context(p_command_kind text,p_idempotency_key text,p_intent jsonb)
+RETURNS TABLE(actor_id uuid,operation_id uuid,receipt_id uuid,result_ref uuid,result_summary jsonb,receipt_state text,intent_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a uuid; op uuid; h bytea; d bytea; r bigint; rec app_private.command_receipts%ROWTYPE;
+BEGIN
+  IF p_command_kind NOT IN ('request.submit','request.review','request.apply') OR p_idempotency_key IS NULL
+     OR pg_catalog.length(pg_catalog.btrim(p_idempotency_key))=0 OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array'
+     OR NOT ((p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=6)
+          OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+          OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2))
+  THEN RAISE EXCEPTION 'D1 Student status correction receipt phase or shape unsupported'; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  a:=app_private.current_principal_id(); IF a IS NULL THEN RAISE EXCEPTION 'D1 Student status correction requires verified actor'; END IF;
+  SELECT o.id INTO op FROM app_private.operation_contracts o WHERE o.code='student.status.correct' AND o.contract_version=1
+    AND o.handler_key='student.status.correct' AND o.enabled;
+  IF op IS NULL THEN RAISE EXCEPTION 'D1 Student status correction operation is not enabled'; END IF;
+  h:=pg_catalog.sha256(pg_catalog.convert_to(app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+    'canonicalization_version',1,'operation_code','student.status.correct','operation_contract_version','1','operation_id',op::text,
+    'command_kind',p_command_kind,'principal_id',a::text,'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+  d:=pg_catalog.sha256(pg_catalog.convert_to(a::text||'|'||op::text||'|'||p_idempotency_key,'UTF8'));
+  r:=pg_catalog.get_byte(d,0)::bigint*16777216+pg_catalog.get_byte(d,1)::bigint*65536+pg_catalog.get_byte(d,2)::bigint*256+pg_catalog.get_byte(d,3)::bigint;
+  IF r>2147483647 THEN r:=r-4294967296; END IF; PERFORM pg_catalog.pg_advisory_xact_lock(71002,r::integer);
+  SELECT x.* INTO rec FROM app_private.command_receipts x WHERE x.principal_id=a AND x.operation_id=op AND x.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF rec.canonicalization_version<>1 OR rec.canonical_payload_hash IS DISTINCT FROM h OR rec.command_kind IS DISTINCT FROM p_command_kind
+      THEN RAISE EXCEPTION 'D1 Student status correction idempotency key conflicts with prior intent'; END IF;
+    RETURN QUERY SELECT a,op,rec.id,rec.result_ref,rec.result_summary,rec.state,h; RETURN;
+  END IF;
+  RETURN QUERY SELECT a,op,NULL::uuid,NULL::uuid,NULL::jsonb,NULL::text,h;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_correct_command_context(text,text,jsonb) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_correct_command_context(text,text,jsonb) TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_student_status_correct_authorized(p_principal uuid,p_permission text,p_student uuid,p_at date,p_reviewer_role uuid DEFAULT NULL)
+RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); e record; n bigint;
+BEGIN
+  IF p_principal IS NULL OR p_student IS NULL OR p_at IS NULL OR p_permission NOT IN ('student.status.correct','student.status.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (SELECT 1 FROM app_private.principal_role_assignments a JOIN app_private.roles r ON r.id=a.role_id
+      WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+        AND r.state='ACTIVE' AND NOT r.family_only AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+        AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  SELECT count(*) INTO n FROM app_private.enrollments x WHERE x.student_id=p_student AND x.placement_kind='PRIMARY'
+    AND x.effective_from<=p_at AND (x.effective_until IS NULL OR p_at<x.effective_until);
+  IF n>1 THEN RETURN false; END IF;
+  IF n=1 THEN SELECT x.id,so.id section_id,co.id class_id,co.campus_id INTO e FROM app_private.enrollments x
+    JOIN app_private.section_offerings so ON so.id=x.section_offering_id JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    WHERE x.student_id=p_student AND x.placement_kind='PRIMARY' AND x.effective_from<=p_at AND (x.effective_until IS NULL OR p_at<x.effective_until); END IF;
+  RETURN EXISTS (SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id JOIN app_private.permissions p ON p.id=sc.permission_id JOIN app_private.roles r ON r.id=sc.role_id
+    WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL' AND a.role_id=sc.role_id
+      AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind
+      AND c.resolver_key=sc.resolver_key AND c.enabled AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+      AND (p_reviewer_role IS NULL OR sc.role_id=p_reviewer_role)
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until) AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+      AND sc.resolver_key='DIRECT' AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+        OR (n=1 AND sc.scope_kind='CAMPUS' AND sc.campus_id=e.campus_id)
+        OR (n=1 AND sc.scope_kind='CLASS' AND sc.class_offering_id=e.class_id)
+        OR (n=1 AND sc.scope_kind='SECTION' AND sc.section_offering_id=e.section_id)));
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_correct_authorized(uuid,text,uuid,date,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_correct_authorized(uuid,text,uuid,date,uuid) TO schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_student_status_correct_policy(p_student uuid,p_at date)
+RETURNS TABLE(policy_id uuid,campus_id uuid) LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); campus uuid; n bigint; school_n bigint; campus_n bigint; school_p uuid; campus_p uuid; chosen uuid; steps bigint; invalid bigint;
+BEGIN
+  SELECT count(*) INTO n FROM app_private.enrollments e WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+    AND e.effective_from<=p_at AND (e.effective_until IS NULL OR p_at<e.effective_until); IF n>1 THEN RETURN; END IF;
+  IF n=1 THEN SELECT co.campus_id INTO campus FROM app_private.enrollments e JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+      AND e.effective_from<=p_at AND (e.effective_until IS NULL OR p_at<e.effective_until); END IF;
+  SELECT count(*),min(p.id::text)::uuid INTO school_n,school_p FROM app_private.approval_policy_versions p JOIN app_private.operation_contracts o ON o.id=p.operation_id
+    WHERE o.code='student.status.correct' AND o.contract_version=1 AND o.enabled AND p.state='ACTIVE' AND p.campus_id IS NULL
+      AND p.d1_route_mode='APPROVAL' AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+  IF campus IS NULL THEN IF school_n<>1 THEN RETURN; END IF; chosen:=school_p;
+  ELSE SELECT count(*),min(p.id::text)::uuid INTO campus_n,campus_p FROM app_private.approval_policy_versions p JOIN app_private.operation_contracts o ON o.id=p.operation_id
+      WHERE o.code='student.status.correct' AND o.contract_version=1 AND o.enabled AND p.state='ACTIVE' AND p.campus_id=campus
+        AND p.d1_route_mode='APPROVAL' AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+    IF campus_n>1 OR school_n>1 THEN RETURN; END IF; IF campus_n=1 THEN chosen:=campus_p; ELSIF school_n=1 THEN chosen:=school_p; ELSE RETURN; END IF; END IF;
+  SELECT count(*),count(*) FILTER (WHERE r.id IS NULL OR r.state<>'ACTIVE' OR t.required_reviews<>1 OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE')
+    INTO steps,invalid FROM app_private.approval_step_templates t LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id WHERE t.policy_id=chosen;
+  IF steps=0 OR invalid<>0 THEN RETURN; END IF; RETURN QUERY SELECT chosen,campus;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_correct_policy(uuid,date) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_correct_policy(uuid,date) TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
