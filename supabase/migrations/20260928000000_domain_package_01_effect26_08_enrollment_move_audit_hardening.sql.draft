@@ -1,0 +1,153 @@
+-- Effect 26 independent-audit hardening: future destination compatibility, policy initialization,
+-- fixed command-context shapes, and source-roll replay proof.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_academic_executor;
+SET ROLE schoolos_academic_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_move_lock_paths(p_source_section uuid,p_destination_section uuid)
+RETURNS TABLE(school_id uuid,source_campus_id uuid,source_year_id uuid,source_class_offering_id uuid,source_class_id uuid,
+  source_section_id uuid,destination_campus_id uuid,destination_year_id uuid,destination_class_offering_id uuid,destination_class_id uuid,
+  destination_section_id uuid,destination_class_capacity integer,destination_section_capacity integer,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE src record; dst record;
+BEGIN
+  IF p_source_section IS NULL OR p_destination_section IS NULL OR p_source_section=p_destination_section THEN
+    RETURN QUERY SELECT NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::integer,NULL::integer,'D1_ENROLLMENT_MOVE_SECTION_INVALID'; RETURN; END IF;
+  SELECT co.school_id,co.campus_id,co.academic_year_id,co.id class_offering_id,co.class_id,so.id section_id INTO src
+    FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_source_section;
+  SELECT co.school_id,co.campus_id,co.academic_year_id,co.id class_offering_id,co.class_id,so.id section_id INTO dst
+    FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_destination_section;
+  IF src.section_id IS NULL OR dst.section_id IS NULL OR src.school_id IS DISTINCT FROM dst.school_id THEN
+    RETURN QUERY SELECT NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,p_source_section,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,p_destination_section,NULL::integer,NULL::integer,'D1_ENROLLMENT_MOVE_ANCESTRY_INVALID'; RETURN; END IF;
+  PERFORM 1 FROM app_private.academic_classes c WHERE c.id IN (src.class_id,dst.class_id) ORDER BY c.id FOR UPDATE;
+  PERFORM 1 FROM app.campuses c WHERE c.id IN (src.campus_id,dst.campus_id) ORDER BY c.id FOR UPDATE;
+  PERFORM 1 FROM app.academic_years y WHERE y.id IN (src.academic_year_id,dst.academic_year_id) ORDER BY y.id FOR UPDATE;
+  PERFORM 1 FROM app_private.class_offerings co WHERE co.id IN (src.class_offering_id,dst.class_offering_id) ORDER BY co.id FOR UPDATE;
+  PERFORM 1 FROM app_private.section_offerings so WHERE so.id IN (src.section_id,dst.section_id) ORDER BY so.id FOR UPDATE;
+  SELECT co.school_id,co.campus_id,co.academic_year_id,co.id class_offering_id,co.class_id,so.id section_id,
+         co.state class_state,so.state section_state,co.capacity class_capacity,so.capacity section_capacity
+    INTO dst FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_destination_section;
+  IF dst.section_id IS NULL OR dst.school_id IS DISTINCT FROM src.school_id THEN
+    RETURN QUERY SELECT src.school_id,src.campus_id,src.academic_year_id,src.class_offering_id,src.class_id,src.section_id,
+      NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,p_destination_section,NULL::integer,NULL::integer,'D1_ENROLLMENT_MOVE_DESTINATION_CHANGED'; RETURN; END IF;
+  IF dst.class_state<>'OPEN' OR dst.section_state<>'OPEN' THEN
+    RETURN QUERY SELECT src.school_id,src.campus_id,src.academic_year_id,src.class_offering_id,src.class_id,src.section_id,
+      dst.campus_id,dst.academic_year_id,dst.class_offering_id,dst.class_id,dst.section_id,dst.class_capacity,dst.section_capacity,'D1_ENROLLMENT_MOVE_DESTINATION_NOT_OPEN'; RETURN; END IF;
+  RETURN QUERY SELECT src.school_id,src.campus_id,src.academic_year_id,src.class_offering_id,src.class_id,src.section_id,
+    dst.campus_id,dst.academic_year_id,dst.class_offering_id,dst.class_id,dst.section_id,dst.class_capacity,dst.section_capacity,NULL::text;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_academic_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_move_policy(p_source_section uuid,p_destination_section uuid)
+RETURNS TABLE(policy_id uuid,route_mode text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); campus_row record; school uuid; campus_count bigint:=0;
+  school_count bigint; school_policy uuid; school_route text; specific_count bigint; candidate uuid; candidate_route text;
+  selected uuid; selected_route text; steps bigint; invalid bigint;
+BEGIN
+  SELECT co.school_id INTO school FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_source_section;
+  IF school IS NULL OR NOT EXISTS (SELECT 1 FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+      WHERE so.id=p_destination_section AND co.school_id=school) THEN RETURN; END IF;
+  SELECT count(*),min(p.id::text)::uuid,min(p.d1_route_mode) INTO school_count,school_policy,school_route
+    FROM app_private.approval_policy_versions p JOIN app_private.operation_contracts o ON o.id=p.operation_id
+   WHERE o.code='student.enrollment.move' AND o.contract_version=1 AND o.enabled AND p.state='ACTIVE' AND p.campus_id IS NULL
+     AND p.d1_route_mode IN ('DIRECT','APPROVAL') AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+  FOR campus_row IN SELECT DISTINCT co.campus_id FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+      WHERE so.id IN (p_source_section,p_destination_section) ORDER BY co.campus_id LOOP
+    campus_count:=campus_count+1;
+    SELECT count(*),min(p.id::text)::uuid,min(p.d1_route_mode) INTO specific_count,candidate,candidate_route
+      FROM app_private.approval_policy_versions p JOIN app_private.operation_contracts o ON o.id=p.operation_id
+     WHERE o.code='student.enrollment.move' AND o.contract_version=1 AND o.enabled AND p.state='ACTIVE' AND p.campus_id=campus_row.campus_id
+       AND p.d1_route_mode IN ('DIRECT','APPROVAL') AND p.effective_from<=at_time AND (p.effective_until IS NULL OR at_time<p.effective_until);
+    IF specific_count>1 THEN RETURN; END IF;
+    IF specific_count=0 THEN IF school_count<>1 OR school_policy IS NULL OR school_route IS NULL THEN RETURN; END IF;
+      candidate:=school_policy; candidate_route:=school_route; END IF;
+    IF selected IS NULL THEN selected:=candidate; selected_route:=candidate_route;
+    ELSIF selected_route IS DISTINCT FROM candidate_route THEN RETURN;
+    ELSIF selected_route='APPROVAL' AND selected IS DISTINCT FROM candidate THEN RETURN; END IF;
+  END LOOP;
+  IF campus_count=0 OR selected IS NULL OR selected_route IS NULL THEN RETURN; END IF;
+  IF selected_route='APPROVAL' THEN
+    SELECT count(*),count(*) FILTER (WHERE r.id IS NULL OR r.state<>'ACTIVE' OR t.required_reviews<>1
+      OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE') INTO steps,invalid
+      FROM app_private.approval_step_templates t LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id WHERE t.policy_id=selected;
+    IF steps=0 OR invalid<>0 THEN RETURN; END IF;
+  END IF;
+  RETURN QUERY SELECT selected,selected_route;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_move_command_context(p_command_kind text,p_idempotency_key text,p_intent jsonb)
+RETURNS TABLE(actor_id uuid,operation_id uuid,receipt_id uuid,result_ref uuid,result_summary jsonb,receipt_state text,intent_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; op uuid; h bytea; digest bytea; resource bigint; rec app_private.command_receipts%ROWTYPE; expected_len integer;
+BEGIN
+  expected_len:=CASE p_command_kind WHEN 'student.enrollment.move' THEN 10 WHEN 'request.submit' THEN 10 WHEN 'request.review' THEN 4 WHEN 'request.apply' THEN 2 ELSE NULL END;
+  IF expected_len IS NULL OR p_idempotency_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_idempotency_key))=0
+     OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array' OR pg_catalog.jsonb_array_length(p_intent)<>expected_len
+    THEN RAISE EXCEPTION 'D1 Enrollment move command context intent invalid'; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1); actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1 Enrollment move requires verified actor'; END IF;
+  SELECT o.id INTO op FROM app_private.operation_contracts o WHERE o.code='student.enrollment.move' AND o.contract_version=1 AND o.handler_key='student.enrollment.move' AND o.enabled;
+  IF op IS NULL THEN RAISE EXCEPTION 'D1 Enrollment move operation is not enabled'; END IF;
+  h:=pg_catalog.sha256(pg_catalog.convert_to(app_private.d1_jcs_typed(pg_catalog.jsonb_build_object('canonicalization_version',1,
+    'operation_code','student.enrollment.move','operation_contract_version','1','operation_id',op::text,'command_kind',p_command_kind,
+    'principal_id',actor::text,'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+  digest:=pg_catalog.sha256(pg_catalog.convert_to(actor::text||'|'||op::text||'|'||p_idempotency_key,'UTF8'));
+  resource:=pg_catalog.get_byte(digest,0)::bigint*16777216+pg_catalog.get_byte(digest,1)::bigint*65536+pg_catalog.get_byte(digest,2)::bigint*256+pg_catalog.get_byte(digest,3)::bigint;
+  IF resource>2147483647 THEN resource:=resource-4294967296; END IF; PERFORM pg_catalog.pg_advisory_xact_lock(71002,resource::integer);
+  SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.principal_id=actor AND r.operation_id=op AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN IF rec.canonicalization_version<>1 OR rec.canonical_payload_hash IS DISTINCT FROM h OR rec.command_kind IS DISTINCT FROM p_command_kind
+    THEN RAISE EXCEPTION 'D1 Enrollment move idempotency key conflicts with prior intent'; END IF;
+    RETURN QUERY SELECT actor,op,rec.id,rec.result_ref,rec.result_summary,rec.state,h; RETURN; END IF;
+  RETURN QUERY SELECT actor,op,NULL::uuid,NULL::uuid,NULL::jsonb,NULL::text,h;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_move_result_matches(
+  p_actor uuid,p_student uuid,p_source uuid,p_source_section uuid,p_destination_section uuid,p_entry_kind text,p_effective_from date,
+  p_receipt uuid,p_destination uuid,p_summary jsonb
+) RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid; over_cap boolean; override_id uuid; source_roll_count bigint;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>17
+     OR NOT (p_summary ?& ARRAY['enrollment_id','source_enrollment_id','roll_allocation_id','numeric_value','roll_mode','student_version','capacity_overridden',
+       'capacity_override_id','source_section_offering_id','destination_section_offering_id','source_class_offering_id','destination_class_offering_id',
+       'source_campus_id','destination_campus_id','source_academic_year_id','destination_academic_year_id','entry_kind'])
+     OR p_summary->>'entry_kind' IS DISTINCT FROM p_entry_kind THEN RETURN false; END IF;
+  over_cap:=pg_catalog.coalesce((p_summary->>'capacity_overridden')::boolean,false); override_id:=NULLIF(p_summary->>'capacity_override_id','')::uuid;
+  rid:=NULLIF(p_summary->>'roll_allocation_id','')::uuid;
+  IF NULLIF(p_summary->>'enrollment_id','')::uuid IS DISTINCT FROM p_destination OR NULLIF(p_summary->>'source_enrollment_id','')::uuid IS DISTINCT FROM p_source
+     OR NULLIF(p_summary->>'source_section_offering_id','')::uuid IS DISTINCT FROM p_source_section
+     OR NULLIF(p_summary->>'destination_section_offering_id','')::uuid IS DISTINCT FROM p_destination_section THEN RETURN false; END IF;
+  IF NOT app_private.d1_enrollment_move_authorized(p_actor,'student.enrollment.move',p_source_section,p_destination_section,NULL) THEN RETURN false; END IF;
+  IF NOT EXISTS (SELECT 1 FROM app_private.enrollments e WHERE e.id=p_source AND e.student_id=p_student AND e.section_offering_id=p_source_section
+      AND e.placement_kind='PRIMARY' AND e.placement_state='ENDED' AND e.effective_until=p_effective_from AND e.end_reason='MOVE_'||p_entry_kind)
+     OR NOT EXISTS (SELECT 1 FROM app_private.enrollments e WHERE e.id=p_destination AND e.student_id=p_student AND e.section_offering_id=p_destination_section
+      AND e.placement_kind='PRIMARY' AND e.entry_kind=p_entry_kind AND e.placement_state='ACTIVE' AND e.effective_from=p_effective_from
+      AND e.effective_until IS NULL AND e.predecessor_id=p_source)
+     OR NOT EXISTS (SELECT 1 FROM app_private.roll_allocations r WHERE r.id=rid AND r.enrollment_id=p_destination AND r.student_id=p_student
+      AND r.numeric_value=(p_summary->>'numeric_value')::bigint AND r.effective_from=p_effective_from AND r.effective_until IS NULL)
+    THEN RETURN false; END IF;
+  SELECT count(*) INTO source_roll_count FROM app_private.roll_allocations r
+   WHERE r.enrollment_id=p_source AND r.student_id=p_student AND r.effective_until=p_effective_from AND r.ended_at IS NOT NULL AND r.ended_by IS NOT NULL;
+  IF source_roll_count<>1 THEN RETURN false; END IF;
+  IF over_cap THEN
+    IF override_id IS NULL OR NOT app_private.d1_enrollment_move_authorized(p_actor,'student.capacity_override',p_source_section,p_destination_section,NULL)
+       OR NOT EXISTS (SELECT 1 FROM app_private.enrollment_capacity_overrides o WHERE o.id=override_id AND o.enrollment_id=p_destination AND o.command_receipt_id=p_receipt)
+      THEN RETURN false; END IF;
+  ELSIF override_id IS NOT NULL OR EXISTS (SELECT 1 FROM app_private.enrollment_capacity_overrides o WHERE o.enrollment_id=p_destination) THEN RETURN false; END IF;
+  RETURN true;
+EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN RETURN false;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
