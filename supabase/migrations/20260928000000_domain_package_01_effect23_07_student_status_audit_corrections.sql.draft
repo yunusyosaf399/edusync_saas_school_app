@@ -1,0 +1,174 @@
+-- Effect 23 independent-audit corrections: no-placement ALL-scope transition support,
+-- review replay against stored affected scope, and exact placement-close application binding.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_preflight(p_student uuid,p_expected_version bigint,p_expected_status text,
+  p_expected_transition uuid,p_new_status text,p_effective_on date)
+RETURNS TABLE(eligible boolean,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c record;
+BEGIN
+  IF p_new_status NOT IN ('ACTIVE','SUSPENDED','WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED','ALUMNI')
+     OR p_effective_on IS NULL OR p_effective_on>pg_catalog.current_date() THEN RETURN QUERY SELECT false,'D1_STUDENT_STATUS_INTENT_INVALID'; RETURN; END IF;
+  SELECT * INTO c FROM app_private.d1_student_status_lock_context(p_student,p_expected_version);
+  IF c.error_code IS NOT NULL THEN RETURN QUERY SELECT false,c.error_code; RETURN; END IF;
+  IF c.current_status IS DISTINCT FROM p_expected_status OR c.last_transition_id IS DISTINCT FROM p_expected_transition THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_STATUS_SOURCE_STALE'; RETURN; END IF;
+  IF NOT app_private.d1_student_status_edge_valid(c.current_status,p_new_status) THEN RETURN QUERY SELECT false,'D1_STUDENT_STATUS_EDGE_DENIED'; RETURN; END IF;
+  IF p_effective_on<c.last_effective_on THEN RETURN QUERY SELECT false,'D1_STUDENT_STATUS_BACKDATE_BREAKS_CHAIN'; RETURN; END IF;
+  IF p_new_status IN ('WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED') AND c.enrollment_id IS NOT NULL THEN
+    IF p_effective_on<=c.enrollment_from THEN RETURN QUERY SELECT false,'D1_STUDENT_STATUS_DEPARTURE_DATE_INVALID'; RETURN; END IF;
+    IF EXISTS (SELECT 1 FROM app_private.roll_allocations r WHERE r.enrollment_id=c.enrollment_id AND r.student_id=p_student
+      AND r.effective_until IS NULL AND p_effective_on<=r.effective_from) THEN
+      RETURN QUERY SELECT false,'D1_STUDENT_STATUS_ROLL_END_DATE_INVALID'; RETURN; END IF;
+  ELSIF p_new_status='ACTIVE' AND c.current_status='SUSPENDED' AND c.enrollment_id IS NULL THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_STATUS_SUSPENSION_PLACEMENT_MISSING'; RETURN;
+  ELSIF p_new_status='ALUMNI' AND c.enrollment_id IS NOT NULL THEN
+    RETURN QUERY SELECT false,'D1_STUDENT_STATUS_ALUMNI_ACTIVE_PLACEMENT'; RETURN;
+  END IF;
+  RETURN QUERY SELECT true,NULL::text;
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_effect(
+  p_actor uuid,p_student uuid,p_expected_version bigint,p_expected_status text,p_expected_transition uuid,
+  p_new_status text,p_effective_on date,p_reason text
+) RETURNS TABLE(transition_id uuid,sequence_number bigint,student_version bigint,ended_enrollment_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; c record; new_id uuid:=pg_catalog.gen_random_uuid(); next_seq bigint; new_version bigint;
+  close_enrollment boolean; end_reason text;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+  THEN RAISE EXCEPTION 'D1 Student status effect intent invalid'; END IF;
+  SELECT * INTO pre FROM app_private.d1_student_status_preflight(p_student,p_expected_version,p_expected_status,p_expected_transition,p_new_status,p_effective_on);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Student status effect denied: %',pre.error_code; END IF;
+  SELECT * INTO c FROM app_private.d1_student_status_lock_context(p_student,p_expected_version);
+  IF c.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Student status source changed: %',c.error_code; END IF;
+  close_enrollment:=p_new_status IN ('WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED') AND c.enrollment_id IS NOT NULL;
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO next_seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
+  IF close_enrollment THEN
+    end_reason:='STATUS_'||p_new_status;
+    UPDATE app_private.roll_allocations r SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+      WHERE r.student_id=p_student AND r.enrollment_id=c.enrollment_id AND r.effective_until IS NULL;
+    UPDATE app_private.enrollments e SET placement_state='ENDED',effective_until=p_effective_on,end_reason=end_reason,
+      ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+      WHERE e.id=c.enrollment_id AND e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE' AND e.effective_until IS NULL;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Student status placement changed'; END IF;
+  END IF;
+  INSERT INTO app_private.student_status_transitions
+    (id,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id)
+  VALUES (new_id,p_actor,p_student,p_expected_status,p_new_status,p_effective_on,next_seq,pg_catalog.btrim(p_reason),NULL,NULL);
+  UPDATE app_private.students SET current_status=p_new_status,row_version=row_version+1,updated_at=pg_catalog.statement_timestamp()
+    WHERE id=p_student AND row_version=p_expected_version AND current_status=p_expected_status RETURNING row_version INTO new_version;
+  IF new_version IS NULL THEN RAISE EXCEPTION 'D1 Student status projection changed'; END IF;
+  RETURN QUERY SELECT new_id,next_seq,new_version,CASE WHEN close_enrollment THEN c.enrollment_id ELSE NULL::uuid END;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE OR REPLACE FUNCTION app.d1_review_student_status_request(
+  p_request_id uuid,p_decision text,p_expected_request_version bigint,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; req record; step_row record; next_step record; policy_row record; assignment_id uuid;
+  n bigint; candidate_count bigint; final_version bigint; final_state text; receipt uuid; reviewer_role uuid;
+  source_transition uuid; old_status text; new_status text; effective_on date; pre record; enrollment_id uuid;
+BEGIN
+  IF p_request_id IS NULL OR p_decision NOT IN ('APPROVE','REJECT') OR p_expected_request_version IS NULL OR p_expected_request_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN RAISE EXCEPTION 'D1 Student status review intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_student_status_command_context('request.review',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_decision,p_expected_request_version::text,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=p_request_id AND q.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND OR req.old_snapshot IS NULL OR req.requested_payload IS NULL THEN RAISE EXCEPTION 'D1 Student status request missing'; END IF;
+  BEGIN source_transition:=NULLIF(req.old_snapshot->>'source_transition_id','')::uuid; enrollment_id:=NULLIF(req.old_snapshot->>'enrollment_id','')::uuid;
+    old_status:=req.old_snapshot->>'current_status'; new_status:=req.requested_payload->>'new_status'; effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RAISE EXCEPTION 'D1 Student status stored request malformed'; END;
+  IF ctx.receipt_id IS NOT NULL THEN
+    SELECT count(*),min(t.reviewer_role_id::text)::uuid INTO n,reviewer_role FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id JOIN app_private.approval_step_templates t ON t.id=s.template_id
+     WHERE s.request_id=p_request_id AND v.reviewer_id=ctx.actor_id AND v.decision=p_decision AND v.expected_request_version=p_expected_request_version;
+    IF n<>1 OR reviewer_role IS NULL OR NOT app_private.d1_student_status_authorized_enrollment(
+        ctx.actor_id,'student.status.approve',req.target_ref,enrollment_id,reviewer_role)
+       OR ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS DISTINCT FROM p_request_id OR ctx.result_summary IS NULL
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state']) THEN RAISE EXCEPTION 'D1 Student status review receipt invalid or authority revoked'; END IF;
+    RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,ctx.result_summary->>'state'; RETURN; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_student_status_policy(req.target_ref);
+  IF policy_row.policy_id IS DISTINCT FROM req.policy_id OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' OR policy_row.campus_id IS DISTINCT FROM req.campus_id
+  THEN RAISE EXCEPTION 'D1 Student status request policy no longer applies'; END IF;
+  SELECT * INTO pre FROM app_private.d1_student_status_preflight(req.target_ref,req.expected_target_version,old_status,source_transition,new_status,effective_on);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Student status request facts changed: %',pre.error_code; END IF;
+  SELECT s.* INTO step_row FROM app_private.approval_request_steps s WHERE s.request_id=p_request_id AND s.state='OPEN' ORDER BY s.step_number LIMIT 1 FOR UPDATE;
+  IF req.state<>'PENDING' OR req.row_version<>p_expected_request_version OR step_row.id IS NULL THEN RAISE EXCEPTION 'D1 Student status review state changed'; END IF;
+  SELECT count(*),min(a.id::text)::uuid INTO n,assignment_id FROM app_private.approval_step_reviewers a
+   WHERE a.step_id=step_row.id AND a.reviewer_id=ctx.actor_id AND a.withdrawn_at IS NULL AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+  IF n<>1 OR NOT EXISTS (SELECT 1 FROM app_private.d1_student_status_candidates(p_request_id,step_row.id) c WHERE c.candidate_principal_id=ctx.actor_id)
+  THEN RAISE EXCEPTION 'D1 Student status reviewer authority denied'; END IF;
+  INSERT INTO app_private.approval_reviews(reviewer_assignment_id,step_id,reviewer_id,decision,reason,expected_request_version,created_by)
+  VALUES (assignment_id,step_row.id,ctx.actor_id,p_decision,pg_catalog.btrim(p_reason),p_expected_request_version,ctx.actor_id);
+  UPDATE app_private.approval_request_steps SET state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+  IF p_decision='REJECT' THEN
+    UPDATE app_private.approval_request_steps SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp() WHERE request_id=p_request_id AND state='WAITING';
+    final_state:='REJECTED'; UPDATE app_private.approval_requests SET state='REJECTED',decided_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+  ELSE
+    SELECT s.* INTO next_step FROM app_private.approval_request_steps s WHERE s.request_id=p_request_id AND s.step_number=step_row.step_number+1 AND s.state='WAITING' FOR UPDATE;
+    IF next_step.id IS NOT NULL THEN
+      UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+      INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+        SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id FROM app_private.d1_student_status_candidates(p_request_id,next_step.id) c;
+      GET DIAGNOSTICS candidate_count=ROW_COUNT; IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Student status next step has no reviewer'; END IF;
+      final_state:='PENDING'; UPDATE app_private.approval_requests SET row_version=row_version+1,updated_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+    ELSE
+      IF EXISTS (SELECT 1 FROM app_private.approval_request_steps s WHERE s.request_id=p_request_id AND s.state<>'APPROVED') THEN RAISE EXCEPTION 'D1 Student status approval sequence incomplete'; END IF;
+      final_state:='APPROVED'; UPDATE app_private.approval_requests SET state='APPROVED',decided_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+    END IF;
+  END IF;
+  receipt:=app_private.d1_student_status_receipt('request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_STATUS_REVIEW',p_request_id,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
+  PERFORM app_private.d1_student_status_audit(ctx.actor_id,'request.review',req.target_ref,source_transition,receipt,p_request_id,
+    req.expected_target_version,old_status,new_status,effective_on,final_state,pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+
+SET ROLE schoolos_schema_owner;
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_application_guard()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE op text; r app_private.command_receipts%ROWTYPE; q app_private.approval_requests%ROWTYPE;
+  t app_private.student_status_transitions%ROWTYPE; source app_private.student_status_transitions%ROWTYPE;
+  e app_private.enrollments%ROWTYPE; source_id uuid; enrollment_id uuid; old_status text; new_status text; effective_on date; ended_id uuid;
+BEGIN
+  SELECT code INTO op FROM app_private.operation_contracts WHERE id=NEW.operation_id; IF op IS DISTINCT FROM 'student.status.change' THEN RETURN NEW; END IF;
+  SELECT * INTO r FROM app_private.command_receipts WHERE id=NEW.command_receipt_id AND operation_id=NEW.operation_id
+    AND request_id=NEW.request_id AND command_kind='request.apply' AND state='SUCCEEDED' AND result_kind='D1_STUDENT_STATUS_APPLY' AND result_ref=NEW.result_ref;
+  SELECT * INTO q FROM app_private.approval_requests WHERE id=NEW.request_id AND operation_id=NEW.operation_id AND state='EXECUTED';
+  SELECT * INTO t FROM app_private.student_status_transitions WHERE id=NEW.result_ref;
+  IF r.id IS NULL OR q.id IS NULL OR t.id IS NULL OR t.student_id IS DISTINCT FROM q.target_ref
+     OR NEW.applied_target_version IS DISTINCT FROM (q.expected_target_version+1)
+     OR r.result_summary->>'state'<>'EXECUTED' OR (r.result_summary->>'transition_id')::uuid IS DISTINCT FROM t.id
+     OR (r.result_summary->>'student_version')::bigint IS DISTINCT FROM NEW.applied_target_version
+  THEN RAISE EXCEPTION 'D1 Student status application binding invalid'; END IF;
+  BEGIN source_id:=NULLIF(q.old_snapshot->>'source_transition_id','')::uuid; enrollment_id:=NULLIF(q.old_snapshot->>'enrollment_id','')::uuid;
+    old_status:=q.old_snapshot->>'current_status'; new_status:=q.requested_payload->>'new_status'; effective_on:=NULLIF(q.requested_payload->>'effective_on','')::date;
+    ended_id:=NULLIF(r.result_summary->>'ended_enrollment_id','')::uuid;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RAISE EXCEPTION 'D1 Student status application payload malformed'; END;
+  SELECT * INTO source FROM app_private.student_status_transitions WHERE id=source_id AND student_id=q.target_ref;
+  IF source.id IS NULL OR t.previous_status IS DISTINCT FROM old_status OR t.new_status IS DISTINCT FROM new_status
+     OR t.effective_on IS DISTINCT FROM effective_on OR t.reason IS DISTINCT FROM q.reason OR t.supersedes_id IS NOT NULL
+     OR t.sequence_number<=source.sequence_number
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=q.target_ref AND s.current_status=t.new_status AND s.row_version=NEW.applied_target_version)
+  THEN RAISE EXCEPTION 'D1 Student status transition binding invalid'; END IF;
+  IF new_status IN ('WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED') AND enrollment_id IS NOT NULL THEN
+    SELECT * INTO e FROM app_private.enrollments WHERE id=enrollment_id AND student_id=q.target_ref;
+    IF ended_id IS DISTINCT FROM enrollment_id OR e.id IS NULL OR e.placement_state<>'ENDED' OR e.effective_until IS DISTINCT FROM effective_on
+       OR e.end_reason IS DISTINCT FROM ('STATUS_'||new_status) OR e.ended_at IS NULL OR e.ended_by IS NULL
+       OR EXISTS (SELECT 1 FROM app_private.roll_allocations x WHERE x.enrollment_id=enrollment_id AND x.student_id=q.target_ref AND x.effective_until IS NULL)
+    THEN RAISE EXCEPTION 'D1 Student status placement close binding invalid'; END IF;
+  ELSIF ended_id IS NOT NULL THEN RAISE EXCEPTION 'D1 Student status unexpected placement close binding'; END IF;
+  RETURN NEW;
+END $body$;
+RESET ROLE;
