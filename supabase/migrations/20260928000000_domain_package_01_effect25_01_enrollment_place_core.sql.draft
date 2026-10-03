@@ -1,0 +1,112 @@
+-- D1C1B effect 25/36: Student PRIMARY placement core.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+-- Approved contract: P0 placement; standalone INITIAL/PROMOTION/REPEAT/REENROLLMENT;
+-- CLASS_CHANGE/SECTION_CHANGE/CAMPUS_TRANSFER belong to Effect 26 move.
+
+SET ROLE schoolos_schema_owner;
+GRANT SELECT (id,row_version,current_status,updated_at) ON app_private.students TO schoolos_student_executor;
+GRANT UPDATE (current_status,row_version,updated_at) ON app_private.students TO schoolos_student_executor;
+GRANT SELECT (id,student_id,section_offering_id,placement_kind,entry_kind,placement_state,effective_from,effective_until,predecessor_id,reason,end_reason,command_receipt_id,created_at,created_by),
+  INSERT (id,created_by,student_id,section_offering_id,placement_kind,entry_kind,placement_state,effective_from,effective_until,predecessor_id,reason,end_reason,command_receipt_id)
+  ON app_private.enrollments TO schoolos_student_executor;
+GRANT SELECT (id,enrollment_id,student_id,policy_revision_id,numeric_value,effective_from,effective_until,origin_allocation_id,supersedes_id,correction_reason,created_at,created_by),
+  INSERT (id,created_by,enrollment_id,student_id,policy_revision_id,numeric_value,effective_from,effective_until,origin_allocation_id,supersedes_id,correction_reason)
+  ON app_private.roll_allocations TO schoolos_student_executor;
+GRANT SELECT,INSERT ON app_private.enrollment_capacity_overrides TO schoolos_student_executor;
+GRANT SELECT ON app_private.roll_policy_revisions TO schoolos_student_executor;
+GRANT SELECT,UPDATE ON app_private.roll_allocator_states TO schoolos_student_executor;
+GRANT SELECT (id,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id,created_at,created_by),
+  INSERT (id,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id)
+  ON app_private.student_status_transitions TO schoolos_student_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_enrollment_place_authorized(p_principal uuid,p_permission text,p_section uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); target record;
+BEGIN
+  IF p_principal IS NULL OR p_section IS NULL OR p_permission NOT IN ('student.enrollment.place','student.capacity_override') THEN RETURN false; END IF;
+  IF NOT EXISTS (SELECT 1 FROM app_private.principals p JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+    WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL) THEN RETURN false; END IF;
+  SELECT so.id section_id,co.id class_offering_id,co.campus_id INTO target
+    FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_section;
+  IF NOT FOUND THEN RETURN false; END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id
+    JOIN app_private.roles r ON r.id=sc.role_id
+    WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+      AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key AND c.enabled
+      AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until) AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+      AND sc.resolver_key='DIRECT'
+      AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+        OR (sc.scope_kind='CAMPUS' AND sc.campus_id=target.campus_id)
+        OR (sc.scope_kind='CLASS' AND sc.class_offering_id=target.class_offering_id)
+        OR (sc.scope_kind='SECTION' AND sc.section_offering_id=target.section_id))
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_place_authorized(uuid,text,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_authorized(uuid,text,uuid) TO schoolos_student_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_enrollment_place_lock_context(
+  p_student uuid,p_expected_version bigint,p_section uuid,p_entry_kind text,p_effective_from date,p_predecessor uuid
+) RETURNS TABLE(student_version bigint,current_status text,school_id uuid,campus_id uuid,academic_year_id uuid,
+ class_offering_id uuid,class_id uuid,section_id uuid,class_capacity integer,section_capacity integer,predecessor_id uuid,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE s app_private.students%ROWTYPE; d record; pred app_private.enrollments%ROWTYPE; prior_count bigint; overlap_count bigint; latest_id uuid;
+BEGIN
+  SELECT * INTO s FROM app_private.students WHERE id=p_student FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT NULL::bigint,NULL::text,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::integer,NULL::integer,NULL::uuid,'D1_ENROLLMENT_PLACE_STUDENT_MISSING'; RETURN; END IF;
+  IF p_expected_version IS NULL OR p_expected_version<1 OR s.row_version IS DISTINCT FROM p_expected_version THEN
+    RETURN QUERY SELECT s.row_version,s.current_status,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::integer,NULL::integer,NULL::uuid,'D1_ENROLLMENT_PLACE_VERSION_STALE'; RETURN; END IF;
+  IF p_entry_kind NOT IN ('INITIAL','PROMOTION','REPEAT','REENROLLMENT') OR p_effective_from IS NULL THEN
+    RETURN QUERY SELECT s.row_version,s.current_status,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::integer,NULL::integer,NULL::uuid,'D1_ENROLLMENT_PLACE_INTENT_INVALID'; RETURN; END IF;
+  PERFORM app_private.d1_lock_academic_path(p_section,NULL,NULL);
+  SELECT co.school_id,co.campus_id,co.academic_year_id,co.id class_offering_id,co.class_id,so.id section_id,
+         co.capacity class_capacity,so.capacity section_capacity,co.state class_state,so.state section_state
+    INTO d FROM app_private.section_offerings so JOIN app_private.class_offerings co ON co.id=so.class_offering_id WHERE so.id=p_section;
+  IF NOT FOUND THEN RETURN QUERY SELECT s.row_version,s.current_status,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::integer,NULL::integer,NULL::uuid,'D1_ENROLLMENT_PLACE_DESTINATION_MISSING'; RETURN; END IF;
+  IF d.class_state<>'OPEN' OR d.section_state<>'OPEN' THEN
+    RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,NULL::uuid,'D1_ENROLLMENT_PLACE_DESTINATION_NOT_OPEN'; RETURN; END IF;
+  IF (p_entry_kind='REENROLLMENT' AND s.current_status NOT IN ('WITHDRAWN','TRANSFERRED'))
+     OR (p_entry_kind<>'REENROLLMENT' AND s.current_status<>'ACTIVE') THEN
+    RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,NULL::uuid,'D1_ENROLLMENT_PLACE_STATUS_INELIGIBLE'; RETURN; END IF;
+  SELECT count(*) INTO prior_count FROM app_private.enrollments e WHERE e.student_id=p_student AND e.placement_kind='PRIMARY';
+  IF p_entry_kind='INITIAL' THEN
+    IF prior_count<>0 OR p_predecessor IS NOT NULL THEN
+      RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,NULL::uuid,'D1_ENROLLMENT_PLACE_INITIAL_HISTORY_CONFLICT'; RETURN; END IF;
+  ELSE
+    IF p_predecessor IS NULL THEN
+      RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,NULL::uuid,'D1_ENROLLMENT_PLACE_PREDECESSOR_REQUIRED'; RETURN; END IF;
+    SELECT * INTO pred FROM app_private.enrollments e WHERE e.id=p_predecessor AND e.student_id=p_student AND e.placement_kind='PRIMARY' FOR UPDATE;
+    IF NOT FOUND OR pred.effective_until IS NULL OR pred.effective_until>p_effective_from OR pred.placement_state='ACTIVE' THEN
+      RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,p_predecessor,'D1_ENROLLMENT_PLACE_PREDECESSOR_INVALID'; RETURN; END IF;
+    SELECT e.id INTO latest_id FROM app_private.enrollments e WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.effective_from<p_effective_from
+      ORDER BY e.effective_from DESC,e.created_at DESC,e.id DESC LIMIT 1;
+    IF latest_id IS DISTINCT FROM p_predecessor THEN
+      RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,p_predecessor,'D1_ENROLLMENT_PLACE_PREDECESSOR_NOT_LATEST'; RETURN; END IF;
+  END IF;
+  SELECT count(*) INTO overlap_count FROM app_private.enrollments e WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+    AND p_effective_from<pg_catalog.coalesce(e.effective_until,'infinity'::date)
+    AND e.effective_from<'infinity'::date;
+  IF overlap_count<>0 THEN
+    RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,p_predecessor,'D1_ENROLLMENT_PLACE_PRIMARY_OVERLAP'; RETURN; END IF;
+  RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,p_predecessor,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_place_lock_context(uuid,bigint,uuid,text,date,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_lock_context(uuid,bigint,uuid,text,date,uuid) TO schoolos_student_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
