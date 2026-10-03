@@ -1,0 +1,47 @@
+-- Effect 25 source-audit correction: CURRENT_DATE syntax and retained re-enrollment transition reason.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_place_effect(
+  p_actor uuid,p_student uuid,p_expected_version bigint,p_section uuid,p_entry_kind text,p_effective_from date,
+  p_predecessor uuid,p_reason text
+) RETURNS TABLE(enrollment_id uuid,roll_allocation_id uuid,policy_revision_id uuid,numeric_value bigint,policy_mode text,
+  student_version bigint,status_transition_id uuid,status_sequence bigint,previous_status text,resulting_status text,
+  class_offering_id uuid,campus_id uuid,academic_year_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c record; roll_row record; eid uuid:=pg_catalog.gen_random_uuid(); sid uuid; seq bigint; new_version bigint;
+  last_status app_private.student_status_transitions%ROWTYPE; status_before text; status_after text;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Enrollment placement effect intent invalid'; END IF;
+  SELECT * INTO c FROM app_private.d1_enrollment_place_lock_context(p_student,p_expected_version,p_section,p_entry_kind,p_effective_from,p_predecessor);
+  IF c.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment placement source changed: %',c.error_code; END IF;
+  IF p_entry_kind='REENROLLMENT' AND p_effective_from>CURRENT_DATE THEN
+    RAISE EXCEPTION 'D1 Enrollment future re-enrollment denied'; END IF;
+  INSERT INTO app_private.enrollments(id,created_by,student_id,section_offering_id,placement_kind,entry_kind,placement_state,
+    effective_from,effective_until,predecessor_id,reason,end_reason,command_receipt_id)
+  VALUES (eid,p_actor,p_student,p_section,'PRIMARY',p_entry_kind,'ACTIVE',p_effective_from,NULL,p_predecessor,pg_catalog.btrim(p_reason),NULL,NULL);
+  SELECT * INTO roll_row FROM app_private.d1_enrollment_place_allocate_roll(p_actor,p_student,eid,c.school_id,c.class_offering_id,p_effective_from);
+  IF roll_row.allocation_id IS NULL THEN RAISE EXCEPTION 'D1 Enrollment roll allocation failed'; END IF;
+  status_before:=c.current_status; status_after:=c.current_status; new_version:=c.student_version;
+  IF p_entry_kind='REENROLLMENT' THEN
+    SELECT t.* INTO last_status FROM app_private.student_status_transitions t
+      WHERE t.student_id=p_student AND NOT EXISTS (
+        SELECT 1 FROM app_private.student_status_transitions x WHERE x.student_id=p_student AND x.supersedes_id=t.id)
+      ORDER BY t.effective_on DESC,t.sequence_number DESC LIMIT 1 FOR UPDATE;
+    IF NOT FOUND OR last_status.new_status IS DISTINCT FROM c.current_status OR last_status.new_status NOT IN ('WITHDRAWN','TRANSFERRED')
+       OR p_effective_from<last_status.effective_on THEN RAISE EXCEPTION 'D1 Enrollment re-enrollment status source changed'; END IF;
+    SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
+    sid:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.student_status_transitions(id,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id)
+    VALUES (sid,p_actor,p_student,last_status.new_status,'ACTIVE',p_effective_from,seq,pg_catalog.btrim(p_reason),NULL,NULL);
+    UPDATE app_private.students SET current_status='ACTIVE',row_version=row_version+1,updated_at=pg_catalog.statement_timestamp()
+      WHERE id=p_student AND row_version=p_expected_version AND current_status=last_status.new_status RETURNING row_version INTO new_version;
+    IF new_version IS NULL THEN RAISE EXCEPTION 'D1 Enrollment re-enrollment projection changed'; END IF;
+    status_after:='ACTIVE';
+  END IF;
+  RETURN QUERY SELECT eid,roll_row.allocation_id,roll_row.policy_revision_id,roll_row.numeric_value,roll_row.policy_mode,
+    new_version,sid,seq,status_before,status_after,c.class_offering_id,c.campus_id,c.academic_year_id;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
