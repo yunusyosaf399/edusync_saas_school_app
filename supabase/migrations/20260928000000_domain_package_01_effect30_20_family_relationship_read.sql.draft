@@ -1,0 +1,100 @@
+-- Effect 30 participant-only typed request read.
+
+SET ROLE schoolos_identity_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_lock_current_principal(uuid) TO schoolos_read_executor;
+RESET ROLE;
+SET ROLE schoolos_family_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_relationship_lock_targets(uuid,uuid,uuid,uuid,uuid)
+  TO schoolos_read_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_family_relationship_participant_kind(p_request uuid,p_actor uuid)
+RETURNS text
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; role_id uuid; n bigint;
+BEGIN
+  SELECT q.* INTO req FROM app_private.approval_requests q
+    JOIN app_private.operation_contracts o ON o.id=q.operation_id
+   WHERE q.id=p_request AND o.code='family.relationship.change';
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  IF p_actor=req.requester_id
+     AND app_private.d1_family_relationship_authorized(p_actor,'family.relationship.change',req.target_ref,NULL) THEN
+    RETURN 'REQUESTER';
+  END IF;
+  role_id:=app_private.d1_final_approver_role(p_request,p_actor);
+  IF role_id IS NOT NULL
+     AND app_private.d1_family_relationship_authorized(p_actor,'family.access.approve',req.target_ref,role_id) THEN
+    RETURN 'FINAL_APPROVER';
+  END IF;
+  SELECT count(*) INTO n
+    FROM app_private.approval_request_steps s
+    JOIN app_private.approval_step_reviewers a ON a.step_id=s.id
+    JOIN app_private.approval_step_templates t ON t.id=s.template_id
+   WHERE s.request_id=p_request AND s.state='OPEN' AND a.reviewer_id=p_actor
+     AND a.withdrawn_at IS NULL AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+     AND app_private.d1_family_relationship_authorized(
+       p_actor,'family.access.approve',req.target_ref,t.reviewer_role_id);
+  IF n=1 THEN RETURN 'OPEN_REVIEWER'; ELSIF n>1 THEN RETURN NULL; END IF;
+  SELECT count(*) INTO n
+    FROM app_private.approval_reviews v
+    JOIN app_private.approval_request_steps s ON s.id=v.step_id
+    JOIN app_private.approval_step_templates t ON t.id=s.template_id
+   WHERE s.request_id=p_request AND v.reviewer_id=p_actor
+     AND app_private.d1_family_relationship_authorized(
+       p_actor,'family.access.approve',req.target_ref,t.reviewer_role_id);
+  IF n=1 THEN RETURN 'DECIDED_REVIEWER'; END IF;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_relationship_participant_kind(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_relationship_participant_kind(uuid,uuid)
+  TO schoolos_read_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+CREATE FUNCTION app.d1_read_family_relationship_request(p_request_id uuid)
+RETURNS TABLE(
+ request_id uuid,request_version bigint,request_state text,student_id uuid,family_id uuid,
+ expected_family_version bigint,action text,source_relationship_id uuid,adult_person_id uuid,
+ relationship_kind text,display_name text,relationship_contact text,effective_on date,
+ primary_replacement_relationship_id uuid,request_reason text,participant_kind text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; req record; kind text; locks record; family_id uuid; family_version bigint;
+  source_id uuid; adult_person uuid; replacement_id uuid; effective_on date; action text;
+BEGIN
+  IF p_request_id IS NULL THEN RETURN; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RETURN; END IF;
+  PERFORM app_private.d1_lock_current_principal(actor);
+  SELECT q.* INTO req FROM app_private.approval_requests q
+    JOIN app_private.operation_contracts o ON o.id=q.operation_id
+   WHERE q.id=p_request_id AND o.code='family.relationship.change';
+  IF NOT FOUND OR req.requested_payload IS NULL OR pg_catalog.jsonb_typeof(req.requested_payload)<>'object' THEN RETURN; END IF;
+  BEGIN
+    family_id:=NULLIF(req.requested_payload->>'family_id','')::uuid;
+    family_version:=(req.requested_payload->>'expected_family_version')::bigint;
+    action:=req.requested_payload->>'action';
+    source_id:=NULLIF(req.requested_payload->>'source_relationship_id','')::uuid;
+    adult_person:=NULLIF(req.requested_payload->>'adult_person_id','')::uuid;
+    effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+    replacement_id:=NULLIF(req.requested_payload->>'primary_replacement_relationship_id','')::uuid;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN RETURN; END;
+  IF family_id IS NULL OR family_version<1 OR action NOT IN ('ADD','END','CORRECT') OR effective_on IS NULL THEN RETURN; END IF;
+  SELECT * INTO locks FROM app_private.d1_family_relationship_lock_targets(
+    req.target_ref,family_id,source_id,adult_person,replacement_id);
+  IF locks.student_version IS NULL OR locks.family_version IS NULL THEN RETURN; END IF;
+  kind:=app_private.d1_family_relationship_participant_kind(p_request_id,actor);
+  IF kind IS NULL THEN RETURN; END IF;
+  RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,family_id,family_version,action,source_id,adult_person,
+    req.requested_payload->>'relationship_kind',req.requested_payload->>'display_name',
+    req.requested_payload->>'relationship_contact',effective_on,replacement_id,req.reason,kind;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_read_family_relationship_request(uuid) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_relationship_request(uuid) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
