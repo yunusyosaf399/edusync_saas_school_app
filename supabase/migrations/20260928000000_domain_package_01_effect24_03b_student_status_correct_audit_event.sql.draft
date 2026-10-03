@@ -1,0 +1,41 @@
+-- Effect 24 minimized audit/outbox evidence.
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_student_status_correct_audit(
+  p_actor uuid,p_phase text,p_student uuid,p_source uuid,p_result uuid,p_receipt uuid,p_request uuid,p_target_version bigint,
+  p_new_status text,p_effective_on date,p_state text,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_student IS NULL OR p_receipt IS NULL OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Student status correction audit intent denied'; END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+     command_receipt_id,approval_request_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',CASE WHEN p_state IN ('INVALIDATED','REJECTED') THEN 'REJECTED' ELSE 'SUCCEEDED' END,
+    pg_catalog.jsonb_build_object('operation','student.status.correct','phase',p_phase),p_target_version,
+    'student.status.correct','STUDENT',p_student,p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('state',p_state,'source_transition_id',p_source,'result_transition_id',p_result,
+      'new_status',p_new_status,'effective_on',p_effective_on),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_correct_audit(uuid,text,uuid,uuid,uuid,uuid,uuid,bigint,text,date,text,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_correct_audit(uuid,text,uuid,uuid,uuid,uuid,uuid,bigint,text,date,text,uuid)
+ TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_status_correct_event(
+  p_actor uuid,p_student uuid,p_transition uuid,p_source uuid,p_receipt uuid,p_student_version bigint,p_new_status text,
+  p_effective_on date,p_sequence bigint,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('student.status_changed','STUDENT',p_student,p_student_version,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('student_id',p_student,'transition_id',p_transition,'supersedes_transition_id',p_source,
+      'new_status',p_new_status,'effective_on',p_effective_on,'sequence_number',p_sequence,'change_kind','FACTUAL_CORRECTION'),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_correct_event(uuid,uuid,uuid,uuid,uuid,bigint,text,date,bigint,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_correct_event(uuid,uuid,uuid,uuid,uuid,bigint,text,date,bigint,uuid)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
