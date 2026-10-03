@@ -1,0 +1,43 @@
+-- Effect 26 packaging closure: private helper execute edge and explicit public RPC ownership/ACL.
+
+SET ROLE schoolos_student_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_result_rows_match(uuid,uuid,uuid,uuid,text,date,uuid,uuid,jsonb)
+  TO schoolos_schema_owner;
+RESET ROLE;
+
+SET ROLE schoolos_schema_owner;
+ALTER FUNCTION app.d1_move_student_enrollment(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text)
+  OWNER TO schoolos_student_executor;
+REVOKE ALL ON FUNCTION app.d1_move_student_enrollment(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_move_student_enrollment(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text)
+  TO authenticated;
+
+ALTER FUNCTION app.d1_submit_student_enrollment_move(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text)
+  OWNER TO schoolos_workflow_executor;
+REVOKE ALL ON FUNCTION app.d1_submit_student_enrollment_move(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_student_enrollment_move(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text)
+  TO authenticated;
+
+ALTER FUNCTION app.d1_review_student_enrollment_move(uuid,text,bigint,text,text)
+  OWNER TO schoolos_workflow_executor;
+REVOKE ALL ON FUNCTION app.d1_review_student_enrollment_move(uuid,text,bigint,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_review_student_enrollment_move(uuid,text,bigint,text,text)
+  TO authenticated;
+
+ALTER FUNCTION app.d1_apply_student_enrollment_move(uuid,bigint,text)
+  OWNER TO schoolos_workflow_executor;
+REVOKE ALL ON FUNCTION app.d1_apply_student_enrollment_move(uuid,bigint,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_student_enrollment_move(uuid,bigint,text)
+  TO authenticated;
+
+ALTER FUNCTION app.d1_read_student_enrollment_move_request(uuid)
+  OWNER TO schoolos_read_executor;
+REVOKE ALL ON FUNCTION app.d1_read_student_enrollment_move_request(uuid)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_enrollment_move_request(uuid)
+  TO authenticated;
+RESET ROLE;
