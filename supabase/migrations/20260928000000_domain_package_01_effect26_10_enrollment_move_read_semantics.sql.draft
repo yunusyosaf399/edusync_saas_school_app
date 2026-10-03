@@ -1,0 +1,101 @@
+-- Effect 26 semantic classification and typed participant request read.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_enrollment_move_kind_valid(
+  p_entry_kind text,p_source_year uuid,p_destination_year uuid,p_source_campus uuid,p_destination_campus uuid
+) RETURNS boolean LANGUAGE sql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT p_entry_kind IN ('PROMOTION','REPEAT','CLASS_CHANGE','SECTION_CHANGE','CAMPUS_TRANSFER')
+    AND CASE WHEN p_entry_kind='PROMOTION' THEN p_source_year IS DISTINCT FROM p_destination_year ELSE true END
+    AND CASE WHEN p_entry_kind='CAMPUS_TRANSFER' THEN p_source_campus IS DISTINCT FROM p_destination_campus ELSE true END
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_kind_valid(text,uuid,uuid,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_kind_valid(text,uuid,uuid,uuid,uuid) TO schoolos_student_executor,schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+
+-- The lock-context function is wrapped by a final semantic checker so callers cannot misclassify a
+-- same-year placement as PROMOTION or a same-campus move as CAMPUS_TRANSFER.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+ALTER FUNCTION app_private.d1_enrollment_move_lock_context(uuid,bigint,uuid,uuid,date,uuid,text,date)
+  RENAME TO d1_enrollment_move_lock_context_base;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_lock_context_base(uuid,bigint,uuid,uuid,date,uuid,text,date) FROM PUBLIC,anon,authenticated,service_role;
+CREATE FUNCTION app_private.d1_enrollment_move_lock_context(
+  p_student uuid,p_expected_student_version bigint,p_source_enrollment uuid,p_expected_source_section uuid,
+  p_expected_source_effective_from date,p_destination_section uuid,p_entry_kind text,p_effective_from date
+) RETURNS TABLE(student_version bigint,source_section_id uuid,source_roll_id uuid,school_id uuid,
+  source_campus_id uuid,source_year_id uuid,source_class_offering_id uuid,destination_campus_id uuid,destination_year_id uuid,
+  destination_class_offering_id uuid,destination_class_capacity integer,destination_section_capacity integer,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c record;
+BEGIN
+  SELECT * INTO c FROM app_private.d1_enrollment_move_lock_context_base(p_student,p_expected_student_version,p_source_enrollment,
+    p_expected_source_section,p_expected_source_effective_from,p_destination_section,p_entry_kind,p_effective_from);
+  IF c.error_code IS NULL AND app_private.d1_enrollment_move_kind_valid(p_entry_kind,c.source_year_id,c.destination_year_id,c.source_campus_id,c.destination_campus_id) IS DISTINCT FROM true THEN
+    c.error_code:='D1_ENROLLMENT_MOVE_KIND_MISMATCH';
+  END IF;
+  RETURN QUERY SELECT c.student_version,c.source_section_id,c.source_roll_id,c.school_id,c.source_campus_id,c.source_year_id,c.source_class_offering_id,
+    c.destination_campus_id,c.destination_year_id,c.destination_class_offering_id,c.destination_class_capacity,c.destination_section_capacity,c.error_code;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_lock_context(uuid,bigint,uuid,uuid,date,uuid,text,date) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_lock_context(uuid,bigint,uuid,uuid,date,uuid,text,date) TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+CREATE FUNCTION app.d1_read_student_enrollment_move_request(p_request_id uuid)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,student_id uuid,source_enrollment_id uuid,
+  source_section_offering_id uuid,destination_section_offering_id uuid,entry_kind text,effective_from date,
+  capacity_override_required boolean,request_reason text,capacity_override_reason text,participant_kind text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; req record; src uuid; dst uuid; source_enrollment uuid; kind text; move_date date; override_required boolean;
+  final_role uuid; open_step record; decided_role uuid; requester_person uuid; actor_person uuid; participant text;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id(); IF actor IS NULL OR p_request_id IS NULL THEN RETURN; END IF;
+  PERFORM app_private.d1_lock_current_principal(actor);
+  SELECT q.* INTO req FROM app_private.approval_requests q JOIN app_private.operation_contracts o ON o.id=q.operation_id
+   WHERE q.id=p_request_id AND o.code='student.enrollment.move';
+  IF NOT FOUND OR req.old_snapshot IS NULL OR req.requested_payload IS NULL THEN RETURN; END IF;
+  BEGIN
+    source_enrollment:=NULLIF(req.old_snapshot->>'source_enrollment_id','')::uuid;
+    src:=NULLIF(req.old_snapshot->>'source_section_offering_id','')::uuid;
+    dst:=NULLIF(req.requested_payload->>'destination_section_offering_id','')::uuid;
+    kind:=req.requested_payload->>'entry_kind'; move_date:=NULLIF(req.requested_payload->>'effective_from','')::date;
+    override_required:=(req.requested_payload->>'capacity_override_required')::boolean;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RETURN; END;
+  IF actor=req.requester_id AND app_private.d1_enrollment_move_authorized(actor,'student.enrollment.move',src,dst,NULL) THEN participant:='REQUESTER'; END IF;
+  IF participant IS NULL THEN
+    final_role:=app_private.d1_final_approver_role(p_request_id,actor);
+    IF final_role IS NOT NULL AND app_private.d1_enrollment_move_authorized(actor,'student.enrollment.approve',src,dst,final_role) THEN participant:='FINAL_APPROVER'; END IF;
+  END IF;
+  IF participant IS NULL THEN
+    SELECT st.id,t.reviewer_role_id INTO open_step FROM app_private.approval_request_steps st
+      JOIN app_private.approval_step_templates t ON t.id=st.template_id
+     WHERE st.request_id=p_request_id AND st.state='OPEN' AND EXISTS (SELECT 1 FROM app_private.approval_step_reviewers a
+       WHERE a.step_id=st.id AND a.reviewer_id=actor AND a.withdrawn_at IS NULL AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE')
+     ORDER BY st.step_number LIMIT 1;
+    IF open_step.id IS NOT NULL AND app_private.d1_enrollment_move_authorized(actor,'student.enrollment.approve',src,dst,open_step.reviewer_role_id)
+       AND EXISTS (SELECT 1 FROM app_private.d1_enrollment_move_candidates(p_request_id,open_step.id) c WHERE c.candidate_principal_id=actor)
+      THEN participant:='OPEN_REVIEWER'; END IF;
+  END IF;
+  IF participant IS NULL THEN
+    SELECT min(t.reviewer_role_id::text)::uuid INTO decided_role FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps st ON st.id=v.step_id JOIN app_private.approval_step_templates t ON t.id=st.template_id
+     WHERE st.request_id=p_request_id AND v.reviewer_id=actor;
+    IF decided_role IS NOT NULL AND app_private.d1_enrollment_move_authorized(actor,'student.enrollment.approve',src,dst,decided_role) THEN participant:='DECIDED_REVIEWER'; END IF;
+  END IF;
+  IF participant IS NULL THEN RETURN; END IF;
+  RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,source_enrollment,src,dst,kind,move_date,override_required,
+    req.reason,NULLIF(req.requested_payload->>'capacity_override_reason',''),participant;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_enrollment_move_request(uuid) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_enrollment_move_request(uuid) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
+
+SET ROLE schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_result_rows_match(uuid,uuid,uuid,uuid,text,date,uuid,uuid,jsonb) TO schoolos_schema_owner;
+RESET ROLE;
