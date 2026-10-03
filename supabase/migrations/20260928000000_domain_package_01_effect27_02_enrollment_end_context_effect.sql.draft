@@ -1,0 +1,107 @@
+-- Effect 27 command context, corrected lock context, and atomic one-way close.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_end_lock_context(
+  p_student uuid,p_expected_student_version bigint,p_source_enrollment uuid,p_expected_source_section uuid,
+  p_expected_source_effective_from date,p_effective_until date
+) RETURNS TABLE(student_version bigint,section_id uuid,campus_id uuid,academic_year_id uuid,class_offering_id uuid,
+  source_roll_id uuid,source_roll_effective_from date,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE s app_private.students%ROWTYPE; path record; src app_private.enrollments%ROWTYPE; v_roll uuid; v_roll_from date; n bigint; later_count bigint;
+BEGIN
+  IF p_student IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1 OR p_source_enrollment IS NULL
+     OR p_expected_source_section IS NULL OR p_expected_source_effective_from IS NULL OR p_effective_until IS NULL THEN
+    RETURN QUERY SELECT NULL::bigint,p_expected_source_section,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_INTENT_INVALID'; RETURN; END IF;
+  SELECT * INTO s FROM app_private.students WHERE id=p_student FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT NULL::bigint,p_expected_source_section,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_STUDENT_MISSING'; RETURN; END IF;
+  IF s.row_version IS DISTINCT FROM p_expected_student_version THEN
+    RETURN QUERY SELECT s.row_version,p_expected_source_section,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_VERSION_STALE'; RETURN; END IF;
+  SELECT * INTO path FROM app_private.d1_enrollment_place_lock_destination(p_expected_source_section);
+  IF NOT FOUND THEN RETURN QUERY SELECT s.row_version,p_expected_source_section,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_SOURCE_ANCESTRY_MISSING'; RETURN; END IF;
+  SELECT * INTO src FROM app_private.enrollments e WHERE e.id=p_source_enrollment FOR UPDATE;
+  IF NOT FOUND OR src.student_id IS DISTINCT FROM p_student OR src.placement_kind<>'PRIMARY'
+     OR src.section_offering_id IS DISTINCT FROM p_expected_source_section OR src.effective_from IS DISTINCT FROM p_expected_source_effective_from
+     OR src.placement_state<>'ACTIVE' OR src.effective_until IS NOT NULL
+     OR src.effective_from>pg_catalog.current_date() OR p_effective_until<=src.effective_from THEN
+    RETURN QUERY SELECT s.row_version,p_expected_source_section,path.campus_id,path.academic_year_id,path.class_offering_id,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_SOURCE_STALE'; RETURN; END IF;
+  SELECT count(*) INTO later_count FROM app_private.enrollments e
+    WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.id<>p_source_enrollment AND e.effective_from>=src.effective_from;
+  IF later_count<>0 THEN
+    RETURN QUERY SELECT s.row_version,src.section_offering_id,path.campus_id,path.academic_year_id,path.class_offering_id,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_SOURCE_NOT_HEAD'; RETURN; END IF;
+  SELECT count(*),min(r.id::text)::uuid,min(r.effective_from) INTO n,v_roll,v_roll_from
+    FROM app_private.roll_allocations r WHERE r.enrollment_id=p_source_enrollment AND r.student_id=p_student AND r.effective_until IS NULL;
+  IF n<>1 OR v_roll IS NULL OR v_roll_from IS NULL OR p_effective_until<=v_roll_from THEN
+    RETURN QUERY SELECT s.row_version,src.section_offering_id,path.campus_id,path.academic_year_id,path.class_offering_id,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_SOURCE_ROLL_INVALID'; RETURN; END IF;
+  PERFORM 1 FROM app_private.roll_allocations r WHERE r.id=v_roll FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment end source roll disappeared'; END IF;
+  RETURN QUERY SELECT s.row_version,src.section_offering_id,path.campus_id,path.academic_year_id,path.class_offering_id,v_roll,v_roll_from,NULL::text;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_enrollment_end_command_context(p_command_kind text,p_idempotency_key text,p_intent jsonb)
+RETURNS TABLE(actor_id uuid,operation_id uuid,receipt_id uuid,result_ref uuid,result_summary jsonb,receipt_state text,intent_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; op uuid; h bytea; digest bytea; resource bigint; rec app_private.command_receipts%ROWTYPE; expected_len integer;
+BEGIN
+  expected_len:=CASE p_command_kind WHEN 'student.enrollment.end' THEN 7 WHEN 'request.submit' THEN 7 WHEN 'request.review' THEN 4 WHEN 'request.apply' THEN 2 ELSE NULL END;
+  IF expected_len IS NULL OR p_idempotency_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_idempotency_key))=0
+     OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array' OR pg_catalog.jsonb_array_length(p_intent)<>expected_len
+    THEN RAISE EXCEPTION 'D1 Enrollment end command context intent invalid'; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id(); IF actor IS NULL THEN RAISE EXCEPTION 'D1 Enrollment end requires verified actor'; END IF;
+  SELECT o.id INTO op FROM app_private.operation_contracts o
+   WHERE o.code='student.enrollment.end' AND o.contract_version=1 AND o.handler_key='student.enrollment.end' AND o.enabled;
+  IF op IS NULL THEN RAISE EXCEPTION 'D1 Enrollment end operation is not enabled'; END IF;
+  h:=pg_catalog.sha256(pg_catalog.convert_to(app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+    'canonicalization_version',1,'operation_code','student.enrollment.end','operation_contract_version','1','operation_id',op::text,
+    'command_kind',p_command_kind,'principal_id',actor::text,'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+  digest:=pg_catalog.sha256(pg_catalog.convert_to(actor::text||'|'||op::text||'|'||p_idempotency_key,'UTF8'));
+  resource:=pg_catalog.get_byte(digest,0)::bigint*16777216+pg_catalog.get_byte(digest,1)::bigint*65536+
+    pg_catalog.get_byte(digest,2)::bigint*256+pg_catalog.get_byte(digest,3)::bigint;
+  IF resource>2147483647 THEN resource:=resource-4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,resource::integer);
+  SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.principal_id=actor AND r.operation_id=op AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF rec.canonicalization_version<>1 OR rec.canonical_payload_hash IS DISTINCT FROM h OR rec.command_kind IS DISTINCT FROM p_command_kind
+      THEN RAISE EXCEPTION 'D1 Enrollment end idempotency key conflicts with prior intent'; END IF;
+    RETURN QUERY SELECT actor,op,rec.id,rec.result_ref,rec.result_summary,rec.state,h; RETURN;
+  END IF;
+  RETURN QUERY SELECT actor,op,NULL::uuid,NULL::uuid,NULL::jsonb,NULL::text,h;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_end_command_context(text,text,jsonb) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_end_command_context(text,text,jsonb) TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_enrollment_end_effect(
+  p_actor uuid,p_student uuid,p_expected_student_version bigint,p_source_enrollment uuid,p_expected_source_section uuid,
+  p_expected_source_effective_from date,p_effective_until date,p_reason text
+) RETURNS TABLE(enrollment_id uuid,source_roll_id uuid,student_version bigint,section_id uuid,campus_id uuid,academic_year_id uuid,class_offering_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c record;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Enrollment end effect intent denied'; END IF;
+  SELECT * INTO c FROM app_private.d1_enrollment_end_lock_context(p_student,p_expected_student_version,p_source_enrollment,
+    p_expected_source_section,p_expected_source_effective_from,p_effective_until);
+  IF c.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment end source changed: %',c.error_code; END IF;
+  UPDATE app_private.roll_allocations SET effective_until=p_effective_until,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+   WHERE id=c.source_roll_id AND enrollment_id=p_source_enrollment AND student_id=p_student AND effective_until IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment end source roll changed'; END IF;
+  UPDATE app_private.enrollments SET placement_state='ENDED',effective_until=p_effective_until,end_reason=pg_catalog.btrim(p_reason),
+    ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+   WHERE id=p_source_enrollment AND student_id=p_student AND section_offering_id=p_expected_source_section
+     AND placement_state='ACTIVE' AND effective_until IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment end source placement changed'; END IF;
+  RETURN QUERY SELECT p_source_enrollment,c.source_roll_id,c.student_version,c.section_id,c.campus_id,c.academic_year_id,c.class_offering_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_end_effect(uuid,uuid,bigint,uuid,uuid,date,date,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_end_effect(uuid,uuid,bigint,uuid,uuid,date,date,text) TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
