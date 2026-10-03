@@ -1,0 +1,64 @@
+-- Effect 24 correction: application must not update immutable status-history rows.
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE OR REPLACE FUNCTION app.d1_apply_student_status_correction(p_request_id uuid,p_expected_request_version bigint,p_idempotency_key text)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; req record; pre record; eff record; ps record; pn record; participant text; source_id uuid; source_status text; source_date date;
+ new_status text; new_date date; invalidation text; final_version bigint; receipt uuid; corr uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_request_id IS NULL OR p_expected_request_version IS NULL OR p_expected_request_version<1 THEN RAISE EXCEPTION 'D1 Student status correction apply intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_student_status_correct_command_context('request.apply',p_idempotency_key,pg_catalog.jsonb_build_array(p_request_id,p_expected_request_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=p_request_id AND q.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Student status correction request missing'; END IF;
+  participant:=app_private.d1_student_status_correct_participant(p_request_id,ctx.actor_id);
+  IF participant NOT IN ('REQUESTER','FINAL_APPROVER') OR participant IS NULL THEN RAISE EXCEPTION 'D1 Student status correction request unavailable'; END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state NOT IN ('SUCCEEDED','REJECTED') OR ctx.result_summary IS NULL OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR (ctx.receipt_state='SUCCEEDED' AND (ctx.result_ref IS NULL OR ctx.result_summary->>'state'<>'EXECUTED'))
+       OR (ctx.receipt_state='REJECTED' AND (ctx.result_ref IS NOT NULL OR ctx.result_summary->>'state'<>'INVALIDATED'))
+    THEN RAISE EXCEPTION 'D1 Student status correction apply receipt invalid'; END IF;
+    RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,ctx.result_summary->>'state'; RETURN; END IF;
+  IF req.state<>'APPROVED' OR req.row_version<>p_expected_request_version THEN RAISE EXCEPTION 'D1 Student status correction approved request changed'; END IF;
+  IF req.old_snapshot IS NULL OR req.requested_payload IS NULL OR pg_catalog.jsonb_typeof(req.old_snapshot)<>'object'
+     OR pg_catalog.jsonb_typeof(req.requested_payload)<>'object' THEN RAISE EXCEPTION 'D1 Student status correction stored request malformed'; END IF;
+  BEGIN source_id:=NULLIF(req.old_snapshot->>'source_transition_id','')::uuid; source_status:=req.old_snapshot->>'new_status';
+    source_date:=NULLIF(req.old_snapshot->>'effective_on','')::date; new_status:=req.requested_payload->>'new_status'; new_date:=NULLIF(req.requested_payload->>'effective_on','')::date;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RAISE EXCEPTION 'D1 Student status correction stored request malformed'; END;
+  IF source_id IS NULL OR source_status IS NULL OR source_date IS NULL OR new_status IS NULL OR new_date IS NULL
+     OR new_status NOT IN ('ACTIVE','SUSPENDED','WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED','ALUMNI') THEN
+    RAISE EXCEPTION 'D1 Student status correction stored request malformed'; END IF;
+  SELECT * INTO ps FROM app_private.d1_student_status_correct_policy(req.target_ref,source_date);
+  SELECT * INTO pn FROM app_private.d1_student_status_correct_policy(req.target_ref,new_date);
+  IF ps.policy_id IS DISTINCT FROM req.policy_id OR pn.policy_id IS DISTINCT FROM req.policy_id OR ps.campus_id IS DISTINCT FROM req.campus_id OR pn.campus_id IS DISTINCT FROM req.campus_id THEN
+    invalidation:='D1_STUDENT_STATUS_CORRECT_POLICY_STALE';
+  ELSIF app_private.d1_student_status_correct_authorized_pair(req.requester_id,'student.status.correct',req.target_ref,source_date,new_date,NULL) IS DISTINCT FROM true THEN
+    invalidation:='D1_STUDENT_STATUS_CORRECT_REQUESTER_AUTHORITY_STALE';
+  ELSIF app_private.d1_student_status_correct_reviews_live(p_request_id) IS DISTINCT FROM true THEN
+    invalidation:='D1_STUDENT_STATUS_CORRECT_REVIEW_AUTHORITY_STALE';
+  ELSE SELECT * INTO pre FROM app_private.d1_student_status_correct_preflight(req.target_ref,req.expected_target_version,source_id,source_status,source_date,new_status,new_date,req.reason);
+    IF pre.eligible IS DISTINCT FROM true THEN invalidation:=pg_catalog.coalesce(pre.error_code,'D1_STUDENT_STATUS_CORRECT_PREFLIGHT_STALE'); END IF;
+  END IF;
+  IF invalidation IS NOT NULL THEN
+    UPDATE app_private.approval_requests SET state='INVALIDATED',decided_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+    receipt:=app_private.d1_student_status_correct_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+      req.expected_target_version,p_request_id,p_expected_request_version,'REJECTED','D1_STUDENT_STATUS_CORRECT_APPLY',NULL,
+      pg_catalog.jsonb_build_object('request_version',final_version,'state','INVALIDATED'),invalidation);
+    PERFORM app_private.d1_student_status_correct_audit(ctx.actor_id,'APPLY',req.target_ref,source_id,NULL,receipt,p_request_id,
+      req.expected_target_version,new_status,new_date,'INVALIDATED',corr);
+    RETURN QUERY SELECT p_request_id,final_version,'INVALIDATED'::text; RETURN; END IF;
+  SELECT * INTO eff FROM app_private.d1_student_status_correct_effect(ctx.actor_id,req.target_ref,req.expected_target_version,source_id,source_status,source_date,new_status,new_date,req.reason,NULL);
+  UPDATE app_private.approval_requests SET state='EXECUTED',executed_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+  receipt:=app_private.d1_student_status_correct_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_STATUS_CORRECT_APPLY',eff.transition_id,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','EXECUTED','transition_id',eff.transition_id,'sequence_number',eff.sequence_number,
+      'student_version',eff.student_version,'resulting_status',eff.resulting_status),NULL);
+  INSERT INTO app_private.approval_applications(request_id,operation_id,command_receipt_id,result_kind,result_ref,applied_target_version,created_by)
+  VALUES (p_request_id,ctx.operation_id,receipt,'D1_STUDENT_STATUS_CORRECT_APPLY',eff.transition_id,eff.student_version,ctx.actor_id);
+  PERFORM app_private.d1_student_status_correct_audit(ctx.actor_id,'APPLY',req.target_ref,source_id,eff.transition_id,receipt,p_request_id,eff.student_version,new_status,new_date,'EXECUTED',corr);
+  PERFORM app_private.d1_student_status_correct_event(ctx.actor_id,req.target_ref,eff.transition_id,source_id,receipt,eff.student_version,new_status,new_date,eff.sequence_number,corr);
+  RETURN QUERY SELECT p_request_id,final_version,'EXECUTED'::text;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
