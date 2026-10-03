@@ -1,0 +1,62 @@
+-- Effect 28 approval-application exact fact binding.
+-- Sensitive facts are compared only inside the protected guard and are not copied to broad evidence.
+
+SET ROLE schoolos_schema_owner;
+CREATE OR REPLACE FUNCTION app_private.d1_student_emergency_contact_application_guard()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; req record; rec record; action text; source_contact uuid; effective_on date; student_id uuid; result_id uuid; base_summary jsonb;
+  requested_person uuid; requested_name text; requested_relationship text; requested_phone text; requested_email text;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'student.emergency_contact.change' THEN RETURN NEW; END IF;
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=NEW.request_id;
+  SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.id=NEW.command_receipt_id;
+  IF req.id IS NULL OR rec.id IS NULL OR req.operation_id IS DISTINCT FROM NEW.operation_id OR rec.operation_id IS DISTINCT FROM NEW.operation_id
+     OR rec.request_id IS DISTINCT FROM NEW.request_id OR rec.command_kind IS DISTINCT FROM 'request.apply' OR rec.state IS DISTINCT FROM 'SUCCEEDED'
+     OR req.state IS DISTINCT FROM 'EXECUTED' OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR rec.expected_target_version IS DISTINCT FROM req.expected_target_version
+     OR NEW.result_ref IS DISTINCT FROM rec.result_ref OR rec.result_ref IS NULL OR rec.result_summary IS NULL
+     OR rec.result_summary->>'state' IS DISTINCT FROM 'EXECUTED' OR rec.result_summary->>'request_version' IS NULL
+  THEN RAISE EXCEPTION 'D1 Emergency Contact approval application evidence invalid'; END IF;
+  BEGIN
+    student_id:=NULLIF(req.old_snapshot->>'student_id','')::uuid;
+    source_contact:=NULLIF(req.old_snapshot->>'source_contact_id','')::uuid;
+    action:=req.requested_payload->>'action'; effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+    requested_person:=NULLIF(req.requested_payload->>'person_id','')::uuid;
+    result_id:=rec.result_ref;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RAISE EXCEPTION 'D1 Emergency Contact approval application request malformed'; END;
+  IF student_id IS DISTINCT FROM req.target_ref OR action NOT IN ('ADD','END','CORRECT') OR effective_on IS NULL
+    THEN RAISE EXCEPTION 'D1 Emergency Contact approval application target mismatch'; END IF;
+  requested_name:=CASE WHEN req.requested_payload->>'contact_name' IS NULL THEN NULL ELSE pg_catalog.btrim(req.requested_payload->>'contact_name') END;
+  requested_relationship:=CASE WHEN req.requested_payload->>'relationship_label' IS NULL THEN NULL ELSE pg_catalog.btrim(req.requested_payload->>'relationship_label') END;
+  requested_phone:=CASE WHEN req.requested_payload->>'contact_phone' IS NULL THEN NULL ELSE pg_catalog.btrim(req.requested_payload->>'contact_phone') END;
+  requested_email:=CASE WHEN req.requested_payload->>'contact_email' IS NULL THEN NULL ELSE pg_catalog.btrim(req.requested_payload->>'contact_email') END;
+  base_summary:=rec.result_summary-'request_version'-'state';
+  IF app_private.d1_student_emergency_contact_result_rows_match(req.target_ref,action,source_contact,result_id,effective_on,base_summary) IS DISTINCT FROM true
+    THEN RAISE EXCEPTION 'D1 Emergency Contact approval application result invalid'; END IF;
+  IF action IN ('ADD','CORRECT') AND NOT EXISTS (
+    SELECT 1 FROM app_private.student_emergency_contacts x
+     WHERE x.id=result_id AND x.student_id=req.target_ref AND x.person_id IS NOT DISTINCT FROM requested_person
+       AND x.contact_name IS NOT DISTINCT FROM requested_name AND x.relationship_label IS NOT DISTINCT FROM requested_relationship
+       AND x.contact_phone IS NOT DISTINCT FROM requested_phone AND x.contact_email IS NOT DISTINCT FROM requested_email
+       AND x.reason=pg_catalog.btrim(req.reason) AND x.effective_from=effective_on
+       AND x.supersedes_id IS NOT DISTINCT FROM CASE WHEN action='CORRECT' THEN source_contact ELSE NULL::uuid END)
+  THEN RAISE EXCEPTION 'D1 Emergency Contact approval application reviewed facts mismatch'; END IF;
+  IF action IN ('END','CORRECT') THEN
+    IF result_id IS DISTINCT FROM CASE WHEN action='END' THEN source_contact ELSE result_id END
+       OR NOT EXISTS (
+        SELECT 1 FROM app_private.student_emergency_contacts s
+         WHERE s.id=source_contact AND s.student_id=req.target_ref
+           AND s.person_id IS NOT DISTINCT FROM NULLIF(req.old_snapshot->>'person_id','')::uuid
+           AND s.contact_name IS NOT DISTINCT FROM req.old_snapshot->>'contact_name'
+           AND s.relationship_label IS NOT DISTINCT FROM req.old_snapshot->>'relationship_label'
+           AND s.contact_phone IS NOT DISTINCT FROM req.old_snapshot->>'contact_phone'
+           AND s.contact_email IS NOT DISTINCT FROM req.old_snapshot->>'contact_email'
+           AND s.effective_from IS NOT DISTINCT FROM NULLIF(req.old_snapshot->>'effective_from','')::date
+           AND s.supersedes_id IS NOT DISTINCT FROM NULLIF(req.old_snapshot->>'supersedes_id','')::uuid
+           AND s.effective_until=effective_on AND s.ended_at IS NOT NULL AND s.ended_by IS NOT NULL)
+    THEN RAISE EXCEPTION 'D1 Emergency Contact approval application source facts mismatch'; END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+RESET ROLE;
