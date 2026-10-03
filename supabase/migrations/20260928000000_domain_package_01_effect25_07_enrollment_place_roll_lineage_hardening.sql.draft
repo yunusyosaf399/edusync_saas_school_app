@@ -1,0 +1,57 @@
+-- Effect 25 audit correction: persistent placements inherit the latest authoritative persistent numeric value.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_place_allocate_roll(
+  p_actor uuid,p_student uuid,p_enrollment uuid,p_school uuid,p_class_offering uuid,p_effective_from date
+) RETURNS TABLE(allocation_id uuid,policy_revision_id uuid,numeric_value bigint,origin_allocation_id uuid,policy_mode text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pol app_private.roll_policy_revisions%ROWTYPE; pol_count bigint; alloc app_private.roll_allocator_states%ROWTYPE;
+  prior record; candidate bigint; aid uuid:=pg_catalog.gen_random_uuid(); origin uuid; mode text;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_student IS NULL OR p_enrollment IS NULL OR p_school IS NULL
+     OR p_class_offering IS NULL OR p_effective_from IS NULL THEN RAISE EXCEPTION 'D1 Enrollment roll intent invalid'; END IF;
+  SELECT count(*) INTO pol_count FROM app_private.roll_policy_revisions r WHERE r.school_id=p_school
+    AND r.effective_from<=p_effective_from AND (r.effective_until IS NULL OR p_effective_from<r.effective_until);
+  IF pol_count<>1 THEN RAISE EXCEPTION 'D1 Enrollment roll policy unavailable'; END IF;
+  SELECT * INTO pol FROM app_private.roll_policy_revisions r WHERE r.school_id=p_school
+    AND r.effective_from<=p_effective_from AND (r.effective_until IS NULL OR p_effective_from<r.effective_until) FOR UPDATE;
+  mode:=pol.mode;
+  IF mode NOT IN ('ACADEMIC_CONTEXT','PERSISTENT_STUDENT') THEN RAISE EXCEPTION 'D1 Enrollment roll policy malformed'; END IF;
+  IF mode='PERSISTENT_STUDENT' THEN
+    SELECT r.id,r.numeric_value,pg_catalog.coalesce(r.origin_allocation_id,r.id) origin_id INTO prior
+      FROM app_private.roll_allocations r JOIN app_private.roll_policy_revisions pr ON pr.id=r.policy_revision_id
+      WHERE r.student_id=p_student AND pr.school_id=p_school AND pr.mode='PERSISTENT_STUDENT'
+        AND NOT EXISTS (SELECT 1 FROM app_private.roll_allocations x WHERE x.student_id=p_student AND x.supersedes_id=r.id)
+      ORDER BY r.effective_from DESC,r.created_at DESC,r.id DESC LIMIT 1;
+    IF prior.id IS NOT NULL THEN candidate:=prior.numeric_value; origin:=prior.origin_id;
+    ELSE
+      SELECT * INTO alloc FROM app_private.roll_allocator_states a WHERE a.policy_revision_id=pol.id AND a.class_offering_id IS NULL FOR UPDATE;
+      IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment persistent roll allocator unavailable'; END IF;
+      candidate:=pg_catalog.greatest(alloc.next_value,pol.start_value);
+      WHILE EXISTS (
+        SELECT 1 FROM app_private.roll_allocations r JOIN app_private.roll_policy_revisions pr ON pr.id=r.policy_revision_id
+        WHERE pr.school_id=p_school AND pr.mode='PERSISTENT_STUDENT' AND r.numeric_value=candidate AND r.student_id<>p_student
+      ) LOOP candidate:=candidate+1; END LOOP;
+      UPDATE app_private.roll_allocator_states SET next_value=candidate+1,row_version=row_version+1,updated_at=pg_catalog.statement_timestamp() WHERE id=alloc.id;
+    END IF;
+  ELSE
+    SELECT * INTO alloc FROM app_private.roll_allocator_states a WHERE a.policy_revision_id=pol.id AND a.class_offering_id=p_class_offering FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment academic roll allocator unavailable'; END IF;
+    candidate:=pg_catalog.greatest(alloc.next_value,pol.start_value);
+    WHILE EXISTS (
+      SELECT 1 FROM app_private.roll_allocations r JOIN app_private.enrollments e ON e.id=r.enrollment_id
+      JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+      WHERE r.policy_revision_id=pol.id AND s.class_offering_id=p_class_offering AND r.numeric_value=candidate
+        AND p_effective_from<pg_catalog.coalesce(r.effective_until,'infinity'::date)
+    ) LOOP candidate:=candidate+1; END LOOP;
+    UPDATE app_private.roll_allocator_states SET next_value=candidate+1,row_version=row_version+1,updated_at=pg_catalog.statement_timestamp() WHERE id=alloc.id;
+  END IF;
+  INSERT INTO app_private.roll_allocations(id,created_by,enrollment_id,student_id,policy_revision_id,numeric_value,effective_from,effective_until,
+    origin_allocation_id,supersedes_id,correction_reason)
+  VALUES (aid,p_actor,p_enrollment,p_student,pol.id,candidate,p_effective_from,NULL,origin,NULL,NULL);
+  IF mode='PERSISTENT_STUDENT' AND origin IS NULL THEN origin:=aid; END IF;
+  RETURN QUERY SELECT aid,pol.id,candidate,origin,mode;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
