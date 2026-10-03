@@ -1,0 +1,51 @@
+-- Effect 30 exact approval-application evidence guard.
+
+SET ROLE schoolos_family_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_relationship_result_rows_match(uuid,uuid,text,uuid,uuid,date,jsonb)
+  TO schoolos_schema_owner;
+RESET ROLE;
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_family_relationship_application_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; req record; rec record; family_id uuid; source_id uuid; effective_on date; action text; base_summary jsonb;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'family.relationship.change' THEN RETURN NEW; END IF;
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=NEW.request_id;
+  SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.id=NEW.command_receipt_id;
+  IF req.id IS NULL OR rec.id IS NULL
+     OR req.operation_id IS DISTINCT FROM NEW.operation_id OR rec.operation_id IS DISTINCT FROM NEW.operation_id
+     OR rec.request_id IS DISTINCT FROM NEW.request_id OR rec.command_kind IS DISTINCT FROM 'request.apply'
+     OR rec.state IS DISTINCT FROM 'SUCCEEDED' OR req.state IS DISTINCT FROM 'EXECUTED'
+     OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR NEW.result_ref IS DISTINCT FROM rec.result_ref OR rec.result_ref IS NULL OR rec.result_summary IS NULL
+     OR rec.result_summary->>'state' IS DISTINCT FROM 'EXECUTED' OR rec.result_summary->>'request_version' IS NULL THEN
+    RAISE EXCEPTION 'D1 Family relationship approval application evidence invalid';
+  END IF;
+  BEGIN
+    family_id:=NULLIF(req.requested_payload->>'family_id','')::uuid;
+    action:=req.requested_payload->>'action';
+    source_id:=NULLIF(req.requested_payload->>'source_relationship_id','')::uuid;
+    effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN
+    RAISE EXCEPTION 'D1 Family relationship approval application request malformed';
+  END;
+  IF family_id IS NULL OR action NOT IN ('ADD','END','CORRECT') OR effective_on IS NULL THEN
+    RAISE EXCEPTION 'D1 Family relationship approval application request malformed';
+  END IF;
+  base_summary:=rec.result_summary-'request_version'-'state';
+  IF app_private.d1_family_relationship_result_rows_match(
+      req.target_ref,family_id,action,source_id,rec.result_ref,effective_on,base_summary) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family relationship approval application result invalid';
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_relationship_application_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_family_relationship_application_guard ON app_private.approval_applications;
+CREATE TRIGGER d1_family_relationship_application_guard
+  BEFORE INSERT ON app_private.approval_applications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_family_relationship_application_guard();
+RESET ROLE;
