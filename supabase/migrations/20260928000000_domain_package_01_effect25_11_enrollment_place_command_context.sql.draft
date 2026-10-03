@@ -1,0 +1,41 @@
+-- Effect 25 fixed command context. Do not widen the shared d1_command_receipt_lookup allowlist.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_enrollment_place_command_context(p_idempotency_key text,p_intent jsonb)
+RETURNS TABLE(actor_id uuid,operation_id uuid,receipt_id uuid,result_ref uuid,result_summary jsonb,receipt_state text,intent_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v_actor uuid; v_operation uuid; v_hash bytea; v_digest bytea; v_resource bigint; v_receipt app_private.command_receipts%ROWTYPE;
+BEGIN
+  IF p_idempotency_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_idempotency_key))=0
+     OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array' OR pg_catalog.jsonb_array_length(p_intent)<>8
+  THEN RAISE EXCEPTION 'D1 Enrollment placement receipt intent shape unsupported'; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor:=app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 Enrollment placement command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+    WHERE o.code='student.enrollment.place' AND o.contract_version=1 AND o.handler_key='student.enrollment.place' AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 Enrollment placement operation is not enabled'; END IF;
+  v_hash:=pg_catalog.sha256(pg_catalog.convert_to(app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+    'canonicalization_version',1,'operation_code','student.enrollment.place','operation_contract_version','1',
+    'operation_id',v_operation::text,'command_kind','student.enrollment.place','principal_id',v_actor::text,
+    'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+  v_digest:=pg_catalog.sha256(pg_catalog.convert_to(v_actor::text||'|'||v_operation::text||'|'||p_idempotency_key,'UTF8'));
+  v_resource:=pg_catalog.get_byte(v_digest,0)::bigint*16777216+pg_catalog.get_byte(v_digest,1)::bigint*65536+
+    pg_catalog.get_byte(v_digest,2)::bigint*256+pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource>2147483647 THEN v_resource:=v_resource-4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+    WHERE r.principal_id=v_actor AND r.operation_id=v_operation AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1 OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_hash
+       OR v_receipt.command_kind IS DISTINCT FROM 'student.enrollment.place' THEN
+      RAISE EXCEPTION 'D1 Enrollment placement idempotency key conflicts with prior intent'; END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,v_receipt.result_summary,v_receipt.state,v_hash; RETURN;
+  END IF;
+  RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,NULL::text,v_hash;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_place_command_context(text,jsonb) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_command_context(text,jsonb) TO schoolos_student_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
