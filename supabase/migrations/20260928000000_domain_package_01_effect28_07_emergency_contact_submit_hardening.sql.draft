@@ -1,0 +1,64 @@
+-- Effect 28 protected request hardening.
+-- Add explicit student_id to the fixed old-snapshot envelope and avoid inventing a contact ID for ADD submit evidence.
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE OR REPLACE FUNCTION app.d1_submit_student_emergency_contact_change(
+ p_student_id uuid,p_expected_student_version bigint,p_action text,p_source_contact_id uuid,p_person_id uuid,p_contact_name text,
+ p_relationship_label text,p_contact_phone text,p_contact_email text,p_effective_on date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy_row record; pre record; src app_private.student_emergency_contacts%ROWTYPE; template_row record;
+  new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid; candidate_count bigint; final_version bigint; receipt uuid;
+  old_snapshot jsonb; requested jsonb;
+BEGIN
+  SELECT * INTO ctx FROM app_private.d1_student_emergency_contact_command_context('request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_action,p_source_contact_id,p_person_id,p_contact_name,
+      p_relationship_label,p_contact_phone,p_contact_email,p_effective_on));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF NOT app_private.d1_student_emergency_contact_authorized(ctx.actor_id,'student.emergency_contact.change',p_student_id,NULL)
+    THEN RAISE EXCEPTION 'D1 Emergency Contact request authority denied'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_student_emergency_contact_policy(p_student_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' THEN RAISE EXCEPTION 'D1 Emergency Contact policy selects direct command'; END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object' OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state']) OR ctx.result_summary->>'state'<>'PENDING'
+      THEN RAISE EXCEPTION 'D1 Emergency Contact submit receipt invalid'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint; RETURN;
+  END IF;
+  SELECT * INTO pre FROM app_private.d1_student_emergency_contact_preflight(p_student_id,p_expected_student_version,p_action,p_source_contact_id,
+    p_person_id,p_contact_name,p_relationship_label,p_contact_phone,p_contact_email,p_effective_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Emergency Contact request preflight denied: %',pre.error_code; END IF;
+  IF p_source_contact_id IS NOT NULL THEN SELECT * INTO src FROM app_private.student_emergency_contacts WHERE id=p_source_contact_id; END IF;
+  old_snapshot:=pg_catalog.jsonb_build_object('student_id',p_student_id,'source_contact_id',p_source_contact_id,'person_id',src.person_id,
+    'contact_name',src.contact_name,'relationship_label',src.relationship_label,'contact_phone',src.contact_phone,'contact_email',src.contact_email,
+    'effective_from',src.effective_from,'effective_until',src.effective_until,'supersedes_id',src.supersedes_id);
+  requested:=pg_catalog.jsonb_build_object('action',p_action,'person_id',p_person_id,'contact_name',p_contact_name,'relationship_label',p_relationship_label,
+    'contact_phone',p_contact_phone,'contact_email',p_contact_email,'effective_on',p_effective_on);
+  INSERT INTO app_private.approval_requests(id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
+    expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,policy_row.campus_id,p_student_id,p_expected_student_version,
+    p_reason,old_snapshot,requested,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp() WHERE id=new_request;
+  FOR template_row IN SELECT t.id,t.step_number,t.required_reviews FROM app_private.approval_step_templates t WHERE t.policy_id=policy_row.policy_id ORDER BY t.step_number LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps(id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step ELSE pg_catalog.gen_random_uuid() END,new_request,policy_row.policy_id,
+      template_row.id,template_row.step_number,template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Emergency Contact policy has no first step'; END IF;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+  SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id FROM app_private.d1_student_emergency_contact_candidates(new_request,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT; IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Emergency Contact step has no reviewer'; END IF;
+  receipt:=app_private.d1_student_emergency_contact_receipt('request.submit',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    p_expected_student_version,new_request,NULL,'SUCCEEDED','D1_STUDENT_EMERGENCY_CONTACT_REQUEST',new_request,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),NULL);
+  PERFORM app_private.d1_student_emergency_contact_audit(ctx.actor_id,'SUBMIT',p_student_id,p_source_contact_id,p_source_contact_id,p_action,
+    receipt,new_request,p_expected_student_version,'SUCCEEDED',NULL,pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT new_request,final_version;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
