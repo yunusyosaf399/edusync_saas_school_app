@@ -1,0 +1,64 @@
+-- Effect 30 lock-order helper: involved People before Student, then all Families UUID-ascending.
+
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_family_relationship_person_update ON app_private.people
+  FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+GRANT UPDATE(id) ON app_private.people TO schoolos_family_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app_private.d1_family_relationship_lock_targets(
+  p_student uuid,p_family uuid,p_source uuid,p_new_adult_person uuid,p_primary_replacement uuid
+) RETURNS TABLE(student_version bigint,family_version bigint,replacement_family_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE source_person uuid; source_family uuid; source_student uuid; repl_family uuid;
+  person_lock uuid; family_lock uuid; sver bigint; fver bigint;
+BEGIN
+  IF p_student IS NULL OR p_family IS NULL THEN RETURN; END IF;
+  IF p_source IS NOT NULL THEN
+    SELECT r.adult_person_id,r.family_id,r.student_id INTO source_person,source_family,source_student
+      FROM app_private.family_relationships r WHERE r.id=p_source;
+  END IF;
+  IF p_primary_replacement IS NOT NULL THEN
+    SELECT r.family_id INTO repl_family FROM app_private.family_relationships r
+      WHERE r.id=p_primary_replacement AND r.student_id=p_student;
+  END IF;
+  FOR person_lock IN
+    SELECT x FROM (VALUES (source_person),(p_new_adult_person)) AS p(x)
+     WHERE x IS NOT NULL GROUP BY x ORDER BY x
+  LOOP
+    PERFORM 1 FROM app_private.people p WHERE p.id=person_lock FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family relationship Person missing'; END IF;
+  END LOOP;
+  SELECT s.row_version INTO sver FROM app_private.students s WHERE s.id=p_student FOR UPDATE;
+  IF sver IS NULL THEN RETURN; END IF;
+  FOR family_lock IN
+    SELECT x FROM (VALUES (p_family),(repl_family)) AS f(x)
+     WHERE x IS NOT NULL GROUP BY x ORDER BY x
+  LOOP
+    PERFORM 1 FROM app_private.families f WHERE f.id=family_lock FOR UPDATE;
+    IF NOT FOUND THEN RETURN; END IF;
+  END LOOP;
+  SELECT f.row_version INTO fver FROM app_private.families f WHERE f.id=p_family;
+  IF p_source IS NOT NULL THEN
+    PERFORM 1 FROM app_private.family_relationships r
+      WHERE r.id=p_source AND r.student_id=p_student AND r.family_id=p_family
+        AND r.adult_person_id IS NOT DISTINCT FROM source_person FOR UPDATE;
+    IF NOT FOUND OR source_family IS DISTINCT FROM p_family OR source_student IS DISTINCT FROM p_student THEN
+      RAISE EXCEPTION 'D1 Family relationship source ancestry changed';
+    END IF;
+  END IF;
+  IF p_primary_replacement IS NOT NULL THEN
+    PERFORM 1 FROM app_private.family_relationships r
+      WHERE r.id=p_primary_replacement AND r.student_id=p_student AND r.family_id=repl_family FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family relationship replacement changed'; END IF;
+  END IF;
+  RETURN QUERY SELECT sver,fver,repl_family;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_relationship_lock_targets(uuid,uuid,uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_relationship_lock_targets(uuid,uuid,uuid,uuid,uuid)
+  TO schoolos_family_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
