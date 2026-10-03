@@ -1,0 +1,124 @@
+-- Effect 26 durable evidence and replay proof. Arbitrary move/override reasons stay out of broad evidence.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_enrollment_move_receipt(
+  p_command_kind text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_expected bigint,p_request uuid,p_expected_request bigint,
+  p_state text,p_result_kind text,p_result uuid,p_summary jsonb,p_error text
+) RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_command_kind NOT IN ('student.enrollment.move','request.submit','request.review','request.apply') OR p_actor IS NULL OR p_operation IS NULL
+     OR p_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_key))=0 OR p_hash IS NULL OR p_expected IS NULL OR p_expected<1
+     OR p_state NOT IN ('SUCCEEDED','REJECTED') OR (p_state='SUCCEEDED' AND (p_result_kind IS NULL OR p_error IS NOT NULL))
+     OR (p_state='REJECTED' AND (p_error IS NULL OR p_result IS NOT NULL)) THEN RAISE EXCEPTION 'D1 Enrollment move receipt intent denied'; END IF;
+  INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+    expected_target_version,request_id,expected_request_version,state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,p_command_kind,p_key,p_hash,1,p_expected,p_request,p_expected_request,p_state,p_result_kind,p_result,p_summary,p_error,
+    pg_catalog.statement_timestamp(),p_actor);
+  RETURN rid;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_enrollment_move_audit(
+  p_actor uuid,p_phase text,p_student uuid,p_source uuid,p_destination uuid,p_receipt uuid,p_request uuid,p_student_version bigint,
+  p_source_section uuid,p_destination_section uuid,p_entry_kind text,p_effective_from date,p_override boolean,p_outcome text,p_error text,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_phase NOT IN ('DIRECT','SUBMIT','REVIEW','APPLY') OR p_student IS NULL
+     OR p_receipt IS NULL OR p_student_version IS NULL OR p_student_version<1 OR p_correlation IS NULL OR p_outcome NOT IN ('SUCCEEDED','REJECTED') THEN
+    RAISE EXCEPTION 'D1 Enrollment move audit intent denied'; END IF;
+  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+    command_receipt_id,approval_request_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',p_outcome,pg_catalog.jsonb_build_object('operation','student.enrollment.move','phase',p_phase),p_student_version,
+    'student.enrollment.move','STUDENT',p_student,p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('source_enrollment_id',p_source,'destination_enrollment_id',p_destination,'source_section_offering_id',p_source_section,
+      'destination_section_offering_id',p_destination_section,'entry_kind',p_entry_kind,'effective_from',p_effective_from,
+      'capacity_override',p_override,'error_code',p_error),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_audit(uuid,text,uuid,uuid,uuid,uuid,uuid,bigint,uuid,uuid,text,date,boolean,text,text,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_audit(uuid,text,uuid,uuid,uuid,uuid,uuid,bigint,uuid,uuid,text,date,boolean,text,text,uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_enrollment_move_events(
+  p_actor uuid,p_student uuid,p_source uuid,p_destination uuid,p_roll uuid,p_override uuid,p_receipt uuid,p_source_section uuid,p_destination_section uuid,
+  p_source_class uuid,p_destination_class uuid,p_source_campus uuid,p_destination_campus uuid,p_source_year uuid,p_destination_year uuid,
+  p_entry_kind text,p_effective_from date,p_numeric bigint,p_policy uuid,p_mode text,p_class_over boolean,p_section_over boolean,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ord integer:=1;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_student IS NULL OR p_source IS NULL OR p_destination IS NULL OR p_roll IS NULL
+     OR p_receipt IS NULL OR p_entry_kind NOT IN ('PROMOTION','REPEAT','CLASS_CHANGE','SECTION_CHANGE','CAMPUS_TRANSFER')
+     OR p_effective_from IS NULL OR p_numeric IS NULL OR p_numeric<0 OR p_policy IS NULL OR p_mode NOT IN ('ACADEMIC_CONTEXT','PERSISTENT_STUDENT')
+     OR p_correlation IS NULL OR (p_override IS NULL AND (p_class_over OR p_section_over))
+     OR (p_override IS NOT NULL AND NOT (p_class_over OR p_section_over)) THEN RAISE EXCEPTION 'D1 Enrollment move event intent denied'; END IF;
+  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('enrollment.moved','ENROLLMENT',p_destination,1,p_receipt,ord,p_correlation,
+    pg_catalog.jsonb_build_object('student_id',p_student,'source_enrollment_id',p_source,'enrollment_id',p_destination,'roll_allocation_id',p_roll,
+      'source_section_offering_id',p_source_section,'destination_section_offering_id',p_destination_section,
+      'source_class_offering_id',p_source_class,'destination_class_offering_id',p_destination_class,
+      'source_campus_id',p_source_campus,'destination_campus_id',p_destination_campus,'source_academic_year_id',p_source_year,
+      'destination_academic_year_id',p_destination_year,'entry_kind',p_entry_kind,'effective_from',p_effective_from,
+      'numeric_value',p_numeric,'policy_revision_id',p_policy,'roll_mode',p_mode),p_actor);
+  IF p_override IS NOT NULL THEN ord:=ord+1;
+    INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+    VALUES ('enrollment.capacity_overridden','ENROLLMENT_CAPACITY_OVERRIDE',p_override,1,p_receipt,ord,p_correlation,
+      pg_catalog.jsonb_build_object('student_id',p_student,'enrollment_id',p_destination,'capacity_override_id',p_override,
+        'class_overridden',p_class_over,'section_overridden',p_section_over),p_actor);
+  END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_events(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,date,bigint,uuid,text,boolean,boolean,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_events(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,date,bigint,uuid,text,boolean,boolean,uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_enrollment_move_result_matches(
+  p_actor uuid,p_student uuid,p_source uuid,p_source_section uuid,p_destination_section uuid,p_entry_kind text,p_effective_from date,
+  p_receipt uuid,p_destination uuid,p_summary jsonb
+) RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid; over_cap boolean; override_id uuid;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>17
+     OR NOT (p_summary ?& ARRAY['enrollment_id','source_enrollment_id','roll_allocation_id','numeric_value','roll_mode','student_version',
+       'capacity_overridden','capacity_override_id','source_section_offering_id','destination_section_offering_id','source_class_offering_id',
+       'destination_class_offering_id','source_campus_id','destination_campus_id','source_academic_year_id','destination_academic_year_id','entry_kind'])
+     OR p_summary->>'entry_kind' IS DISTINCT FROM p_entry_kind THEN RETURN false; END IF;
+  over_cap:=pg_catalog.coalesce((p_summary->>'capacity_overridden')::boolean,false);
+  override_id:=NULLIF(p_summary->>'capacity_override_id','')::uuid;
+  rid:=NULLIF(p_summary->>'roll_allocation_id','')::uuid;
+  IF NULLIF(p_summary->>'enrollment_id','')::uuid IS DISTINCT FROM p_destination
+     OR NULLIF(p_summary->>'source_enrollment_id','')::uuid IS DISTINCT FROM p_source
+     OR NULLIF(p_summary->>'source_section_offering_id','')::uuid IS DISTINCT FROM p_source_section
+     OR NULLIF(p_summary->>'destination_section_offering_id','')::uuid IS DISTINCT FROM p_destination_section THEN RETURN false; END IF;
+  IF NOT app_private.d1_enrollment_move_authorized(p_actor,'student.enrollment.move',p_source_section,p_destination_section,NULL) THEN RETURN false; END IF;
+  IF NOT EXISTS (SELECT 1 FROM app_private.enrollments e WHERE e.id=p_source AND e.student_id=p_student AND e.section_offering_id=p_source_section
+      AND e.placement_kind='PRIMARY' AND e.placement_state='ENDED' AND e.effective_until=p_effective_from AND e.end_reason='MOVE_'||p_entry_kind)
+     OR NOT EXISTS (SELECT 1 FROM app_private.enrollments e WHERE e.id=p_destination AND e.student_id=p_student AND e.section_offering_id=p_destination_section
+      AND e.placement_kind='PRIMARY' AND e.entry_kind=p_entry_kind AND e.placement_state='ACTIVE' AND e.effective_from=p_effective_from
+      AND e.effective_until IS NULL AND e.predecessor_id=p_source)
+     OR NOT EXISTS (SELECT 1 FROM app_private.roll_allocations r WHERE r.id=rid AND r.enrollment_id=p_destination AND r.student_id=p_student
+      AND r.numeric_value=(p_summary->>'numeric_value')::bigint AND r.effective_from=p_effective_from AND r.effective_until IS NULL)
+     THEN RETURN false; END IF;
+  IF over_cap THEN
+    IF override_id IS NULL OR NOT app_private.d1_enrollment_move_authorized(p_actor,'student.capacity_override',p_source_section,p_destination_section,NULL)
+       OR NOT EXISTS (SELECT 1 FROM app_private.enrollment_capacity_overrides o WHERE o.id=override_id AND o.enrollment_id=p_destination AND o.command_receipt_id=p_receipt)
+    THEN RETURN false; END IF;
+  ELSIF override_id IS NOT NULL OR EXISTS (SELECT 1 FROM app_private.enrollment_capacity_overrides o WHERE o.enrollment_id=p_destination) THEN RETURN false; END IF;
+  RETURN true;
+EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN RETURN false;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_result_matches(uuid,uuid,uuid,uuid,uuid,text,date,uuid,uuid,jsonb)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_result_matches(uuid,uuid,uuid,uuid,uuid,text,date,uuid,uuid,jsonb)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
