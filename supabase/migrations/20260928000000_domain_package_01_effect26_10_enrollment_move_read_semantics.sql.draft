@@ -20,7 +20,8 @@ GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
 SET ROLE schoolos_student_executor;
 ALTER FUNCTION app_private.d1_enrollment_move_lock_context(uuid,bigint,uuid,uuid,date,uuid,text,date)
   RENAME TO d1_enrollment_move_lock_context_base;
-REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_lock_context_base(uuid,bigint,uuid,uuid,date,uuid,text,date) FROM PUBLIC,anon,authenticated,service_role;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_lock_context_base(uuid,bigint,uuid,uuid,date,uuid,text,date)
+  FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor;
 CREATE FUNCTION app_private.d1_enrollment_move_lock_context(
   p_student uuid,p_expected_student_version bigint,p_source_enrollment uuid,p_expected_source_section uuid,
   p_expected_source_effective_from date,p_destination_section uuid,p_entry_kind text,p_effective_from date
@@ -51,7 +52,7 @@ RETURNS TABLE(request_id uuid,request_version bigint,request_state text,student_
   capacity_override_required boolean,request_reason text,capacity_override_reason text,participant_kind text)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE actor uuid; req record; src uuid; dst uuid; source_enrollment uuid; kind text; move_date date; override_required boolean;
-  final_role uuid; open_step record; decided_role uuid; requester_person uuid; actor_person uuid; participant text;
+  final_role uuid; open_step record; decided_role uuid; participant text;
 BEGIN
   PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
   actor:=app_private.current_principal_id(); IF actor IS NULL OR p_request_id IS NULL THEN RETURN; END IF;
@@ -95,7 +96,3 @@ REVOKE ALL ON FUNCTION app.d1_read_student_enrollment_move_request(uuid) FROM PU
 GRANT EXECUTE ON FUNCTION app.d1_read_student_enrollment_move_request(uuid) TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
-
-SET ROLE schoolos_schema_owner;
-GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_result_rows_match(uuid,uuid,uuid,uuid,text,date,uuid,uuid,jsonb) TO schoolos_schema_owner;
-RESET ROLE;
