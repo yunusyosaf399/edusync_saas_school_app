@@ -1,0 +1,178 @@
+-- Effect 26 P1 direct path and approval submit path.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_enrollment_move_candidates(p_request uuid,p_step uuid)
+RETURNS TABLE(candidate_principal_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; templ record; requester_person uuid; src uuid; dst uuid;
+BEGIN
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=p_request;
+  SELECT t.* INTO templ FROM app_private.approval_request_steps s JOIN app_private.approval_step_templates t ON t.id=s.template_id
+   WHERE s.id=p_step AND s.request_id=p_request;
+  IF req.id IS NULL OR templ.id IS NULL OR templ.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE' THEN RETURN; END IF;
+  src:=NULLIF(req.old_snapshot->>'source_section_offering_id','')::uuid;
+  dst:=NULLIF(req.requested_payload->>'destination_section_offering_id','')::uuid;
+  IF src IS NULL OR dst IS NULL THEN RETURN; END IF;
+  SELECT p.person_id INTO requester_person FROM app_private.principals p WHERE p.id=req.requester_id;
+  RETURN QUERY SELECT p.id FROM app_private.principals p
+   WHERE p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL
+     AND p.id<>req.requester_id AND p.person_id<>requester_person
+     AND app_private.d1_enrollment_move_authorized(p.id,'student.enrollment.approve',src,dst,templ.reviewer_role_id)
+   ORDER BY p.id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_candidates(uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_candidates(uuid,uuid) TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app.d1_move_student_enrollment(
+  p_student_id uuid,p_expected_student_version bigint,p_source_enrollment_id uuid,p_expected_source_section_id uuid,
+  p_expected_source_effective_from date,p_destination_section_id uuid,p_entry_kind text,p_effective_from date,p_reason text,
+  p_capacity_override_reason text,p_idempotency_key text
+) RETURNS TABLE(enrollment_id uuid,roll_allocation_id uuid,numeric_value bigint,roll_mode text,student_version bigint,capacity_overridden boolean)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy_row record; prelock record; locked record; cap record; eff record; receipt uuid; override_id uuid;
+  over_cap boolean; override_reason text:=NULLIF(pg_catalog.btrim(p_capacity_override_reason),''); summary jsonb; corr uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_student_id IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1 OR p_source_enrollment_id IS NULL
+     OR p_expected_source_section_id IS NULL OR p_expected_source_effective_from IS NULL OR p_destination_section_id IS NULL
+     OR p_entry_kind NOT IN ('PROMOTION','REPEAT','CLASS_CHANGE','SECTION_CHANGE','CAMPUS_TRANSFER') OR p_effective_from IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN RAISE EXCEPTION 'D1 Enrollment move intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_enrollment_move_command_context('student.enrollment.move',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_source_enrollment_id,p_expected_source_section_id,
+      p_expected_source_effective_from,p_destination_section_id,p_entry_kind,p_effective_from,p_reason,override_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF NOT app_private.d1_enrollment_move_authorized(ctx.actor_id,'student.enrollment.move',p_expected_source_section_id,p_destination_section_id,NULL)
+    THEN RAISE EXCEPTION 'D1 Enrollment move authority denied'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_enrollment_move_policy(p_expected_source_section_id,p_destination_section_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'DIRECT' THEN RAISE EXCEPTION 'D1 Enrollment move requires approval request'; END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR app_private.d1_enrollment_move_result_matches(ctx.actor_id,p_student_id,p_source_enrollment_id,p_expected_source_section_id,
+          p_destination_section_id,p_entry_kind,p_effective_from,ctx.receipt_id,ctx.result_ref,ctx.result_summary) IS DISTINCT FROM true
+    THEN RAISE EXCEPTION 'D1 Enrollment move receipt is not replayable'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,NULLIF(ctx.result_summary->>'roll_allocation_id','')::uuid,(ctx.result_summary->>'numeric_value')::bigint,
+      ctx.result_summary->>'roll_mode',(ctx.result_summary->>'student_version')::bigint,(ctx.result_summary->>'capacity_overridden')::boolean; RETURN; END IF;
+  SELECT * INTO prelock FROM app_private.d1_enrollment_place_prelock_roll(p_destination_section_id,p_effective_from);
+  IF prelock.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment move roll prelock denied: %',prelock.error_code; END IF;
+  SELECT * INTO locked FROM app_private.d1_enrollment_move_lock_context(p_student_id,p_expected_student_version,p_source_enrollment_id,
+    p_expected_source_section_id,p_expected_source_effective_from,p_destination_section_id,p_entry_kind,p_effective_from);
+  IF locked.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment move denied: %',locked.error_code; END IF;
+  IF locked.school_id IS DISTINCT FROM prelock.school_id OR locked.destination_class_offering_id IS DISTINCT FROM prelock.class_offering_id THEN
+    RAISE EXCEPTION 'D1 Enrollment move destination changed after roll prelock'; END IF;
+  SELECT * INTO cap FROM app_private.d1_enrollment_move_capacity(p_source_enrollment_id,locked.destination_class_offering_id,p_destination_section_id,
+    p_effective_from,locked.destination_class_capacity,locked.destination_section_capacity);
+  IF cap.class_count IS NULL THEN RAISE EXCEPTION 'D1 Enrollment move capacity unavailable'; END IF;
+  over_cap:=cap.class_full OR cap.section_full;
+  IF over_cap THEN
+    IF override_reason IS NULL OR NOT app_private.d1_enrollment_move_authorized(ctx.actor_id,'student.capacity_override',p_expected_source_section_id,p_destination_section_id,NULL)
+      THEN RAISE EXCEPTION 'D1 Enrollment move capacity override denied'; END IF;
+    override_id:=pg_catalog.gen_random_uuid();
+  ELSIF override_reason IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment move override reason supplied without full capacity'; END IF;
+  SELECT * INTO eff FROM app_private.d1_enrollment_move_effect(ctx.actor_id,p_student_id,p_expected_student_version,p_source_enrollment_id,
+    p_expected_source_section_id,p_expected_source_effective_from,p_destination_section_id,p_entry_kind,p_effective_from,p_reason,
+    cap.class_count,cap.section_count,cap.class_full,cap.section_full);
+  IF eff.policy_revision_id IS DISTINCT FROM prelock.policy_revision_id OR eff.roll_mode IS DISTINCT FROM prelock.policy_mode THEN
+    RAISE EXCEPTION 'D1 Enrollment move roll policy changed after prelock'; END IF;
+  summary:=pg_catalog.jsonb_build_object('enrollment_id',eff.enrollment_id,'source_enrollment_id',p_source_enrollment_id,
+    'roll_allocation_id',eff.roll_allocation_id,'numeric_value',eff.numeric_value,'roll_mode',eff.roll_mode,'student_version',eff.student_version,
+    'capacity_overridden',over_cap,'capacity_override_id',override_id,'source_section_offering_id',p_expected_source_section_id,
+    'destination_section_offering_id',p_destination_section_id,'source_class_offering_id',eff.source_class_offering_id,
+    'destination_class_offering_id',eff.destination_class_offering_id,'source_campus_id',eff.source_campus_id,'destination_campus_id',eff.destination_campus_id,
+    'source_academic_year_id',eff.source_year_id,'destination_academic_year_id',eff.destination_year_id,'entry_kind',p_entry_kind);
+  receipt:=app_private.d1_enrollment_move_receipt('student.enrollment.move',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    p_expected_student_version,NULL,NULL,'SUCCEEDED','D1_ENROLLMENT_MOVE',eff.enrollment_id,summary,NULL);
+  IF over_cap THEN
+    INSERT INTO app_private.enrollment_capacity_overrides(id,enrollment_id,class_overridden,section_overridden,class_limit_at_decision,
+      section_limit_at_decision,class_count_at_decision,section_count_at_decision,reason,command_receipt_id,created_by)
+    VALUES (override_id,eff.enrollment_id,cap.class_full,cap.section_full,locked.destination_class_capacity,locked.destination_section_capacity,
+      cap.class_count,cap.section_count,override_reason,receipt,ctx.actor_id);
+  END IF;
+  PERFORM app_private.d1_enrollment_move_audit(ctx.actor_id,'DIRECT',p_student_id,p_source_enrollment_id,eff.enrollment_id,receipt,NULL,
+    eff.student_version,p_expected_source_section_id,p_destination_section_id,p_entry_kind,p_effective_from,over_cap,'SUCCEEDED',NULL,corr);
+  PERFORM app_private.d1_enrollment_move_events(ctx.actor_id,p_student_id,p_source_enrollment_id,eff.enrollment_id,eff.roll_allocation_id,override_id,receipt,
+    p_expected_source_section_id,p_destination_section_id,eff.source_class_offering_id,eff.destination_class_offering_id,eff.source_campus_id,
+    eff.destination_campus_id,eff.source_year_id,eff.destination_year_id,p_entry_kind,p_effective_from,eff.numeric_value,eff.policy_revision_id,
+    eff.roll_mode,cap.class_full,cap.section_full,corr);
+  RETURN QUERY SELECT eff.enrollment_id,eff.roll_allocation_id,eff.numeric_value,eff.roll_mode,eff.student_version,over_cap;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_move_student_enrollment(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_move_student_enrollment(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_student_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_submit_student_enrollment_move(
+  p_student_id uuid,p_expected_student_version bigint,p_source_enrollment_id uuid,p_expected_source_section_id uuid,
+  p_expected_source_effective_from date,p_destination_section_id uuid,p_entry_kind text,p_effective_from date,p_reason text,
+  p_capacity_override_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy_row record; prelock record; locked record; cap record; template_row record; first_step uuid; candidate_count bigint;
+  request_id uuid:=pg_catalog.gen_random_uuid(); final_version bigint; receipt uuid; override_reason text:=NULLIF(pg_catalog.btrim(p_capacity_override_reason),''); over_cap boolean;
+  old_snapshot jsonb; requested jsonb;
+BEGIN
+  IF p_student_id IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1 OR p_source_enrollment_id IS NULL
+     OR p_expected_source_section_id IS NULL OR p_expected_source_effective_from IS NULL OR p_destination_section_id IS NULL
+     OR p_entry_kind NOT IN ('PROMOTION','REPEAT','CLASS_CHANGE','SECTION_CHANGE','CAMPUS_TRANSFER') OR p_effective_from IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN RAISE EXCEPTION 'D1 Enrollment move request intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_enrollment_move_command_context('request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_source_enrollment_id,p_expected_source_section_id,
+      p_expected_source_effective_from,p_destination_section_id,p_entry_kind,p_effective_from,p_reason,override_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF NOT app_private.d1_enrollment_move_authorized(ctx.actor_id,'student.enrollment.move',p_expected_source_section_id,p_destination_section_id,NULL)
+    THEN RAISE EXCEPTION 'D1 Enrollment move request authority denied'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_enrollment_move_policy(p_expected_source_section_id,p_destination_section_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' THEN RAISE EXCEPTION 'D1 Enrollment move policy selects direct command'; END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL OR ctx.result_summary->>'state'<>'PENDING' THEN
+      RAISE EXCEPTION 'D1 Enrollment move submit receipt invalid'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint; RETURN; END IF;
+  SELECT * INTO prelock FROM app_private.d1_enrollment_place_prelock_roll(p_destination_section_id,p_effective_from);
+  IF prelock.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment move request roll prelock denied: %',prelock.error_code; END IF;
+  SELECT * INTO locked FROM app_private.d1_enrollment_move_lock_context(p_student_id,p_expected_student_version,p_source_enrollment_id,
+    p_expected_source_section_id,p_expected_source_effective_from,p_destination_section_id,p_entry_kind,p_effective_from);
+  IF locked.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment move request denied: %',locked.error_code; END IF;
+  SELECT * INTO cap FROM app_private.d1_enrollment_move_capacity(p_source_enrollment_id,locked.destination_class_offering_id,p_destination_section_id,
+    p_effective_from,locked.destination_class_capacity,locked.destination_section_capacity);
+  over_cap:=cap.class_full OR cap.section_full;
+  IF over_cap AND (override_reason IS NULL OR NOT app_private.d1_enrollment_move_authorized(ctx.actor_id,'student.capacity_override',p_expected_source_section_id,p_destination_section_id,NULL))
+    THEN RAISE EXCEPTION 'D1 Enrollment move request capacity override denied'; END IF;
+  IF NOT over_cap AND override_reason IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment move request override reason supplied without full capacity'; END IF;
+  old_snapshot:=pg_catalog.jsonb_build_object('student_id',p_student_id,'source_enrollment_id',p_source_enrollment_id,
+    'source_section_offering_id',p_expected_source_section_id,'source_effective_from',p_expected_source_effective_from);
+  requested:=pg_catalog.jsonb_build_object('destination_section_offering_id',p_destination_section_id,'entry_kind',p_entry_kind,
+    'effective_from',p_effective_from,'capacity_override_reason',override_reason,'capacity_override_required',over_cap);
+  INSERT INTO app_private.approval_requests(id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
+    expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (request_id,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,NULL,p_student_id,p_expected_student_version,p_reason,old_snapshot,requested,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp() WHERE id=request_id;
+  FOR template_row IN SELECT t.id,t.step_number,t.required_reviews FROM app_private.approval_step_templates t
+      WHERE t.policy_id=policy_row.policy_id ORDER BY t.step_number LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps(id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step ELSE pg_catalog.gen_random_uuid() END,request_id,policy_row.policy_id,
+      template_row.id,template_row.step_number,template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Enrollment move policy has no first step'; END IF;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=request_id RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+  SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id FROM app_private.d1_enrollment_move_candidates(request_id,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT;
+  IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Enrollment move step has no reviewer'; END IF;
+  receipt:=app_private.d1_enrollment_move_receipt('request.submit',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    p_expected_student_version,request_id,NULL,'SUCCEEDED','D1_ENROLLMENT_MOVE_REQUEST',request_id,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),NULL);
+  PERFORM app_private.d1_enrollment_move_audit(ctx.actor_id,'SUBMIT',p_student_id,p_source_enrollment_id,NULL,receipt,request_id,
+    p_expected_student_version,p_expected_source_section_id,p_destination_section_id,p_entry_kind,p_effective_from,over_cap,'SUCCEEDED',NULL,pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT request_id,final_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_submit_student_enrollment_move(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_student_enrollment_move(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
