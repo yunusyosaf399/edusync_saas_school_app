@@ -1,0 +1,126 @@
+-- D1C1B effect 23/36: Student status effect + evidence helpers.
+-- Static non-executable continuation only.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_student_status_effect(
+  p_actor uuid,p_student uuid,p_expected_version bigint,p_expected_status text,p_expected_transition uuid,
+  p_new_status text,p_effective_on date,p_reason text
+) RETURNS TABLE(transition_id uuid,sequence_number bigint,student_version bigint,ended_enrollment_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; c record; new_id uuid:=pg_catalog.gen_random_uuid(); next_seq bigint; new_version bigint;
+  close_enrollment boolean:=p_new_status IN ('WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED');
+  end_reason text;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+  THEN RAISE EXCEPTION 'D1 Student status effect intent invalid'; END IF;
+  SELECT * INTO pre FROM app_private.d1_student_status_preflight(p_student,p_expected_version,p_expected_status,p_expected_transition,p_new_status,p_effective_on);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Student status effect denied: %',pre.error_code; END IF;
+  SELECT * INTO c FROM app_private.d1_student_status_lock_context(p_student,p_expected_version);
+  IF c.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Student status source changed: %',c.error_code; END IF;
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO next_seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
+  IF close_enrollment THEN
+    end_reason:='STATUS_'||p_new_status;
+    UPDATE app_private.roll_allocations r SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+      WHERE r.student_id=p_student AND r.enrollment_id=c.enrollment_id AND r.effective_until IS NULL;
+    UPDATE app_private.enrollments e SET placement_state='ENDED',effective_until=p_effective_on,end_reason=end_reason,
+      ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+      WHERE e.id=c.enrollment_id AND e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE' AND e.effective_until IS NULL;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Student status placement changed'; END IF;
+  END IF;
+  INSERT INTO app_private.student_status_transitions
+    (id,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id)
+  VALUES (new_id,p_actor,p_student,p_expected_status,p_new_status,p_effective_on,next_seq,pg_catalog.btrim(p_reason),NULL,NULL);
+  UPDATE app_private.students SET current_status=p_new_status,row_version=row_version+1,updated_at=pg_catalog.statement_timestamp()
+    WHERE id=p_student AND row_version=p_expected_version AND current_status=p_expected_status RETURNING row_version INTO new_version;
+  IF new_version IS NULL THEN RAISE EXCEPTION 'D1 Student status projection changed'; END IF;
+  RETURN QUERY SELECT new_id,next_seq,new_version,CASE WHEN close_enrollment THEN c.enrollment_id ELSE NULL::uuid END;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_effect(uuid,uuid,bigint,text,uuid,text,date,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_effect(uuid,uuid,bigint,text,uuid,text,date,text) TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_student_status_receipt(
+  p_phase text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_expected bigint,p_request uuid,p_request_version bigint,
+  p_state text,p_result_kind text,p_result_ref uuid,p_summary jsonb,p_error text
+) RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_phase NOT IN ('student.status.change','request.submit','request.review','request.apply') OR p_actor IS NULL OR p_operation IS NULL
+     OR p_key IS NULL OR p_hash IS NULL OR p_state NOT IN ('SUCCEEDED','REJECTED') OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (p_state='REJECTED' AND (p_phase<>'request.apply' OR p_error IS NULL OR p_result_ref IS NOT NULL))
+  THEN RAISE EXCEPTION 'D1 Student status receipt intent denied'; END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,expected_target_version,
+     request_id,expected_request_version,state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,p_phase,p_key,p_hash,1,p_expected,p_request,p_request_version,p_state,p_result_kind,p_result_ref,p_summary,
+    p_error,pg_catalog.statement_timestamp(),p_actor); RETURN rid;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+  TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_status_audit(
+  p_actor uuid,p_phase text,p_student uuid,p_transition uuid,p_receipt uuid,p_request uuid,p_target_version bigint,
+  p_old_status text,p_new_status text,p_effective_on date,p_state text,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_student IS NULL OR p_receipt IS NULL OR p_correlation IS NULL THEN
+    RAISE EXCEPTION 'D1 Student status audit intent denied'; END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+     command_receipt_id,approval_request_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',CASE WHEN p_state IN ('INVALIDATED','REJECTED') THEN 'REJECTED' ELSE 'SUCCEEDED' END,
+    pg_catalog.jsonb_build_object('operation','student.status.change','phase',p_phase),p_target_version,
+    'student.status.change','STUDENT',p_student,p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('state',p_state,'transition_id',p_transition,'previous_status',p_old_status,
+      'new_status',p_new_status,'effective_on',p_effective_on),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_audit(uuid,text,uuid,uuid,uuid,uuid,bigint,text,text,date,text,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_audit(uuid,text,uuid,uuid,uuid,uuid,bigint,text,text,date,text,uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_status_event(
+  p_actor uuid,p_student uuid,p_transition uuid,p_receipt uuid,p_student_version bigint,p_old_status text,p_new_status text,
+  p_effective_on date,p_sequence bigint,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('student.status_changed','STUDENT',p_student,p_student_version,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('student_id',p_student,'transition_id',p_transition,'previous_status',p_old_status,
+      'new_status',p_new_status,'effective_on',p_effective_on,'sequence_number',p_sequence),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_event(uuid,uuid,uuid,uuid,bigint,text,text,date,bigint,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_event(uuid,uuid,uuid,uuid,bigint,text,text,date,bigint,uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_student_status_candidates(p_request uuid,p_step uuid)
+RETURNS TABLE(candidate_principal_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; templ record; requester_person uuid;
+BEGIN
+  SELECT q.* INTO req FROM app_private.approval_requests q JOIN app_private.operation_contracts o ON o.id=q.operation_id
+   WHERE q.id=p_request AND o.code='student.status.change';
+  SELECT t.* INTO templ FROM app_private.approval_request_steps s JOIN app_private.approval_step_templates t ON t.id=s.template_id
+   WHERE s.id=p_step AND s.request_id=p_request;
+  IF req.id IS NULL OR templ.id IS NULL OR templ.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE' THEN RETURN; END IF;
+  SELECT p.person_id INTO requester_person FROM app_private.principals p WHERE p.id=req.requester_id;
+  RETURN QUERY SELECT p.id FROM app_private.principals p WHERE p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL
+    AND p.id<>req.requester_id AND p.person_id<>requester_person
+    AND app_private.d1_student_status_authorized(p.id,'student.status.approve',req.target_ref,templ.reviewer_role_id) ORDER BY p.id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_candidates(uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_candidates(uuid,uuid) TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
