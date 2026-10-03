@@ -1,0 +1,93 @@
+-- Effect 30 receipt-shape NULL hardening.
+-- Exact key/type checks avoid SQL three-valued logic accepting a missing state/result key.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE OR REPLACE FUNCTION app_private.d1_family_relationship_receipt(
+ p_command_kind text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_expected_student bigint,
+ p_request uuid,p_expected_request bigint,p_state text,p_result_kind text,p_result uuid,p_summary jsonb,p_error text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid(); summary_keys bigint;
+  base_keys text[]:=ARRAY['relationship_id','source_relationship_id','action','effective_from','effective_until',
+    'student_version','family_version','primary_context_id','access_closed_count'];
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_operation IS NULL OR NOT EXISTS (
+       SELECT 1 FROM app_private.operation_contracts o
+        WHERE o.id=p_operation AND o.code='family.relationship.change' AND o.contract_version=1
+          AND o.handler_key='family.relationship.change' AND o.enabled)
+     OR p_command_kind NOT IN ('family.relationship.change','request.submit','request.review','request.apply')
+     OR p_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_key))=0 OR p_hash IS NULL
+     OR p_expected_student IS NULL OR p_expected_student<1
+     OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR p_state NOT IN ('SUCCEEDED','REJECTED') THEN
+    RAISE EXCEPTION 'D1 Family relationship receipt intent denied';
+  END IF;
+  SELECT count(*) INTO summary_keys FROM pg_catalog.jsonb_object_keys(p_summary);
+
+  IF p_command_kind='family.relationship.change' THEN
+    IF p_request IS NOT NULL OR p_expected_request IS NOT NULL OR p_state IS DISTINCT FROM 'SUCCEEDED'
+       OR p_result_kind IS DISTINCT FROM 'D1_FAMILY_RELATIONSHIP_CHANGE' OR p_result IS NULL OR p_error IS NOT NULL
+       OR summary_keys<>9 OR NOT (p_summary ?& base_keys)
+       OR p_summary->>'relationship_id' IS DISTINCT FROM p_result::text
+       OR p_summary->>'action' IS NULL OR p_summary->>'action' NOT IN ('ADD','END','CORRECT')
+       OR pg_catalog.jsonb_typeof(p_summary->'student_version')<>'number'
+       OR pg_catalog.jsonb_typeof(p_summary->'family_version')<>'number'
+       OR pg_catalog.jsonb_typeof(p_summary->'access_closed_count')<>'number' THEN
+      RAISE EXCEPTION 'D1 Family relationship direct receipt shape denied';
+    END IF;
+  ELSIF p_command_kind='request.submit' THEN
+    IF p_request IS NULL OR p_expected_request IS NOT NULL OR p_state IS DISTINCT FROM 'SUCCEEDED'
+       OR p_result_kind IS DISTINCT FROM 'D1_FAMILY_RELATIONSHIP_REQUEST'
+       OR p_result IS DISTINCT FROM p_request OR p_error IS NOT NULL
+       OR summary_keys<>2 OR NOT (p_summary ?& ARRAY['request_version','state'])
+       OR pg_catalog.jsonb_typeof(p_summary->'request_version')<>'number'
+       OR pg_catalog.jsonb_typeof(p_summary->'state')<>'string'
+       OR p_summary->>'state' IS DISTINCT FROM 'PENDING' THEN
+      RAISE EXCEPTION 'D1 Family relationship submit receipt shape denied';
+    END IF;
+  ELSIF p_command_kind='request.review' THEN
+    IF p_request IS NULL OR p_expected_request IS NULL OR p_expected_request<1 OR p_state IS DISTINCT FROM 'SUCCEEDED'
+       OR p_result_kind IS DISTINCT FROM 'D1_FAMILY_RELATIONSHIP_REVIEW'
+       OR p_result IS DISTINCT FROM p_request OR p_error IS NOT NULL
+       OR summary_keys<>2 OR NOT (p_summary ?& ARRAY['request_version','state'])
+       OR pg_catalog.jsonb_typeof(p_summary->'request_version')<>'number'
+       OR pg_catalog.jsonb_typeof(p_summary->'state')<>'string'
+       OR p_summary->>'state' IS NULL OR p_summary->>'state' NOT IN ('PENDING','APPROVED','REJECTED') THEN
+      RAISE EXCEPTION 'D1 Family relationship review receipt shape denied';
+    END IF;
+  ELSIF p_state='SUCCEEDED' THEN
+    IF p_request IS NULL OR p_expected_request IS NULL OR p_expected_request<1
+       OR p_result_kind IS DISTINCT FROM 'D1_FAMILY_RELATIONSHIP_CHANGE' OR p_result IS NULL OR p_error IS NOT NULL
+       OR summary_keys<>11 OR NOT (p_summary ?& (base_keys||ARRAY['request_version','state']))
+       OR p_summary->>'relationship_id' IS DISTINCT FROM p_result::text
+       OR p_summary->>'action' IS NULL OR p_summary->>'action' NOT IN ('ADD','END','CORRECT')
+       OR pg_catalog.jsonb_typeof(p_summary->'student_version')<>'number'
+       OR pg_catalog.jsonb_typeof(p_summary->'family_version')<>'number'
+       OR pg_catalog.jsonb_typeof(p_summary->'access_closed_count')<>'number'
+       OR pg_catalog.jsonb_typeof(p_summary->'request_version')<>'number'
+       OR pg_catalog.jsonb_typeof(p_summary->'state')<>'string'
+       OR p_summary->>'state' IS DISTINCT FROM 'EXECUTED' THEN
+      RAISE EXCEPTION 'D1 Family relationship apply receipt shape denied';
+    END IF;
+  ELSE
+    IF p_request IS NULL OR p_expected_request IS NULL OR p_expected_request<1
+       OR p_result_kind IS NOT NULL OR p_result IS NOT NULL
+       OR p_error IS NULL OR pg_catalog.length(pg_catalog.btrim(p_error))=0
+       OR summary_keys<>2 OR NOT (p_summary ?& ARRAY['request_version','state'])
+       OR pg_catalog.jsonb_typeof(p_summary->'request_version')<>'number'
+       OR pg_catalog.jsonb_typeof(p_summary->'state')<>'string'
+       OR p_summary->>'state' IS DISTINCT FROM 'INVALIDATED' THEN
+      RAISE EXCEPTION 'D1 Family relationship invalidation receipt shape denied';
+    END IF;
+  END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+     expected_target_version,request_id,expected_request_version,state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,p_command_kind,p_key,p_hash,1,p_expected_student,p_request,p_expected_request,p_state,
+    p_result_kind,p_result,p_summary,p_error,pg_catalog.statement_timestamp(),p_actor);
+  RETURN rid;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
