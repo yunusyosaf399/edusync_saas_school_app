@@ -1,0 +1,32 @@
+-- D1C1B effect 22/36: typed Student Special request read.
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+CREATE FUNCTION app.d1_read_student_special_request(p_request_id uuid)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,student_id uuid,
+  source_disability_indicator boolean,source_orphan_indicator boolean,source_blood_group_code text,
+  requested_disability_indicator boolean,requested_orphan_indicator boolean,requested_blood_group_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; participant text; req record;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1 Student special request unavailable'; END IF;
+  participant:=app_private.d1_student_special_participant(p_request_id,actor);
+  IF participant IS NULL THEN RAISE EXCEPTION 'D1 Student special request unavailable'; END IF;
+  SELECT r.id,r.row_version,r.state,r.target_ref,r.old_snapshot,r.requested_payload INTO req
+    FROM app_private.approval_requests r JOIN app_private.operation_contracts o ON o.id=r.operation_id
+   WHERE r.id=p_request_id AND o.code='student.special.correct';
+  IF NOT FOUND OR app_private.d1_student_special_request_payload_valid(req.old_snapshot,req.requested_payload) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Student special request unavailable'; END IF;
+  RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,
+    CASE WHEN req.old_snapshot->'disability_indicator'='null'::jsonb THEN NULL ELSE (req.old_snapshot->>'disability_indicator')::boolean END,
+    CASE WHEN req.old_snapshot->'orphan_indicator'='null'::jsonb THEN NULL ELSE (req.old_snapshot->>'orphan_indicator')::boolean END,
+    NULLIF(req.old_snapshot->>'blood_group_code',''),
+    CASE WHEN req.requested_payload->'disability_indicator'='null'::jsonb THEN NULL ELSE (req.requested_payload->>'disability_indicator')::boolean END,
+    CASE WHEN req.requested_payload->'orphan_indicator'='null'::jsonb THEN NULL ELSE (req.requested_payload->>'orphan_indicator')::boolean END,
+    NULLIF(req.requested_payload->>'blood_group_code','');
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_read_student_special_request(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_student_special_request(uuid) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
