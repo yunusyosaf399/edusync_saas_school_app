@@ -1,0 +1,100 @@
+-- Effect 30 typed domain effect. No portal access is created here.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app_private.d1_family_relationship_effect(
+  p_actor uuid,p_student uuid,p_expected_student_version bigint,p_family uuid,p_expected_family_version bigint,
+  p_action text,p_source uuid,p_adult_person uuid,p_relationship_kind text,p_display_name text,
+  p_relationship_contact text,p_effective_on date,p_reason text,p_primary_replacement uuid
+) RETURNS TABLE(relationship_id uuid,source_relationship_id uuid,action text,effective_from date,effective_until date,
+  student_version bigint,family_version bigint,primary_context_id uuid,access_closed_count bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; src app_private.family_relationships%ROWTYPE; rel_id uuid:=pg_catalog.gen_random_uuid();
+  ctx app_private.student_primary_family_contexts%ROWTYPE; ctx_new uuid; ctx_target uuid;
+  a app_private.family_student_access%ROWTYPE; first_gap date; closed_count bigint:=0; sver bigint; fver bigint;
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id() THEN
+    RAISE EXCEPTION 'D1 Family relationship actor denied';
+  END IF;
+  SELECT * INTO pre FROM app_private.d1_family_relationship_preflight(
+    p_student,p_expected_student_version,p_family,p_expected_family_version,p_action,p_source,p_adult_person,
+    p_relationship_kind,p_display_name,p_relationship_contact,p_effective_on,p_reason,p_primary_replacement);
+  IF pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family relationship preflight denied: %',pre.error_code;
+  END IF;
+  IF p_source IS NOT NULL THEN
+    SELECT * INTO src FROM app_private.family_relationships WHERE id=p_source FOR UPDATE;
+  END IF;
+  IF p_action IN ('END','CORRECT') THEN
+    UPDATE app_private.family_relationships SET effective_until=p_effective_on,
+      ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+     WHERE id=p_source AND student_id=p_student AND family_id=p_family AND effective_until IS NULL;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family relationship source changed'; END IF;
+  END IF;
+  IF p_action IN ('ADD','CORRECT') THEN
+    INSERT INTO app_private.family_relationships
+      (id,family_id,student_id,adult_person_id,relationship_kind,display_name,relationship_contact,
+       effective_from,reason,supersedes_id,created_by)
+    VALUES (rel_id,p_family,p_student,p_adult_person,p_relationship_kind,
+      CASE WHEN p_display_name IS NULL THEN NULL ELSE pg_catalog.btrim(p_display_name) END,
+      CASE WHEN p_relationship_contact IS NULL THEN NULL ELSE pg_catalog.btrim(p_relationship_contact) END,
+      p_effective_on,pg_catalog.btrim(p_reason),CASE WHEN p_action='CORRECT' THEN p_source ELSE NULL END,p_actor);
+  ELSE
+    rel_id:=p_source;
+  END IF;
+
+  IF p_action IN ('END','CORRECT') THEN
+    SELECT c.* INTO ctx FROM app_private.student_primary_family_contexts c
+     WHERE c.student_id=p_student AND c.family_relationship_id=p_source
+       AND c.effective_from<p_effective_on AND (c.effective_until IS NULL OR p_effective_on<c.effective_until)
+     ORDER BY c.effective_from DESC,c.created_at DESC,c.id DESC LIMIT 1 FOR UPDATE;
+    IF ctx.id IS NOT NULL THEN
+      UPDATE app_private.student_primary_family_contexts SET effective_until=p_effective_on,
+        ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor WHERE id=ctx.id;
+      ctx_target:=CASE WHEN p_action='CORRECT' THEN rel_id ELSE p_primary_replacement END;
+      IF ctx_target IS NOT NULL THEN
+        ctx_new:=pg_catalog.gen_random_uuid();
+        INSERT INTO app_private.student_primary_family_contexts
+          (id,student_id,family_relationship_id,effective_from,effective_until,reason,supersedes_id,created_by,ended_at,ended_by)
+        VALUES (ctx_new,p_student,ctx_target,p_effective_on,ctx.effective_until,pg_catalog.btrim(p_reason),ctx.id,p_actor,
+          CASE WHEN ctx.effective_until IS NULL THEN NULL ELSE pg_catalog.statement_timestamp() END,
+          CASE WHEN ctx.effective_until IS NULL THEN NULL ELSE p_actor END);
+      END IF;
+    END IF;
+  END IF;
+
+  IF p_action='END' THEN
+    FOR a IN SELECT x.* FROM app_private.family_student_access x
+      WHERE x.family_id=p_family AND x.student_id=p_student
+        AND (x.effective_until IS NULL OR p_effective_on<x.effective_until)
+      ORDER BY x.effective_from,x.id FOR UPDATE
+    LOOP
+      first_gap:=app_private.d1_family_relationship_access_first_gap(
+        p_family,p_student,p_source,pg_catalog.greatest(a.effective_from,p_effective_on),a.effective_until);
+      IF first_gap IS NOT NULL THEN
+        IF first_gap<=a.effective_from THEN
+          RAISE EXCEPTION 'D1 Family relationship dependent access cannot be closed safely';
+        END IF;
+        UPDATE app_private.family_student_access SET effective_until=first_gap,
+          ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor WHERE id=a.id;
+        closed_count:=closed_count+1;
+      END IF;
+    END LOOP;
+  END IF;
+
+  UPDATE app_private.students SET updated_at=pg_catalog.statement_timestamp()
+    WHERE id=p_student RETURNING row_version INTO sver;
+  UPDATE app_private.families SET updated_at=pg_catalog.statement_timestamp()
+    WHERE id=p_family RETURNING row_version INTO fver;
+
+  RETURN QUERY SELECT rel_id,p_source,p_action,
+    CASE WHEN p_action='END' THEN src.effective_from ELSE p_effective_on END,
+    CASE WHEN p_action='END' THEN p_effective_on ELSE NULL::date END,
+    sver,fver,ctx_new,closed_count;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_relationship_effect(uuid,uuid,bigint,uuid,bigint,text,uuid,uuid,text,text,text,date,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_relationship_effect(uuid,uuid,bigint,uuid,bigint,text,uuid,uuid,text,text,text,date,text,uuid)
+  TO schoolos_family_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
