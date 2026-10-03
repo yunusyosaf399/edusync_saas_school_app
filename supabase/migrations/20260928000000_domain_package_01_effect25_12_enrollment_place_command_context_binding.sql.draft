@@ -1,0 +1,56 @@
+-- Effect 25 command binding correction: use the fixed placement-specific receipt context.
+
+GRANT CREATE ON SCHEMA app TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app.d1_place_student_enrollment(
+  p_student_id uuid,p_expected_student_version bigint,p_section_offering_id uuid,p_entry_kind text,p_effective_from date,
+  p_predecessor_id uuid,p_reason text,p_capacity_override_reason text,p_idempotency_key text
+) RETURNS TABLE(enrollment_id uuid,roll_allocation_id uuid,numeric_value bigint,roll_mode text,student_version bigint,
+  status_transition_id uuid,resulting_status text,capacity_overridden boolean)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; prelock record; locked record; cap record; eff record; receipt uuid; corr uuid:=pg_catalog.gen_random_uuid(); summary jsonb;
+  over_cap boolean; override_reason text:=NULLIF(pg_catalog.btrim(p_capacity_override_reason),'');
+BEGIN
+  IF p_student_id IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1 OR p_section_offering_id IS NULL
+     OR p_entry_kind NOT IN ('INITIAL','PROMOTION','REPEAT','REENROLLMENT') OR p_effective_from IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN RAISE EXCEPTION 'D1 Enrollment placement intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_enrollment_place_command_context(p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_section_offering_id,p_entry_kind,p_effective_from,p_predecessor_id,p_reason,override_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF NOT app_private.d1_enrollment_place_authorized(ctx.actor_id,'student.enrollment.place',p_section_offering_id) THEN RAISE EXCEPTION 'D1 Enrollment placement authority denied'; END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR app_private.d1_enrollment_place_result_matches(ctx.actor_id,p_student_id,p_section_offering_id,p_entry_kind,p_effective_from,p_predecessor_id,
+            ctx.receipt_id,ctx.result_ref,ctx.result_summary) IS DISTINCT FROM true
+    THEN RAISE EXCEPTION 'D1 Enrollment placement receipt is not replayable'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'roll_allocation_id')::uuid,(ctx.result_summary->>'numeric_value')::bigint,
+      ctx.result_summary->>'roll_mode',(ctx.result_summary->>'student_version')::bigint,NULLIF(ctx.result_summary->>'status_transition_id','')::uuid,
+      ctx.result_summary->>'resulting_status',(ctx.result_summary->>'capacity_overridden')::boolean; RETURN;
+  END IF;
+  SELECT * INTO prelock FROM app_private.d1_enrollment_place_prelock_roll(p_section_offering_id,p_effective_from);
+  IF prelock.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment roll prelock denied: %',prelock.error_code; END IF;
+  SELECT * INTO locked FROM app_private.d1_enrollment_place_lock_context(p_student_id,p_expected_student_version,p_section_offering_id,p_entry_kind,p_effective_from,p_predecessor_id);
+  IF locked.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment placement denied: %',locked.error_code; END IF;
+  IF locked.school_id IS DISTINCT FROM prelock.school_id OR locked.class_offering_id IS DISTINCT FROM prelock.class_offering_id THEN RAISE EXCEPTION 'D1 Enrollment destination ancestry changed after roll prelock'; END IF;
+  SELECT * INTO cap FROM app_private.d1_enrollment_place_capacity(locked.class_offering_id,p_section_offering_id,p_effective_from);
+  IF cap.class_limit IS NULL THEN RAISE EXCEPTION 'D1 Enrollment capacity unavailable'; END IF;
+  over_cap:=cap.class_full OR cap.section_full;
+  IF over_cap THEN
+    IF override_reason IS NULL OR NOT app_private.d1_enrollment_place_authorized(ctx.actor_id,'student.capacity_override',p_section_offering_id) THEN RAISE EXCEPTION 'D1 Enrollment capacity override denied'; END IF;
+  ELSIF override_reason IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment override reason supplied without full capacity'; END IF;
+  SELECT * INTO eff FROM app_private.d1_enrollment_place_effect(ctx.actor_id,p_student_id,p_expected_student_version,p_section_offering_id,p_entry_kind,p_effective_from,p_predecessor_id,p_reason);
+  IF eff.policy_revision_id IS DISTINCT FROM prelock.policy_revision_id OR eff.policy_mode IS DISTINCT FROM prelock.policy_mode THEN RAISE EXCEPTION 'D1 Enrollment roll policy changed after prelock'; END IF;
+  summary:=pg_catalog.jsonb_build_object('enrollment_id',eff.enrollment_id,'roll_allocation_id',eff.roll_allocation_id,'numeric_value',eff.numeric_value,
+    'roll_mode',eff.policy_mode,'student_version',eff.student_version,'status_transition_id',eff.status_transition_id,'resulting_status',eff.resulting_status,
+    'capacity_overridden',over_cap,'section_offering_id',p_section_offering_id,'class_offering_id',eff.class_offering_id,'campus_id',eff.campus_id,
+    'academic_year_id',eff.academic_year_id,'entry_kind',p_entry_kind,'effective_from',p_effective_from,'predecessor_id',p_predecessor_id);
+  receipt:=app_private.d1_enrollment_place_receipt(ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,p_expected_student_version,eff.enrollment_id,summary);
+  IF over_cap THEN INSERT INTO app_private.enrollment_capacity_overrides(enrollment_id,class_overridden,section_overridden,class_limit_at_decision,
+    section_limit_at_decision,class_count_at_decision,section_count_at_decision,reason,command_receipt_id,created_by)
+    VALUES (eff.enrollment_id,cap.class_full,cap.section_full,cap.class_limit,cap.section_limit,cap.class_count,cap.section_count,override_reason,receipt,ctx.actor_id); END IF;
+  PERFORM app_private.d1_enrollment_place_audit(ctx.actor_id,p_student_id,eff.enrollment_id,eff.roll_allocation_id,receipt,eff.student_version,p_section_offering_id,p_entry_kind,p_effective_from,over_cap,eff.status_transition_id IS NOT NULL,eff.status_transition_id,corr);
+  PERFORM app_private.d1_enrollment_place_events(ctx.actor_id,p_student_id,eff.enrollment_id,eff.roll_allocation_id,receipt,eff.student_version,p_section_offering_id,eff.class_offering_id,eff.campus_id,eff.academic_year_id,p_entry_kind,p_effective_from,eff.numeric_value,eff.policy_revision_id,eff.policy_mode,over_cap,cap.class_full,cap.section_full,eff.status_transition_id,eff.previous_status,eff.resulting_status,corr);
+  RETURN QUERY SELECT eff.enrollment_id,eff.roll_allocation_id,eff.numeric_value,eff.policy_mode,eff.student_version,eff.status_transition_id,eff.resulting_status,over_cap;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_student_executor;
