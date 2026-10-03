@@ -1,0 +1,97 @@
+-- Effect 23 scope hardening: exact current principal/role chain for historical scope
+-- and durable direct replay scope independent of whether placement was ended.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_authorized_enrollment(
+  p_principal uuid,p_permission text,p_student uuid,p_enrollment uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); scope_row record;
+BEGIN
+  IF p_principal IS NULL OR p_student IS NULL OR p_permission NOT IN ('student.status.change','student.status.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a JOIN app_private.roles r ON r.id=a.role_id
+     WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND r.state='ACTIVE' AND NOT r.family_only AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  IF p_enrollment IS NOT NULL THEN
+    SELECT so.id AS section_id,co.id AS class_id,co.campus_id INTO scope_row
+      FROM app_private.enrollments e JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.id=p_enrollment AND e.student_id=p_student AND e.placement_kind='PRIMARY';
+    IF scope_row.section_id IS NULL THEN RETURN false; END IF;
+  END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id JOIN app_private.roles r ON r.id=sc.role_id
+    WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+      AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key AND c.enabled
+      AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+      AND (p_reviewer_role IS NULL OR sc.role_id=p_reviewer_role)
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until) AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+      AND sc.resolver_key='DIRECT'
+      AND ((p_enrollment IS NULL AND sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+        OR (p_enrollment IS NOT NULL AND sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+        OR (p_enrollment IS NOT NULL AND sc.scope_kind='CAMPUS' AND sc.campus_id=scope_row.campus_id)
+        OR (p_enrollment IS NOT NULL AND sc.scope_kind='CLASS' AND sc.class_offering_id=scope_row.class_id)
+        OR (p_enrollment IS NOT NULL AND sc.scope_kind='SECTION' AND sc.section_offering_id=scope_row.section_id)));
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app.d1_change_student_status(
+  p_student_id uuid,p_expected_student_version bigint,p_new_status text,p_effective_on date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(transition_id uuid,sequence_number bigint,student_version bigint,ended_enrollment_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy_row record; locked record; pre record; eff record; receipt uuid; corr uuid:=pg_catalog.gen_random_uuid(); scope_enrollment uuid;
+BEGIN
+  IF p_student_id IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1 OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+  THEN RAISE EXCEPTION 'D1 Student status change intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_student_status_command_context('student.status.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_new_status,p_effective_on,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF ctx.receipt_id IS NOT NULL THEN
+    BEGIN scope_enrollment:=NULLIF(ctx.result_summary->>'scope_enrollment_id','')::uuid; EXCEPTION WHEN invalid_text_representation THEN
+      RAISE EXCEPTION 'D1 Student status replay receipt invalid'; END;
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR NOT (ctx.result_summary ?& ARRAY['transition_id','sequence_number','student_version','ended_enrollment_id','scope_enrollment_id'])
+       OR NOT app_private.d1_student_status_authorized_enrollment(ctx.actor_id,'student.status.change',p_student_id,scope_enrollment,NULL)
+    THEN RAISE EXCEPTION 'D1 Student status replay receipt invalid or authority revoked'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'sequence_number')::bigint,
+      (ctx.result_summary->>'student_version')::bigint,NULLIF(ctx.result_summary->>'ended_enrollment_id','')::uuid; RETURN;
+  END IF;
+  IF NOT app_private.d1_student_status_authorized(ctx.actor_id,'student.status.change',p_student_id,NULL) THEN RAISE EXCEPTION 'D1 Student status authority denied'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_student_status_policy(p_student_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'DIRECT' THEN RAISE EXCEPTION 'D1 Student status requires approval request'; END IF;
+  SELECT * INTO locked FROM app_private.d1_student_status_lock_context(p_student_id,p_expected_student_version);
+  IF locked.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Student status source unavailable: %',locked.error_code; END IF;
+  SELECT * INTO pre FROM app_private.d1_student_status_preflight(p_student_id,p_expected_student_version,locked.current_status,locked.last_transition_id,p_new_status,p_effective_on);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Student status preflight denied: %',pre.error_code; END IF;
+  scope_enrollment:=locked.enrollment_id;
+  SELECT * INTO eff FROM app_private.d1_student_status_effect(ctx.actor_id,p_student_id,p_expected_student_version,
+    locked.current_status,locked.last_transition_id,p_new_status,p_effective_on,p_reason);
+  receipt:=app_private.d1_student_status_receipt('student.status.change',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    p_expected_student_version,NULL,NULL,'SUCCEEDED','D1_STUDENT_STATUS_CHANGE',eff.transition_id,
+    pg_catalog.jsonb_build_object('transition_id',eff.transition_id,'sequence_number',eff.sequence_number,'student_version',eff.student_version,
+      'ended_enrollment_id',eff.ended_enrollment_id,'scope_enrollment_id',scope_enrollment),NULL);
+  PERFORM app_private.d1_student_status_audit(ctx.actor_id,'student.status.change',p_student_id,eff.transition_id,receipt,NULL,
+    eff.student_version,locked.current_status,p_new_status,p_effective_on,'SUCCEEDED',corr);
+  PERFORM app_private.d1_student_status_event(ctx.actor_id,p_student_id,eff.transition_id,receipt,eff.student_version,
+    locked.current_status,p_new_status,p_effective_on,eff.sequence_number,corr);
+  RETURN QUERY SELECT eff.transition_id,eff.sequence_number,eff.student_version,eff.ended_enrollment_id;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_student_executor;
