@@ -1,0 +1,75 @@
+-- D1C1B effect 21/36: successful application binding for Student Restricted Identity.
+-- Static non-executable continuation only.
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_student_identity_application_receipt_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE op_code text; receipt app_private.command_receipts%ROWTYPE;
+  req app_private.approval_requests%ROWTYPE; result app_private.student_identity_details%ROWTYPE;
+  predecessor app_private.student_identity_details%ROWTYPE; source_id uuid;
+BEGIN
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF op_code IS DISTINCT FROM 'student.identity.correct' THEN RETURN NEW; END IF;
+  SELECT r.* INTO receipt FROM app_private.command_receipts r
+   WHERE r.id=NEW.command_receipt_id AND r.operation_id=NEW.operation_id
+     AND r.request_id=NEW.request_id AND r.command_kind='request.apply'
+     AND r.state='SUCCEEDED' AND r.result_kind='D1_STUDENT_IDENTITY_APPLY'
+     AND r.result_ref=NEW.result_ref;
+  SELECT q.* INTO req FROM app_private.approval_requests q
+   WHERE q.id=NEW.request_id AND q.operation_id=NEW.operation_id AND q.state='EXECUTED';
+  SELECT d.* INTO result FROM app_private.student_identity_details d WHERE d.id=NEW.result_ref;
+  IF receipt.id IS NULL OR req.id IS NULL OR result.id IS NULL
+     OR result.student_id IS DISTINCT FROM req.target_ref
+     OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR receipt.expected_target_version IS DISTINCT FROM req.expected_target_version
+     OR app_private.d1_student_identity_request_payload_valid(req.old_snapshot,req.requested_payload) IS DISTINCT FROM true
+     OR receipt.result_summary IS NULL OR pg_catalog.jsonb_typeof(receipt.result_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(receipt.result_summary))<>5
+     OR NOT (receipt.result_summary ?& ARRAY['request_version','state','identity_snapshot_id','student_version','effective_from'])
+     OR receipt.result_summary->>'state'<>'EXECUTED'
+     OR (receipt.result_summary->>'request_version')::bigint<>req.row_version
+     OR (receipt.result_summary->>'identity_snapshot_id')::uuid IS DISTINCT FROM NEW.result_ref
+     OR (receipt.result_summary->>'student_version')::bigint IS DISTINCT FROM NEW.applied_target_version
+     OR (receipt.result_summary->>'effective_from')::timestamptz IS DISTINCT FROM result.effective_from
+  THEN RAISE EXCEPTION 'D1 Student identity application requires successful bound apply receipt'; END IF;
+  source_id:=NULLIF(req.old_snapshot->>'source_snapshot_id','')::uuid;
+  IF source_id IS NULL OR req.old_snapshot->>'source_present'<>'true' OR result.supersedes_id IS DISTINCT FROM source_id THEN
+    RAISE EXCEPTION 'D1 Student identity correction source binding invalid'; END IF;
+  SELECT d.* INTO predecessor FROM app_private.student_identity_details d WHERE d.id=source_id;
+  IF predecessor.id IS NULL OR predecessor.student_id IS DISTINCT FROM req.target_ref
+     OR predecessor.effective_until IS DISTINCT FROM result.effective_from
+     OR predecessor.ended_at IS NULL OR predecessor.ended_by IS NULL
+     OR predecessor.national_id IS DISTINCT FROM NULLIF(req.old_snapshot->>'national_id','')
+     OR predecessor.birth_certificate_number IS DISTINCT FROM NULLIF(req.old_snapshot->>'birth_certificate_number','')
+     OR predecessor.birth_certificate_file_id IS DISTINCT FROM NULLIF(req.old_snapshot->>'birth_certificate_file_id','')::uuid
+     OR predecessor.private_address IS DISTINCT FROM NULLIF(req.old_snapshot->>'private_address','')
+     OR predecessor.city IS DISTINCT FROM NULLIF(req.old_snapshot->>'city','')
+     OR predecessor.guardian_identity_text IS DISTINCT FROM NULLIF(req.old_snapshot->>'guardian_identity_text','')
+     OR predecessor.guardian_contact IS DISTINCT FROM NULLIF(req.old_snapshot->>'guardian_contact','')
+     OR predecessor.effective_from IS DISTINCT FROM NULLIF(req.old_snapshot->>'source_effective_from','')::timestamptz
+     OR predecessor.supersedes_id IS DISTINCT FROM NULLIF(req.old_snapshot->>'source_supersedes_id','')::uuid
+  THEN RAISE EXCEPTION 'D1 Student identity predecessor binding invalid'; END IF;
+  IF result.national_id IS DISTINCT FROM NULLIF(req.requested_payload->>'national_id','')
+     OR result.birth_certificate_number IS DISTINCT FROM NULLIF(req.requested_payload->>'birth_certificate_number','')
+     OR result.birth_certificate_file_id IS DISTINCT FROM NULLIF(req.requested_payload->>'birth_certificate_file_id','')::uuid
+     OR result.private_address IS DISTINCT FROM NULLIF(req.requested_payload->>'private_address','')
+     OR result.city IS DISTINCT FROM NULLIF(req.requested_payload->>'city','')
+     OR result.guardian_identity_text IS DISTINCT FROM NULLIF(req.requested_payload->>'guardian_identity_text','')
+     OR result.guardian_contact IS DISTINCT FROM NULLIF(req.requested_payload->>'guardian_contact','')
+     OR result.reason IS DISTINCT FROM req.reason OR result.effective_until IS NOT NULL
+     OR result.ended_at IS NOT NULL OR result.ended_by IS NOT NULL
+  THEN RAISE EXCEPTION 'D1 Student identity successor binding invalid'; END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_identity_application_receipt_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_student_identity_application_receipt_guard ON app_private.approval_applications;
+CREATE TRIGGER d1_student_identity_application_receipt_guard
+  BEFORE INSERT ON app_private.approval_applications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_student_identity_application_receipt_guard();
+RESET ROLE;
+
+ALTER FUNCTION app.d1_apply_student_identity_request(uuid,bigint,text) OWNER TO schoolos_workflow_executor;
+REVOKE ALL ON FUNCTION app.d1_apply_student_identity_request(uuid,bigint,text) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_student_identity_request(uuid,bigint,text) TO authenticated;
