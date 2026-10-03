@@ -1,0 +1,39 @@
+-- Effect 25 audit correction: academic ancestry discovery/locking stays owned by schoolos_academic_executor.
+-- Student executor receives fixed typed helper EXECUTE only, not academic table DML/read privileges.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_academic_executor;
+SET ROLE schoolos_academic_executor;
+CREATE FUNCTION app_private.d1_enrollment_place_destination(p_section uuid)
+RETURNS TABLE(school_id uuid,campus_id uuid,academic_year_id uuid,class_offering_id uuid,class_id uuid,
+  section_id uuid,class_capacity integer,section_capacity integer,class_state text,section_state text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT co.school_id,co.campus_id,co.academic_year_id,co.id,co.class_id,so.id,
+         co.capacity,so.capacity,co.state,so.state
+    FROM app_private.section_offerings so
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+   WHERE so.id=p_section;
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_place_destination(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_destination(uuid) TO schoolos_student_executor,schoolos_authz_reader;
+
+CREATE FUNCTION app_private.d1_enrollment_place_lock_destination(p_section uuid)
+RETURNS TABLE(school_id uuid,campus_id uuid,academic_year_id uuid,class_offering_id uuid,class_id uuid,
+  section_id uuid,class_capacity integer,section_capacity integer,class_state text,section_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  PERFORM app_private.d1_lock_academic_path(p_section,NULL,NULL);
+  RETURN QUERY
+    SELECT co.school_id,co.campus_id,co.academic_year_id,co.id,co.class_id,so.id,
+           co.capacity,so.capacity,co.state,so.state
+      FROM app_private.section_offerings so
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE so.id=p_section;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_place_lock_destination(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_lock_destination(uuid) TO schoolos_student_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_academic_executor;
+
+SET ROLE schoolos_schema_owner;
+REVOKE EXECUTE ON FUNCTION app_private.d1_lock_academic_path(uuid,uuid,uuid) FROM schoolos_student_executor;
+RESET ROLE;
