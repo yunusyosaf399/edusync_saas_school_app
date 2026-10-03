@@ -1,0 +1,33 @@
+-- Effect 30 dependent child-access coverage helper.
+-- It never grants access. It finds the first uncovered date after excluding the relationship being ended.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app_private.d1_family_relationship_access_first_gap(
+  p_family uuid,p_student uuid,p_exclude_relationship uuid,p_from date,p_until date
+) RETURNS date
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE basis datemultirange:='{}'::datemultirange; target datemultirange; gaps datemultirange; first_gap date;
+BEGIN
+  IF p_family IS NULL OR p_student IS NULL OR p_from IS NULL OR (p_until IS NOT NULL AND p_until<=p_from) THEN RETURN p_from; END IF;
+  SELECT pg_catalog.coalesce(pg_catalog.range_agg(
+      pg_catalog.daterange(r.effective_from,pg_catalog.coalesce(r.effective_until,'infinity'::date),'[)')),
+      '{}'::datemultirange)
+    INTO basis
+    FROM app_private.family_relationships r
+   WHERE r.family_id=p_family AND r.student_id=p_student
+     AND (p_exclude_relationship IS NULL OR r.id<>p_exclude_relationship)
+     AND r.effective_from<pg_catalog.coalesce(p_until,'infinity'::date)
+     AND p_from<pg_catalog.coalesce(r.effective_until,'infinity'::date);
+  target:=pg_catalog.datemultirange(
+    pg_catalog.daterange(p_from,pg_catalog.coalesce(p_until,'infinity'::date),'[)'));
+  gaps:=target-basis;
+  SELECT min(pg_catalog.lower(x)) INTO first_gap FROM pg_catalog.unnest(gaps) AS x;
+  RETURN first_gap;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_relationship_access_first_gap(uuid,uuid,uuid,date,date)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_relationship_access_first_gap(uuid,uuid,uuid,date,date)
+  TO schoolos_family_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
