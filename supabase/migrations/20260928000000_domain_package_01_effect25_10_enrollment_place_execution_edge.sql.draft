@@ -1,0 +1,6 @@
+-- Effect 25 packaging/security correction: placement executor may invoke the frozen academic path-lock helper,
+-- but receives no academic-executor membership and no direct mutable academic catalog privilege.
+
+SET ROLE schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION app_private.d1_lock_academic_path(uuid,uuid,uuid) TO schoolos_student_executor;
+RESET ROLE;
