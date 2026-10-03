@@ -1,0 +1,76 @@
+-- Effect 26 move-specific capacity simulation and atomic close+successor effect.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_enrollment_move_capacity(
+  p_source_enrollment uuid,p_class_offering uuid,p_section uuid,p_effective_from date,p_class_limit integer,p_section_limit integer
+) RETURNS TABLE(class_count integer,section_count integer,class_full boolean,section_full boolean)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE cc integer; sc integer;
+BEGIN
+  IF p_source_enrollment IS NULL OR p_class_offering IS NULL OR p_section IS NULL OR p_effective_from IS NULL
+     OR p_class_limit IS NULL OR p_class_limit<0 OR p_section_limit IS NULL OR p_section_limit<0 THEN RETURN; END IF;
+  WITH class_sections AS (
+    SELECT x.section_id FROM app_private.d1_enrollment_place_class_sections(p_class_offering) x
+  ), breakpoints AS (
+    SELECT p_effective_from AS d
+    UNION SELECT e.effective_from FROM app_private.enrollments e WHERE e.id<>p_source_enrollment AND e.placement_kind='PRIMARY'
+      AND e.section_offering_id IN (SELECT section_id FROM class_sections) AND e.effective_from>=p_effective_from
+    UNION SELECT e.effective_until FROM app_private.enrollments e WHERE e.id<>p_source_enrollment AND e.placement_kind='PRIMARY'
+      AND e.section_offering_id IN (SELECT section_id FROM class_sections) AND e.effective_until IS NOT NULL AND e.effective_until>=p_effective_from
+  ), counts AS (
+    SELECT b.d,
+      1+(SELECT count(*) FROM app_private.enrollments e WHERE e.id<>p_source_enrollment AND e.placement_kind='PRIMARY'
+        AND e.section_offering_id IN (SELECT section_id FROM class_sections)
+        AND e.effective_from<=b.d AND (e.effective_until IS NULL OR b.d<e.effective_until)) AS class_n,
+      1+(SELECT count(*) FROM app_private.enrollments e WHERE e.id<>p_source_enrollment AND e.placement_kind='PRIMARY'
+        AND e.section_offering_id=p_section AND e.effective_from<=b.d AND (e.effective_until IS NULL OR b.d<e.effective_until)) AS section_n
+    FROM breakpoints b WHERE b.d IS NOT NULL
+  ) SELECT pg_catalog.coalesce(max(class_n),1)::integer,pg_catalog.coalesce(max(section_n),1)::integer INTO cc,sc FROM counts;
+  RETURN QUERY SELECT cc,sc,(cc>p_class_limit),(sc>p_section_limit);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_capacity(uuid,uuid,uuid,date,integer,integer) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_capacity(uuid,uuid,uuid,date,integer,integer) TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_enrollment_move_effect(
+  p_actor uuid,p_student uuid,p_expected_student_version bigint,p_source_enrollment uuid,p_expected_source_section uuid,
+  p_expected_source_effective_from date,p_destination_section uuid,p_entry_kind text,p_effective_from date,p_reason text,
+  p_expected_class_count integer,p_expected_section_count integer,p_expected_class_full boolean,p_expected_section_full boolean
+) RETURNS TABLE(enrollment_id uuid,roll_allocation_id uuid,policy_revision_id uuid,numeric_value bigint,roll_mode text,
+  source_roll_id uuid,student_version bigint,source_campus_id uuid,source_year_id uuid,source_class_offering_id uuid,
+  destination_campus_id uuid,destination_year_id uuid,destination_class_offering_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c record; cap record; rollrow record; eid uuid:=pg_catalog.gen_random_uuid(); source_roll uuid;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Enrollment move effect intent denied'; END IF;
+  SELECT * INTO c FROM app_private.d1_enrollment_move_lock_context(p_student,p_expected_student_version,p_source_enrollment,
+    p_expected_source_section,p_expected_source_effective_from,p_destination_section,p_entry_kind,p_effective_from);
+  IF c.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment move source changed: %',c.error_code; END IF;
+  SELECT * INTO cap FROM app_private.d1_enrollment_move_capacity(p_source_enrollment,c.destination_class_offering_id,p_destination_section,
+    p_effective_from,c.destination_class_capacity,c.destination_section_capacity);
+  IF cap.class_count IS DISTINCT FROM p_expected_class_count OR cap.section_count IS DISTINCT FROM p_expected_section_count
+     OR cap.class_full IS DISTINCT FROM p_expected_class_full OR cap.section_full IS DISTINCT FROM p_expected_section_full THEN
+    RAISE EXCEPTION 'D1 Enrollment move capacity changed'; END IF;
+  source_roll:=c.source_roll_id;
+  UPDATE app_private.roll_allocations SET effective_until=p_effective_from,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+   WHERE id=source_roll AND enrollment_id=p_source_enrollment AND student_id=p_student AND effective_until IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment move source roll changed'; END IF;
+  UPDATE app_private.enrollments SET placement_state='ENDED',effective_until=p_effective_from,end_reason='MOVE_'||p_entry_kind,
+    ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+   WHERE id=p_source_enrollment AND student_id=p_student AND placement_state='ACTIVE' AND effective_until IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment move source placement changed'; END IF;
+  INSERT INTO app_private.enrollments(id,created_by,student_id,section_offering_id,placement_kind,entry_kind,placement_state,
+    effective_from,effective_until,predecessor_id,reason,end_reason,command_receipt_id)
+  VALUES (eid,p_actor,p_student,p_destination_section,'PRIMARY',p_entry_kind,'ACTIVE',p_effective_from,NULL,p_source_enrollment,pg_catalog.btrim(p_reason),NULL,NULL);
+  SELECT * INTO rollrow FROM app_private.d1_enrollment_place_allocate_roll(p_actor,p_student,eid,c.school_id,c.destination_class_offering_id,p_effective_from);
+  IF rollrow.allocation_id IS NULL THEN RAISE EXCEPTION 'D1 Enrollment move roll allocation failed'; END IF;
+  RETURN QUERY SELECT eid,rollrow.allocation_id,rollrow.policy_revision_id,rollrow.numeric_value,rollrow.policy_mode,source_roll,
+    c.student_version,c.source_campus_id,c.source_year_id,c.source_class_offering_id,c.destination_campus_id,c.destination_year_id,c.destination_class_offering_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_effect(uuid,uuid,bigint,uuid,uuid,date,uuid,text,date,text,integer,integer,boolean,boolean)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_effect(uuid,uuid,bigint,uuid,uuid,date,uuid,text,date,text,integer,integer,boolean,boolean)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
