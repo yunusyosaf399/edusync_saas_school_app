@@ -1,0 +1,30 @@
+-- Effect 30 final explicit client ACL closure.
+
+REVOKE ALL ON FUNCTION app.d1_change_family_relationship(
+  uuid,bigint,uuid,bigint,text,uuid,uuid,text,text,text,date,text,uuid,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_family_relationship(
+  uuid,bigint,uuid,bigint,text,uuid,uuid,text,text,text,date,text,uuid,text)
+  TO authenticated;
+
+REVOKE ALL ON FUNCTION app.d1_submit_family_relationship_change(
+  uuid,bigint,uuid,bigint,text,uuid,uuid,text,text,text,date,text,uuid,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_family_relationship_change(
+  uuid,bigint,uuid,bigint,text,uuid,uuid,text,text,text,date,text,uuid,text)
+  TO authenticated;
+
+REVOKE ALL ON FUNCTION app.d1_review_family_relationship_change(uuid,text,bigint,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_review_family_relationship_change(uuid,text,bigint,text,text)
+  TO authenticated;
+
+REVOKE ALL ON FUNCTION app.d1_apply_family_relationship_change(uuid,bigint,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_family_relationship_change(uuid,bigint,text)
+  TO authenticated;
+
+REVOKE ALL ON FUNCTION app.d1_read_family_relationship_request(uuid)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_relationship_request(uuid)
+  TO authenticated;
