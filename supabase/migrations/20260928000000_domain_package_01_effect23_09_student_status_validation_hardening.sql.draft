@@ -1,0 +1,87 @@
+-- Effect 23 validation hardening: current placement means effective today; exact stored
+-- request shape is required for participant/read/apply classification.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_lock_context(p_student uuid,p_expected_version bigint DEFAULT NULL)
+RETURNS TABLE(student_version bigint,current_status text,last_transition_id uuid,last_effective_on date,last_sequence bigint,
+  enrollment_id uuid,enrollment_from date,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE s app_private.students%ROWTYPE; st app_private.student_status_transitions%ROWTYPE; e app_private.enrollments%ROWTYPE; n bigint;
+BEGIN
+  SELECT * INTO s FROM app_private.students WHERE id=p_student FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT NULL::bigint,NULL::text,NULL::uuid,NULL::date,NULL::bigint,NULL::uuid,NULL::date,'D1_STUDENT_STATUS_STUDENT_MISSING'; RETURN; END IF;
+  IF p_expected_version IS NOT NULL AND s.row_version IS DISTINCT FROM p_expected_version THEN
+    RETURN QUERY SELECT s.row_version,s.current_status,NULL::uuid,NULL::date,NULL::bigint,NULL::uuid,NULL::date,'D1_STUDENT_STATUS_VERSION_STALE'; RETURN; END IF;
+  SELECT t.* INTO st FROM app_private.student_status_transitions t
+   WHERE t.student_id=p_student AND NOT EXISTS (SELECT 1 FROM app_private.student_status_transitions x WHERE x.student_id=p_student AND x.supersedes_id=t.id)
+   ORDER BY t.effective_on DESC,t.sequence_number DESC LIMIT 1 FOR UPDATE;
+  IF NOT FOUND OR st.new_status IS DISTINCT FROM s.current_status THEN
+    RETURN QUERY SELECT s.row_version,s.current_status,NULL::uuid,NULL::date,NULL::bigint,NULL::uuid,NULL::date,'D1_STUDENT_STATUS_PROJECTION_DIVERGED'; RETURN; END IF;
+  SELECT count(*) INTO n FROM app_private.enrollments x WHERE x.student_id=p_student AND x.placement_kind='PRIMARY'
+    AND x.placement_state='ACTIVE' AND x.effective_from<=pg_catalog.current_date() AND x.effective_until IS NULL;
+  IF n>1 THEN RETURN QUERY SELECT s.row_version,s.current_status,st.id,st.effective_on,st.sequence_number,NULL::uuid,NULL::date,
+    'D1_STUDENT_STATUS_ACTIVE_PLACEMENT_AMBIGUOUS'; RETURN; END IF;
+  IF n=1 THEN
+    SELECT * INTO e FROM app_private.enrollments x WHERE x.student_id=p_student AND x.placement_kind='PRIMARY'
+      AND x.placement_state='ACTIVE' AND x.effective_from<=pg_catalog.current_date() AND x.effective_until IS NULL FOR UPDATE;
+    PERFORM r.id FROM app_private.roll_allocations r WHERE r.student_id=p_student AND r.enrollment_id=e.id
+      AND r.effective_from<=pg_catalog.current_date() AND r.effective_until IS NULL ORDER BY r.id FOR UPDATE;
+  END IF;
+  RETURN QUERY SELECT s.row_version,s.current_status,st.id,st.effective_on,st.sequence_number,e.id,e.effective_from,NULL::text;
+END $body$;
+
+CREATE FUNCTION app_private.d1_student_status_request_payload_valid(p_old jsonb,p_requested jsonb)
+RETURNS boolean LANGUAGE sql IMMUTABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT p_old IS NOT NULL AND pg_catalog.jsonb_typeof(p_old)='object'
+   AND (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_old))=5
+   AND p_old ?& ARRAY['source_transition_id','current_status','last_effective_on','last_sequence_number','enrollment_id']
+   AND pg_catalog.jsonb_typeof(p_old->'source_transition_id')='string'
+   AND pg_catalog.jsonb_typeof(p_old->'current_status')='string'
+   AND pg_catalog.jsonb_typeof(p_old->'last_effective_on')='string'
+   AND pg_catalog.jsonb_typeof(p_old->'last_sequence_number')='number'
+   AND (p_old->'enrollment_id'='null'::jsonb OR pg_catalog.jsonb_typeof(p_old->'enrollment_id')='string')
+   AND p_requested IS NOT NULL AND pg_catalog.jsonb_typeof(p_requested)='object'
+   AND (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_requested))=2
+   AND p_requested ?& ARRAY['new_status','effective_on']
+   AND pg_catalog.jsonb_typeof(p_requested->'new_status')='string'
+   AND pg_catalog.jsonb_typeof(p_requested->'effective_on')='string';
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_status_request_payload_valid(jsonb,jsonb) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_status_request_payload_valid(jsonb,jsonb) TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_participant(p_request uuid,p_actor uuid)
+RETURNS text LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; enrollment_id uuid; requester_person uuid; actor_person uuid; final_role uuid; decided record;
+BEGIN
+  SELECT q.* INTO req FROM app_private.approval_requests q JOIN app_private.operation_contracts o ON o.id=q.operation_id
+   WHERE q.id=p_request AND o.code='student.status.change';
+  IF NOT FOUND OR p_actor IS NULL OR app_private.d1_student_status_request_payload_valid(req.old_snapshot,req.requested_payload) IS DISTINCT FROM true THEN RETURN NULL; END IF;
+  BEGIN enrollment_id:=NULLIF(req.old_snapshot->>'enrollment_id','')::uuid; EXCEPTION WHEN invalid_text_representation THEN RETURN NULL; END;
+  IF p_actor=req.requester_id AND app_private.d1_student_status_authorized_enrollment(p_actor,'student.status.change',req.target_ref,enrollment_id,NULL)
+    THEN RETURN 'REQUESTER'; END IF;
+  SELECT p.person_id INTO requester_person FROM app_private.principals p WHERE p.id=req.requester_id;
+  SELECT p.person_id INTO actor_person FROM app_private.principals p WHERE p.id=p_actor;
+  IF requester_person IS NULL OR actor_person IS NULL OR requester_person=actor_person THEN RETURN NULL; END IF;
+  final_role:=app_private.d1_final_approver_role(p_request,p_actor);
+  IF final_role IS NOT NULL AND app_private.d1_student_status_authorized_enrollment(p_actor,'student.status.approve',req.target_ref,enrollment_id,final_role)
+    THEN RETURN 'FINAL_APPROVER'; END IF;
+  IF EXISTS (SELECT 1 FROM app_private.approval_request_steps s JOIN app_private.approval_step_templates t ON t.id=s.template_id
+    JOIN app_private.approval_step_reviewers a ON a.step_id=s.id WHERE s.request_id=p_request AND s.state='OPEN'
+      AND a.reviewer_id=p_actor AND a.withdrawn_at IS NULL AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+      AND t.selection_resolver_key='D1_REVIEWER_ROLE_SCOPE'
+      AND app_private.d1_student_status_authorized_enrollment(p_actor,'student.status.approve',req.target_ref,enrollment_id,t.reviewer_role_id))
+  THEN RETURN 'OPEN_REVIEWER'; END IF;
+  FOR decided IN SELECT t.reviewer_role_id,a.assignment_reason FROM app_private.approval_reviews v
+    JOIN app_private.approval_request_steps s ON s.id=v.step_id JOIN app_private.approval_step_templates t ON t.id=s.template_id
+    JOIN app_private.approval_step_reviewers a ON a.id=v.reviewer_assignment_id WHERE s.request_id=p_request AND v.reviewer_id=p_actor LOOP
+    IF decided.assignment_reason='D1_REVIEWER_ROLE_SCOPE' AND app_private.d1_student_status_authorized_enrollment(
+      p_actor,'student.status.approve',req.target_ref,enrollment_id,decided.reviewer_role_id) THEN RETURN 'DECIDED_REVIEWER'; END IF;
+  END LOOP; RETURN NULL;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
