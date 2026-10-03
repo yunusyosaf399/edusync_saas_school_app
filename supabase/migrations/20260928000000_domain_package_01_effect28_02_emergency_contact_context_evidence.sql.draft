@@ -1,0 +1,126 @@
+-- Effect 28 command context, minimized evidence and replay proof.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_student_emergency_contact_command_context(p_command_kind text,p_idempotency_key text,p_intent jsonb)
+RETURNS TABLE(actor_id uuid,operation_id uuid,receipt_id uuid,result_ref uuid,result_summary jsonb,receipt_state text,intent_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; op uuid; h bytea; digest bytea; resource bigint; rec app_private.command_receipts%ROWTYPE; expected_len integer;
+BEGIN
+  expected_len:=CASE p_command_kind WHEN 'student.emergency_contact.change' THEN 10 WHEN 'request.submit' THEN 10 WHEN 'request.review' THEN 4 WHEN 'request.apply' THEN 2 ELSE NULL END;
+  IF expected_len IS NULL OR p_idempotency_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_idempotency_key))=0
+     OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array' OR pg_catalog.jsonb_array_length(p_intent)<>expected_len
+  THEN RAISE EXCEPTION 'D1 Emergency Contact command context intent invalid'; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id(); IF actor IS NULL THEN RAISE EXCEPTION 'D1 Emergency Contact requires verified actor'; END IF;
+  SELECT o.id INTO op FROM app_private.operation_contracts o
+   WHERE o.code='student.emergency_contact.change' AND o.contract_version=1 AND o.handler_key='student.emergency_contact.change' AND o.enabled;
+  IF op IS NULL THEN RAISE EXCEPTION 'D1 Emergency Contact operation is not enabled'; END IF;
+  h:=pg_catalog.sha256(pg_catalog.convert_to(app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+    'canonicalization_version',1,'operation_code','student.emergency_contact.change','operation_contract_version','1','operation_id',op::text,
+    'command_kind',p_command_kind,'principal_id',actor::text,'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+  digest:=pg_catalog.sha256(pg_catalog.convert_to(actor::text||'|'||op::text||'|'||p_idempotency_key,'UTF8'));
+  resource:=pg_catalog.get_byte(digest,0)::bigint*16777216+pg_catalog.get_byte(digest,1)::bigint*65536+
+    pg_catalog.get_byte(digest,2)::bigint*256+pg_catalog.get_byte(digest,3)::bigint;
+  IF resource>2147483647 THEN resource:=resource-4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,resource::integer);
+  SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.principal_id=actor AND r.operation_id=op AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF rec.canonicalization_version<>1 OR rec.canonical_payload_hash IS DISTINCT FROM h OR rec.command_kind IS DISTINCT FROM p_command_kind
+      THEN RAISE EXCEPTION 'D1 Emergency Contact idempotency key conflicts with prior intent'; END IF;
+    RETURN QUERY SELECT actor,op,rec.id,rec.result_ref,rec.result_summary,rec.state,h; RETURN;
+  END IF;
+  RETURN QUERY SELECT actor,op,NULL::uuid,NULL::uuid,NULL::jsonb,NULL::text,h;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_emergency_contact_command_context(text,text,jsonb) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_emergency_contact_command_context(text,text,jsonb) TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_emergency_contact_receipt(
+ p_command_kind text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_expected bigint,p_request uuid,p_expected_request bigint,
+ p_state text,p_result_kind text,p_result uuid,p_summary jsonb,p_error text
+) RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_command_kind NOT IN ('student.emergency_contact.change','request.submit','request.review','request.apply') OR p_actor IS NULL OR p_operation IS NULL
+     OR p_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_key))=0 OR p_hash IS NULL OR p_expected IS NULL OR p_expected<1
+     OR p_state NOT IN ('SUCCEEDED','REJECTED') OR (p_state='SUCCEEDED' AND (p_result_kind IS NULL OR p_error IS NOT NULL))
+     OR (p_state='REJECTED' AND (p_error IS NULL OR p_result IS NOT NULL)) THEN RAISE EXCEPTION 'D1 Emergency Contact receipt intent denied'; END IF;
+  INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+    expected_target_version,request_id,expected_request_version,state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,p_command_kind,p_key,p_hash,1,p_expected,p_request,p_expected_request,p_state,p_result_kind,p_result,p_summary,p_error,
+    pg_catalog.statement_timestamp(),p_actor);
+  RETURN rid;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_emergency_contact_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_emergency_contact_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_emergency_contact_audit(
+ p_actor uuid,p_phase text,p_student uuid,p_contact uuid,p_source uuid,p_action text,p_receipt uuid,p_request uuid,p_student_version bigint,
+ p_outcome text,p_error text,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_phase NOT IN ('DIRECT','SUBMIT','REVIEW','APPLY') OR p_student IS NULL
+     OR p_action NOT IN ('ADD','END','CORRECT') OR p_receipt IS NULL OR p_student_version IS NULL OR p_student_version<1
+     OR p_outcome NOT IN ('SUCCEEDED','REJECTED') OR p_correlation IS NULL THEN RAISE EXCEPTION 'D1 Emergency Contact audit intent denied'; END IF;
+  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+    command_receipt_id,approval_request_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',p_outcome,pg_catalog.jsonb_build_object('operation','student.emergency_contact.change','phase',p_phase),
+    p_student_version,'student.emergency_contact.change','STUDENT',p_student,p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'contact_id',p_contact,'source_contact_id',p_source,'error_code',p_error),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_emergency_contact_audit(uuid,text,uuid,uuid,uuid,text,uuid,uuid,bigint,text,text,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_emergency_contact_audit(uuid,text,uuid,uuid,uuid,text,uuid,uuid,bigint,text,text,uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_student_emergency_contact_event(
+ p_actor uuid,p_student uuid,p_contact uuid,p_source uuid,p_action text,p_receipt uuid,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_student IS NULL OR p_contact IS NULL
+     OR p_action NOT IN ('ADD','END','CORRECT') OR p_receipt IS NULL OR p_correlation IS NULL THEN RAISE EXCEPTION 'D1 Emergency Contact event intent denied'; END IF;
+  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('student.emergency_contact_changed','STUDENT_EMERGENCY_CONTACT',p_contact,1,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('student_id',p_student,'contact_id',p_contact,'source_contact_id',p_source,'action',p_action),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_emergency_contact_event(uuid,uuid,uuid,uuid,text,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_emergency_contact_event(uuid,uuid,uuid,uuid,text,uuid,uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_student_emergency_contact_result_rows_match(
+ p_student uuid,p_action text,p_source uuid,p_result uuid,p_effective_on date,p_summary jsonb
+) RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v bigint;
+BEGIN
+  IF p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object' OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>6
+     OR NOT (p_summary ?& ARRAY['contact_id','source_contact_id','action','effective_from','effective_until','student_version']) THEN RETURN false; END IF;
+  BEGIN v:=(p_summary->>'student_version')::bigint; EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN RETURN false; END;
+  IF v<1 OR p_summary->>'action' IS DISTINCT FROM p_action OR NULLIF(p_summary->>'contact_id','')::uuid IS DISTINCT FROM p_result
+     OR NULLIF(p_summary->>'source_contact_id','')::uuid IS DISTINCT FROM p_source THEN RETURN false; END IF;
+  IF p_action='ADD' THEN
+    RETURN EXISTS (SELECT 1 FROM app_private.student_emergency_contacts x WHERE x.id=p_result AND x.student_id=p_student AND x.supersedes_id IS NULL
+      AND x.effective_from=p_effective_on AND x.effective_until IS NULL);
+  ELSIF p_action='CORRECT' THEN
+    RETURN EXISTS (SELECT 1 FROM app_private.student_emergency_contacts x WHERE x.id=p_result AND x.student_id=p_student AND x.supersedes_id=p_source
+      AND x.effective_from=p_effective_on AND x.effective_until IS NULL)
+      AND EXISTS (SELECT 1 FROM app_private.student_emergency_contacts s WHERE s.id=p_source AND s.student_id=p_student
+        AND s.effective_until=p_effective_on AND s.ended_at IS NOT NULL AND s.ended_by IS NOT NULL);
+  ELSIF p_action='END' THEN
+    RETURN p_result=p_source AND EXISTS (SELECT 1 FROM app_private.student_emergency_contacts s WHERE s.id=p_source AND s.student_id=p_student
+      AND s.effective_until=p_effective_on AND s.ended_at IS NOT NULL AND s.ended_by IS NOT NULL);
+  END IF;
+  RETURN false;
+EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RETURN false;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_emergency_contact_result_rows_match(uuid,text,uuid,uuid,date,jsonb)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_emergency_contact_result_rows_match(uuid,text,uuid,uuid,date,jsonb)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
