@@ -1,0 +1,130 @@
+-- Effect 28 apply scope serialization and deterministic stale handling.
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE OR REPLACE FUNCTION app.d1_apply_student_emergency_contact_change(
+ p_request_id uuid,p_expected_request_version bigint,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text,contact_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; req record; policy_row record; pre record; eff record; final_role uuid; src app_private.student_emergency_contacts%ROWTYPE;
+  action text; source_contact uuid; person_id uuid; contact_name text; relationship_label text; contact_phone text; contact_email text; effective_on date;
+  stored_student uuid; invalidation_code text; final_version bigint; receipt uuid; seq bigint; summary jsonb; base_summary jsonb;
+  corr uuid:=pg_catalog.gen_random_uuid(); locked_version bigint;
+BEGIN
+  IF p_request_id IS NULL OR p_expected_request_version IS NULL OR p_expected_request_version<1 THEN RAISE EXCEPTION 'D1 Emergency Contact apply intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_student_emergency_contact_command_context('request.apply',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_expected_request_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=p_request_id AND q.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Emergency Contact request missing'; END IF;
+  IF req.old_snapshot IS NULL OR pg_catalog.jsonb_typeof(req.old_snapshot)<>'object' OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.old_snapshot))<>10
+     OR NOT (req.old_snapshot ?& ARRAY['student_id','source_contact_id','person_id','contact_name','relationship_label','contact_phone','contact_email','effective_from','effective_until','supersedes_id'])
+     OR req.requested_payload IS NULL OR pg_catalog.jsonb_typeof(req.requested_payload)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.requested_payload))<>7
+     OR NOT (req.requested_payload ?& ARRAY['action','person_id','contact_name','relationship_label','contact_phone','contact_email','effective_on'])
+     OR req.reason IS NULL OR pg_catalog.length(pg_catalog.btrim(req.reason))=0
+  THEN RAISE EXCEPTION 'D1 Emergency Contact stored request malformed'; END IF;
+  BEGIN
+    stored_student:=NULLIF(req.old_snapshot->>'student_id','')::uuid;
+    source_contact:=NULLIF(req.old_snapshot->>'source_contact_id','')::uuid;
+    action:=req.requested_payload->>'action'; person_id:=NULLIF(req.requested_payload->>'person_id','')::uuid;
+    contact_name:=req.requested_payload->>'contact_name'; relationship_label:=req.requested_payload->>'relationship_label';
+    contact_phone:=req.requested_payload->>'contact_phone'; contact_email:=req.requested_payload->>'contact_email';
+    effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RAISE EXCEPTION 'D1 Emergency Contact stored request malformed'; END;
+  IF stored_student IS DISTINCT FROM req.target_ref OR action NOT IN ('ADD','END','CORRECT') OR effective_on IS NULL
+     OR (action='ADD' AND source_contact IS NOT NULL) OR (action IN ('END','CORRECT') AND source_contact IS NULL)
+  THEN RAISE EXCEPTION 'D1 Emergency Contact stored request malformed'; END IF;
+
+  -- Serialize current-placement ACS and policy under the Student lock.
+  locked_version:=app_private.d1_student_emergency_contact_lock_student(req.target_ref);
+  IF locked_version IS NULL THEN RAISE EXCEPTION 'D1 Emergency Contact Student missing'; END IF;
+  final_role:=app_private.d1_final_approver_role(p_request_id,ctx.actor_id);
+  IF NOT ((ctx.actor_id=req.requester_id AND app_private.d1_student_emergency_contact_authorized(ctx.actor_id,'student.emergency_contact.change',req.target_ref,NULL))
+       OR (final_role IS NOT NULL AND app_private.d1_student_emergency_contact_authorized(ctx.actor_id,'student.emergency_contact.approve',req.target_ref,final_role)))
+    THEN RAISE EXCEPTION 'D1 Emergency Contact request unavailable'; END IF;
+
+  -- Terminal replay is before mutation preflight; current participant/requester/reviewer authority is still required under the Student lock.
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF NOT app_private.d1_student_emergency_contact_authorized(req.requester_id,'student.emergency_contact.change',req.target_ref,NULL)
+      THEN RAISE EXCEPTION 'D1 Emergency Contact requester authority revoked'; END IF;
+    IF ctx.receipt_state='SUCCEEDED' THEN
+      IF app_private.d1_student_emergency_contact_reviews_live(p_request_id) IS DISTINCT FROM true OR ctx.result_ref IS NULL
+         OR ctx.result_summary IS NULL OR ctx.result_summary->>'state'<>'EXECUTED' OR ctx.result_summary->>'request_version' IS NULL
+        THEN RAISE EXCEPTION 'D1 Emergency Contact apply receipt invalid'; END IF;
+      base_summary:=ctx.result_summary-'request_version'-'state';
+      IF app_private.d1_student_emergency_contact_result_rows_match(req.target_ref,action,source_contact,ctx.result_ref,effective_on,base_summary) IS DISTINCT FROM true
+         OR NOT EXISTS (SELECT 1 FROM app_private.approval_applications a WHERE a.request_id=p_request_id AND a.command_receipt_id=ctx.receipt_id
+              AND a.operation_id=ctx.operation_id AND a.result_ref=ctx.result_ref AND a.applied_target_version=req.expected_target_version)
+        THEN RAISE EXCEPTION 'D1 Emergency Contact apply replay evidence invalid'; END IF;
+      RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,'EXECUTED',ctx.result_ref; RETURN;
+    ELSIF ctx.receipt_state='REJECTED' THEN
+      IF ctx.result_ref IS NOT NULL OR ctx.result_summary IS NULL OR ctx.result_summary->>'state'<>'INVALIDATED'
+        THEN RAISE EXCEPTION 'D1 Emergency Contact invalidation receipt malformed'; END IF;
+      RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,'INVALIDATED',NULL::uuid; RETURN;
+    ELSE RAISE EXCEPTION 'D1 Emergency Contact apply receipt invalid'; END IF;
+  END IF;
+
+  IF req.state<>'APPROVED' OR req.row_version<>p_expected_request_version THEN RAISE EXCEPTION 'D1 Emergency Contact approved request changed'; END IF;
+  IF locked_version IS DISTINCT FROM req.expected_target_version THEN invalidation_code:='D1_EMERGENCY_CONTACT_VERSION_STALE'; END IF;
+  IF invalidation_code IS NULL THEN
+    SELECT * INTO policy_row FROM app_private.d1_student_emergency_contact_policy(req.target_ref);
+    IF policy_row.policy_id IS DISTINCT FROM req.policy_id OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL'
+       OR policy_row.campus_id IS DISTINCT FROM req.campus_id THEN invalidation_code:='D1_EMERGENCY_CONTACT_POLICY_STALE';
+    ELSIF NOT app_private.d1_student_emergency_contact_authorized(req.requester_id,'student.emergency_contact.change',req.target_ref,NULL) THEN
+      invalidation_code:='D1_EMERGENCY_CONTACT_REQUESTER_AUTHORITY_STALE';
+    ELSIF app_private.d1_student_emergency_contact_reviews_live(p_request_id) IS DISTINCT FROM true THEN
+      invalidation_code:='D1_EMERGENCY_CONTACT_REVIEW_AUTHORITY_STALE';
+    END IF;
+  END IF;
+  IF invalidation_code IS NULL AND source_contact IS NOT NULL THEN
+    SELECT * INTO src FROM app_private.student_emergency_contacts x WHERE x.id=source_contact AND x.student_id=req.target_ref;
+    IF NOT FOUND OR src.person_id IS DISTINCT FROM NULLIF(req.old_snapshot->>'person_id','')::uuid
+       OR src.contact_name IS DISTINCT FROM req.old_snapshot->>'contact_name'
+       OR src.relationship_label IS DISTINCT FROM req.old_snapshot->>'relationship_label'
+       OR src.contact_phone IS DISTINCT FROM req.old_snapshot->>'contact_phone'
+       OR src.contact_email IS DISTINCT FROM req.old_snapshot->>'contact_email'
+       OR src.effective_from IS DISTINCT FROM NULLIF(req.old_snapshot->>'effective_from','')::date
+       OR src.effective_until IS DISTINCT FROM NULLIF(req.old_snapshot->>'effective_until','')::date
+       OR src.supersedes_id IS DISTINCT FROM NULLIF(req.old_snapshot->>'supersedes_id','')::uuid
+    THEN invalidation_code:='D1_EMERGENCY_CONTACT_SOURCE_FACTS_STALE'; END IF;
+  END IF;
+  IF invalidation_code IS NULL THEN
+    SELECT * INTO pre FROM app_private.d1_student_emergency_contact_preflight(req.target_ref,req.expected_target_version,action,source_contact,
+      person_id,contact_name,relationship_label,contact_phone,contact_email,effective_on,req.reason);
+    IF pre.eligible IS DISTINCT FROM true THEN invalidation_code:=COALESCE(pre.error_code,'D1_EMERGENCY_CONTACT_PREFLIGHT_STALE'); END IF;
+  END IF;
+  IF invalidation_code IS NOT NULL THEN
+    UPDATE app_private.approval_requests SET state='INVALIDATED' WHERE id=p_request_id RETURNING row_version INTO final_version;
+    receipt:=app_private.d1_student_emergency_contact_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+      req.expected_target_version,p_request_id,p_expected_request_version,'REJECTED',NULL,NULL,
+      pg_catalog.jsonb_build_object('request_version',final_version,'state','INVALIDATED'),invalidation_code);
+    SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+    INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+    VALUES (p_request_id,seq,'APPROVED','INVALIDATED',invalidation_code,receipt,ctx.actor_id);
+    PERFORM app_private.d1_student_emergency_contact_audit(ctx.actor_id,'APPLY',req.target_ref,source_contact,source_contact,action,receipt,p_request_id,
+      req.expected_target_version,'REJECTED',invalidation_code,corr);
+    RETURN QUERY SELECT p_request_id,final_version,'INVALIDATED',NULL::uuid; RETURN;
+  END IF;
+
+  SELECT * INTO eff FROM app_private.d1_student_emergency_contact_effect(ctx.actor_id,req.target_ref,req.expected_target_version,action,source_contact,
+    person_id,contact_name,relationship_label,contact_phone,contact_email,effective_on,req.reason);
+  summary:=pg_catalog.jsonb_build_object('contact_id',eff.contact_id,'source_contact_id',eff.source_contact_id,'action',action,
+    'effective_from',eff.effective_from,'effective_until',eff.effective_until,'student_version',eff.student_version);
+  UPDATE app_private.approval_requests SET state='EXECUTED',executed_at=pg_catalog.statement_timestamp()
+    WHERE id=p_request_id RETURNING row_version INTO final_version;
+  receipt:=app_private.d1_student_emergency_contact_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_EMERGENCY_CONTACT_CHANGE',eff.contact_id,
+    summary||pg_catalog.jsonb_build_object('request_version',final_version,'state','EXECUTED'),NULL);
+  INSERT INTO app_private.approval_applications(request_id,command_receipt_id,operation_id,applied_target_version,result_ref,created_by)
+  VALUES (p_request_id,receipt,ctx.operation_id,req.expected_target_version,eff.contact_id,ctx.actor_id);
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+  VALUES (p_request_id,seq,'APPROVED','EXECUTED','Emergency Contact change applied',receipt,ctx.actor_id);
+  PERFORM app_private.d1_student_emergency_contact_audit(ctx.actor_id,'APPLY',req.target_ref,eff.contact_id,source_contact,action,receipt,p_request_id,
+    eff.student_version,'SUCCEEDED',NULL,corr);
+  PERFORM app_private.d1_student_emergency_contact_event(ctx.actor_id,req.target_ref,eff.contact_id,source_contact,action,receipt,corr);
+  RETURN QUERY SELECT p_request_id,final_version,'EXECUTED',eff.contact_id;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
