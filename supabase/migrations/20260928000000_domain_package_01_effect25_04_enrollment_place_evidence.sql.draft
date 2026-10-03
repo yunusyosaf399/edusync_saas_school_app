@@ -1,0 +1,71 @@
+-- Effect 25 receipt, audit and outbox evidence. Arbitrary placement/override reasons are excluded from broad evidence.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_enrollment_place_receipt(
+  p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_expected bigint,p_result uuid,p_summary jsonb
+) RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_actor IS NULL OR p_operation IS NULL OR p_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_key))=0 OR p_hash IS NULL
+     OR p_expected IS NULL OR p_expected<1 OR p_result IS NULL OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+  THEN RAISE EXCEPTION 'D1 Enrollment placement receipt intent denied'; END IF;
+  INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,
+    canonicalization_version,expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,'student.enrollment.place',p_key,p_hash,1,p_expected,'SUCCEEDED','D1_ENROLLMENT_PLACE',p_result,p_summary,
+    pg_catalog.statement_timestamp(),p_actor);
+  RETURN rid;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_place_receipt(uuid,uuid,text,bytea,bigint,uuid,jsonb) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_receipt(uuid,uuid,text,bytea,bigint,uuid,jsonb) TO schoolos_student_executor;
+
+CREATE FUNCTION app_private.d1_enrollment_place_audit(
+  p_actor uuid,p_student uuid,p_enrollment uuid,p_roll uuid,p_receipt uuid,p_student_version bigint,p_section uuid,p_entry_kind text,
+  p_effective_from date,p_override boolean,p_reactivated boolean,p_status_transition uuid,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_student IS NULL OR p_enrollment IS NULL OR p_roll IS NULL
+     OR p_receipt IS NULL OR p_correlation IS NULL THEN RAISE EXCEPTION 'D1 Enrollment placement audit intent denied'; END IF;
+  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+    command_receipt_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL','SUCCEEDED',pg_catalog.jsonb_build_object('operation','student.enrollment.place','phase','DIRECT'),
+    p_student_version,'student.enrollment.place','STUDENT',p_student,p_receipt,'API',p_correlation,
+    pg_catalog.jsonb_build_object('enrollment_id',p_enrollment,'roll_allocation_id',p_roll,'section_offering_id',p_section,
+      'entry_kind',p_entry_kind,'effective_from',p_effective_from,'capacity_override',p_override,'reactivated',p_reactivated,
+      'status_transition_id',p_status_transition),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_place_audit(uuid,uuid,uuid,uuid,uuid,bigint,uuid,text,date,boolean,boolean,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_audit(uuid,uuid,uuid,uuid,uuid,bigint,uuid,text,date,boolean,boolean,uuid,uuid)
+ TO schoolos_student_executor;
+
+CREATE FUNCTION app_private.d1_enrollment_place_events(
+  p_actor uuid,p_student uuid,p_enrollment uuid,p_roll uuid,p_receipt uuid,p_student_version bigint,p_section uuid,p_class uuid,p_campus uuid,
+  p_year uuid,p_entry_kind text,p_effective_from date,p_numeric bigint,p_policy uuid,p_mode text,p_override boolean,p_class_over boolean,
+  p_section_over boolean,p_status_transition uuid,p_status_before text,p_status_after text,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ord integer:=1;
+BEGIN
+  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('enrollment.created','STUDENT',p_student,p_student_version,p_receipt,ord,p_correlation,
+    pg_catalog.jsonb_build_object('student_id',p_student,'enrollment_id',p_enrollment,'roll_allocation_id',p_roll,'section_offering_id',p_section,
+      'class_offering_id',p_class,'campus_id',p_campus,'academic_year_id',p_year,'entry_kind',p_entry_kind,'effective_from',p_effective_from,
+      'numeric_value',p_numeric,'policy_revision_id',p_policy,'roll_mode',p_mode),p_actor);
+  IF p_override THEN ord:=ord+1;
+    INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+    VALUES ('enrollment.capacity_overridden','STUDENT',p_student,p_student_version,p_receipt,ord,p_correlation,
+      pg_catalog.jsonb_build_object('student_id',p_student,'enrollment_id',p_enrollment,'class_overridden',p_class_over,'section_overridden',p_section_over),p_actor);
+  END IF;
+  IF p_status_transition IS NOT NULL THEN ord:=ord+1;
+    INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+    VALUES ('student.status_changed','STUDENT',p_student,p_student_version,p_receipt,ord,p_correlation,
+      pg_catalog.jsonb_build_object('student_id',p_student,'transition_id',p_status_transition,'previous_status',p_status_before,
+        'new_status',p_status_after,'effective_on',p_effective_from),p_actor);
+  END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_place_events(uuid,uuid,uuid,uuid,uuid,bigint,uuid,uuid,uuid,uuid,text,date,bigint,uuid,text,boolean,boolean,boolean,uuid,text,text,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_events(uuid,uuid,uuid,uuid,uuid,bigint,uuid,uuid,uuid,uuid,text,date,bigint,uuid,text,boolean,boolean,boolean,uuid,text,text,uuid)
+ TO schoolos_student_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
