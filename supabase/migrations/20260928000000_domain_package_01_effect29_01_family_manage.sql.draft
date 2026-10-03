@@ -1,0 +1,250 @@
+-- D1C1B Effect 29/36: Family grouping administration.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+-- Approved contract: P0 CREATE/RELABEL/ARCHIVE; code and school immutable;
+-- ARCHIVE is one-way and does not mutate relationship, principal-membership,
+-- child-access, or primary-context history.
+
+SET ROLE schoolos_schema_owner;
+-- CREATE must resolve the one-school project anchor without accepting caller
+-- supplied ancestry. This SELECT grant does not permit School mutation.
+CREATE POLICY d1_family_school_anchor_read ON app_private.school_profiles
+  FOR SELECT TO schoolos_family_executor USING (true);
+GRANT SELECT (id) ON app_private.school_profiles TO schoolos_family_executor;
+RESET ROLE;
+
+-- The generic receipt lookup is the frozen typed/idempotent first phase. Effect
+-- 29 extends its private EXECUTE allowlist to the Family executor only.
+SET ROLE schoolos_evidence_writer;
+GRANT EXECUTE ON FUNCTION app_private.d1_command_receipt_lookup(text,text,text,jsonb)
+  TO schoolos_family_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_family_manage_receipt(
+  p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+  p_expected_version bigint,p_action text,p_result_ref uuid,p_summary jsonb
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid(); op_code text; result_state text; result_version bigint;
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_operation IS NULL OR p_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_key))=0
+     OR p_hash IS NULL OR p_action NOT IN ('CREATE','RELABEL','ARCHIVE')
+     OR p_result_ref IS NULL OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>2
+     OR NOT (p_summary ?& ARRAY['row_version','state'])
+     OR pg_catalog.jsonb_typeof(p_summary->'row_version')<>'number'
+     OR pg_catalog.jsonb_typeof(p_summary->'state')<>'string' THEN
+    RAISE EXCEPTION 'D1 Family manage receipt intent invalid';
+  END IF;
+  BEGIN
+    result_version:=(p_summary->>'row_version')::bigint;
+    result_state:=p_summary->>'state';
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+    RAISE EXCEPTION 'D1 Family manage receipt summary invalid';
+  END;
+  IF result_version<1
+     OR (p_action='CREATE' AND (p_expected_version IS NOT NULL OR result_state<>'ACTIVE'))
+     OR (p_action='RELABEL' AND (p_expected_version IS NULL OR p_expected_version<1 OR result_state<>'ACTIVE'))
+     OR (p_action='ARCHIVE' AND (p_expected_version IS NULL OR p_expected_version<1 OR result_state<>'ARCHIVED')) THEN
+    RAISE EXCEPTION 'D1 Family manage receipt result invalid';
+  END IF;
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o
+   WHERE o.id=p_operation AND o.code='family.manage' AND o.contract_version=1
+     AND o.handler_key='family.manage' AND o.enabled;
+  IF op_code IS NULL THEN RAISE EXCEPTION 'D1 Family manage operation invalid'; END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,
+     canonicalization_version,expected_target_version,state,result_kind,result_ref,
+     result_summary,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,'family.manage',p_key,p_hash,1,p_expected_version,
+    'SUCCEEDED','D1_FAMILY',p_result_ref,p_summary,pg_catalog.statement_timestamp(),p_actor);
+  RETURN rid;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_manage_receipt(
+  uuid,uuid,text,bytea,bigint,text,uuid,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_manage_receipt(
+  uuid,uuid,text,bytea,bigint,text,uuid,jsonb) TO schoolos_family_executor;
+
+CREATE FUNCTION app_private.d1_family_manage_audit(
+  p_actor uuid,p_action text,p_family uuid,p_receipt uuid,p_version bigint,
+  p_state text,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_action NOT IN ('CREATE','RELABEL','ARCHIVE') OR p_family IS NULL
+     OR p_receipt IS NULL OR p_version IS NULL OR p_version<1
+     OR p_state NOT IN ('ACTIVE','ARCHIVED') OR p_correlation IS NULL
+     OR (p_action='ARCHIVE' AND p_state<>'ARCHIVED')
+     OR (p_action<>'ARCHIVE' AND p_state<>'ACTIVE') THEN
+    RAISE EXCEPTION 'D1 Family manage audit intent invalid';
+  END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
+     target_kind,target_ref,command_receipt_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL','SUCCEEDED',
+    pg_catalog.jsonb_build_object('operation','family.manage'),p_version,
+    'family.changed','FAMILY',p_family,p_receipt,'API',p_correlation,
+    pg_catalog.jsonb_build_object('action',p_action,'state',p_state),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_manage_audit(
+  uuid,text,uuid,uuid,bigint,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_manage_audit(
+  uuid,text,uuid,uuid,bigint,text,uuid) TO schoolos_family_executor;
+
+CREATE FUNCTION app_private.d1_family_manage_event(
+  p_actor uuid,p_action text,p_family uuid,p_receipt uuid,p_version bigint,
+  p_state text,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_action NOT IN ('CREATE','RELABEL','ARCHIVE') OR p_family IS NULL
+     OR p_receipt IS NULL OR p_version IS NULL OR p_version<1
+     OR p_state NOT IN ('ACTIVE','ARCHIVED') OR p_correlation IS NULL
+     OR (p_action='ARCHIVE' AND p_state<>'ARCHIVED')
+     OR (p_action<>'ARCHIVE' AND p_state<>'ACTIVE') THEN
+    RAISE EXCEPTION 'D1 Family manage event intent invalid';
+  END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+     event_ordinal,correlation_id,payload,created_by)
+  VALUES ('family.changed','FAMILY',p_family,p_version,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('family_id',p_family,'action',p_action,'state',p_state),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_manage_event(
+  uuid,text,uuid,uuid,bigint,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_manage_event(
+  uuid,text,uuid,uuid,bigint,text,uuid) TO schoolos_family_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app.d1_manage_family(
+  p_action text,p_family_id uuid,p_code text,p_display_label text,
+  p_expected_version bigint,p_idempotency_key text
+) RETURNS TABLE(family_id uuid,row_version bigint,state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; current_row app_private.families%ROWTYPE; target_id uuid;
+  target_school uuid; school_count bigint; new_version bigint; new_state text;
+  receipt uuid; correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_action IS NULL OR p_action NOT IN ('CREATE','RELABEL','ARCHIVE')
+     OR (p_action='CREATE' AND (
+          p_family_id IS NOT NULL OR p_expected_version IS NOT NULL
+          OR p_code IS NULL OR pg_catalog.length(pg_catalog.btrim(p_code))=0
+          OR p_display_label IS NULL OR pg_catalog.length(pg_catalog.btrim(p_display_label))=0))
+     OR (p_action='RELABEL' AND (
+          p_family_id IS NULL OR p_expected_version IS NULL OR p_expected_version<1
+          OR p_code IS NOT NULL
+          OR p_display_label IS NULL OR pg_catalog.length(pg_catalog.btrim(p_display_label))=0))
+     OR (p_action='ARCHIVE' AND (
+          p_family_id IS NULL OR p_expected_version IS NULL OR p_expected_version<1
+          OR p_code IS NOT NULL OR p_display_label IS NOT NULL)) THEN
+    RAISE EXCEPTION 'D1 Family manage intent invalid';
+  END IF;
+
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'family.manage','family.manage',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_action,p_family_id,p_code,p_display_label,
+      p_expected_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+
+  IF p_action='CREATE' THEN
+    SELECT count(*),min(s.id::text)::uuid INTO school_count,target_school
+      FROM app_private.school_profiles s;
+    IF school_count<>1 OR target_school IS NULL THEN
+      RAISE EXCEPTION 'D1 Family manage School anchor invalid';
+    END IF;
+    IF ctx.receipt_id IS NOT NULL THEN
+      SELECT * INTO current_row FROM app_private.families f
+       WHERE f.id=ctx.result_ref FOR UPDATE;
+      IF NOT FOUND OR current_row.school_id IS DISTINCT FROM target_school
+         OR current_row.code IS DISTINCT FROM pg_catalog.btrim(p_code) THEN
+        RAISE EXCEPTION 'D1 Family manage CREATE replay target changed';
+      END IF;
+    END IF;
+  ELSE
+    SELECT * INTO current_row FROM app_private.families f
+     WHERE f.id=p_family_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family manage target missing'; END IF;
+    target_school:=current_row.school_id;
+    IF ctx.receipt_id IS NOT NULL AND ctx.result_ref IS DISTINCT FROM p_family_id THEN
+      RAISE EXCEPTION 'D1 Family manage replay target changed';
+    END IF;
+  END IF;
+
+  IF NOT app_private.d1_authorized('family.manage','SCHOOL',target_school) THEN
+    RAISE EXCEPTION 'D1 Family manage authority denied';
+  END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['row_version','state'])
+       OR pg_catalog.jsonb_typeof(ctx.result_summary->'row_version')<>'number'
+       OR pg_catalog.jsonb_typeof(ctx.result_summary->'state')<>'string' THEN
+      RAISE EXCEPTION 'D1 Family manage receipt is not replayable';
+    END IF;
+    BEGIN
+      new_version:=(ctx.result_summary->>'row_version')::bigint;
+      new_state:=ctx.result_summary->>'state';
+    EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+      RAISE EXCEPTION 'D1 Family manage receipt summary invalid';
+    END;
+    IF new_version<1 OR new_state NOT IN ('ACTIVE','ARCHIVED')
+       OR (p_action='ARCHIVE' AND new_state<>'ARCHIVED')
+       OR (p_action<>'ARCHIVE' AND new_state<>'ACTIVE') THEN
+      RAISE EXCEPTION 'D1 Family manage receipt result invalid';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,new_version,new_state;
+    RETURN;
+  END IF;
+
+  IF p_action='CREATE' THEN
+    target_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.families(id,school_id,code,display_label,created_by)
+    VALUES (target_id,target_school,pg_catalog.btrim(p_code),
+      pg_catalog.btrim(p_display_label),ctx.actor_id)
+    RETURNING families.row_version INTO new_version;
+    new_state:='ACTIVE';
+  ELSE
+    IF current_row.row_version IS DISTINCT FROM p_expected_version
+       OR current_row.state<>'ACTIVE' THEN
+      RAISE EXCEPTION 'D1 Family manage stale version/state';
+    END IF;
+    target_id:=current_row.id;
+    IF p_action='RELABEL' THEN
+      UPDATE app_private.families f SET display_label=pg_catalog.btrim(p_display_label)
+       WHERE f.id=target_id RETURNING f.row_version INTO new_version;
+      new_state:='ACTIVE';
+    ELSE
+      UPDATE app_private.families f SET state='ARCHIVED',
+        archived_at=pg_catalog.statement_timestamp(),archived_by=ctx.actor_id
+       WHERE f.id=target_id RETURNING f.row_version INTO new_version;
+      new_state:='ARCHIVED';
+    END IF;
+  END IF;
+
+  receipt:=app_private.d1_family_manage_receipt(ctx.actor_id,ctx.operation_id,
+    p_idempotency_key,ctx.intent_hash,p_expected_version,p_action,target_id,
+    pg_catalog.jsonb_build_object('row_version',new_version,'state',new_state));
+  PERFORM app_private.d1_family_manage_audit(ctx.actor_id,p_action,target_id,
+    receipt,new_version,new_state,correlation);
+  PERFORM app_private.d1_family_manage_event(ctx.actor_id,p_action,target_id,
+    receipt,new_version,new_state,correlation);
+  RETURN QUERY SELECT target_id,new_version,new_state;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_manage_family(text,uuid,text,text,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_manage_family(text,uuid,text,text,bigint,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_family_executor;
