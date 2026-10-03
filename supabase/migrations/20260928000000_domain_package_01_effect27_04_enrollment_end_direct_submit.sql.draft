@@ -1,0 +1,139 @@
+-- Effect 27 P1 direct path, reviewer candidates and approval submit.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_enrollment_end_candidates(p_request uuid,p_step uuid)
+RETURNS TABLE(candidate_principal_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; templ record; requester_person uuid; src uuid;
+BEGIN
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=p_request;
+  SELECT t.* INTO templ FROM app_private.approval_request_steps s JOIN app_private.approval_step_templates t ON t.id=s.template_id
+   WHERE s.id=p_step AND s.request_id=p_request;
+  IF req.id IS NULL OR templ.id IS NULL OR templ.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE' THEN RETURN; END IF;
+  BEGIN src:=NULLIF(req.old_snapshot->>'source_section_offering_id','')::uuid; EXCEPTION WHEN invalid_text_representation THEN RETURN; END;
+  IF src IS NULL THEN RETURN; END IF;
+  SELECT p.person_id INTO requester_person FROM app_private.principals p WHERE p.id=req.requester_id;
+  RETURN QUERY SELECT p.id FROM app_private.principals p
+   WHERE p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL
+     AND p.id<>req.requester_id AND p.person_id<>requester_person
+     AND app_private.d1_enrollment_end_authorized(p.id,'student.enrollment.approve',src,templ.reviewer_role_id)
+   ORDER BY p.id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_end_candidates(uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_end_candidates(uuid,uuid) TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app.d1_end_student_enrollment(
+  p_student_id uuid,p_expected_student_version bigint,p_source_enrollment_id uuid,p_expected_source_section_id uuid,
+  p_expected_source_effective_from date,p_effective_until date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(enrollment_id uuid,roll_allocation_id uuid,student_version bigint,effective_until date)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy_row record; locked record; eff record; receipt uuid; summary jsonb; corr uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_student_id IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1 OR p_source_enrollment_id IS NULL
+     OR p_expected_source_section_id IS NULL OR p_expected_source_effective_from IS NULL OR p_effective_until IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN RAISE EXCEPTION 'D1 Enrollment end intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_enrollment_end_command_context('student.enrollment.end',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_source_enrollment_id,p_expected_source_section_id,
+      p_expected_source_effective_from,p_effective_until,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF NOT app_private.d1_enrollment_end_authorized(ctx.actor_id,'student.enrollment.end',p_expected_source_section_id,NULL)
+    THEN RAISE EXCEPTION 'D1 Enrollment end authority denied'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_enrollment_end_policy(p_expected_source_section_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'DIRECT' THEN RAISE EXCEPTION 'D1 Enrollment end requires approval request'; END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS DISTINCT FROM p_source_enrollment_id OR ctx.result_summary IS NULL
+       OR app_private.d1_enrollment_end_result_matches(ctx.actor_id,p_student_id,p_source_enrollment_id,p_expected_source_section_id,
+            p_expected_source_effective_from,p_effective_until,ctx.result_summary) IS DISTINCT FROM true
+      THEN RAISE EXCEPTION 'D1 Enrollment end receipt is not replayable'; END IF;
+    RETURN QUERY SELECT p_source_enrollment_id,NULLIF(ctx.result_summary->>'roll_allocation_id','')::uuid,
+      (ctx.result_summary->>'student_version')::bigint,p_effective_until; RETURN;
+  END IF;
+  SELECT * INTO locked FROM app_private.d1_enrollment_end_lock_context(p_student_id,p_expected_student_version,p_source_enrollment_id,
+    p_expected_source_section_id,p_expected_source_effective_from,p_effective_until);
+  IF locked.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment end denied: %',locked.error_code; END IF;
+  SELECT * INTO eff FROM app_private.d1_enrollment_end_effect(ctx.actor_id,p_student_id,p_expected_student_version,p_source_enrollment_id,
+    p_expected_source_section_id,p_expected_source_effective_from,p_effective_until,p_reason);
+  summary:=pg_catalog.jsonb_build_object('enrollment_id',eff.enrollment_id,'roll_allocation_id',eff.source_roll_id,
+    'student_version',eff.student_version,'section_offering_id',eff.section_id,'class_offering_id',eff.class_offering_id,
+    'campus_id',eff.campus_id,'academic_year_id',eff.academic_year_id,'effective_until',p_effective_until);
+  receipt:=app_private.d1_enrollment_end_receipt('student.enrollment.end',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    p_expected_student_version,NULL,NULL,'SUCCEEDED','D1_ENROLLMENT_END',eff.enrollment_id,summary,NULL);
+  PERFORM app_private.d1_enrollment_end_audit(ctx.actor_id,'DIRECT',p_student_id,eff.enrollment_id,receipt,NULL,eff.student_version,
+    eff.section_id,p_effective_until,'SUCCEEDED',NULL,corr);
+  PERFORM app_private.d1_enrollment_end_event(ctx.actor_id,p_student_id,eff.enrollment_id,eff.source_roll_id,receipt,eff.student_version,
+    eff.section_id,eff.class_offering_id,eff.campus_id,eff.academic_year_id,p_effective_until,corr);
+  RETURN QUERY SELECT eff.enrollment_id,eff.source_roll_id,eff.student_version,p_effective_until;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_end_student_enrollment(uuid,bigint,uuid,uuid,date,date,text,text) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_end_student_enrollment(uuid,bigint,uuid,uuid,date,date,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_student_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_submit_student_enrollment_end(
+  p_student_id uuid,p_expected_student_version bigint,p_source_enrollment_id uuid,p_expected_source_section_id uuid,
+  p_expected_source_effective_from date,p_effective_until date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy_row record; locked record; template_row record; new_request uuid:=pg_catalog.gen_random_uuid();
+  first_step uuid; candidate_count bigint; final_version bigint; receipt uuid; old_snapshot jsonb; requested jsonb;
+BEGIN
+  IF p_student_id IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1 OR p_source_enrollment_id IS NULL
+     OR p_expected_source_section_id IS NULL OR p_expected_source_effective_from IS NULL OR p_effective_until IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN RAISE EXCEPTION 'D1 Enrollment end request intent invalid'; END IF;
+  SELECT * INTO ctx FROM app_private.d1_enrollment_end_command_context('request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_source_enrollment_id,p_expected_source_section_id,
+      p_expected_source_effective_from,p_effective_until,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  IF NOT app_private.d1_enrollment_end_authorized(ctx.actor_id,'student.enrollment.end',p_expected_source_section_id,NULL)
+    THEN RAISE EXCEPTION 'D1 Enrollment end request authority denied'; END IF;
+  SELECT * INTO policy_row FROM app_private.d1_enrollment_end_policy(p_expected_source_section_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' THEN RAISE EXCEPTION 'D1 Enrollment end policy selects direct command'; END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL OR ctx.result_summary->>'state'<>'PENDING'
+      THEN RAISE EXCEPTION 'D1 Enrollment end submit receipt invalid'; END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint; RETURN;
+  END IF;
+  SELECT * INTO locked FROM app_private.d1_enrollment_end_lock_context(p_student_id,p_expected_student_version,p_source_enrollment_id,
+    p_expected_source_section_id,p_expected_source_effective_from,p_effective_until);
+  IF locked.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment end request denied: %',locked.error_code; END IF;
+  old_snapshot:=pg_catalog.jsonb_build_object('student_id',p_student_id,'source_enrollment_id',p_source_enrollment_id,
+    'source_section_offering_id',p_expected_source_section_id,'source_effective_from',p_expected_source_effective_from,
+    'source_roll_allocation_id',locked.source_roll_id,'source_roll_effective_from',locked.source_roll_effective_from);
+  requested:=pg_catalog.jsonb_build_object('effective_until',p_effective_until);
+  INSERT INTO app_private.approval_requests(id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
+    expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,locked.campus_id,p_student_id,p_expected_student_version,
+    p_reason,old_snapshot,requested,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp() WHERE id=new_request;
+  FOR template_row IN SELECT t.id,t.step_number,t.required_reviews FROM app_private.approval_step_templates t
+      WHERE t.policy_id=policy_row.policy_id ORDER BY t.step_number LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps(id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step ELSE pg_catalog.gen_random_uuid() END,new_request,policy_row.policy_id,
+      template_row.id,template_row.step_number,template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Enrollment end policy has no first step'; END IF;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+  SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id FROM app_private.d1_enrollment_end_candidates(new_request,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT;
+  IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Enrollment end step has no reviewer'; END IF;
+  receipt:=app_private.d1_enrollment_end_receipt('request.submit',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    p_expected_student_version,new_request,NULL,'SUCCEEDED','D1_ENROLLMENT_END_REQUEST',new_request,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),NULL);
+  PERFORM app_private.d1_enrollment_end_audit(ctx.actor_id,'SUBMIT',p_student_id,p_source_enrollment_id,receipt,new_request,p_expected_student_version,
+    p_expected_source_section_id,p_effective_until,'SUCCEEDED',NULL,pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT new_request,final_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_submit_student_enrollment_end(uuid,bigint,uuid,uuid,date,date,text,text) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_student_enrollment_end(uuid,bigint,uuid,uuid,date,date,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
