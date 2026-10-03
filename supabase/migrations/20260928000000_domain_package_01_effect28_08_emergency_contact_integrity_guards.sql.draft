@@ -1,0 +1,83 @@
+-- Effect 28 protected-envelope and receipt integrity guards.
+-- These guards make the fixed JSON contracts structural, so malformed protected state cannot pass as a valid request/receipt.
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_student_emergency_contact_request_guard()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; source_id uuid; student_id uuid; action text; effective_on date;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'student.emergency_contact.change' THEN RETURN NEW; END IF;
+  IF NEW.target_ref IS NULL OR NEW.expected_target_version IS NULL OR NEW.expected_target_version<1
+     OR NEW.old_snapshot IS NULL OR pg_catalog.jsonb_typeof(NEW.old_snapshot)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(NEW.old_snapshot))<>10
+     OR NOT (NEW.old_snapshot ?& ARRAY['student_id','source_contact_id','person_id','contact_name','relationship_label','contact_phone','contact_email','effective_from','effective_until','supersedes_id'])
+     OR NEW.requested_payload IS NULL OR pg_catalog.jsonb_typeof(NEW.requested_payload)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(NEW.requested_payload))<>7
+     OR NOT (NEW.requested_payload ?& ARRAY['action','person_id','contact_name','relationship_label','contact_phone','contact_email','effective_on'])
+  THEN RAISE EXCEPTION 'D1 Emergency Contact protected request shape invalid'; END IF;
+  BEGIN
+    student_id:=NULLIF(NEW.old_snapshot->>'student_id','')::uuid;
+    source_id:=NULLIF(NEW.old_snapshot->>'source_contact_id','')::uuid;
+    action:=NEW.requested_payload->>'action';
+    effective_on:=NULLIF(NEW.requested_payload->>'effective_on','')::date;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN
+    RAISE EXCEPTION 'D1 Emergency Contact protected request values invalid';
+  END;
+  IF student_id IS DISTINCT FROM NEW.target_ref OR effective_on IS NULL OR action NOT IN ('ADD','END','CORRECT')
+     OR (action='ADD' AND source_id IS NOT NULL) OR (action IN ('END','CORRECT') AND source_id IS NULL)
+  THEN RAISE EXCEPTION 'D1 Emergency Contact protected request binding invalid'; END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_emergency_contact_request_guard() FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_student_emergency_contact_request_guard ON app_private.approval_requests;
+CREATE TRIGGER d1_student_emergency_contact_request_guard
+  BEFORE INSERT OR UPDATE ON app_private.approval_requests FOR EACH ROW EXECUTE FUNCTION app_private.d1_student_emergency_contact_request_guard();
+
+CREATE FUNCTION app_private.d1_student_emergency_contact_receipt_guard()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; sv bigint;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'student.emergency_contact.change' THEN RETURN NEW; END IF;
+  IF NEW.state='SUCCEEDED' AND NEW.command_kind IN ('student.emergency_contact.change','request.apply') THEN
+    IF NEW.result_ref IS NULL OR NEW.result_summary IS NULL OR pg_catalog.jsonb_typeof(NEW.result_summary)<>'object'
+       OR NOT (NEW.result_summary ? 'student_version') THEN RAISE EXCEPTION 'D1 Emergency Contact success receipt missing result binding'; END IF;
+    BEGIN sv:=NULLIF(NEW.result_summary->>'student_version','')::bigint;
+    EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN RAISE EXCEPTION 'D1 Emergency Contact success receipt version malformed'; END;
+    IF sv IS DISTINCT FROM NEW.expected_target_version THEN RAISE EXCEPTION 'D1 Emergency Contact success receipt version mismatch'; END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_emergency_contact_receipt_guard() FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_student_emergency_contact_receipt_guard ON app_private.command_receipts;
+CREATE TRIGGER d1_student_emergency_contact_receipt_guard
+  BEFORE INSERT ON app_private.command_receipts FOR EACH ROW EXECUTE FUNCTION app_private.d1_student_emergency_contact_receipt_guard();
+
+CREATE OR REPLACE FUNCTION app_private.d1_student_emergency_contact_application_guard()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; req record; rec record; action text; source_contact uuid; effective_on date; student_id uuid; base_summary jsonb;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'student.emergency_contact.change' THEN RETURN NEW; END IF;
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=NEW.request_id;
+  SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.id=NEW.command_receipt_id;
+  IF req.id IS NULL OR rec.id IS NULL OR req.operation_id IS DISTINCT FROM NEW.operation_id OR rec.operation_id IS DISTINCT FROM NEW.operation_id
+     OR rec.request_id IS DISTINCT FROM NEW.request_id OR rec.command_kind IS DISTINCT FROM 'request.apply' OR rec.state IS DISTINCT FROM 'SUCCEEDED'
+     OR req.state IS DISTINCT FROM 'EXECUTED' OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR rec.expected_target_version IS DISTINCT FROM req.expected_target_version
+     OR NEW.result_ref IS DISTINCT FROM rec.result_ref OR rec.result_ref IS NULL OR rec.result_summary IS NULL
+     OR rec.result_summary->>'state' IS DISTINCT FROM 'EXECUTED' OR rec.result_summary->>'request_version' IS NULL
+  THEN RAISE EXCEPTION 'D1 Emergency Contact approval application evidence invalid'; END IF;
+  BEGIN
+    student_id:=NULLIF(req.old_snapshot->>'student_id','')::uuid;
+    action:=req.requested_payload->>'action'; source_contact:=NULLIF(req.old_snapshot->>'source_contact_id','')::uuid;
+    effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RAISE EXCEPTION 'D1 Emergency Contact approval application request malformed'; END;
+  IF student_id IS DISTINCT FROM req.target_ref THEN RAISE EXCEPTION 'D1 Emergency Contact approval application target mismatch'; END IF;
+  base_summary:=rec.result_summary-'request_version'-'state';
+  IF app_private.d1_student_emergency_contact_result_rows_match(req.target_ref,action,source_contact,rec.result_ref,effective_on,base_summary) IS DISTINCT FROM true
+    THEN RAISE EXCEPTION 'D1 Emergency Contact approval application result invalid'; END IF;
+  RETURN NEW;
+END $body$;
+RESET ROLE;
