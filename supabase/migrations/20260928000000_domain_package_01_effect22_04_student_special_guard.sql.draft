@@ -6,6 +6,7 @@ LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS
 DECLARE op text; r app_private.command_receipts%ROWTYPE;
   q app_private.approval_requests%ROWTYPE; x app_private.student_special_details%ROWTYPE;
   p app_private.student_special_details%ROWTYPE; source_id uuid;
+  old_disability boolean; old_orphan boolean; new_disability boolean; new_orphan boolean;
 BEGIN
   SELECT code INTO op FROM app_private.operation_contracts WHERE id=NEW.operation_id;
   IF op IS DISTINCT FROM 'student.special.correct' THEN RETURN NEW; END IF;
@@ -18,19 +19,37 @@ BEGIN
    WHERE id=NEW.request_id AND operation_id=NEW.operation_id AND state='EXECUTED';
   SELECT * INTO x FROM app_private.student_special_details WHERE id=NEW.result_ref;
   IF r.id IS NULL OR q.id IS NULL OR x.id IS NULL
+     OR app_private.d1_student_special_request_payload_valid(q.old_snapshot,q.requested_payload) IS DISTINCT FROM true
      OR x.student_id IS DISTINCT FROM q.target_ref
      OR NEW.applied_target_version IS DISTINCT FROM q.expected_target_version
      OR r.expected_target_version IS DISTINCT FROM q.expected_target_version
+     OR r.result_summary IS NULL OR pg_catalog.jsonb_typeof(r.result_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(r.result_summary))<>5
+     OR NOT (r.result_summary ?& ARRAY['request_version','state','special_snapshot_id','student_version','effective_from'])
      OR r.result_summary->>'state'<>'EXECUTED'
+     OR (r.result_summary->>'request_version')::bigint<>q.row_version
      OR (r.result_summary->>'special_snapshot_id')::uuid IS DISTINCT FROM x.id
+     OR (r.result_summary->>'student_version')::bigint IS DISTINCT FROM NEW.applied_target_version
      OR (r.result_summary->>'effective_from')::timestamptz IS DISTINCT FROM x.effective_from THEN
     RAISE EXCEPTION 'D1 Student special application binding invalid'; END IF;
   source_id:=NULLIF(q.old_snapshot->>'source_snapshot_id','')::uuid;
+  old_disability:=CASE WHEN q.old_snapshot->'disability_indicator'='null'::jsonb THEN NULL ELSE (q.old_snapshot->>'disability_indicator')::boolean END;
+  old_orphan:=CASE WHEN q.old_snapshot->'orphan_indicator'='null'::jsonb THEN NULL ELSE (q.old_snapshot->>'orphan_indicator')::boolean END;
+  new_disability:=CASE WHEN q.requested_payload->'disability_indicator'='null'::jsonb THEN NULL ELSE (q.requested_payload->>'disability_indicator')::boolean END;
+  new_orphan:=CASE WHEN q.requested_payload->'orphan_indicator'='null'::jsonb THEN NULL ELSE (q.requested_payload->>'orphan_indicator')::boolean END;
   SELECT * INTO p FROM app_private.student_special_details WHERE id=source_id;
   IF source_id IS NULL OR p.id IS NULL OR p.student_id IS DISTINCT FROM q.target_ref
+     OR p.disability_indicator IS DISTINCT FROM old_disability
+     OR p.orphan_indicator IS DISTINCT FROM old_orphan
+     OR p.blood_group_code IS DISTINCT FROM NULLIF(q.old_snapshot->>'blood_group_code','')
+     OR p.effective_from IS DISTINCT FROM NULLIF(q.old_snapshot->>'source_effective_from','')::timestamptz
+     OR p.supersedes_id IS DISTINCT FROM NULLIF(q.old_snapshot->>'source_supersedes_id','')::uuid
      OR x.supersedes_id IS DISTINCT FROM source_id
      OR p.effective_until IS DISTINCT FROM x.effective_from
      OR p.ended_at IS NULL OR p.ended_by IS NULL
+     OR x.disability_indicator IS DISTINCT FROM new_disability
+     OR x.orphan_indicator IS DISTINCT FROM new_orphan
+     OR x.blood_group_code IS DISTINCT FROM NULLIF(q.requested_payload->>'blood_group_code','')
      OR x.reason IS DISTINCT FROM q.reason OR x.effective_until IS NOT NULL
      OR x.ended_at IS NOT NULL OR x.ended_by IS NOT NULL THEN
     RAISE EXCEPTION 'D1 Student special lineage binding invalid'; END IF;
