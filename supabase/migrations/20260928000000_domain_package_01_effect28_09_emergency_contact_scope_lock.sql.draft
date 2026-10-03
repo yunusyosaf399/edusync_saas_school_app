@@ -1,0 +1,44 @@
+-- Effect 28 scope serialization hardening.
+-- Student is the authorization/concurrency anchor; current-placement ACS is re-resolved only while this lock is held.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_student_emergency_contact_lock_student(p_student uuid)
+RETURNS bigint LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v bigint;
+BEGIN
+  SELECT s.row_version INTO v FROM app_private.students s WHERE s.id=p_student FOR UPDATE;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  RETURN v;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_student_emergency_contact_lock_student(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_emergency_contact_lock_student(uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+CREATE OR REPLACE FUNCTION app.d1_read_student_emergency_contact_request(p_request_id uuid)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,student_id uuid,action text,source_contact_id uuid,
+ person_id uuid,contact_name text,relationship_label text,contact_phone text,contact_email text,effective_on date,request_reason text,participant_kind text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; req record; kind text; locked_version bigint;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id(); IF actor IS NULL THEN RETURN; END IF;
+  PERFORM app_private.d1_lock_current_principal(actor);
+  SELECT q.* INTO req FROM app_private.approval_requests q JOIN app_private.operation_contracts o ON o.id=q.operation_id
+   WHERE q.id=p_request_id AND o.code='student.emergency_contact.change'; IF NOT FOUND THEN RETURN; END IF;
+  locked_version:=app_private.d1_student_emergency_contact_lock_student(req.target_ref); IF locked_version IS NULL THEN RETURN; END IF;
+  kind:=app_private.d1_student_emergency_contact_participant_kind(p_request_id,actor); IF kind IS NULL THEN RETURN; END IF;
+  IF req.old_snapshot IS NULL OR req.requested_payload IS NULL THEN RETURN; END IF;
+  BEGIN
+    RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,req.requested_payload->>'action',
+      NULLIF(req.old_snapshot->>'source_contact_id','')::uuid,NULLIF(req.requested_payload->>'person_id','')::uuid,
+      req.requested_payload->>'contact_name',req.requested_payload->>'relationship_label',req.requested_payload->>'contact_phone',
+      req.requested_payload->>'contact_email',NULLIF(req.requested_payload->>'effective_on','')::date,req.reason,kind;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RETURN; END;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
