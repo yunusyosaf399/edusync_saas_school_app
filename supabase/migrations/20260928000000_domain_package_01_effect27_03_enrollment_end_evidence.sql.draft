@@ -1,0 +1,107 @@
+-- Effect 27 durable receipt/audit/outbox evidence and replay proof.
+-- Arbitrary enrollment-end reason text is retained on the Enrollment/request but excluded from broad evidence.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_enrollment_end_receipt(
+  p_command_kind text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_expected bigint,p_request uuid,p_expected_request bigint,
+  p_state text,p_result_kind text,p_result uuid,p_summary jsonb,p_error text
+) RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_command_kind NOT IN ('student.enrollment.end','request.submit','request.review','request.apply') OR p_actor IS NULL OR p_operation IS NULL
+     OR p_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_key))=0 OR p_hash IS NULL OR p_expected IS NULL OR p_expected<1
+     OR p_state NOT IN ('SUCCEEDED','REJECTED') OR (p_state='SUCCEEDED' AND (p_result_kind IS NULL OR p_error IS NOT NULL))
+     OR (p_state='REJECTED' AND (p_error IS NULL OR p_result IS NOT NULL)) THEN RAISE EXCEPTION 'D1 Enrollment end receipt intent denied'; END IF;
+  INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+    expected_target_version,request_id,expected_request_version,state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,p_command_kind,p_key,p_hash,1,p_expected,p_request,p_expected_request,p_state,p_result_kind,p_result,p_summary,p_error,
+    pg_catalog.statement_timestamp(),p_actor);
+  RETURN rid;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_end_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_end_receipt(text,uuid,uuid,text,bytea,bigint,uuid,bigint,text,text,uuid,jsonb,text)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_enrollment_end_audit(
+  p_actor uuid,p_phase text,p_student uuid,p_enrollment uuid,p_receipt uuid,p_request uuid,p_student_version bigint,
+  p_section uuid,p_effective_until date,p_outcome text,p_error text,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_phase NOT IN ('DIRECT','SUBMIT','REVIEW','APPLY') OR p_student IS NULL
+     OR p_enrollment IS NULL OR p_receipt IS NULL OR p_student_version IS NULL OR p_student_version<1 OR p_section IS NULL
+     OR p_effective_until IS NULL OR p_outcome NOT IN ('SUCCEEDED','REJECTED') OR p_correlation IS NULL
+    THEN RAISE EXCEPTION 'D1 Enrollment end audit intent denied'; END IF;
+  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+    command_receipt_id,approval_request_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',p_outcome,pg_catalog.jsonb_build_object('operation','student.enrollment.end','phase',p_phase),
+    p_student_version,'student.enrollment.end','STUDENT',p_student,p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('enrollment_id',p_enrollment,'section_offering_id',p_section,'effective_until',p_effective_until,'error_code',p_error),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_end_audit(uuid,text,uuid,uuid,uuid,uuid,bigint,uuid,date,text,text,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_end_audit(uuid,text,uuid,uuid,uuid,uuid,bigint,uuid,date,text,text,uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_enrollment_end_event(
+  p_actor uuid,p_student uuid,p_enrollment uuid,p_roll uuid,p_receipt uuid,p_student_version bigint,p_section uuid,p_class uuid,p_campus uuid,
+  p_year uuid,p_effective_until date,p_correlation uuid
+) RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_student IS NULL OR p_enrollment IS NULL OR p_roll IS NULL OR p_receipt IS NULL
+     OR p_student_version IS NULL OR p_student_version<1 OR p_section IS NULL OR p_class IS NULL OR p_campus IS NULL OR p_year IS NULL
+     OR p_effective_until IS NULL OR p_correlation IS NULL THEN RAISE EXCEPTION 'D1 Enrollment end event intent denied'; END IF;
+  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('enrollment.ended','ENROLLMENT',p_enrollment,1,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('student_id',p_student,'enrollment_id',p_enrollment,'roll_allocation_id',p_roll,
+      'section_offering_id',p_section,'class_offering_id',p_class,'campus_id',p_campus,'academic_year_id',p_year,
+      'effective_until',p_effective_until),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_end_event(uuid,uuid,uuid,uuid,uuid,bigint,uuid,uuid,uuid,uuid,date,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_end_event(uuid,uuid,uuid,uuid,uuid,bigint,uuid,uuid,uuid,uuid,date,uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_enrollment_end_result_rows_match(
+  p_student uuid,p_enrollment uuid,p_section uuid,p_effective_from date,p_effective_until date,p_summary jsonb
+) RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE roll_id uuid;
+BEGIN
+  IF p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object' OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>8
+     OR NOT (p_summary ?& ARRAY['enrollment_id','roll_allocation_id','student_version','section_offering_id','class_offering_id','campus_id','academic_year_id','effective_until'])
+    THEN RETURN false; END IF;
+  roll_id:=NULLIF(p_summary->>'roll_allocation_id','')::uuid;
+  IF NULLIF(p_summary->>'enrollment_id','')::uuid IS DISTINCT FROM p_enrollment
+     OR NULLIF(p_summary->>'section_offering_id','')::uuid IS DISTINCT FROM p_section
+     OR NULLIF(p_summary->>'effective_until','')::date IS DISTINCT FROM p_effective_until THEN RETURN false; END IF;
+  IF NOT EXISTS (SELECT 1 FROM app_private.enrollments e WHERE e.id=p_enrollment AND e.student_id=p_student AND e.section_offering_id=p_section
+      AND e.placement_kind='PRIMARY' AND e.placement_state='ENDED' AND e.effective_from=p_effective_from AND e.effective_until=p_effective_until
+      AND e.end_reason IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(e.end_reason))>0 AND e.ended_at IS NOT NULL AND e.ended_by IS NOT NULL)
+     OR NOT EXISTS (SELECT 1 FROM app_private.roll_allocations r WHERE r.id=roll_id AND r.enrollment_id=p_enrollment AND r.student_id=p_student
+      AND r.effective_until=p_effective_until AND r.ended_at IS NOT NULL AND r.ended_by IS NOT NULL)
+    THEN RETURN false; END IF;
+  RETURN true;
+EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow OR numeric_value_out_of_range THEN RETURN false;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_end_result_rows_match(uuid,uuid,uuid,date,date,jsonb) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_end_result_rows_match(uuid,uuid,uuid,date,date,jsonb)
+  TO schoolos_student_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_enrollment_end_result_matches(
+  p_actor uuid,p_student uuid,p_enrollment uuid,p_section uuid,p_effective_from date,p_effective_until date,p_summary jsonb
+) RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR NOT app_private.d1_enrollment_end_authorized(p_actor,'student.enrollment.end',p_section,NULL) THEN RETURN false; END IF;
+  RETURN app_private.d1_enrollment_end_result_rows_match(p_student,p_enrollment,p_section,p_effective_from,p_effective_until,p_summary);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_enrollment_end_result_matches(uuid,uuid,uuid,uuid,date,date,jsonb) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_end_result_matches(uuid,uuid,uuid,uuid,date,date,jsonb)
+  TO schoolos_student_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
