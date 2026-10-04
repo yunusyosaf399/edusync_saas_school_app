@@ -1,0 +1,77 @@
+-- Effect 33 P0 DIRECT command surface and explicit client ACL.
+-- There is no approval-request/reviewer/apply workflow for family.primary_context.change.
+
+GRANT CREATE ON SCHEMA app TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app.d1_change_family_primary_context(
+  p_student_id uuid,p_expected_student_version bigint,p_action text,p_source_context_id uuid,
+  p_family_relationship_id uuid,p_effective_on date,p_effective_until date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(context_id uuid,source_context_id uuid,action text,family_relationship_id uuid,
+  family_id uuid,effective_from date,effective_until date,student_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; locks record; pre record; eff record; receipt uuid;
+  summary jsonb; corr uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'family.primary_context.change','family.primary_context.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_action,p_source_context_id,
+      p_family_relationship_id,p_effective_on,p_effective_until,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+
+  SELECT * INTO locks FROM app_private.d1_family_primary_context_lock_targets(
+    p_student_id,p_source_context_id,p_family_relationship_id);
+  IF locks.student_version IS NULL THEN RAISE EXCEPTION 'D1 Family primary context target missing'; END IF;
+  IF app_private.d1_family_primary_context_authorized(ctx.actor_id,p_student_id) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family primary context authority denied';
+  END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state IS DISTINCT FROM 'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR app_private.d1_family_primary_context_result_match(
+         p_student_id,p_action,p_source_context_id,ctx.result_ref,p_effective_on,p_effective_until,ctx.result_summary)
+         IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'D1 Family primary context receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,NULLIF(ctx.result_summary->>'source_context_id','')::uuid,
+      ctx.result_summary->>'action',NULLIF(ctx.result_summary->>'family_relationship_id','')::uuid,
+      NULLIF(ctx.result_summary->>'family_id','')::uuid,NULLIF(ctx.result_summary->>'effective_from','')::date,
+      NULLIF(ctx.result_summary->>'effective_until','')::date,(ctx.result_summary->>'student_version')::bigint;
+    RETURN;
+  END IF;
+
+  IF locks.student_version IS DISTINCT FROM p_expected_student_version THEN
+    RAISE EXCEPTION 'D1 Family primary context target version changed';
+  END IF;
+  SELECT * INTO pre FROM app_private.d1_family_primary_context_preflight(
+    p_student_id,p_expected_student_version,p_action,p_source_context_id,p_family_relationship_id,
+    p_effective_on,p_effective_until,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family primary context preflight denied: %',pre.error_code;
+  END IF;
+
+  SELECT * INTO eff FROM app_private.d1_family_primary_context_effect(
+    ctx.actor_id,p_student_id,p_expected_student_version,p_action,p_source_context_id,p_family_relationship_id,
+    p_effective_on,p_effective_until,p_reason);
+  summary:=pg_catalog.jsonb_build_object(
+    'context_id',eff.context_id,'source_context_id',eff.source_context_id,'action',eff.action,
+    'family_relationship_id',eff.family_relationship_id,'family_id',eff.family_id,
+    'effective_from',eff.effective_from,'effective_until',eff.effective_until,'student_version',eff.student_version);
+  receipt:=app_private.d1_family_primary_context_receipt(
+    ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,p_expected_student_version,
+    p_action,eff.context_id,summary);
+  PERFORM app_private.d1_family_primary_context_audit(
+    ctx.actor_id,p_student_id,eff.family_id,eff.context_id,eff.source_context_id,eff.family_relationship_id,
+    eff.action,eff.effective_from,eff.effective_until,receipt,eff.student_version,corr);
+  PERFORM app_private.d1_family_primary_context_event(
+    ctx.actor_id,p_student_id,eff.family_id,eff.context_id,eff.source_context_id,eff.family_relationship_id,
+    eff.action,eff.effective_from,eff.effective_until,receipt,corr);
+
+  RETURN QUERY SELECT eff.context_id,eff.source_context_id,eff.action,eff.family_relationship_id,
+    eff.family_id,eff.effective_from,eff.effective_until,eff.student_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_family_primary_context(uuid,bigint,text,uuid,uuid,date,date,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_family_primary_context(uuid,bigint,text,uuid,uuid,date,date,text,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_family_executor;
