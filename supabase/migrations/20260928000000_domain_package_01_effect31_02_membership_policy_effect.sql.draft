@@ -1,0 +1,159 @@
+-- Effect 31 P1 policy, ordered Principal locking, mutation, and durable replay proof.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_family_membership_history_read ON app_private.family_principal_memberships
+  FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_family_membership_history_insert ON app_private.family_principal_memberships
+  FOR INSERT TO schoolos_family_executor WITH CHECK (true);
+CREATE POLICY d1_family_membership_history_update ON app_private.family_principal_memberships
+  FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+CREATE POLICY d1_family_membership_family_read ON app_private.families
+  FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_family_membership_family_lock ON app_private.families
+  FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_family_principal_membership_policy()
+RETURNS TABLE(policy_id uuid,route_mode text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); n bigint; chosen uuid; route text; steps bigint; invalid bigint;
+BEGIN
+  SELECT count(*),min(v.id::text)::uuid,min(v.d1_route_mode)
+    INTO n,chosen,route
+  FROM app_private.approval_policy_versions v
+  JOIN app_private.operation_contracts o ON o.id=v.operation_id
+  WHERE o.code='family.principal_membership.change' AND o.contract_version=1 AND o.enabled
+    AND v.state='ACTIVE' AND v.campus_id IS NULL
+    AND v.d1_route_mode IN ('DIRECT','APPROVAL')
+    AND v.effective_from<=at_time AND (v.effective_until IS NULL OR at_time<v.effective_until);
+  IF n<>1 OR chosen IS NULL OR route IS NULL THEN RETURN; END IF;
+  -- ALL-only operation: a campus-specific policy is not a compatible substitute.
+  IF route='APPROVAL' THEN
+    SELECT count(*),count(*) FILTER (
+      WHERE r.id IS NULL OR r.state<>'ACTIVE' OR t.required_reviews<>1
+        OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE')
+      INTO steps,invalid
+    FROM app_private.approval_step_templates t
+    LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id
+    WHERE t.policy_id=chosen;
+    IF steps=0 OR invalid<>0 THEN RETURN; END IF;
+  END IF;
+  RETURN QUERY SELECT chosen,route;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_policy()
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_policy()
+  TO schoolos_family_executor,schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app_private.d1_family_principal_membership_lock_principals(
+  p_actor uuid,p_requester uuid,p_target uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE x uuid;
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_target IS NULL THEN
+    RAISE EXCEPTION 'D1 Family membership Principal lock intent denied';
+  END IF;
+  FOR x IN
+    SELECT v FROM (VALUES (p_actor),(p_requester),(p_target)) q(v)
+      WHERE v IS NOT NULL GROUP BY v ORDER BY v
+  LOOP
+    PERFORM 1 FROM app_private.principals p WHERE p.id=x FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family membership Principal missing'; END IF;
+  END LOOP;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_lock_principals(uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_lock_principals(uuid,uuid,uuid)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_family_principal_membership_effect(
+  p_actor uuid,p_family uuid,p_expected_family_version bigint,p_target_principal uuid,p_expected_principal_version bigint,
+  p_action text,p_source uuid,p_effective_on date,p_reason text
+) RETURNS TABLE(membership_id uuid,source_membership_id uuid,source_family_id uuid,family_id uuid,
+  principal_id uuid,action text,effective_from date,effective_until date,family_version bigint,principal_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; new_id uuid:=pg_catalog.gen_random_uuid(); src app_private.family_principal_memberships%ROWTYPE;
+  fv bigint; pv bigint;
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id() THEN
+    RAISE EXCEPTION 'D1 Family membership actor denied';
+  END IF;
+  SELECT * INTO pre FROM app_private.d1_family_principal_membership_preflight(
+    p_family,p_expected_family_version,p_target_principal,p_expected_principal_version,
+    p_action,p_source,p_effective_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family membership preflight denied: %',pre.error_code;
+  END IF;
+  IF p_source IS NOT NULL THEN
+    SELECT * INTO src FROM app_private.family_principal_memberships m WHERE m.id=p_source;
+  END IF;
+  IF p_action IN ('END','CORRECT') THEN
+    UPDATE app_private.family_principal_memberships
+      SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+      WHERE id=p_source AND principal_id=p_target_principal AND effective_until IS NULL;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family membership source changed'; END IF;
+  END IF;
+  IF p_action IN ('ADD','CORRECT') THEN
+    INSERT INTO app_private.family_principal_memberships
+      (id,family_id,principal_id,principal_kind,effective_from,reason,supersedes_id,created_by)
+    VALUES (new_id,p_family,p_target_principal,'FAMILY',p_effective_on,pg_catalog.btrim(p_reason),
+      CASE WHEN p_action='CORRECT' THEN p_source ELSE NULL END,p_actor);
+  ELSE
+    new_id:=p_source;
+  END IF;
+  SELECT f.row_version INTO fv FROM app_private.families f WHERE f.id=p_family;
+  SELECT p.row_version INTO pv FROM app_private.principals p WHERE p.id=p_target_principal;
+  RETURN QUERY SELECT new_id,p_source,pre.source_family_id,p_family,p_target_principal,p_action,
+    CASE WHEN p_action='END' THEN src.effective_from ELSE p_effective_on END,
+    CASE WHEN p_action='END' THEN p_effective_on ELSE NULL::date END,fv,pv;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_effect(uuid,uuid,bigint,uuid,bigint,text,uuid,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_effect(uuid,uuid,bigint,uuid,bigint,text,uuid,date,text)
+  TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_family_principal_membership_result_match(
+  p_family uuid,p_principal uuid,p_action text,p_source uuid,p_result uuid,p_effective_on date,p_summary jsonb
+) RETURNS boolean
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE src record; res record;
+BEGIN
+  IF p_family IS NULL OR p_principal IS NULL OR p_action NOT IN ('ADD','END','CORRECT')
+     OR p_result IS NULL OR p_effective_on IS NULL OR p_summary IS NULL
+     OR pg_catalog.jsonb_typeof(p_summary)<>'object' THEN RETURN false; END IF;
+  SELECT * INTO res FROM app_private.family_principal_memberships m WHERE m.id=p_result;
+  IF NOT FOUND OR res.principal_id IS DISTINCT FROM p_principal OR res.principal_kind IS DISTINCT FROM 'FAMILY' THEN RETURN false; END IF;
+  IF p_action='ADD' THEN
+    RETURN res.family_id IS NOT DISTINCT FROM p_family
+      AND res.effective_from IS NOT DISTINCT FROM p_effective_on
+      AND res.supersedes_id IS NULL
+      AND p_summary->>'action'='ADD';
+  ELSIF p_action='END' THEN
+    IF p_result IS DISTINCT FROM p_source THEN RETURN false; END IF;
+    RETURN res.family_id IS NOT DISTINCT FROM p_family
+      AND res.effective_until IS NOT DISTINCT FROM p_effective_on
+      AND p_summary->>'action'='END';
+  ELSE
+    IF p_source IS NULL OR res.family_id IS DISTINCT FROM p_family
+       OR res.effective_from IS DISTINCT FROM p_effective_on
+       OR res.supersedes_id IS DISTINCT FROM p_source THEN RETURN false; END IF;
+    SELECT * INTO src FROM app_private.family_principal_memberships m WHERE m.id=p_source;
+    RETURN FOUND AND src.principal_id IS NOT DISTINCT FROM p_principal
+      AND src.effective_until IS NOT DISTINCT FROM p_effective_on
+      AND p_summary->>'action'='CORRECT';
+  END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_result_match(uuid,uuid,text,uuid,uuid,date,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_result_match(uuid,uuid,text,uuid,uuid,date,jsonb)
+  TO schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
