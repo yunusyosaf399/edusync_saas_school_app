@@ -7,14 +7,18 @@ on:
       - '.gitattributes'
       - 'supabase/migrations/20260928000000_domain_package_01*.sql.draft'
       - 'tools/supabase/domain_draft_guard.py'
+      - 'tools/supabase/domain_function_final_guard.py'
       - 'tools/supabase/tests/test_domain_draft_guard.py'
+      - 'tools/supabase/tests/test_domain_function_final_guard.py'
   pull_request:
     paths:
       - '.github/workflows/domain-draft-static.yml'
       - '.gitattributes'
       - 'supabase/migrations/20260928000000_domain_package_01*.sql.draft'
       - 'tools/supabase/domain_draft_guard.py'
+      - 'tools/supabase/domain_function_final_guard.py'
       - 'tools/supabase/tests/test_domain_draft_guard.py'
+      - 'tools/supabase/tests/test_domain_function_final_guard.py'
   workflow_dispatch:
 
 jobs:
@@ -28,5 +32,9 @@ jobs:
           python-version: '3.12'
       - name: D1 draft guard unit tests
         run: python -m unittest discover -s tools/supabase/tests -p 'test_domain_draft_guard.py' -v
+      - name: D1 final function-state unit tests
+        run: python -m unittest discover -s tools/supabase/tests -p 'test_domain_function_final_guard.py' -v
       - name: Integrated Migration 10 source guard
         run: python tools/supabase/domain_draft_guard.py
+      - name: Final Migration 10 function ownership and ACL audit
+        run: python tools/supabase/domain_function_final_guard.py --verbose
