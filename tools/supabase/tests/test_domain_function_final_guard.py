@@ -168,6 +168,21 @@ RESET ROLE;
         self.assertEqual(metrics["possible_name_collisions"], 1)
         self.assertTrue(any("unresolved bare CREATE" in error for error in errors))
 
+    def test_rejects_argument_shape_drift_across_replace(self):
+        text = _base_sql() + """
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_signature_guard(p_value uuid) RETURNS boolean
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$ SELECT true; $body$;
+CREATE OR REPLACE FUNCTION app_private.d1_signature_guard(p_value text) RETURNS boolean
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$ SELECT true; $body$;
+RESET ROLE;
+"""
+        errors, metrics, _ = guard.inspect(self.make_root(text))
+        self.assertEqual(metrics["signature_shape_drift_names"], ["app_private.d1_signature_guard"])
+        self.assertTrue(any("argument-shape drift" in error for error in errors))
+
 
 if __name__ == "__main__":
     unittest.main()
