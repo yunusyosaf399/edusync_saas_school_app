@@ -2,9 +2,9 @@
 
 **Status: FROZEN.**
 
-Trusted runtime SHA: `8a6e580150a8e4ba0923704f01fc7a2a6e9053d6`.
+Trusted runtime SHA: `3c2e7fbe2521cce685e96f493b1dd92729108e49`.
 
-Security freeze accepts `family.primary_context.change` after independent static review and exact-SHA GitHub Actions run #205 (`37183363297`) passed on that runtime SHA.
+Security freeze accepts `family.primary_context.change` after independent static review and exact-SHA GitHub Actions run #206 (`37184333023`) passed on that runtime SHA.
 
 ## Frozen security boundary
 
@@ -18,11 +18,13 @@ Security freeze accepts `family.primary_context.change` after independent static
 
 ## Frozen SELECT/END/CORRECT distinction
 
-SELECT requires an exact effective Father/Mother/Guardian relationship belonging to the Student, full interval containment, non-overlap and an ACTIVE target Family. Replacing an effective current context requires the exact source context; the server does not guess.
+SELECT requires an exact effective Father/Mother/Guardian relationship belonging to the Student, full interval containment, non-overlap and an ACTIVE target Family. Replacing an effective current context requires the exact source context; the server does not guess. A normal SELECT replacement closes and retains that source but starts a fresh selection lineage with `supersedes_id IS NULL`.
 
 END is reduction-only and closes the exact open source without replacement. It remains available after Family archive and does not mutate the selected relationship or portal access.
 
 CORRECT closes the exact open source and appends a retained successor through `supersedes_id`. It must make a factual change and remains available for historical repair after Family archive subject to relationship containment and overlap rules.
+
+`supersedes_id` is therefore correction lineage only; an ordinary display-selection change cannot be misrepresented as factual correction history.
 
 ## Frozen concurrency boundary
 
@@ -36,17 +38,23 @@ The Student row is the serialization/version anchor and is not mutated merely to
 
 - Canonical idempotency binds Student ID/version, action, source context where applicable, target relationship, interval and private reason.
 - Successful replay uses retained history and does not require an earlier result to remain current after a legitimate later END/CORRECT.
+- Replay proves SELECT has no correction predecessor and CORRECT names its exact accepted source; a replaced SELECT source is separately proven closed at the accepted boundary.
 - The HE provenance guard supplies end actor/time on one-way closure and accepted initially bounded rows.
+- END reason is required and canonical-intent-bound without mutating the source row's original immutable reason.
 - The only successful domain event is `family.primary_context_changed`.
 - Broad audit/outbox evidence is minimized to typed IDs, action, safe interval/version data and receipt/correlation evidence.
 - Private reason text, relationship contact/display values, Auth-user IDs, Student private fields and copied arbitrary request JSON are excluded from broad evidence.
 - No normal delete exists.
 
+## Audit corrections frozen
+
+Six Effect-33 draft continuations form the accepted implementation. Continuation 05 removes the artificial Student parent-version bump; continuation 06 reserves `supersedes_id` for CORRECT and makes normal SELECT switches fresh lineages, with corresponding durable replay validation.
+
 ## Exact-SHA validation and boundary
 
-Full run #205 logs confirm exact checkout of `8a6e580150a8e4ba0923704f01fc7a2a6e9053d6`, 121/121 tooling tests, frozen Foundation source integrity, Supabase CLI 2.98.2, clean nine-migration/no-seed reset, 5/5 Auth fixtures, lint passes and 220/220 Foundation TAP assertions.
+Full run #206 logs confirm exact checkout of `3c2e7fbe2521cce685e96f493b1dd92729108e49`, 121/121 tooling tests, frozen Foundation source integrity, Supabase CLI 2.98.2, clean nine-migration/no-seed reset, 5/5 Auth fixtures, lint passes and 220/220 Foundation TAP assertions.
 
-The Effect-33 runtime delta from Effect-32 freeze tip `f593105baf95805766586a3f9ffd3b6459b624e8` consists of exactly five Effect-33 `.sql.draft` continuations. Foundation migrations 1–9 remain unchanged and the manifest remains **97 permissions / 322 scope alternatives / 36 operation contracts**.
+The executable/runtime Effect-33 delta since Effect-32 freeze tip `f593105baf95805766586a3f9ffd3b6459b624e8` is six Effect-33 `.sql.draft` continuations. Four documentation commits from the interrupted pre-correction freeze attempt occur before continuation 06 in commit ancestry; the corrected documentation after the trusted runtime SHA supersedes them and changes no runtime behavior. Foundation migrations 1–9 remain unchanged and the manifest remains **97 permissions / 322 scope alternatives / 36 operation contracts**.
 
 Migration 10 remains `.sql.draft` and unexecuted. This freeze does not authorize D1C2, staging/managed Supabase application, worker activation or Effect 34 implementation.
 
