@@ -1,0 +1,174 @@
+-- Effect 32 P1 DIRECT and APPROVAL submission entry points.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+
+GRANT CREATE ON SCHEMA app TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app.d1_change_family_child_access(
+  p_student_id uuid,p_expected_student_version bigint,p_family_id uuid,p_expected_family_version bigint,
+  p_action text,p_source_access_id uuid,p_effective_on date,p_effective_until date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(access_id uuid,source_access_id uuid,action text,effective_from date,effective_until date,
+  student_version bigint,family_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; locks record; policy_row record; pre record; eff record; receipt uuid;
+  summary jsonb; corr uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'family.child_access.change','family.child_access.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_family_id,p_expected_family_version::text,
+      p_action,p_source_access_id,p_effective_on,p_effective_until,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT * INTO locks FROM app_private.d1_family_child_access_lock_targets(p_student_id,p_family_id,p_source_access_id);
+  IF locks.student_version IS NULL OR locks.family_version IS NULL THEN
+    RAISE EXCEPTION 'D1 Family child access target missing';
+  END IF;
+  IF NOT app_private.d1_family_child_access_authorized(ctx.actor_id,'family.child_access.change',p_student_id,NULL) THEN
+    RAISE EXCEPTION 'D1 Family child access authority denied';
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_family_child_access_policy(p_student_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'DIRECT' THEN
+    RAISE EXCEPTION 'D1 Family child access requires approval request';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state IS DISTINCT FROM 'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR app_private.d1_family_child_access_result_match(
+         p_student_id,p_family_id,p_action,p_source_access_id,ctx.result_ref,p_effective_on,p_effective_until,ctx.result_summary)
+         IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'D1 Family child access receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,NULLIF(ctx.result_summary->>'source_access_id','')::uuid,
+      ctx.result_summary->>'action',NULLIF(ctx.result_summary->>'effective_from','')::date,
+      NULLIF(ctx.result_summary->>'effective_until','')::date,
+      (ctx.result_summary->>'student_version')::bigint,(ctx.result_summary->>'family_version')::bigint;
+    RETURN;
+  END IF;
+  IF locks.student_version IS DISTINCT FROM p_expected_student_version
+     OR locks.family_version IS DISTINCT FROM p_expected_family_version THEN
+    RAISE EXCEPTION 'D1 Family child access target version changed';
+  END IF;
+  SELECT * INTO pre FROM app_private.d1_family_child_access_preflight(
+    p_student_id,p_expected_student_version,p_family_id,p_expected_family_version,p_action,p_source_access_id,
+    p_effective_on,p_effective_until,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family child access preflight denied: %',pre.error_code;
+  END IF;
+  SELECT * INTO eff FROM app_private.d1_family_child_access_effect(
+    ctx.actor_id,p_student_id,p_expected_student_version,p_family_id,p_expected_family_version,p_action,p_source_access_id,
+    p_effective_on,p_effective_until,p_reason);
+  summary:=pg_catalog.jsonb_build_object(
+    'access_id',eff.access_id,'source_access_id',eff.source_access_id,'action',eff.action,
+    'effective_from',eff.effective_from,'effective_until',eff.effective_until,
+    'student_version',eff.student_version,'family_version',eff.family_version);
+  receipt:=app_private.d1_family_child_access_receipt(
+    'family.child_access.change',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,p_expected_student_version,
+    NULL,NULL,'SUCCEEDED','D1_FAMILY_CHILD_ACCESS_CHANGE',eff.access_id,summary,NULL);
+  PERFORM app_private.d1_family_child_access_audit(
+    ctx.actor_id,'DIRECT',p_student_id,p_family_id,eff.access_id,p_source_access_id,p_action,receipt,NULL,
+    eff.student_version,eff.family_version,'SUCCEEDED',NULL,corr);
+  PERFORM app_private.d1_family_child_access_event(
+    ctx.actor_id,p_student_id,p_family_id,eff.access_id,p_source_access_id,p_action,receipt,corr);
+  RETURN QUERY SELECT eff.access_id,eff.source_access_id,eff.action,eff.effective_from,eff.effective_until,
+    eff.student_version,eff.family_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_family_child_access(uuid,bigint,uuid,bigint,text,uuid,date,date,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_family_child_access(uuid,bigint,uuid,bigint,text,uuid,date,date,text,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_family_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_submit_family_child_access_change(
+  p_student_id uuid,p_expected_student_version bigint,p_family_id uuid,p_expected_family_version bigint,
+  p_action text,p_source_access_id uuid,p_effective_on date,p_effective_until date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; locks record; policy_row record; pre record; template_row record; src record;
+  new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid; candidate_count bigint; final_version bigint; receipt uuid;
+  old_snapshot jsonb; requested jsonb;
+BEGIN
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'family.child_access.change','request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_student_id,p_expected_student_version::text,p_family_id,p_expected_family_version::text,
+      p_action,p_source_access_id,p_effective_on,p_effective_until,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT * INTO locks FROM app_private.d1_family_child_access_lock_targets(p_student_id,p_family_id,p_source_access_id);
+  IF locks.student_version IS NULL OR locks.family_version IS NULL THEN
+    RAISE EXCEPTION 'D1 Family child access request target missing';
+  END IF;
+  IF NOT app_private.d1_family_child_access_authorized(ctx.actor_id,'family.child_access.change',p_student_id,NULL) THEN
+    RAISE EXCEPTION 'D1 Family child access request authority denied';
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_family_child_access_policy(p_student_id);
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' THEN
+    RAISE EXCEPTION 'D1 Family child access policy selects direct command';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state IS DISTINCT FROM 'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR ctx.result_summary->>'state' IS DISTINCT FROM 'PENDING' THEN
+      RAISE EXCEPTION 'D1 Family child access submit receipt invalid';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint; RETURN;
+  END IF;
+  IF locks.student_version IS DISTINCT FROM p_expected_student_version
+     OR locks.family_version IS DISTINCT FROM p_expected_family_version THEN
+    RAISE EXCEPTION 'D1 Family child access request target version changed';
+  END IF;
+  SELECT * INTO pre FROM app_private.d1_family_child_access_preflight(
+    p_student_id,p_expected_student_version,p_family_id,p_expected_family_version,p_action,p_source_access_id,
+    p_effective_on,p_effective_until,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family child access request preflight denied: %',pre.error_code;
+  END IF;
+  IF p_source_access_id IS NOT NULL THEN
+    SELECT a.* INTO src FROM app_private.family_student_access a WHERE a.id=p_source_access_id;
+  END IF;
+  old_snapshot:=pg_catalog.jsonb_build_object(
+    'family_id',p_family_id,'source_access_id',p_source_access_id,
+    'source_effective_from',CASE WHEN p_source_access_id IS NULL THEN NULL ELSE src.effective_from END);
+  requested:=pg_catalog.jsonb_build_object(
+    'family_id',p_family_id,'expected_family_version',p_expected_family_version,'action',p_action,
+    'source_access_id',p_source_access_id,'effective_on',p_effective_on,'effective_until',p_effective_until);
+  INSERT INTO app_private.approval_requests
+    (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
+     expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,policy_row.campus_id,p_student_id,
+    p_expected_student_version,p_reason,old_snapshot,requested,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
+    WHERE id=new_request;
+  FOR template_row IN
+    SELECT t.id,t.step_number,t.required_reviews FROM app_private.approval_step_templates t
+      WHERE t.policy_id=policy_row.policy_id ORDER BY t.step_number
+  LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps
+      (id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step ELSE pg_catalog.gen_random_uuid() END,
+      new_request,policy_row.policy_id,template_row.id,template_row.step_number,template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Family child access policy has no first step'; END IF;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+  SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+    FROM app_private.d1_family_child_access_candidates(new_request,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT;
+  IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Family child access step has no reviewer'; END IF;
+  receipt:=app_private.d1_family_child_access_receipt(
+    'request.submit',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,p_expected_student_version,
+    new_request,NULL,'SUCCEEDED','D1_FAMILY_CHILD_ACCESS_REQUEST',new_request,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),NULL);
+  PERFORM app_private.d1_family_child_access_audit(
+    ctx.actor_id,'SUBMIT',p_student_id,p_family_id,p_source_access_id,p_source_access_id,p_action,receipt,new_request,
+    p_expected_student_version,p_expected_family_version,'SUCCEEDED',NULL,pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT new_request,final_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_submit_family_child_access_change(uuid,bigint,uuid,bigint,text,uuid,date,date,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_family_child_access_change(uuid,bigint,uuid,bigint,text,uuid,date,date,text,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
