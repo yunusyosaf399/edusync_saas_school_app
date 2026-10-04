@@ -2,7 +2,7 @@
 
 **Status: ACCEPTED STATIC RUNTIME CANDIDATE.**
 
-Trusted runtime candidate: `8a6e580150a8e4ba0923704f01fc7a2a6e9053d6`.
+Trusted runtime candidate: `3c2e7fbe2521cce685e96f493b1dd92729108e49`.
 
 Effect 33 implements frozen operation `family.primary_context.change` as the P0 protected command for retained `student_primary_family_contexts` display-selection history. Primary/responsible context is an operational display selection only. It is not Father/Mother/Guardian relationship truth, Family portal entitlement, FAMILY Principal membership, Foundation authority, legal custody, pickup authorization or financial responsibility.
 
@@ -22,13 +22,15 @@ SELECT chooses an exact effective Father/Mother/Guardian `family_relationships` 
 
 If another primary context is effective at the selection boundary, the caller must identify that exact source context. The source is closed and the new selection is appended atomically. The server does not guess which current context to replace.
 
+A normal SELECT switch starts a new display-selection lineage: the replacement row has `supersedes_id IS NULL`. The closed source remains retained and is still proven during idempotent replay. `supersedes_id` is reserved for factual CORRECT lineage.
+
 A new SELECT requires the target Family to be ACTIVE. Family archive does not silently end already retained primary-context history, but a new current display selection is not created into an archived Family.
 
 ## END
 
 END requires the exact unsuperseded open source context and an exclusive end date after its start. It closes the retained row without selecting a replacement and without deleting history.
 
-END does not require the selected Family to remain ACTIVE and does not mutate relationship, child-access or FAMILY-membership history.
+END does not require the selected Family to remain ACTIVE and does not mutate relationship, child-access or FAMILY-membership history. The private command reason is required and bound into canonical intent; the immutable source row retains its original creation reason, matching the frozen HE end model used by prior Family effects.
 
 ## CORRECT
 
@@ -71,6 +73,8 @@ Canonical intent binds Student ID, expected Student version, action, source cont
 
 Successful replay is retained-history based. An earlier open-ended SELECT/CORRECT remains replayable after a later legitimate END/CORRECT because replay proves the original accepted retained row rather than requiring it to remain current. END replay proves the retained accepted closure.
 
+Continuation 06 makes replay aware of the frozen lineage distinction: SELECT requires the accepted result to have no correction predecessor while CORRECT requires `supersedes_id` to equal the supplied source. When SELECT replaced a current source, replay separately proves that source was closed at the accepted boundary.
+
 ## Evidence
 
 The only successful domain event is `family.primary_context_changed`.
@@ -81,19 +85,24 @@ No Principal/Auth/Foundation grant, Family membership, child-access or relations
 
 ## Independent audit result
 
-The five ordered runtime fragments were reviewed for SELECT/END/CORRECT shape, HE provenance, containment, overlap, source-lineage staleness, ACS authorization, lock ordering, cross-effect serialization, idempotency, replay durability, evidence minimization, SECURITY DEFINER search paths and client/private ACLs.
+Six ordered Effect-33 continuation fragments were reviewed for SELECT/END/CORRECT shape, HE provenance, relationship containment, Student-wide non-overlap, source staleness, correction lineage, ACS authorization, lock ordering, cross-effect serialization, idempotency, replay durability, evidence minimization, SECURITY DEFINER search paths and client/private ACLs.
 
-The HE base guard was specifically rechecked: closing an open HE row supplies `ended_at`/`ended_by`, and an accepted initially bounded insert receives matching end evidence. Therefore continuation 05's update of `effective_until` only is consistent with the frozen provenance trigger.
+Two audit corrections are retained:
 
-No blocking defect remains after continuation 05.
+- continuation 05 removes an artificial Student `updated_at` mutation. Primary-context history is a child fact; the Student row remains a serialization/version anchor without manufacturing a parent version bump;
+- continuation 06 corrects SELECT/CORRECT lineage. A normal SELECT switch closes the old selection but starts a fresh lineage, while only factual CORRECT appends through `supersedes_id`. Replay was hardened to prove that exact distinction.
+
+The HE base guard was specifically rechecked: closing an open HE row supplies `ended_at`/`ended_by`, and an accepted initially bounded insert receives matching end evidence. Therefore continuations 05/06 may set the protected `effective_until` while relying on the frozen provenance trigger for end actor/time.
+
+No blocking defect remains after continuation 06.
 
 ## Exact-SHA gate
 
-GitHub Actions run #205 (`37183363297`) completed successfully on exact SHA `8a6e580150a8e4ba0923704f01fc7a2a6e9053d6`.
+GitHub Actions run #206 (`37184333023`) completed successfully on exact SHA `3c2e7fbe2521cce685e96f493b1dd92729108e49`.
 
 Full log inspection confirms:
 
-- exact checkout of `8a6e580150a8e4ba0923704f01fc7a2a6e9053d6`;
+- exact checkout of `3c2e7fbe2521cce685e96f493b1dd92729108e49`;
 - 121/121 tooling unit tests;
 - frozen Foundation source integrity (`9 migrations + 9 tests`);
 - Supabase CLI 2.98.2 and Docker/Linux local stack;
@@ -106,6 +115,6 @@ This gate validates the frozen Foundation. Migration 10 and Effect-33 continuati
 
 ## Runtime boundary
 
-The runtime delta from Effect-32 freeze tip `f593105baf95805766586a3f9ffd3b6459b624e8` to trusted runtime SHA `8a6e580150a8e4ba0923704f01fc7a2a6e9053d6` consists only of five ordered `20260928000000_domain_package_01_effect33_*.sql.draft` files.
+The executable/runtime delta introduced for Effect 33 since Effect-32 freeze tip `f593105baf95805766586a3f9ffd3b6459b624e8` consists of six ordered `20260928000000_domain_package_01_effect33_*.sql.draft` files. Four Effect-33 review/freeze documents from the interrupted pre-correction freeze attempt also occur in commit ancestry before continuation 06; they are documentation only and are superseded by the corrected records at the final freeze tip.
 
 Foundation migrations 1–9 are unchanged. The frozen manifest remains **97 permissions / 322 scope alternatives / 36 operation contracts**. Migration 10 remains unexecuted. No D1C2, staging/managed Supabase application or worker activation is authorized by this review.
