@@ -1,0 +1,143 @@
+-- Effect 31 correction: exact Family-membership cardinality and target credential readiness.
+-- One effective FAMILY membership is enforced per Family; a FAMILY Principal may participate in more than one Family.
+-- ADD/CORRECT establish a link only for a current usable FAMILY Principal. END remains available for disabled credentials.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_family_principal_membership_target_ready(p_principal uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp();
+BEGIN
+  RETURN EXISTS (
+    SELECT 1
+    FROM app_private.principals pr
+    JOIN app_private.principal_auth_bindings b
+      ON b.principal_id=pr.id AND b.principal_kind='FAMILY' AND b.auth_user_id IS NOT NULL
+    JOIN app_private.principal_role_assignments a
+      ON a.principal_id=pr.id AND a.principal_kind='FAMILY' AND a.context_kind='FAMILY'
+    JOIN app_private.roles r
+      ON r.id=a.role_id AND r.family_only AND r.state='ACTIVE'
+    JOIN app_private.role_permission_grants g
+      ON g.role_id=a.role_id AND g.role_family_only AND g.permission_family_safe
+    JOIN app_private.permissions p
+      ON p.id=g.permission_id AND p.family_safe AND p.state='ENABLED'
+    JOIN app_private.assignment_permission_scopes sc
+      ON sc.assignment_id=a.id AND sc.grant_id=g.id AND sc.role_id=a.role_id AND sc.permission_id=p.id
+    JOIN app_private.permission_scope_contracts c
+      ON c.id=sc.scope_contract_id AND c.permission_id=p.id
+       AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key AND c.enabled
+    WHERE pr.id=p_principal AND pr.kind='FAMILY' AND pr.state='ACTIVE'
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+      AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until)
+      AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_target_ready(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_target_ready(uuid)
+  TO schoolos_family_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_preflight(
+  p_family uuid,p_expected_family_version bigint,p_target_principal uuid,p_expected_principal_version bigint,
+  p_action text,p_source uuid,p_effective_on date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text,source_effective_from date,source_family_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE fam app_private.families%ROWTYPE; pr app_private.principals%ROWTYPE;
+  src app_private.family_principal_memberships%ROWTYPE; source_family uuid; lock_family uuid; overlap_count bigint;
+BEGIN
+  IF p_family IS NULL OR p_expected_family_version IS NULL OR p_expected_family_version<1
+     OR p_target_principal IS NULL OR p_expected_principal_version IS NULL OR p_expected_principal_version<1
+     OR p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT') OR p_effective_on IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_INTENT_INVALID',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  SELECT * INTO pr FROM app_private.principals p WHERE p.id=p_target_principal FOR UPDATE;
+  IF NOT FOUND OR pr.kind IS DISTINCT FROM 'FAMILY' THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_INVALID',NULL::date,NULL::uuid; RETURN;
+  END IF;
+  IF pr.row_version IS DISTINCT FROM p_expected_principal_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_VERSION_STALE',NULL::date,NULL::uuid; RETURN;
+  END IF;
+  IF p_action IN ('ADD','CORRECT')
+     AND app_private.d1_family_principal_membership_target_ready(p_target_principal) IS DISTINCT FROM true THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_NOT_READY',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  IF p_source IS NOT NULL THEN
+    SELECT m.family_id INTO source_family
+    FROM app_private.family_principal_memberships m
+    WHERE m.id=p_source AND m.principal_id=p_target_principal AND m.principal_kind='FAMILY';
+    IF source_family IS NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_MISSING',NULL::date,NULL::uuid; RETURN;
+    END IF;
+  END IF;
+
+  FOR lock_family IN
+    SELECT x FROM (VALUES (p_family),(source_family)) AS f(x)
+    WHERE x IS NOT NULL GROUP BY x ORDER BY x
+  LOOP
+    PERFORM 1 FROM app_private.families f WHERE f.id=lock_family FOR UPDATE;
+    IF NOT FOUND THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_MISSING',NULL::date,source_family; RETURN;
+    END IF;
+  END LOOP;
+  SELECT * INTO fam FROM app_private.families f WHERE f.id=p_family;
+  IF fam.row_version IS DISTINCT FROM p_expected_family_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_VERSION_STALE',NULL::date,source_family; RETURN;
+  END IF;
+
+  IF p_action='ADD' THEN
+    IF p_source IS NOT NULL OR fam.state IS DISTINCT FROM 'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_ADD_SHAPE_INVALID',NULL::date,NULL::uuid; RETURN;
+    END IF;
+  ELSE
+    IF p_source IS NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_REQUIRED',NULL::date,NULL::uuid; RETURN;
+    END IF;
+    SELECT * INTO src FROM app_private.family_principal_memberships m
+    WHERE m.id=p_source AND m.principal_id=p_target_principal AND m.principal_kind='FAMILY' FOR UPDATE;
+    IF NOT FOUND OR src.effective_until IS NOT NULL
+       OR EXISTS (SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=src.id) THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_STALE',NULL::date,source_family; RETURN;
+    END IF;
+    IF p_effective_on<=src.effective_from THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_DATE_INVALID',src.effective_from,source_family; RETURN;
+    END IF;
+    IF p_action='END' AND p_family IS DISTINCT FROM src.family_id THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_END_FAMILY_MISMATCH',src.effective_from,source_family; RETURN;
+    END IF;
+    IF p_action='CORRECT' THEN
+      IF fam.state IS DISTINCT FROM 'ACTIVE' THEN
+        RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_CORRECT_DESTINATION_INACTIVE',src.effective_from,source_family; RETURN;
+      END IF;
+      IF p_family IS NOT DISTINCT FROM src.family_id THEN
+        RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_NOOP',src.effective_from,source_family; RETURN;
+      END IF;
+    END IF;
+  END IF;
+
+  IF p_action IN ('ADD','CORRECT') THEN
+    SELECT count(*) INTO overlap_count
+    FROM app_private.family_principal_memberships m
+    WHERE m.family_id=p_family AND (p_source IS NULL OR m.id<>p_source)
+      AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date)
+      AND NOT EXISTS (SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=m.id);
+    IF overlap_count<>0 THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_OVERLAP',
+        CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family; RETURN;
+    END IF;
+  END IF;
+
+  RETURN QUERY SELECT true,NULL::text,CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
