@@ -2,61 +2,58 @@
 
 **Status: FROZEN.**
 
-Trusted runtime SHA: `e93bf31d60d0a7afff8215fd5a2ca732f850a04c`.
+Trusted runtime SHA: `077aacd3f07f4cd89fa7371fd90339429e88296f`.
 
-Exact-SHA GitHub Actions run #192 (`37177474863`) completed successfully on that SHA. Full log inspection confirms exact checkout, 121/121 tooling unit tests, frozen Foundation integrity, Supabase CLI 2.98.2, clean local reset of nine frozen migrations with no seed, 5/5 Auth fixtures, lint gates and 220/220 Foundation TAP assertions.
+Exact-SHA GitHub Actions run #193 (`37179696695`) completed successfully on that SHA. Full log inspection confirms exact checkout, 121/121 tooling unit tests, frozen Foundation integrity, Supabase CLI 2.98.2, clean local reset of nine frozen migrations with no seed, 5/5 Auth fixtures, lint gates and 220/220 Foundation TAP assertions.
 
 ## Frozen operation
 
 `family.principal_membership.change`
 
-Routing: **P1 DIRECT or APPROVAL according to one exact compatible active policy; ambiguous/incompatible policy denies.**
+Routing: **P1 DIRECT or APPROVAL according to one exact compatible active school-wide policy; missing/ambiguous/incompatible policy denies.**
 
 Frozen actions:
 
-- `ADD` — add one existing current-ready Foundation `FAMILY` Principal to an ACTIVE Family through a retained effective membership interval.
+- `ADD` — add one existing current-ready Foundation `FAMILY` Principal to an ACTIVE Family through a retained effective interval.
 - `END` — close the selected unsuperseded open membership once at an exclusive end date after its start.
-- `CORRECT` — repair a prematurely ended retained membership by appending a same-Family/same-Principal successor at the closed predecessor boundary using `supersedes_id`.
+- `CORRECT` — repair a prematurely ended retained membership by appending a same-Family/same-Principal successor at the predecessor boundary using `supersedes_id`.
 
 Changing Principal identity is not CORRECT. It is explicit END of the old Principal membership plus ADD of the replacement Principal.
 
 ## Frozen semantics
 
-- The operation never creates a Principal, Auth binding, Foundation role, role assignment, permission grant, assignment scope, Student-family relationship, child-access entitlement or primary-family context.
-- `family.principal_membership.change` is non-family-safe and ALL-only. A FAMILY Principal cannot administer its own membership merely because it is linked to a Family.
-- The target membership Principal is exactly a Foundation `FAMILY` Principal. Current readiness requires the reviewed current Principal/Auth/family-only/family-safe chain; membership itself is not a child entitlement.
-- Child visibility remains separately controlled by `family.child_access.change` and its relationship-basis checks.
-- ADD requires an ACTIVE Family. Family archive does not silently end existing membership.
-- Retained END/CORRECT history remains explicit and no normal delete exists.
-- The target Principal expected version and Family expected version are part of optimistic concurrency/stale-request protection.
-- Global lock order is preserved: Foundation Principals UUID-ascending → Family rows UUID-ascending → membership history.
-- Retained overlap validation scans all relevant historical intervals, not only current lineage heads.
+- The operation never creates or mutates Principal/Auth identity, Foundation roles/assignments/grants/scopes, relationship facts, child-access entitlement or primary-family context.
+- `family.principal_membership.change` is non-family-safe and ALL-only. FAMILY membership grants no authority to administer itself.
+- ADD/CORRECT require the target Foundation `FAMILY` Principal to be currently ready through its current Principal/Auth/family-only/family-safe chain.
+- END remains available even after that FAMILY credential has been disabled or lost its live Auth/family-safe chain. It still locks and validates exact Principal kind/version, Family/version, source ancestry and source interval before closure.
+- Child visibility remains separately controlled by `family.child_access.change`; membership alone grants no Student visibility.
+- ADD requires ACTIVE Family. Family archive does not silently end membership.
+- Retained END/CORRECT history remains explicit; no normal delete exists.
+- Expected Principal and Family versions are bound for optimistic concurrency/stale-request protection.
+- Lock order is Foundation authorization/idempotency → acting/requester/target Principals UUID-ascending → Family row(s) → retained membership history.
+- Retained overlap validation scans all relevant Family membership intervals; strict overlap denies and adjacency is allowed.
 - Canonical idempotency binds Family/version, target Principal/version, action, source where applicable, effective date and private reason.
-- Successful replay is history-based and does not require an earlier accepted membership to remain open/current.
-- Review does not auto-apply. APPROVAL apply rechecks current requester/reviewer authority, policy and domain facts and invalidates stale accepted requests.
-- Requester/reviewer separation remains enforced at both Principal and Person level through configured reviewer-role selection.
-- Only `family.principal_link_changed` is emitted for successful domain application.
+- Successful replay is history-based and does not require an earlier result to remain open/current.
+- APPROVAL review never auto-applies. Explicit apply rechecks current requester/reviewer authority, policy and domain state and invalidates stale requests.
+- Requester/reviewer separation is enforced at Principal and Person level with the configured reviewer-role chain.
+- Only `family.principal_link_changed` is emitted for successful domain mutation.
 - Broad evidence excludes arbitrary reason text, Auth user IDs, labels, child data and copied protected request JSON.
 
-## Included hardening
+## Final audit correction
 
-The frozen runtime includes the complete 16-fragment Effect-31 continuation and its audit-driven hardening, including:
+The earlier 16-fragment candidate required target credential readiness for END. Independent review identified that as an unsafe revocation dependency: if the FAMILY credential was disabled first, staff could be prevented from explicitly closing the retained membership.
 
-- alignment to the actual frozen Foundation `FAMILY` Principal discriminator;
-- exact P1 policy and reviewer-role handling;
-- target readiness against current Auth/family-safe FAMILY scope material;
-- retained correction-lineage semantics;
-- exact workflow/request/application guards;
-- durable retained-history replay proof;
-- NULL/exact-key evidence validation;
-- fail-closed incompatible policy handling;
-- post-wait target-readiness recheck for revoke/correction paths;
-- retained-history overlap scanning;
-- least-privilege Principal row-lock grant correction at trusted runtime SHA `e93bf31d...`.
+Continuation `20260928000000_domain_package_01_effect31_17_membership_end_disabled_principal.sql.draft` fixes only that distinction:
+
+- ADD/CORRECT still require target readiness because they create/restore effective membership;
+- END does not require login/grant readiness because it only removes retained membership authority;
+- FAMILY kind/version, Family/version, source ancestry and interval rules remain mandatory.
+
+No further blocking defect remained after this correction.
 
 ## Exact runtime boundary
 
-The runtime delta from Effect-30 freeze tip `9ce87c272c65e9b9c614405b8e7fbc8072e8227e` to trusted runtime SHA `e93bf31d60d0a7afff8215fd5a2ca732f850a04c` contains only the 16 files named `20260928000000_domain_package_01_effect31_*.sql.draft`.
+The Effect-31 runtime SQL delta from Effect-30 freeze tip `9ce87c272c65e9b9c614405b8e7fbc8072e8227e` to trusted runtime SHA `077aacd3f07f4cd89fa7371fd90339429e88296f` consists of 17 files named `20260928000000_domain_package_01_effect31_*.sql.draft`.
 
 Foundation migrations 1–9 are unchanged. The manifest remains **97 permissions / 322 scope alternatives / 36 operation contracts**.
 
