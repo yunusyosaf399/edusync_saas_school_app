@@ -44,9 +44,10 @@ BEGIN
     RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_INTENT_INVALID',NULL::date; RETURN;
   END IF;
 
-  -- Global lock order: Foundation principal before Family before child history.
+  -- Global lock order: Foundation principal before Family before membership history.
   SELECT * INTO pr FROM app_private.principals p WHERE p.id=p_target_principal FOR UPDATE;
-  IF NOT FOUND OR pr.kind IS DISTINCT FROM 'FAMILY' THEN
+  IF NOT FOUND OR pr.kind IS DISTINCT FROM 'FAMILY' OR pr.account_type IS DISTINCT FROM 'SHARED_FAMILY'
+     OR pr.state IS DISTINCT FROM 'ACTIVE' THEN
     RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_INVALID',NULL::date; RETURN;
   END IF;
   SELECT * INTO fam FROM app_private.families f WHERE f.id=p_family FOR UPDATE;
@@ -74,9 +75,10 @@ BEGIN
       RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_DATE_INVALID',src.effective_from; RETURN;
     END IF;
     IF p_action='CORRECT' THEN
-      -- Principal/family identity is immutable within one correction lineage; only interval fact can be corrected.
-      -- A reason-only correction is therefore a no-op and is denied.
-      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_NOOP',src.effective_from; RETURN;
+      -- CORRECT changes the retained interval fact by ending the erroneous row at p_effective_on
+      -- and appending a successor for the same Family/Principal identity. Identity replacement is END + ADD.
+      -- A successor beginning at the same boundary is meaningful even when the reason text is unchanged.
+      NULL;
     END IF;
   END IF;
 
