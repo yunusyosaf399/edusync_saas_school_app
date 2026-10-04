@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,10 +27,18 @@ EXPECTED_TABLES = (
 UUID_TUPLE_RE = re.compile(r"\(\s*'([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})'\s*,\s*'([^']+)'", re.I)
 CREATE_TABLE_RE = re.compile(r"\bCREATE\s+TABLE\s+app_private\.([a-z0-9_]+)\s*\(", re.I)
 PUBLIC_TABLE_RE = re.compile(r"\bCREATE\s+TABLE\s+app\.([a-z0-9_]+)\s*\(", re.I)
+FUNCTION_NAME_RE = re.compile(
+    r"\bCREATE(?:\s+OR\s+REPLACE)?\s+FUNCTION\s+((?:app|app_private)\.[a-z0-9_]+)\s*\(", re.I
+)
+OWNER_TRANSFER_RE = re.compile(
+    r"\bALTER\s+FUNCTION\s+((?:app|app_private)\.[a-z0-9_]+)\s*\([^;]*?\)\s+OWNER\s+TO\s+(schoolos_[a-z0-9_]+)\s*;",
+    re.I | re.S,
+)
 DEFINER_HEADER_RE = re.compile(
     r"\bCREATE(?:\s+OR\s+REPLACE)?\s+FUNCTION\s+((?:app|app_private)\.[a-z0-9_]+)\s*\([^;]*?\)\s*RETURNS\b(?P<header>.*?)(?=\bAS\s+\$[a-z0-9_]*\$)",
     re.I | re.S,
 )
+EXPOSED_ROLE_RE = r"(?:PUBLIC|\banon\b|\bauthenticated\b|\bservice_role\b)"
 
 
 class GuardError(ValueError):
@@ -141,6 +150,13 @@ def inspect(root: Path) -> tuple[list[str], dict[str, int]]:
     ):
         errors.append("student.create public command exists before Admissions handoff integration")
 
+    function_names = [name.lower() for name in FUNCTION_NAME_RE.findall(text)]
+    function_counts = Counter(function_names)
+    metrics["function_declarations"] = len(function_names)
+    metrics["unique_function_names"] = len(function_counts)
+    metrics["redefined_function_names"] = sum(1 for count in function_counts.values() if count > 1)
+    metrics["owner_transfers"] = len(OWNER_TRANSFER_RE.findall(text))
+
     definers = 0
     for match in DEFINER_HEADER_RE.finditer(text):
         header = match.group("header")
@@ -157,6 +173,17 @@ def inspect(root: Path) -> tuple[list[str], dict[str, int]]:
         text, re.I | re.S,
     ):
         errors.append("broad D1 EXECUTE grant to PUBLIC/anon/service_role")
+
+    if re.search(
+        rf"\bGRANT\s+(?:(?:SELECT|INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES|TRIGGER|ALL)(?:\s*\([^;]*?\))?\s*(?:,\s*)?)+\s+ON\s+(?:TABLE\s+)?app_private\.[^;]+?\s+TO\s+[^;]*{EXPOSED_ROLE_RE}",
+        text, re.I | re.S,
+    ):
+        errors.append("direct app_private table privilege granted to exposed role")
+    if re.search(
+        rf"\bGRANT\s+(?:USAGE|CREATE|ALL)(?:\s*,\s*(?:USAGE|CREATE|ALL))*\s+ON\s+SCHEMA\s+app_private\s+TO\s+[^;]*{EXPOSED_ROLE_RE}",
+        text, re.I | re.S,
+    ):
+        errors.append("app_private schema privilege granted to exposed role")
 
     metrics["shared_auth_lock_calls"] = len(re.findall(r"pg_catalog\.pg_advisory_xact_lock_shared\s*\(\s*71001\s*,\s*1\s*\)", text, re.I))
     metrics["exclusive_auth_lock_calls"] = len(re.findall(r"pg_catalog\.pg_advisory_xact_lock\s*\(\s*71001\s*,\s*1\s*\)", text, re.I))
@@ -181,7 +208,9 @@ def main(argv=None) -> int:
         "D1_DRAFT_STATIC_PASS "
         f"{metrics['draft_fragments']} fragments; {metrics['relations']} relations; "
         f"{metrics['permissions']} permissions; {metrics['scope_alternatives']} scope alternatives; "
-        f"{metrics['operations']} operations; {metrics['security_definers']} SECURITY DEFINER routines; "
+        f"{metrics['operations']} operations; {metrics['security_definers']} SECURITY DEFINER declarations; "
+        f"functions declarations={metrics['function_declarations']} unique_names={metrics['unique_function_names']} "
+        f"redefined_names={metrics['redefined_function_names']} owner_transfers={metrics['owner_transfers']}; "
         f"auth-lock calls shared={metrics['shared_auth_lock_calls']} exclusive={metrics['exclusive_auth_lock_calls']}"
     )
     return 0

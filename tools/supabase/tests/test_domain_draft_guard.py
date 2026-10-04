@@ -69,6 +69,8 @@ class DomainDraftGuardTests(unittest.TestCase):
         self.assertEqual(metrics["permissions"], 97)
         self.assertEqual(metrics["scope_alternatives"], 322)
         self.assertEqual(metrics["operations"], 36)
+        self.assertGreaterEqual(metrics["function_declarations"], 2)
+        self.assertGreaterEqual(metrics["unique_function_names"], 2)
 
     def test_rejects_executable_migration10(self):
         root = self.make_root()
@@ -116,6 +118,20 @@ class DomainDraftGuardTests(unittest.TestCase):
         )
         errors, _ = guard.inspect(self.make_root(text))
         self.assertTrue(any("broad D1 EXECUTE grant" in e for e in errors))
+
+    def test_rejects_direct_private_table_grant_to_authenticated(self):
+        text = _fixture_text() + (
+            "GRANT SELECT ON app_private.students TO authenticated;\n"
+        )
+        errors, _ = guard.inspect(self.make_root(text))
+        self.assertTrue(any("direct app_private table privilege" in e for e in errors))
+
+    def test_rejects_private_schema_grant_to_service_role(self):
+        text = _fixture_text() + (
+            "GRANT USAGE ON SCHEMA app_private TO service_role;\n"
+        )
+        errors, _ = guard.inspect(self.make_root(text))
+        self.assertTrue(any("app_private schema privilege" in e for e in errors))
 
 
 if __name__ == "__main__":
