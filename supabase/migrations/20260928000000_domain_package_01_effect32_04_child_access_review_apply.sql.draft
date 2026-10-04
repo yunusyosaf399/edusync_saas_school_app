@@ -1,0 +1,289 @@
+-- Effect 32 APPROVAL review and explicit apply. Review never auto-applies.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_review_family_child_access_change(
+  p_request_id uuid,p_decision text,p_expected_request_version bigint,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; req record; step_row record; next_step record; policy_row record;
+  assignment_id uuid; reviewer_role uuid; family_id uuid; family_version bigint; action text; source_id uuid;
+  n bigint; candidate_count bigint; final_version bigint; final_state text; receipt uuid; seq bigint;
+BEGIN
+  IF p_request_id IS NULL OR p_decision IS NULL OR p_decision NOT IN ('APPROVE','REJECT')
+     OR p_expected_request_version IS NULL OR p_expected_request_version<1
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Family child access review intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'family.child_access.change','request.review',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_decision,p_expected_request_version::text,p_reason));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT q.* INTO req FROM app_private.approval_requests q
+    WHERE q.id=p_request_id AND q.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND OR req.expected_target_version IS NULL OR req.expected_target_version<1 OR req.policy_id IS NULL
+     OR req.reason IS NULL OR pg_catalog.length(pg_catalog.btrim(req.reason))=0
+     OR req.requested_payload IS NULL OR pg_catalog.jsonb_typeof(req.requested_payload)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.requested_payload))<>6
+     OR NOT (req.requested_payload ?& ARRAY['family_id','expected_family_version','action','source_access_id','effective_on','effective_until']) THEN
+    RAISE EXCEPTION 'D1 Family child access stored request malformed';
+  END IF;
+  BEGIN
+    family_id:=NULLIF(req.requested_payload->>'family_id','')::uuid;
+    family_version:=(req.requested_payload->>'expected_family_version')::bigint;
+    action:=req.requested_payload->>'action';
+    source_id:=NULLIF(req.requested_payload->>'source_access_id','')::uuid;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+    RAISE EXCEPTION 'D1 Family child access stored request malformed';
+  END;
+  IF family_id IS NULL OR family_version<1 OR action IS NULL OR action NOT IN ('ADD','REVOKE') THEN
+    RAISE EXCEPTION 'D1 Family child access stored request malformed';
+  END IF;
+  PERFORM app_private.d1_family_child_access_lock_targets(req.target_ref,family_id,source_id);
+  SELECT * INTO policy_row FROM app_private.d1_family_child_access_policy(req.target_ref);
+  IF policy_row.policy_id IS DISTINCT FROM req.policy_id OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL'
+     OR policy_row.campus_id IS DISTINCT FROM req.campus_id THEN
+    RAISE EXCEPTION 'D1 Family child access request policy no longer applies';
+  END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    SELECT count(*),min(t.reviewer_role_id::text)::uuid INTO n,reviewer_role
+      FROM app_private.approval_reviews v
+      JOIN app_private.approval_request_steps s ON s.id=v.step_id
+      JOIN app_private.approval_step_templates t ON t.id=s.template_id
+     WHERE s.request_id=p_request_id AND v.reviewer_id=ctx.actor_id AND v.decision=p_decision
+       AND v.expected_request_version=p_expected_request_version;
+    IF n<>1 OR reviewer_role IS NULL
+       OR NOT app_private.d1_family_child_access_authorized(ctx.actor_id,'family.access.approve',req.target_ref,reviewer_role)
+       OR ctx.receipt_state IS DISTINCT FROM 'SUCCEEDED' OR ctx.result_ref IS DISTINCT FROM p_request_id
+       OR ctx.result_summary IS NULL OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state']) THEN
+      RAISE EXCEPTION 'D1 Family child access review replay invalid';
+    END IF;
+    RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,ctx.result_summary->>'state'; RETURN;
+  END IF;
+
+  SELECT s.* INTO step_row FROM app_private.approval_request_steps s
+    WHERE s.request_id=p_request_id AND s.state='OPEN' ORDER BY s.step_number LIMIT 1 FOR UPDATE;
+  IF req.state<>'PENDING' OR req.row_version<>p_expected_request_version OR step_row.id IS NULL THEN
+    RAISE EXCEPTION 'D1 Family child access review state changed';
+  END IF;
+  SELECT count(*),min(a.id::text)::uuid INTO n,assignment_id
+    FROM app_private.approval_step_reviewers a
+   WHERE a.step_id=step_row.id AND a.reviewer_id=ctx.actor_id AND a.withdrawn_at IS NULL
+     AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE';
+  IF n<>1 OR NOT EXISTS (
+      SELECT 1 FROM app_private.d1_family_child_access_candidates(p_request_id,step_row.id) c
+       WHERE c.candidate_principal_id=ctx.actor_id) THEN
+    RAISE EXCEPTION 'D1 Family child access reviewer authority denied';
+  END IF;
+  INSERT INTO app_private.approval_reviews
+    (reviewer_assignment_id,step_id,reviewer_id,decision,reason,expected_request_version,created_by)
+  VALUES (assignment_id,step_row.id,ctx.actor_id,p_decision,p_reason,p_expected_request_version,ctx.actor_id);
+  UPDATE app_private.approval_request_steps SET
+    state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+  IF p_decision='REJECT' THEN
+    UPDATE app_private.approval_request_steps SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp()
+      WHERE request_id=p_request_id AND state='WAITING';
+    final_state:='REJECTED';
+    UPDATE app_private.approval_requests SET state=final_state,decided_at=pg_catalog.statement_timestamp()
+      WHERE id=p_request_id RETURNING row_version INTO final_version;
+  ELSE
+    SELECT s.* INTO next_step FROM app_private.approval_request_steps s
+      WHERE s.request_id=p_request_id AND s.step_number=step_row.step_number+1 AND s.state='WAITING' FOR UPDATE;
+    IF next_step.id IS NOT NULL THEN
+      UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+      INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+      SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+        FROM app_private.d1_family_child_access_candidates(p_request_id,next_step.id) c;
+      GET DIAGNOSTICS candidate_count=ROW_COUNT;
+      IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Family child access next step has no reviewer'; END IF;
+      final_state:='PENDING';
+      UPDATE app_private.approval_requests SET row_version=row_version+1,updated_at=pg_catalog.statement_timestamp()
+        WHERE id=p_request_id RETURNING row_version INTO final_version;
+    ELSE
+      final_state:='APPROVED';
+      UPDATE app_private.approval_requests SET state=final_state,decided_at=pg_catalog.statement_timestamp()
+        WHERE id=p_request_id RETURNING row_version INTO final_version;
+    END IF;
+  END IF;
+  receipt:=app_private.d1_family_child_access_receipt(
+    'request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
+    p_request_id,p_expected_request_version,'SUCCEEDED','D1_FAMILY_CHILD_ACCESS_REVIEW',p_request_id,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
+  IF final_state IN ('APPROVED','REJECTED') THEN
+    SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq
+      FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+    INSERT INTO app_private.approval_transitions
+      (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+    VALUES (p_request_id,seq,'PENDING',final_state,'D1_FAMILY_CHILD_ACCESS_REVIEW_'||final_state,receipt,ctx.actor_id);
+  END IF;
+  PERFORM app_private.d1_family_child_access_audit(
+    ctx.actor_id,'REVIEW',req.target_ref,family_id,source_id,source_id,action,receipt,p_request_id,
+    req.expected_target_version,family_version,'SUCCEEDED',NULL,pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT p_request_id,final_version,final_state;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_review_family_child_access_change(uuid,text,bigint,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_review_family_child_access_change(uuid,text,bigint,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_apply_family_child_access_change(
+  p_request_id uuid,p_expected_request_version bigint,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text,access_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; req record; policy_row record; locks record; pre record; eff record; final_role uuid;
+  family_id uuid; family_version bigint; action text; source_id uuid; effective_on date; effective_until date;
+  invalidation_code text; final_version bigint; receipt uuid; seq bigint; summary jsonb; base_summary jsonb;
+  corr uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_request_id IS NULL OR p_expected_request_version IS NULL OR p_expected_request_version<1 THEN
+    RAISE EXCEPTION 'D1 Family child access apply intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'family.child_access.change','request.apply',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_request_id,p_expected_request_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  SELECT q.* INTO req FROM app_private.approval_requests q
+    WHERE q.id=p_request_id AND q.operation_id=ctx.operation_id FOR UPDATE;
+  IF NOT FOUND OR req.expected_target_version IS NULL OR req.expected_target_version<1 OR req.policy_id IS NULL
+     OR req.reason IS NULL OR pg_catalog.length(pg_catalog.btrim(req.reason))=0
+     OR req.requested_payload IS NULL OR pg_catalog.jsonb_typeof(req.requested_payload)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.requested_payload))<>6
+     OR NOT (req.requested_payload ?& ARRAY['family_id','expected_family_version','action','source_access_id','effective_on','effective_until']) THEN
+    RAISE EXCEPTION 'D1 Family child access stored request malformed';
+  END IF;
+  BEGIN
+    family_id:=NULLIF(req.requested_payload->>'family_id','')::uuid;
+    family_version:=(req.requested_payload->>'expected_family_version')::bigint;
+    action:=req.requested_payload->>'action';
+    source_id:=NULLIF(req.requested_payload->>'source_access_id','')::uuid;
+    effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+    effective_until:=NULLIF(req.requested_payload->>'effective_until','')::date;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+    RAISE EXCEPTION 'D1 Family child access stored request malformed';
+  END;
+  IF family_id IS NULL OR family_version<1 OR action IS NULL OR action NOT IN ('ADD','REVOKE') OR effective_on IS NULL THEN
+    RAISE EXCEPTION 'D1 Family child access stored request malformed';
+  END IF;
+  SELECT * INTO locks FROM app_private.d1_family_child_access_lock_targets(req.target_ref,family_id,source_id);
+  final_role:=app_private.d1_final_approver_role(p_request_id,ctx.actor_id);
+  IF NOT ((ctx.actor_id=req.requester_id AND app_private.d1_family_child_access_authorized(
+              ctx.actor_id,'family.child_access.change',req.target_ref,NULL))
+       OR (final_role IS NOT NULL AND app_private.d1_family_child_access_authorized(
+              ctx.actor_id,'family.access.approve',req.target_ref,final_role))) THEN
+    RAISE EXCEPTION 'D1 Family child access request unavailable';
+  END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF NOT app_private.d1_family_child_access_authorized(req.requester_id,'family.child_access.change',req.target_ref,NULL) THEN
+      RAISE EXCEPTION 'D1 Family child access requester authority revoked';
+    END IF;
+    IF ctx.receipt_state='SUCCEEDED' THEN
+      IF app_private.d1_family_child_access_reviews_live(p_request_id) IS DISTINCT FROM true
+         OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+         OR ctx.result_summary->>'state' IS DISTINCT FROM 'EXECUTED' OR ctx.result_summary->>'request_version' IS NULL THEN
+        RAISE EXCEPTION 'D1 Family child access apply receipt invalid';
+      END IF;
+      base_summary:=ctx.result_summary-'request_version'-'state';
+      IF app_private.d1_family_child_access_result_match(
+          req.target_ref,family_id,action,source_id,ctx.result_ref,effective_on,effective_until,base_summary) IS DISTINCT FROM true
+         OR NOT EXISTS (
+           SELECT 1 FROM app_private.approval_applications a
+            WHERE a.request_id=p_request_id AND a.command_receipt_id=ctx.receipt_id
+              AND a.operation_id=ctx.operation_id AND a.result_ref=ctx.result_ref
+              AND a.applied_target_version=req.expected_target_version) THEN
+        RAISE EXCEPTION 'D1 Family child access apply replay evidence invalid';
+      END IF;
+      RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,'EXECUTED',ctx.result_ref; RETURN;
+    ELSIF ctx.receipt_state='REJECTED' THEN
+      IF ctx.result_ref IS NOT NULL OR ctx.result_summary IS NULL
+         OR ctx.result_summary->>'state' IS DISTINCT FROM 'INVALIDATED' THEN
+        RAISE EXCEPTION 'D1 Family child access invalidation receipt malformed';
+      END IF;
+      RETURN QUERY SELECT p_request_id,(ctx.result_summary->>'request_version')::bigint,'INVALIDATED',NULL::uuid; RETURN;
+    ELSE
+      RAISE EXCEPTION 'D1 Family child access apply receipt invalid';
+    END IF;
+  END IF;
+
+  IF req.state<>'APPROVED' OR req.row_version<>p_expected_request_version THEN
+    RAISE EXCEPTION 'D1 Family child access approved request changed';
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_family_child_access_policy(req.target_ref);
+  IF policy_row.policy_id IS DISTINCT FROM req.policy_id OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL'
+     OR policy_row.campus_id IS DISTINCT FROM req.campus_id THEN
+    invalidation_code:='D1_FAMILY_CHILD_ACCESS_POLICY_STALE';
+  ELSIF NOT app_private.d1_family_child_access_authorized(req.requester_id,'family.child_access.change',req.target_ref,NULL) THEN
+    invalidation_code:='D1_FAMILY_CHILD_ACCESS_REQUESTER_AUTHORITY_STALE';
+  ELSIF app_private.d1_family_child_access_reviews_live(p_request_id) IS DISTINCT FROM true THEN
+    invalidation_code:='D1_FAMILY_CHILD_ACCESS_REVIEW_AUTHORITY_STALE';
+  ELSIF locks.student_version IS DISTINCT FROM req.expected_target_version
+     OR locks.family_version IS DISTINCT FROM family_version THEN
+    invalidation_code:='D1_FAMILY_CHILD_ACCESS_VERSION_STALE';
+  END IF;
+  IF invalidation_code IS NULL THEN
+    SELECT * INTO pre FROM app_private.d1_family_child_access_preflight(
+      req.target_ref,req.expected_target_version,family_id,family_version,action,source_id,effective_on,effective_until,req.reason);
+    IF pre.eligible IS DISTINCT FROM true THEN
+      invalidation_code:=pg_catalog.coalesce(pre.error_code,'D1_FAMILY_CHILD_ACCESS_PREFLIGHT_STALE');
+    END IF;
+  END IF;
+
+  IF invalidation_code IS NOT NULL THEN
+    UPDATE app_private.approval_requests SET state='INVALIDATED'
+      WHERE id=p_request_id RETURNING row_version INTO final_version;
+    receipt:=app_private.d1_family_child_access_receipt(
+      'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
+      p_request_id,p_expected_request_version,'REJECTED',NULL,NULL,
+      pg_catalog.jsonb_build_object('request_version',final_version,'state','INVALIDATED'),invalidation_code);
+    SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t
+      WHERE t.request_id=p_request_id;
+    INSERT INTO app_private.approval_transitions
+      (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+    VALUES (p_request_id,seq,'APPROVED','INVALIDATED',invalidation_code,receipt,ctx.actor_id);
+    PERFORM app_private.d1_family_child_access_audit(
+      ctx.actor_id,'APPLY',req.target_ref,family_id,source_id,source_id,action,receipt,p_request_id,
+      req.expected_target_version,family_version,'REJECTED',invalidation_code,corr);
+    RETURN QUERY SELECT p_request_id,final_version,'INVALIDATED',NULL::uuid; RETURN;
+  END IF;
+
+  SELECT * INTO eff FROM app_private.d1_family_child_access_effect(
+    ctx.actor_id,req.target_ref,req.expected_target_version,family_id,family_version,action,source_id,
+    effective_on,effective_until,req.reason);
+  summary:=pg_catalog.jsonb_build_object(
+    'access_id',eff.access_id,'source_access_id',eff.source_access_id,'action',eff.action,
+    'effective_from',eff.effective_from,'effective_until',eff.effective_until,
+    'student_version',eff.student_version,'family_version',eff.family_version);
+  UPDATE app_private.approval_requests SET state='EXECUTED',executed_at=pg_catalog.statement_timestamp()
+    WHERE id=p_request_id RETURNING row_version INTO final_version;
+  receipt:=app_private.d1_family_child_access_receipt(
+    'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
+    p_request_id,p_expected_request_version,'SUCCEEDED','D1_FAMILY_CHILD_ACCESS_CHANGE',eff.access_id,
+    summary||pg_catalog.jsonb_build_object('request_version',final_version,'state','EXECUTED'),NULL);
+  INSERT INTO app_private.approval_applications
+    (request_id,command_receipt_id,operation_id,applied_target_version,result_ref,created_by)
+  VALUES (p_request_id,receipt,ctx.operation_id,req.expected_target_version,eff.access_id,ctx.actor_id);
+  SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t
+    WHERE t.request_id=p_request_id;
+  INSERT INTO app_private.approval_transitions
+    (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
+  VALUES (p_request_id,seq,'APPROVED','EXECUTED','D1_FAMILY_CHILD_ACCESS_APPLIED',receipt,ctx.actor_id);
+  PERFORM app_private.d1_family_child_access_audit(
+    ctx.actor_id,'APPLY',req.target_ref,family_id,eff.access_id,source_id,action,receipt,p_request_id,
+    eff.student_version,eff.family_version,'SUCCEEDED',NULL,corr);
+  PERFORM app_private.d1_family_child_access_event(
+    ctx.actor_id,req.target_ref,family_id,eff.access_id,source_id,action,receipt,corr);
+  RETURN QUERY SELECT p_request_id,final_version,'EXECUTED',eff.access_id;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_apply_family_child_access_change(uuid,bigint,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_family_child_access_change(uuid,bigint,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
