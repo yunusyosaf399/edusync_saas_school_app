@@ -30,6 +30,11 @@ OWNER_RE = re.compile(
     rf"OWNER\s+TO\s+(?P<role>[a-z0-9_]+)\s*;",
     re.I | re.S,
 )
+RENAME_RE = re.compile(
+    rf"\bALTER\s+FUNCTION\s+(?P<name>{FUNC_NAME_RE})\s*\([^;]*?\)\s+"
+    rf"RENAME\s+TO\s+(?P<new>[a-z0-9_]+)\s*;",
+    re.I | re.S,
+)
 ACL_RE = re.compile(
     rf"\b(?P<verb>GRANT|REVOKE)\s+(?P<priv>EXECUTE|ALL)\s+ON\s+FUNCTION\s+"
     rf"(?P<name>{FUNC_NAME_RE})\s*\([^;]*?\)\s+"
@@ -54,6 +59,7 @@ class FunctionState:
     execute_roles: set[str] = field(default_factory=set)
     last_definition_offset: int = -1
     owner_transfer_count: int = 0
+    rename_count: int = 0
 
 
 def discover_drafts(root: Path) -> list[Path]:
@@ -147,6 +153,7 @@ def _events(text: str):
         ("reset_role", RESET_ROLE_RE),
         ("create", CREATE_RE),
         ("owner", OWNER_RE),
+        ("rename", RENAME_RE),
         ("acl", ACL_RE),
     ]
     events = []
@@ -173,6 +180,7 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
     states: dict[str, FunctionState] = {}
     current_role: str | None = None
     possible_name_collisions = 0
+    rename_events = 0
 
     for _, kind, match in _events(text):
         if kind == "set_role":
@@ -191,7 +199,6 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
                 state = FunctionState(name=name, owner=current_role)
                 states[name] = state
             elif not replacing:
-                # This may be an overload because this pass is intentionally name-level.
                 possible_name_collisions += 1
             state.declarations += 1
             if replacing:
@@ -206,6 +213,21 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
             state.owner = role
             state.owner_transfer_count += 1
             continue
+        if kind == "rename":
+            old_name = match.group("name").lower()
+            schema = old_name.split(".", 1)[0]
+            new_name = f"{schema}.{match.group('new').lower()}"
+            state = states.pop(old_name, None)
+            if state is None or not state.declarations:
+                errors.append(f"function rename source unresolved: {old_name}->{new_name}")
+                state = FunctionState(name=new_name)
+            if new_name in states and states[new_name].declarations:
+                errors.append(f"function rename target already exists: {new_name}")
+            state.name = new_name
+            state.rename_count += 1
+            states[new_name] = state
+            rename_events += 1
+            continue
         if kind == "acl":
             name = match.group("name").lower()
             roles = _parse_roles(match.group("roles"))
@@ -217,6 +239,8 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
 
     if current_role is not None:
         errors.append(f"D1 draft leaves SET ROLE active at end of lexical chain: {current_role}")
+    if possible_name_collisions:
+        errors.append(f"unresolved bare CREATE function-name collisions: {possible_name_collisions}")
 
     unknown_owner_definers = sorted(
         name for name, state in states.items()
@@ -284,6 +308,9 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
     schema_owner_public = sorted(
         state.name for state in public_app if state.owner == "schoolos_schema_owner"
     )
+    renamed_final = sorted(
+        state.name for state in states.values() if state.declarations and state.rename_count
+    )
 
     metrics: dict[str, object] = {
         "draft_fragments": len(drafts),
@@ -291,6 +318,8 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
         "redefined_names": len(redefined),
         "replace_declarations": sum(state.replace_declarations for state in states.values()),
         "owner_transfers": sum(state.owner_transfer_count for state in states.values()),
+        "renames": rename_events,
+        "renamed_final_names": renamed_final,
         "final_security_definers": sum(
             1 for state in states.values() if state.declarations and state.security_definer
         ),
@@ -324,7 +353,8 @@ def main(argv=None) -> int:
         "D1_FUNCTION_FINAL_PASS "
         f"{metrics['draft_fragments']} fragments; final_functions={metrics['final_functions']} "
         f"redefined_names={metrics['redefined_names']} replace_declarations={metrics['replace_declarations']} "
-        f"owner_transfers={metrics['owner_transfers']} final_security_definers={metrics['final_security_definers']} "
+        f"owner_transfers={metrics['owner_transfers']} renames={metrics['renames']} "
+        f"final_security_definers={metrics['final_security_definers']} "
         f"app={metrics['public_app_functions']} app_private={metrics['private_functions']} "
         f"authenticated_app={metrics['authenticated_public_functions']} "
         f"authenticated_app_private={metrics['authenticated_private_functions']} "
@@ -336,6 +366,11 @@ def main(argv=None) -> int:
         print(
             "D1_FUNCTION_FINAL_REPORT app_schema_owner="
             + (",".join(schema_owner_public) if schema_owner_public else "<none>")
+        )
+        renamed = metrics["renamed_final_names"]
+        print(
+            "D1_FUNCTION_FINAL_REPORT renamed_final="
+            + (",".join(renamed) if renamed else "<none>")
         )
         redefined_names = sorted(
             state.name for state in states.values() if state.declarations > 1
