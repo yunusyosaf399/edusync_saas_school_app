@@ -1,106 +1,182 @@
--- Effect 31/36: family.principal_membership.change core contract.
--- D1C2 working fragment only. NOT AN EXECUTABLE MIGRATION; do not deploy independently.
--- Approved semantics: ADD / END / CORRECT retained membership history. Changing principal identity is END + ADD.
+-- D1C1B Effect 31/36: family.principal_membership.change core.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+-- Approved P1 ADD/END/CORRECT retained membership history. Principal replacement is END + ADD.
+
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_family_membership_principal_read ON app_private.principals
+  FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_family_membership_principal_lock ON app_private.principals
+  FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+GRANT SELECT (id,kind,state,row_version,person_id),UPDATE(updated_at)
+  ON app_private.principals TO schoolos_family_executor;
+GRANT SELECT (id,row_version,state),UPDATE(updated_at)
+  ON app_private.families TO schoolos_family_executor;
+GRANT SELECT (id,family_id,principal_id,principal_kind,effective_from,effective_until,reason,supersedes_id,created_at,created_by,ended_at,ended_by),
+  INSERT (id,family_id,principal_id,principal_kind,effective_from,effective_until,reason,supersedes_id,created_by),
+  UPDATE (effective_until,ended_at,ended_by)
+  ON app_private.family_principal_memberships TO schoolos_family_executor;
+RESET ROLE;
 
 GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
 SET ROLE schoolos_authz_reader;
-CREATE FUNCTION app_private.d1_family_principal_membership_authorized(
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_authorized(
   p_principal uuid,p_permission text,p_reviewer_role uuid DEFAULT NULL
 ) RETURNS boolean
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-  SELECT EXISTS (
-    SELECT 1
-    FROM app_private.role_assignments a
-    JOIN app_private.roles r ON r.id=a.role_id AND r.state='ACTIVE'
-    JOIN app_private.role_permission_grants g ON g.role_id=r.id AND g.revoked_at IS NULL
-    JOIN app_private.permissions pm ON pm.id=g.permission_id AND pm.code=p_permission
-    JOIN app_private.assignment_scopes s ON s.assignment_id=a.id AND s.scope_kind='ALL'
-    WHERE a.principal_id=p_principal AND a.assignment_state='ACTIVE' AND a.withdrawn_at IS NULL
-      AND (p_reviewer_role IS NULL OR a.role_id=p_reviewer_role)
-      AND (a.effective_from IS NULL OR a.effective_from<=pg_catalog.statement_timestamp())
-      AND (a.effective_until IS NULL OR pg_catalog.statement_timestamp()<a.effective_until)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp();
+BEGIN
+  IF p_principal IS NULL
+     OR p_permission NOT IN ('family.principal_membership.change','family.access.approve')
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+         AND p.person_id IS NOT NULL AND b.principal_kind='INDIVIDUAL' AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+    WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+      AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at))
+  THEN RETURN false; END IF;
+
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id
+    JOIN app_private.roles r ON r.id=sc.role_id
+    WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+      AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind
+      AND c.resolver_key=sc.resolver_key AND c.enabled
+      AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND (p_reviewer_role IS NULL OR sc.role_id=p_reviewer_role)
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+      AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until)
+      AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+      AND sc.resolver_key='DIRECT' AND sc.scope_kind='ALL' AND sc.campus_id IS NULL
   );
-$body$;
+END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_authorized(uuid,text,uuid)
   FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_authorized(uuid,text,uuid)
-  TO schoolos_family_executor,schoolos_workflow_executor;
+  TO schoolos_family_executor,schoolos_workflow_executor,schoolos_read_executor;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
 
 GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
 SET ROLE schoolos_family_executor;
-CREATE FUNCTION app_private.d1_family_principal_membership_preflight(
-  p_family uuid,p_expected_family_version bigint,p_target_principal uuid,
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_preflight(
+  p_family uuid,p_expected_family_version bigint,p_target_principal uuid,p_expected_principal_version bigint,
   p_action text,p_source uuid,p_effective_on date,p_reason text
-) RETURNS TABLE(eligible boolean,error_code text,source_effective_from date)
+) RETURNS TABLE(eligible boolean,error_code text,source_effective_from date,source_family_id uuid)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE fam app_private.families%ROWTYPE; pr app_private.principals%ROWTYPE;
-  src app_private.family_principal_memberships%ROWTYPE; overlap_count bigint;
+  src app_private.family_principal_memberships%ROWTYPE; source_family uuid; lock_family uuid; overlap_count bigint;
 BEGIN
   IF p_family IS NULL OR p_expected_family_version IS NULL OR p_expected_family_version<1
-     OR p_target_principal IS NULL OR p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT')
-     OR p_effective_on IS NULL OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
-    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_INTENT_INVALID',NULL::date; RETURN;
+     OR p_target_principal IS NULL OR p_expected_principal_version IS NULL OR p_expected_principal_version<1
+     OR p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT') OR p_effective_on IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_INTENT_INVALID',NULL::date,NULL::uuid; RETURN;
   END IF;
 
-  -- Global lock order: Foundation principal before Family before membership history.
+  -- Foundation target Principal precedes Family rows in the frozen global order.
   SELECT * INTO pr FROM app_private.principals p WHERE p.id=p_target_principal FOR UPDATE;
-  IF NOT FOUND OR pr.kind IS DISTINCT FROM 'ACCOUNT' OR pr.account_type IS DISTINCT FROM 'SHARED_FAMILY'
-     OR pr.state IS DISTINCT FROM 'ACTIVE' THEN
-    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_INVALID',NULL::date; RETURN;
+  IF NOT FOUND OR pr.kind IS DISTINCT FROM 'FAMILY' THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_INVALID',NULL::date,NULL::uuid; RETURN;
   END IF;
-  SELECT * INTO fam FROM app_private.families f WHERE f.id=p_family FOR UPDATE;
-  IF NOT FOUND THEN RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_MISSING',NULL::date; RETURN; END IF;
+  IF pr.row_version IS DISTINCT FROM p_expected_principal_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_VERSION_STALE',NULL::date,NULL::uuid; RETURN;
+  END IF;
+  IF p_action='ADD' AND pr.state IS DISTINCT FROM 'ACTIVE' THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_INACTIVE',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  IF p_source IS NOT NULL THEN
+    SELECT m.family_id INTO source_family FROM app_private.family_principal_memberships m
+      WHERE m.id=p_source AND m.principal_id=p_target_principal AND m.principal_kind='FAMILY';
+    IF source_family IS NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_MISSING',NULL::date,NULL::uuid; RETURN;
+    END IF;
+  END IF;
+
+  FOR lock_family IN
+    SELECT x FROM (VALUES (p_family),(source_family)) AS f(x)
+      WHERE x IS NOT NULL GROUP BY x ORDER BY x
+  LOOP
+    PERFORM 1 FROM app_private.families f WHERE f.id=lock_family FOR UPDATE;
+    IF NOT FOUND THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_MISSING',NULL::date,source_family; RETURN;
+    END IF;
+  END LOOP;
+  SELECT * INTO fam FROM app_private.families f WHERE f.id=p_family;
   IF fam.row_version IS DISTINCT FROM p_expected_family_version THEN
-    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_VERSION_STALE',NULL::date; RETURN;
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_VERSION_STALE',NULL::date,source_family; RETURN;
   END IF;
 
   IF p_action='ADD' THEN
     IF p_source IS NOT NULL OR fam.state IS DISTINCT FROM 'ACTIVE' THEN
-      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_ADD_SHAPE_INVALID',NULL::date; RETURN;
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_ADD_SHAPE_INVALID',NULL::date,NULL::uuid; RETURN;
     END IF;
   ELSE
     IF p_source IS NULL THEN
-      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_REQUIRED',NULL::date; RETURN;
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_REQUIRED',NULL::date,NULL::uuid; RETURN;
     END IF;
     SELECT * INTO src FROM app_private.family_principal_memberships m
-      WHERE m.id=p_source AND m.family_id=p_family AND m.principal_id=p_target_principal
-        AND m.principal_kind='FAMILY' FOR UPDATE;
+      WHERE m.id=p_source AND m.principal_id=p_target_principal AND m.principal_kind='FAMILY' FOR UPDATE;
     IF NOT FOUND OR src.effective_until IS NOT NULL
        OR EXISTS (SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=src.id) THEN
-      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_STALE',NULL::date; RETURN;
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_STALE',NULL::date,source_family; RETURN;
     END IF;
     IF p_effective_on<=src.effective_from THEN
-      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_DATE_INVALID',src.effective_from; RETURN;
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_DATE_INVALID',src.effective_from,source_family; RETURN;
+    END IF;
+    IF p_action='END' AND p_family IS DISTINCT FROM src.family_id THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_END_FAMILY_MISMATCH',src.effective_from,source_family; RETURN;
     END IF;
     IF p_action='CORRECT' THEN
-      -- CORRECT changes the retained interval fact by ending the erroneous row at p_effective_on
-      -- and appending a successor for the same Family/Principal identity. Identity replacement is END + ADD.
-      NULL;
+      IF fam.state IS DISTINCT FROM 'ACTIVE' THEN
+        RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_CORRECT_DESTINATION_INACTIVE',src.effective_from,source_family; RETURN;
+      END IF;
+      IF p_family IS NOT DISTINCT FROM src.family_id THEN
+        RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_NOOP',src.effective_from,source_family; RETURN;
+      END IF;
     END IF;
   END IF;
 
-  IF p_action='ADD' THEN
+  IF p_action IN ('ADD','CORRECT') THEN
     SELECT count(*) INTO overlap_count FROM app_private.family_principal_memberships m
-      WHERE m.family_id=p_family
-        AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date);
+      WHERE m.family_id=p_family AND (p_source IS NULL OR m.id<>p_source)
+        AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date)
+        AND NOT EXISTS (SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=m.id);
     IF overlap_count<>0 THEN
-      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_OVERLAP',NULL::date; RETURN;
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_OVERLAP',CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family; RETURN;
     END IF;
     SELECT count(*) INTO overlap_count FROM app_private.family_principal_memberships m
-      WHERE m.principal_id=p_target_principal
-        AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date);
+      WHERE m.principal_id=p_target_principal AND (p_source IS NULL OR m.id<>p_source)
+        AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date)
+        AND NOT EXISTS (SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=m.id);
     IF overlap_count<>0 THEN
-      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_OVERLAP',NULL::date; RETURN;
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_OVERLAP',CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family; RETURN;
     END IF;
   END IF;
 
-  RETURN QUERY SELECT true,NULL::text,CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END;
+  RETURN QUERY SELECT true,NULL::text,CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family;
 END $body$;
-REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_preflight(uuid,bigint,uuid,text,uuid,date,text)
+REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_preflight(uuid,bigint,uuid,bigint,text,uuid,date,text)
   FROM PUBLIC,anon,authenticated,service_role;
-GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_preflight(uuid,bigint,uuid,text,uuid,date,text)
+GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_preflight(uuid,bigint,uuid,bigint,text,uuid,date,text)
   TO schoolos_family_executor,schoolos_workflow_executor;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
