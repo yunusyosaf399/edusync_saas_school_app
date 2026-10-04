@@ -1,0 +1,32 @@
+name: D1 Migration 10 draft static
+
+on:
+  push:
+    paths:
+      - '.github/workflows/domain-draft-static.yml'
+      - '.gitattributes'
+      - 'supabase/migrations/20260928000000_domain_package_01*.sql.draft'
+      - 'tools/supabase/domain_draft_guard.py'
+      - 'tools/supabase/tests/test_domain_draft_guard.py'
+  pull_request:
+    paths:
+      - '.github/workflows/domain-draft-static.yml'
+      - '.gitattributes'
+      - 'supabase/migrations/20260928000000_domain_package_01*.sql.draft'
+      - 'tools/supabase/domain_draft_guard.py'
+      - 'tools/supabase/tests/test_domain_draft_guard.py'
+  workflow_dispatch:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: D1 draft guard unit tests
+        run: python -m unittest discover -s tools/supabase/tests -p 'test_domain_draft_guard.py' -v
+      - name: Integrated Migration 10 source guard
+        run: python tools/supabase/domain_draft_guard.py

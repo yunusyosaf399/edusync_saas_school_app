@@ -1,3 +1,4 @@
 .gitattributes text eol=lf
 supabase/migrations/*.sql text eol=lf
+supabase/migrations/*.sql.draft text eol=lf
 supabase/tests/database/*.sql text eol=lf
