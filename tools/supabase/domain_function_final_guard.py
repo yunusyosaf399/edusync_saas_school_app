@@ -57,6 +57,7 @@ class FunctionState:
     declarations: int = 0
     replace_declarations: int = 0
     execute_roles: set[str] = field(default_factory=set)
+    argument_shapes: set[str] = field(default_factory=set)
     last_definition_offset: int = -1
     owner_transfer_count: int = 0
     rename_count: int = 0
@@ -147,6 +148,10 @@ def _parse_roles(raw: str) -> set[str]:
     return {piece.strip().lower() for piece in raw.split(",") if piece.strip()}
 
 
+def _argument_shape(raw: str) -> str:
+    return re.sub(r"\s+", " ", raw.strip().lower())
+
+
 def _events(text: str):
     patterns = [
         ("set_role", SET_ROLE_RE),
@@ -203,6 +208,7 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
             state.declarations += 1
             if replacing:
                 state.replace_declarations += 1
+            state.argument_shapes.add(_argument_shape(match.group("args")))
             state.security_definer = is_definer
             state.last_definition_offset = match.start()
             continue
@@ -241,6 +247,17 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
         errors.append(f"D1 draft leaves SET ROLE active at end of lexical chain: {current_role}")
     if possible_name_collisions:
         errors.append(f"unresolved bare CREATE function-name collisions: {possible_name_collisions}")
+
+    signature_shape_drift = sorted(
+        name for name, state in states.items()
+        if state.declarations > 1 and len(state.argument_shapes) > 1
+    )
+    if signature_shape_drift:
+        errors.append(
+            "function declaration argument-shape drift requires signature audit: "
+            + ",".join(signature_shape_drift[:20])
+            + ("..." if len(signature_shape_drift) > 20 else "")
+        )
 
     unknown_owner_definers = sorted(
         name for name, state in states.items()
@@ -320,6 +337,7 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
         "owner_transfers": sum(state.owner_transfer_count for state in states.values()),
         "renames": rename_events,
         "renamed_final_names": renamed_final,
+        "signature_shape_drift_names": signature_shape_drift,
         "final_security_definers": sum(
             1 for state in states.values() if state.declarations and state.security_definer
         ),
@@ -354,7 +372,7 @@ def main(argv=None) -> int:
         f"{metrics['draft_fragments']} fragments; final_functions={metrics['final_functions']} "
         f"redefined_names={metrics['redefined_names']} replace_declarations={metrics['replace_declarations']} "
         f"owner_transfers={metrics['owner_transfers']} renames={metrics['renames']} "
-        f"final_security_definers={metrics['final_security_definers']} "
+        f"signature_shape_drift=0 final_security_definers={metrics['final_security_definers']} "
         f"app={metrics['public_app_functions']} app_private={metrics['private_functions']} "
         f"authenticated_app={metrics['authenticated_public_functions']} "
         f"authenticated_app_private={metrics['authenticated_private_functions']} "
