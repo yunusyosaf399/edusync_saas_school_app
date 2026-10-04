@@ -1,0 +1,9 @@
+-- Effect 31 least-privilege Principal row-lock correction.
+-- PostgreSQL SELECT FOR UPDATE requires UPDATE privilege; use immutable id only, matching the frozen row-lock ceiling.
+
+SET ROLE schoolos_schema_owner;
+REVOKE SELECT (state,person_id), UPDATE (updated_at)
+  ON app_private.principals FROM schoolos_family_executor;
+GRANT SELECT (id,kind,row_version), UPDATE (id)
+  ON app_private.principals TO schoolos_family_executor;
+RESET ROLE;
