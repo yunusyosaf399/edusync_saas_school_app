@@ -121,6 +121,53 @@ RESET ROLE;
         self.assertEqual(errors, [])
         self.assertEqual(states["app_private.d1_body_words"].owner, "schoolos_schema_owner")
 
+    def test_rename_then_recreate_produces_two_final_functions(self):
+        text = _base_sql() + """
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_participant(uuid,uuid) RETURNS text
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$ SELECT 'OLD'::text; $body$;
+REVOKE ALL ON FUNCTION app_private.d1_participant(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_participant(uuid,uuid)
+  TO schoolos_workflow_executor;
+ALTER FUNCTION app_private.d1_participant(uuid,uuid)
+  RENAME TO d1_participant_v0;
+REVOKE ALL ON FUNCTION app_private.d1_participant_v0(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor;
+CREATE FUNCTION app_private.d1_participant(uuid,uuid) RETURNS text
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$ SELECT 'NEW'::text; $body$;
+REVOKE ALL ON FUNCTION app_private.d1_participant(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_participant(uuid,uuid)
+  TO schoolos_workflow_executor;
+RESET ROLE;
+"""
+        errors, metrics, states = guard.inspect(self.make_root(text))
+        self.assertEqual(errors, [])
+        self.assertEqual(metrics["possible_name_collisions"], 0)
+        self.assertEqual(metrics["renames"], 1)
+        self.assertIn("app_private.d1_participant", states)
+        self.assertIn("app_private.d1_participant_v0", states)
+        self.assertEqual(states["app_private.d1_participant"].owner, "schoolos_authz_reader")
+        self.assertEqual(states["app_private.d1_participant_v0"].owner, "schoolos_authz_reader")
+
+    def test_rejects_true_duplicate_bare_create_without_rename(self):
+        text = _base_sql() + """
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_duplicate() RETURNS boolean
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$ SELECT true; $body$;
+CREATE FUNCTION app_private.d1_duplicate() RETURNS boolean
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$ SELECT false; $body$;
+RESET ROLE;
+"""
+        errors, metrics, _ = guard.inspect(self.make_root(text))
+        self.assertEqual(metrics["possible_name_collisions"], 1)
+        self.assertTrue(any("unresolved bare CREATE" in error for error in errors))
+
 
 if __name__ == "__main__":
     unittest.main()
