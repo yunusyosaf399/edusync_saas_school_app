@@ -1,0 +1,43 @@
+-- Effect 31 target-readiness hardening.
+-- A FAMILY credential is ready for membership only with a current family-only, family-safe OWN/D1_FAMILY_CHILD chain.
+-- The resolver itself is not evaluated here (that would require the membership being created); child authority remains a later conjunctive check.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_target_ready(p_principal uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp();
+BEGIN
+  RETURN EXISTS (
+    SELECT 1
+    FROM app_private.principals pr
+    JOIN app_private.principal_auth_bindings b
+      ON b.principal_id=pr.id AND b.principal_kind='FAMILY' AND b.auth_user_id IS NOT NULL
+    JOIN app_private.principal_role_assignments a
+      ON a.principal_id=pr.id AND a.principal_kind='FAMILY' AND a.context_kind='FAMILY'
+    JOIN app_private.roles r
+      ON r.id=a.role_id AND r.family_only AND r.state='ACTIVE'
+    JOIN app_private.role_permission_grants g
+      ON g.role_id=a.role_id AND g.role_family_only AND g.permission_family_safe
+    JOIN app_private.permissions p
+      ON p.id=g.permission_id AND p.family_safe AND p.state='ENABLED'
+    JOIN app_private.assignment_permission_scopes sc
+      ON sc.assignment_id=a.id AND sc.grant_id=g.id AND sc.role_id=a.role_id AND sc.permission_id=p.id
+    JOIN app_private.permission_scope_contracts c
+      ON c.id=sc.scope_contract_id AND c.permission_id=p.id
+       AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key AND c.enabled
+    WHERE pr.id=p_principal AND pr.kind='FAMILY' AND pr.state='ACTIVE'
+      AND sc.scope_kind='OWN' AND sc.resolver_key='D1_FAMILY_CHILD'
+      AND sc.campus_id IS NULL AND sc.class_offering_id IS NULL
+      AND sc.section_offering_id IS NULL AND sc.subject_id IS NULL
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+      AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until)
+      AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+  );
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
