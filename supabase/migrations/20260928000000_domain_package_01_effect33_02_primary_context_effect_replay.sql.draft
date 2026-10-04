@@ -1,0 +1,141 @@
+-- Effect 33 typed domain mutation and retained-history replay proof.
+-- Successful replay does not require the accepted context row to remain current.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app_private.d1_family_primary_context_effect(
+  p_actor uuid,p_student uuid,p_expected_student_version bigint,p_action text,p_source_context uuid,
+  p_target_relationship uuid,p_effective_on date,p_effective_until date,p_reason text
+) RETURNS TABLE(context_id uuid,source_context_id uuid,action text,family_relationship_id uuid,
+  family_id uuid,effective_from date,effective_until date,student_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE locks record; pre record; src app_private.student_primary_family_contexts%ROWTYPE;
+  target app_private.family_relationships%ROWTYPE; result_id uuid; result_relationship uuid;
+  result_family uuid; result_from date; result_until date; sver bigint;
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id() THEN
+    RAISE EXCEPTION 'D1 Family primary context actor denied';
+  END IF;
+  SELECT * INTO locks FROM app_private.d1_family_primary_context_lock_targets(
+    p_student,p_source_context,p_target_relationship);
+  IF locks.student_version IS NULL THEN RAISE EXCEPTION 'D1 Family primary context target missing'; END IF;
+  SELECT * INTO pre FROM app_private.d1_family_primary_context_preflight(
+    p_student,p_expected_student_version,p_action,p_source_context,p_target_relationship,
+    p_effective_on,p_effective_until,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family primary context preflight denied: %',pre.error_code;
+  END IF;
+
+  IF p_source_context IS NOT NULL THEN
+    SELECT * INTO src FROM app_private.student_primary_family_contexts c
+     WHERE c.id=p_source_context AND c.student_id=p_student FOR UPDATE;
+    UPDATE app_private.student_primary_family_contexts c
+       SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+     WHERE c.id=p_source_context AND c.student_id=p_student AND c.effective_until IS NULL;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family primary context source changed'; END IF;
+  END IF;
+
+  IF p_action IN ('SELECT','CORRECT') THEN
+    SELECT * INTO target FROM app_private.family_relationships r
+     WHERE r.id=p_target_relationship AND r.student_id=p_student FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family primary context relationship changed'; END IF;
+    result_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.student_primary_family_contexts
+      (id,student_id,family_relationship_id,effective_from,effective_until,reason,supersedes_id,
+       created_by,ended_at,ended_by)
+    VALUES (result_id,p_student,p_target_relationship,p_effective_on,p_effective_until,pg_catalog.btrim(p_reason),
+      p_source_context,p_actor,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE pg_catalog.statement_timestamp() END,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE p_actor END);
+    result_relationship:=p_target_relationship;
+    result_family:=target.family_id;
+    result_from:=p_effective_on;
+    result_until:=p_effective_until;
+  ELSE
+    result_id:=p_source_context;
+    result_relationship:=src.family_relationship_id;
+    SELECT r.family_id INTO result_family FROM app_private.family_relationships r
+     WHERE r.id=result_relationship AND r.student_id=p_student;
+    IF result_family IS NULL THEN RAISE EXCEPTION 'D1 Family primary context source relationship missing'; END IF;
+    result_from:=src.effective_from;
+    result_until:=p_effective_on;
+  END IF;
+
+  UPDATE app_private.students s SET updated_at=pg_catalog.statement_timestamp()
+   WHERE s.id=p_student RETURNING s.row_version INTO sver;
+  IF sver IS NULL THEN RAISE EXCEPTION 'D1 Family primary context Student changed'; END IF;
+
+  RETURN QUERY SELECT result_id,p_source_context,p_action,result_relationship,result_family,
+    result_from,result_until,sver;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_primary_context_effect(uuid,uuid,bigint,text,uuid,uuid,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_primary_context_effect(uuid,uuid,bigint,text,uuid,uuid,date,date,text)
+  TO schoolos_family_executor;
+
+CREATE FUNCTION app_private.d1_family_primary_context_result_match(
+  p_student uuid,p_action text,p_source_context uuid,p_result uuid,p_effective_on date,
+  p_effective_until date,p_summary jsonb
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE summary_context uuid; summary_source uuid; summary_relationship uuid; summary_family uuid;
+  summary_from date; summary_until date; summary_version bigint; result_row app_private.student_primary_family_contexts%ROWTYPE;
+BEGIN
+  IF p_student IS NULL OR p_action IS NULL OR p_action NOT IN ('SELECT','END','CORRECT')
+     OR p_result IS NULL OR p_effective_on IS NULL OR p_summary IS NULL
+     OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>8
+     OR NOT (p_summary ?& ARRAY['context_id','source_context_id','action','family_relationship_id','family_id',
+       'effective_from','effective_until','student_version']) THEN RETURN false; END IF;
+  BEGIN
+    summary_context:=NULLIF(p_summary->>'context_id','')::uuid;
+    summary_source:=NULLIF(p_summary->>'source_context_id','')::uuid;
+    summary_relationship:=NULLIF(p_summary->>'family_relationship_id','')::uuid;
+    summary_family:=NULLIF(p_summary->>'family_id','')::uuid;
+    summary_from:=NULLIF(p_summary->>'effective_from','')::date;
+    summary_until:=NULLIF(p_summary->>'effective_until','')::date;
+    summary_version:=(p_summary->>'student_version')::bigint;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+    RETURN false;
+  END;
+  IF summary_context IS DISTINCT FROM p_result OR summary_source IS DISTINCT FROM p_source_context
+     OR p_summary->>'action' IS DISTINCT FROM p_action OR summary_relationship IS NULL OR summary_family IS NULL
+     OR summary_from IS NULL OR summary_version<1 THEN RETURN false; END IF;
+
+  IF p_action='END' THEN
+    IF p_result IS DISTINCT FROM p_source_context OR summary_until IS DISTINCT FROM p_effective_on THEN RETURN false; END IF;
+    SELECT * INTO result_row FROM app_private.student_primary_family_contexts c
+     WHERE c.id=p_result AND c.student_id=p_student;
+    IF NOT FOUND OR result_row.family_relationship_id IS DISTINCT FROM summary_relationship
+       OR result_row.effective_from IS DISTINCT FROM summary_from
+       OR result_row.effective_until IS DISTINCT FROM p_effective_on
+       OR result_row.ended_at IS NULL OR result_row.ended_by IS NULL THEN RETURN false; END IF;
+  ELSE
+    IF summary_from IS DISTINCT FROM p_effective_on OR summary_until IS DISTINCT FROM p_effective_until THEN RETURN false; END IF;
+    SELECT * INTO result_row FROM app_private.student_primary_family_contexts c
+     WHERE c.id=p_result AND c.student_id=p_student;
+    IF NOT FOUND OR result_row.family_relationship_id IS DISTINCT FROM summary_relationship
+       OR result_row.effective_from IS DISTINCT FROM p_effective_on
+       OR result_row.supersedes_id IS DISTINCT FROM p_source_context
+       OR (p_effective_until IS NOT NULL AND (
+         result_row.effective_until IS DISTINCT FROM p_effective_until
+         OR result_row.ended_at IS NULL OR result_row.ended_by IS NULL)) THEN RETURN false; END IF;
+    IF p_source_context IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM app_private.student_primary_family_contexts s
+       WHERE s.id=p_source_context AND s.student_id=p_student
+         AND s.effective_until=p_effective_on AND s.ended_at IS NOT NULL AND s.ended_by IS NOT NULL) THEN
+      RETURN false;
+    END IF;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM app_private.family_relationships r
+     WHERE r.id=summary_relationship AND r.student_id=p_student AND r.family_id=summary_family) THEN RETURN false; END IF;
+  RETURN true;
+EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RETURN false;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_primary_context_result_match(uuid,text,uuid,uuid,date,date,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_primary_context_result_match(uuid,text,uuid,uuid,date,date,jsonb)
+  TO schoolos_family_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
