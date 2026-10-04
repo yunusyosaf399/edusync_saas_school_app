@@ -1,0 +1,74 @@
+-- Effect 32 FAMILY-credential concurrency hardening.
+-- Any currently effective shared FAMILY membership Principal is pre-read and locked before
+-- Student -> Family anchors. Family lock then stabilizes membership ancestry while ADD
+-- rechecks exact current readiness. REVOKE still does not require a usable credential.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_family_child_access_lock_targets(
+  p_student uuid,p_family uuid,p_source uuid
+) RETURNS TABLE(student_version bigint,family_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE source_student uuid; source_family uuid; sver bigint; fver bigint; x uuid;
+BEGIN
+  IF p_student IS NULL OR p_family IS NULL THEN RETURN; END IF;
+  IF p_source IS NOT NULL THEN
+    SELECT a.student_id,a.family_id INTO source_student,source_family
+      FROM app_private.family_student_access a WHERE a.id=p_source;
+  END IF;
+
+  -- Foundation Principal rows precede D1 Student/Family anchors. The Family row is the
+  -- serialization anchor for membership ancestry, so a harmless pre-read can identify
+  -- every currently effective membership Principal before that Family lock is taken.
+  FOR x IN
+    SELECT m.principal_id
+      FROM app_private.family_principal_memberships m
+     WHERE m.family_id IN (p_family,source_family)
+       AND m.effective_from<=pg_catalog.current_date
+       AND (m.effective_until IS NULL OR pg_catalog.current_date<m.effective_until)
+     GROUP BY m.principal_id ORDER BY m.principal_id
+  LOOP
+    PERFORM 1 FROM app_private.principals p
+      WHERE p.id=x AND p.kind='FAMILY' FOR UPDATE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'D1 Family child access membership Principal invalid';
+    END IF;
+  END LOOP;
+
+  FOR x IN SELECT v FROM (VALUES (p_student),(source_student)) q(v)
+    WHERE v IS NOT NULL GROUP BY v ORDER BY v
+  LOOP
+    PERFORM 1 FROM app_private.students s WHERE s.id=x FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family child access Student missing'; END IF;
+  END LOOP;
+  SELECT s.row_version INTO sver FROM app_private.students s WHERE s.id=p_student;
+
+  FOR x IN SELECT v FROM (VALUES (p_family),(source_family)) q(v)
+    WHERE v IS NOT NULL GROUP BY v ORDER BY v
+  LOOP
+    PERFORM 1 FROM app_private.families f WHERE f.id=x FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family child access Family missing'; END IF;
+  END LOOP;
+  SELECT f.row_version INTO fver FROM app_private.families f WHERE f.id=p_family;
+
+  -- With Family locked, no conforming membership mutation can change current ancestry.
+  -- Lock relationship then access history in deterministic UUID order.
+  FOR x IN SELECT r.id FROM app_private.family_relationships r
+    WHERE r.student_id=p_student AND r.family_id=p_family ORDER BY r.id
+  LOOP
+    PERFORM 1 FROM app_private.family_relationships r WHERE r.id=x FOR UPDATE;
+  END LOOP;
+  FOR x IN SELECT a.id FROM app_private.family_student_access a
+    WHERE a.student_id=p_student AND a.family_id=p_family ORDER BY a.id
+  LOOP
+    PERFORM 1 FROM app_private.family_student_access a WHERE a.id=x FOR UPDATE;
+  END LOOP;
+
+  IF p_source IS NOT NULL AND (source_student IS DISTINCT FROM p_student OR source_family IS DISTINCT FROM p_family) THEN
+    RAISE EXCEPTION 'D1 Family child access source ancestry changed';
+  END IF;
+  RETURN QUERY SELECT sver,fver;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
