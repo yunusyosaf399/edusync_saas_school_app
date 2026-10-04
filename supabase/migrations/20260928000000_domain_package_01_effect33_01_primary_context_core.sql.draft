@@ -1,0 +1,271 @@
+-- D1C1B Effect 33/36: family.primary_context.change core.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+-- Approved actions: SELECT, END, CORRECT. Primary context is display/operational
+-- selection only and never grants/revokes FAMILY portal access or Foundation authority.
+
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_family_primary_context_history_read ON app_private.student_primary_family_contexts
+  FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_family_primary_context_history_insert ON app_private.student_primary_family_contexts
+  FOR INSERT TO schoolos_family_executor WITH CHECK (true);
+CREATE POLICY d1_family_primary_context_history_update ON app_private.student_primary_family_contexts
+  FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+GRANT SELECT (id,student_id,family_relationship_id,effective_from,effective_until,reason,supersedes_id,
+    created_at,created_by,ended_at,ended_by),
+  INSERT (id,student_id,family_relationship_id,effective_from,effective_until,reason,supersedes_id,
+    created_by,ended_at,ended_by),
+  UPDATE (effective_until,ended_at,ended_by)
+  ON app_private.student_primary_family_contexts TO schoolos_family_executor;
+CREATE POLICY d1_family_primary_context_student_read ON app_private.students
+  FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_family_primary_context_student_update ON app_private.students
+  FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+GRANT SELECT (id,row_version,updated_at),UPDATE(updated_at)
+  ON app_private.students TO schoolos_family_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_family_primary_context_authorized(
+  p_principal uuid,p_student uuid
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date:=at_time::date;
+  target_section uuid; target_class uuid; target_campus uuid; n bigint;
+BEGIN
+  IF p_principal IS NULL OR p_student IS NULL
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+         AND p.person_id IS NOT NULL AND b.principal_kind='INDIVIDUAL' AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+
+  SELECT count(*) INTO n FROM app_private.enrollments e
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+     AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+     AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  IF n>1 THEN RETURN false; END IF;
+  IF n=1 THEN
+    SELECT so.id,co.id,co.campus_id INTO target_section,target_class,target_campus
+      FROM app_private.enrollments e
+      JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+       AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+       AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  END IF;
+
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id
+    JOIN app_private.roles r ON r.id=sc.role_id
+    WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+      AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind
+      AND c.resolver_key=sc.resolver_key AND c.enabled
+      AND p.code='family.primary_context.change' AND p.state='ENABLED' AND NOT p.family_safe
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+      AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until)
+      AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+      AND sc.resolver_key='DIRECT'
+      AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+        OR (n=1 AND sc.scope_kind='CAMPUS' AND sc.campus_id=target_campus)
+        OR (n=1 AND sc.scope_kind='CLASS' AND sc.class_offering_id=target_class)
+        OR (n=1 AND sc.scope_kind='SECTION' AND sc.section_offering_id=target_section)));
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_primary_context_authorized(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_primary_context_authorized(uuid,uuid)
+  TO schoolos_family_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app_private.d1_family_primary_context_lock_targets(
+  p_student uuid,p_source_context uuid,p_target_relationship uuid
+) RETURNS TABLE(student_version bigint,source_relationship_id uuid,source_family_id uuid,target_family_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE source_student uuid; source_relationship uuid; source_rel_student uuid; source_family uuid;
+  target_student uuid; target_family uuid; x uuid; sver bigint;
+BEGIN
+  IF p_student IS NULL THEN RETURN; END IF;
+
+  IF p_source_context IS NOT NULL THEN
+    SELECT c.student_id,c.family_relationship_id INTO source_student,source_relationship
+      FROM app_private.student_primary_family_contexts c WHERE c.id=p_source_context;
+    IF source_relationship IS NOT NULL THEN
+      SELECT r.student_id,r.family_id INTO source_rel_student,source_family
+        FROM app_private.family_relationships r WHERE r.id=source_relationship;
+    END IF;
+  END IF;
+  IF p_target_relationship IS NOT NULL THEN
+    SELECT r.student_id,r.family_id INTO target_student,target_family
+      FROM app_private.family_relationships r WHERE r.id=p_target_relationship;
+  END IF;
+
+  FOR x IN
+    SELECT v FROM (VALUES (p_student),(source_student),(source_rel_student),(target_student)) q(v)
+     WHERE v IS NOT NULL GROUP BY v ORDER BY v
+  LOOP
+    PERFORM 1 FROM app_private.students s WHERE s.id=x FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family primary context Student ancestry missing'; END IF;
+  END LOOP;
+  SELECT s.row_version INTO sver FROM app_private.students s WHERE s.id=p_student;
+  IF sver IS NULL THEN RETURN; END IF;
+
+  FOR x IN
+    SELECT v FROM (VALUES (source_family),(target_family)) q(v)
+     WHERE v IS NOT NULL GROUP BY v ORDER BY v
+  LOOP
+    PERFORM 1 FROM app_private.families f WHERE f.id=x FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family primary context Family ancestry missing'; END IF;
+  END LOOP;
+
+  FOR x IN
+    SELECT v FROM (VALUES (source_relationship),(p_target_relationship)) q(v)
+     WHERE v IS NOT NULL GROUP BY v ORDER BY v
+  LOOP
+    PERFORM 1 FROM app_private.family_relationships r WHERE r.id=x FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family primary context relationship missing'; END IF;
+  END LOOP;
+
+  FOR x IN
+    SELECT c.id FROM app_private.student_primary_family_contexts c
+     WHERE c.student_id=p_student ORDER BY c.id
+  LOOP
+    PERFORM 1 FROM app_private.student_primary_family_contexts c WHERE c.id=x FOR UPDATE;
+  END LOOP;
+
+  IF p_source_context IS NOT NULL AND (
+       source_student IS DISTINCT FROM p_student OR source_relationship IS NULL
+       OR source_rel_student IS DISTINCT FROM p_student OR source_family IS NULL
+       OR NOT EXISTS (
+         SELECT 1 FROM app_private.student_primary_family_contexts c
+          WHERE c.id=p_source_context AND c.student_id=source_student
+            AND c.family_relationship_id=source_relationship)
+       OR NOT EXISTS (
+         SELECT 1 FROM app_private.family_relationships r
+          WHERE r.id=source_relationship AND r.student_id=source_rel_student AND r.family_id=source_family)) THEN
+    RAISE EXCEPTION 'D1 Family primary context source ancestry changed';
+  END IF;
+  IF p_target_relationship IS NOT NULL AND (
+       target_student IS DISTINCT FROM p_student OR target_family IS NULL
+       OR NOT EXISTS (
+         SELECT 1 FROM app_private.family_relationships r
+          WHERE r.id=p_target_relationship AND r.student_id=target_student AND r.family_id=target_family)) THEN
+    RAISE EXCEPTION 'D1 Family primary context target ancestry changed';
+  END IF;
+
+  RETURN QUERY SELECT sver,source_relationship,source_family,target_family;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_primary_context_lock_targets(uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_primary_context_lock_targets(uuid,uuid,uuid)
+  TO schoolos_family_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_family_primary_context_preflight(
+  p_student uuid,p_expected_student_version bigint,p_action text,p_source_context uuid,
+  p_target_relationship uuid,p_effective_on date,p_effective_until date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text,source_effective_from date,target_family_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE locks record; src app_private.student_primary_family_contexts%ROWTYPE;
+  target app_private.family_relationships%ROWTYPE; target_family_state text;
+  current_count bigint; current_id uuid; overlaps bigint;
+BEGIN
+  IF p_student IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1
+     OR p_action IS NULL OR p_action NOT IN ('SELECT','END','CORRECT')
+     OR p_effective_on IS NULL OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR (p_effective_until IS NOT NULL AND p_effective_until<=p_effective_on) THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_INTENT_INVALID',NULL::date,NULL::uuid; RETURN;
+  END IF;
+  IF (p_action='SELECT' AND p_target_relationship IS NULL)
+     OR (p_action='END' AND (p_source_context IS NULL OR p_target_relationship IS NOT NULL OR p_effective_until IS NOT NULL))
+     OR (p_action='CORRECT' AND (p_source_context IS NULL OR p_target_relationship IS NULL)) THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_SHAPE_INVALID',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  SELECT * INTO locks FROM app_private.d1_family_primary_context_lock_targets(
+    p_student,p_source_context,p_target_relationship);
+  IF locks.student_version IS NULL THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_STUDENT_MISSING',NULL::date,locks.target_family_id; RETURN;
+  END IF;
+  IF locks.student_version IS DISTINCT FROM p_expected_student_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_VERSION_STALE',NULL::date,locks.target_family_id; RETURN;
+  END IF;
+
+  IF p_source_context IS NOT NULL THEN
+    SELECT * INTO src FROM app_private.student_primary_family_contexts c
+     WHERE c.id=p_source_context AND c.student_id=p_student FOR UPDATE;
+    IF NOT FOUND OR src.effective_until IS NOT NULL
+       OR EXISTS (SELECT 1 FROM app_private.student_primary_family_contexts z WHERE z.supersedes_id=src.id) THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_SOURCE_STALE',NULL::date,locks.target_family_id; RETURN;
+    END IF;
+    IF p_effective_on<=src.effective_from THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_DATE_INVALID',src.effective_from,locks.target_family_id; RETURN;
+    END IF;
+  END IF;
+
+  SELECT count(*),min(c.id::text)::uuid INTO current_count,current_id
+    FROM app_private.student_primary_family_contexts c
+   WHERE c.student_id=p_student AND c.effective_from<=p_effective_on
+     AND (c.effective_until IS NULL OR p_effective_on<c.effective_until);
+  IF current_count>1 THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_EXISTING_OVERLAP',
+      CASE WHEN p_source_context IS NULL THEN NULL ELSE src.effective_from END,locks.target_family_id; RETURN;
+  END IF;
+  IF (current_count=1 AND current_id IS DISTINCT FROM p_source_context)
+     OR (current_count=0 AND p_source_context IS NOT NULL) THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_SOURCE_MISMATCH',
+      CASE WHEN p_source_context IS NULL THEN NULL ELSE src.effective_from END,locks.target_family_id; RETURN;
+  END IF;
+
+  IF p_action IN ('SELECT','CORRECT') THEN
+    SELECT * INTO target FROM app_private.family_relationships r
+     WHERE r.id=p_target_relationship AND r.student_id=p_student FOR UPDATE;
+    IF NOT FOUND OR target.relationship_kind NOT IN ('FATHER','MOTHER','GUARDIAN')
+       OR target.effective_from>p_effective_on
+       OR (p_effective_until IS NULL AND target.effective_until IS NOT NULL)
+       OR (p_effective_until IS NOT NULL AND target.effective_until IS NOT NULL
+         AND target.effective_until<p_effective_until) THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_RELATIONSHIP_NOT_CONTAINING',
+        CASE WHEN p_source_context IS NULL THEN NULL ELSE src.effective_from END,locks.target_family_id; RETURN;
+    END IF;
+    SELECT f.state INTO target_family_state FROM app_private.families f WHERE f.id=target.family_id;
+    IF p_action='SELECT' AND target_family_state IS DISTINCT FROM 'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_FAMILY_NOT_ACTIVE',
+        CASE WHEN p_source_context IS NULL THEN NULL ELSE src.effective_from END,target.family_id; RETURN;
+    END IF;
+    IF p_source_context IS NOT NULL AND src.family_relationship_id=p_target_relationship
+       AND (p_action='SELECT' OR (p_action='CORRECT' AND p_effective_until IS NULL)) THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_NOOP',src.effective_from,target.family_id; RETURN;
+    END IF;
+    SELECT count(*) INTO overlaps FROM app_private.student_primary_family_contexts c
+     WHERE c.student_id=p_student AND (p_source_context IS NULL OR c.id<>p_source_context)
+       AND c.effective_from<pg_catalog.coalesce(p_effective_until,'infinity'::date)
+       AND p_effective_on<pg_catalog.coalesce(c.effective_until,'infinity'::date);
+    IF overlaps<>0 THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_OVERLAP',
+        CASE WHEN p_source_context IS NULL THEN NULL ELSE src.effective_from END,target.family_id; RETURN;
+    END IF;
+  END IF;
+
+  RETURN QUERY SELECT true,NULL::text,
+    CASE WHEN p_source_context IS NULL THEN NULL ELSE src.effective_from END,
+    CASE WHEN p_target_relationship IS NULL THEN locks.source_family_id ELSE locks.target_family_id END;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_primary_context_preflight(uuid,bigint,text,uuid,uuid,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_primary_context_preflight(uuid,bigint,text,uuid,uuid,date,date,text)
+  TO schoolos_family_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
