@@ -1,0 +1,184 @@
+-- D1C1B Effect 35/36 independent-audit hardening.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+-- The approved Designation CREATE/UPDATE/ARCHIVE command already exists in the
+-- working Migration-10 draft. This continuation does not change business
+-- semantics; it binds successful receipt/audit evidence to the exact retained
+-- Designation result and rejects broad-evidence shape expansion.
+
+SET ROLE schoolos_schema_owner;
+
+CREATE FUNCTION app_private.d1_employee_designation_receipt_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  op_code text;
+  key_count bigint;
+  result_version bigint;
+  result_state text;
+  current_version bigint;
+  current_state text;
+BEGIN
+  SELECT o.code INTO op_code
+    FROM app_private.operation_contracts o
+   WHERE o.id=NEW.operation_id;
+
+  -- Ignore every other operation. If either discriminator claims Designation,
+  -- however, both must agree so a receipt cannot be cross-bound to another
+  -- operation contract or command kind.
+  IF op_code IS DISTINCT FROM 'employee.designation.change'
+     AND NEW.command_kind IS DISTINCT FROM 'employee.designation.change' THEN
+    RETURN NEW;
+  END IF;
+
+  IF op_code IS DISTINCT FROM 'employee.designation.change'
+     OR NEW.command_kind IS DISTINCT FROM 'employee.designation.change'
+     OR NEW.request_id IS NOT NULL
+     OR NEW.state IS DISTINCT FROM 'SUCCEEDED'
+     OR NEW.result_kind IS DISTINCT FROM 'D1_DESIGNATION'
+     OR NEW.result_ref IS NULL
+     OR NEW.result_summary IS NULL
+     OR pg_catalog.jsonb_typeof(NEW.result_summary) IS DISTINCT FROM 'object'
+  THEN
+    RAISE EXCEPTION 'D1 Employee Designation receipt binding invalid';
+  END IF;
+
+  SELECT count(*) INTO key_count
+    FROM pg_catalog.jsonb_object_keys(NEW.result_summary);
+  IF key_count<>2
+     OR NOT (NEW.result_summary ?& ARRAY['row_version','state'])
+     OR pg_catalog.jsonb_typeof(NEW.result_summary->'row_version') IS DISTINCT FROM 'number'
+     OR pg_catalog.jsonb_typeof(NEW.result_summary->'state') IS DISTINCT FROM 'string'
+  THEN
+    RAISE EXCEPTION 'D1 Employee Designation receipt summary malformed';
+  END IF;
+
+  BEGIN
+    result_version:=(NEW.result_summary->>'row_version')::bigint;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+    RAISE EXCEPTION 'D1 Employee Designation receipt version malformed';
+  END;
+  result_state:=NEW.result_summary->>'state';
+
+  IF result_version<1
+     OR result_state NOT IN ('ACTIVE','ARCHIVED')
+     OR (result_state='ARCHIVED'
+         AND (NEW.expected_target_version IS NULL OR NEW.expected_target_version<1))
+     OR (result_state='ACTIVE' AND NEW.expected_target_version IS NOT NULL
+         AND NEW.expected_target_version<1)
+  THEN
+    RAISE EXCEPTION 'D1 Employee Designation receipt result invalid';
+  END IF;
+
+  -- At append time the receipt must describe the exact row produced by the
+  -- command. Durable replay later does not re-run this INSERT and therefore
+  -- does not require this historical result to remain the current version.
+  SELECT d.row_version,d.state INTO current_version,current_state
+    FROM app_private.designations d
+   WHERE d.id=NEW.result_ref;
+  IF NOT FOUND
+     OR current_version IS DISTINCT FROM result_version
+     OR current_state IS DISTINCT FROM result_state
+  THEN
+    RAISE EXCEPTION 'D1 Employee Designation receipt/result mismatch';
+  END IF;
+
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_designation_receipt_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE TRIGGER d1_effect35_designation_receipt_guard
+  BEFORE INSERT ON app_private.command_receipts
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_employee_designation_receipt_guard();
+
+CREATE FUNCTION app_private.d1_employee_designation_audit_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  receipt app_private.command_receipts%ROWTYPE;
+  key_count bigint;
+  authority_count bigint;
+  detail_version bigint;
+  detail_state text;
+  detail_action text;
+BEGIN
+  IF NEW.event_type IS DISTINCT FROM 'employee.designation.change' THEN
+    RETURN NEW;
+  END IF;
+
+  IF NEW.actor_kind IS DISTINCT FROM 'INDIVIDUAL'
+     OR NEW.outcome IS DISTINCT FROM 'SUCCEEDED'
+     OR NEW.target_kind IS DISTINCT FROM 'DESIGNATION'
+     OR NEW.target_ref IS NULL
+     OR NEW.command_receipt_id IS NULL
+     OR NEW.approval_request_id IS NOT NULL
+     OR NEW.target_version IS NULL OR NEW.target_version<1
+     OR NEW.source_kind IS DISTINCT FROM 'API'
+     OR NEW.authority_evidence IS NULL
+     OR pg_catalog.jsonb_typeof(NEW.authority_evidence) IS DISTINCT FROM 'object'
+     OR NEW.details IS NULL
+     OR pg_catalog.jsonb_typeof(NEW.details) IS DISTINCT FROM 'object'
+  THEN
+    RAISE EXCEPTION 'D1 Employee Designation audit binding invalid';
+  END IF;
+
+  SELECT count(*) INTO authority_count
+    FROM pg_catalog.jsonb_object_keys(NEW.authority_evidence);
+  SELECT count(*) INTO key_count
+    FROM pg_catalog.jsonb_object_keys(NEW.details);
+  IF authority_count<>1
+     OR NOT (NEW.authority_evidence ? 'operation')
+     OR NEW.authority_evidence->>'operation' IS DISTINCT FROM 'employee.designation.change'
+     OR key_count<>3
+     OR NOT (NEW.details ?& ARRAY['action','state','row_version'])
+     OR pg_catalog.jsonb_typeof(NEW.details->'action') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(NEW.details->'state') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(NEW.details->'row_version') IS DISTINCT FROM 'number'
+  THEN
+    RAISE EXCEPTION 'D1 Employee Designation audit details malformed';
+  END IF;
+
+  BEGIN
+    detail_version:=(NEW.details->>'row_version')::bigint;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+    RAISE EXCEPTION 'D1 Employee Designation audit version malformed';
+  END;
+  detail_state:=NEW.details->>'state';
+  detail_action:=NEW.details->>'action';
+
+  IF detail_action NOT IN ('CREATE','UPDATE','ARCHIVE')
+     OR detail_version IS DISTINCT FROM NEW.target_version
+     OR detail_state NOT IN ('ACTIVE','ARCHIVED')
+     OR (detail_action IN ('CREATE','UPDATE') AND detail_state<>'ACTIVE')
+     OR (detail_action='ARCHIVE' AND detail_state<>'ARCHIVED')
+  THEN
+    RAISE EXCEPTION 'D1 Employee Designation audit result invalid';
+  END IF;
+
+  SELECT r.* INTO receipt
+    FROM app_private.command_receipts r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+   WHERE r.id=NEW.command_receipt_id
+     AND o.code='employee.designation.change'
+     AND r.command_kind='employee.designation.change'
+     AND r.state='SUCCEEDED'
+     AND r.result_kind='D1_DESIGNATION'
+     AND r.result_ref=NEW.target_ref;
+
+  IF receipt.id IS NULL
+     OR (receipt.result_summary->>'row_version')::bigint IS DISTINCT FROM NEW.target_version
+     OR receipt.result_summary->>'state' IS DISTINCT FROM detail_state
+  THEN
+    RAISE EXCEPTION 'D1 Employee Designation audit/receipt mismatch';
+  END IF;
+
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_employee_designation_audit_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE TRIGGER d1_effect35_designation_audit_guard
+  BEFORE INSERT ON app_private.audit_events
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_employee_designation_audit_guard();
+
+RESET ROLE;
