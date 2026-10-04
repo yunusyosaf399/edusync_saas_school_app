@@ -1,0 +1,119 @@
+-- Effect 31 protected approval-request and application evidence guards.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+
+SET ROLE schoolos_family_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_result_match(uuid,uuid,text,uuid,uuid,date,jsonb)
+  TO schoolos_schema_owner;
+RESET ROLE;
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_family_principal_membership_request_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; target_principal uuid; principal_version bigint; action text; source_id uuid;
+  effective_on date; source_family uuid; old_source uuid; old_family uuid; old_from date; stored record;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'family.principal_membership.change' THEN RETURN NEW; END IF;
+  IF NEW.campus_id IS NOT NULL OR NEW.target_ref IS NULL OR NEW.expected_target_version IS NULL
+     OR NEW.expected_target_version<1 OR NEW.reason IS NULL OR pg_catalog.length(pg_catalog.btrim(NEW.reason))=0
+     OR NEW.old_snapshot IS NULL OR pg_catalog.jsonb_typeof(NEW.old_snapshot)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(NEW.old_snapshot))<>3
+     OR NOT (NEW.old_snapshot ?& ARRAY['source_membership_id','source_family_id','source_effective_from'])
+     OR NEW.requested_payload IS NULL OR pg_catalog.jsonb_typeof(NEW.requested_payload)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(NEW.requested_payload))<>6
+     OR NOT (NEW.requested_payload ?& ARRAY['target_principal_id','expected_principal_version','action',
+       'source_membership_id','effective_on','source_family_id']) THEN
+    RAISE EXCEPTION 'D1 Family membership approval request shape invalid';
+  END IF;
+  BEGIN
+    target_principal:=NULLIF(NEW.requested_payload->>'target_principal_id','')::uuid;
+    principal_version:=(NEW.requested_payload->>'expected_principal_version')::bigint;
+    action:=NEW.requested_payload->>'action';
+    source_id:=NULLIF(NEW.requested_payload->>'source_membership_id','')::uuid;
+    effective_on:=NULLIF(NEW.requested_payload->>'effective_on','')::date;
+    source_family:=NULLIF(NEW.requested_payload->>'source_family_id','')::uuid;
+    old_source:=NULLIF(NEW.old_snapshot->>'source_membership_id','')::uuid;
+    old_family:=NULLIF(NEW.old_snapshot->>'source_family_id','')::uuid;
+    old_from:=NULLIF(NEW.old_snapshot->>'source_effective_from','')::date;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+    RAISE EXCEPTION 'D1 Family membership approval request values invalid';
+  END;
+  IF target_principal IS NULL OR principal_version<1 OR action IS NULL
+     OR action NOT IN ('ADD','END','CORRECT') OR effective_on IS NULL
+     OR old_source IS DISTINCT FROM source_id OR old_family IS DISTINCT FROM source_family THEN
+    RAISE EXCEPTION 'D1 Family membership approval request intent invalid';
+  END IF;
+  IF action='ADD' THEN
+    IF source_id IS NOT NULL OR source_family IS NOT NULL OR old_from IS NOT NULL THEN
+      RAISE EXCEPTION 'D1 Family membership ADD request invalid';
+    END IF;
+  ELSE
+    IF source_id IS NULL OR source_family IS NULL OR old_from IS NULL THEN
+      RAISE EXCEPTION 'D1 Family membership source request invalid';
+    END IF;
+    SELECT m.* INTO stored FROM app_private.family_principal_memberships m
+      WHERE m.id=source_id AND m.principal_id=target_principal AND m.principal_kind='FAMILY';
+    IF NOT FOUND OR stored.family_id IS DISTINCT FROM source_family
+       OR stored.effective_from IS DISTINCT FROM old_from OR effective_on<=old_from THEN
+      RAISE EXCEPTION 'D1 Family membership source snapshot invalid';
+    END IF;
+    IF action='END' AND NEW.target_ref IS DISTINCT FROM source_family THEN
+      RAISE EXCEPTION 'D1 Family membership END target invalid';
+    ELSIF action='CORRECT' AND NEW.target_ref IS NOT DISTINCT FROM source_family THEN
+      RAISE EXCEPTION 'D1 Family membership CORRECT target invalid';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_request_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_family_principal_membership_request_guard ON app_private.approval_requests;
+CREATE TRIGGER d1_family_principal_membership_request_guard
+  BEFORE INSERT ON app_private.approval_requests
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_family_principal_membership_request_guard();
+
+CREATE FUNCTION app_private.d1_family_principal_membership_application_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; req record; rec record; target_principal uuid; action text; source_id uuid; effective_on date; base_summary jsonb;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'family.principal_membership.change' THEN RETURN NEW; END IF;
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=NEW.request_id;
+  SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.id=NEW.command_receipt_id;
+  IF req.id IS NULL OR rec.id IS NULL
+     OR req.operation_id IS DISTINCT FROM NEW.operation_id OR rec.operation_id IS DISTINCT FROM NEW.operation_id
+     OR rec.request_id IS DISTINCT FROM NEW.request_id OR rec.command_kind IS DISTINCT FROM 'request.apply'
+     OR rec.state IS DISTINCT FROM 'SUCCEEDED' OR req.state IS DISTINCT FROM 'EXECUTED'
+     OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR NEW.result_ref IS DISTINCT FROM rec.result_ref OR rec.result_ref IS NULL OR rec.result_summary IS NULL
+     OR rec.result_summary->>'state' IS DISTINCT FROM 'EXECUTED'
+     OR rec.result_summary->>'request_version' IS NULL THEN
+    RAISE EXCEPTION 'D1 Family membership approval application evidence invalid';
+  END IF;
+  BEGIN
+    target_principal:=NULLIF(req.requested_payload->>'target_principal_id','')::uuid;
+    action:=req.requested_payload->>'action';
+    source_id:=NULLIF(req.requested_payload->>'source_membership_id','')::uuid;
+    effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN
+    RAISE EXCEPTION 'D1 Family membership approval application request malformed';
+  END;
+  IF target_principal IS NULL OR action IS NULL OR action NOT IN ('ADD','END','CORRECT') OR effective_on IS NULL THEN
+    RAISE EXCEPTION 'D1 Family membership approval application request malformed';
+  END IF;
+  base_summary:=rec.result_summary-'request_version'-'state';
+  IF app_private.d1_family_principal_membership_result_match(
+      req.target_ref,target_principal,action,source_id,rec.result_ref,effective_on,base_summary) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family membership approval application result invalid';
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_application_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_family_principal_membership_application_guard ON app_private.approval_applications;
+CREATE TRIGGER d1_family_principal_membership_application_guard
+  BEFORE INSERT ON app_private.approval_applications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_family_principal_membership_application_guard();
+RESET ROLE;
