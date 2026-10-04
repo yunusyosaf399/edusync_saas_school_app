@@ -1,0 +1,179 @@
+-- Effect 31 P1 DIRECT and APPROVAL submission entry points.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+
+GRANT CREATE ON SCHEMA app TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app.d1_change_family_principal_membership(
+  p_family_id uuid,p_expected_family_version bigint,p_target_principal_id uuid,p_expected_principal_version bigint,
+  p_action text,p_source_membership_id uuid,p_effective_on date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(membership_id uuid,source_membership_id uuid,source_family_id uuid,family_id uuid,
+  principal_id uuid,action text,effective_from date,effective_until date,family_version bigint,principal_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy_row record; pre record; eff record; receipt uuid; summary jsonb;
+  corr uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'family.principal_membership.change','family.principal_membership.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_family_id,p_expected_family_version::text,p_target_principal_id,
+      p_expected_principal_version::text,p_action,p_source_membership_id,p_effective_on,p_reason));
+  PERFORM app_private.d1_family_principal_membership_lock_principals(ctx.actor_id,NULL,p_target_principal_id);
+  IF NOT app_private.d1_family_principal_membership_authorized(
+      ctx.actor_id,'family.principal_membership.change',NULL) THEN
+    RAISE EXCEPTION 'D1 Family membership authority denied';
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_family_principal_membership_policy();
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'DIRECT' THEN
+    RAISE EXCEPTION 'D1 Family membership requires approval request';
+  END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR app_private.d1_family_principal_membership_result_match(
+         p_family_id,p_target_principal_id,p_action,p_source_membership_id,ctx.result_ref,p_effective_on,ctx.result_summary)
+         IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'D1 Family membership receipt is not replayable';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,
+      NULLIF(ctx.result_summary->>'source_membership_id','')::uuid,
+      NULLIF(ctx.result_summary->>'source_family_id','')::uuid,
+      NULLIF(ctx.result_summary->>'family_id','')::uuid,
+      NULLIF(ctx.result_summary->>'principal_id','')::uuid,
+      ctx.result_summary->>'action',
+      NULLIF(ctx.result_summary->>'effective_from','')::date,
+      NULLIF(ctx.result_summary->>'effective_until','')::date,
+      (ctx.result_summary->>'family_version')::bigint,
+      (ctx.result_summary->>'principal_version')::bigint;
+    RETURN;
+  END IF;
+
+  SELECT * INTO pre FROM app_private.d1_family_principal_membership_preflight(
+    p_family_id,p_expected_family_version,p_target_principal_id,p_expected_principal_version,
+    p_action,p_source_membership_id,p_effective_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family membership preflight denied: %',pre.error_code;
+  END IF;
+  SELECT * INTO eff FROM app_private.d1_family_principal_membership_effect(
+    ctx.actor_id,p_family_id,p_expected_family_version,p_target_principal_id,p_expected_principal_version,
+    p_action,p_source_membership_id,p_effective_on,p_reason);
+  summary:=pg_catalog.jsonb_build_object(
+    'membership_id',eff.membership_id,'source_membership_id',eff.source_membership_id,
+    'source_family_id',eff.source_family_id,'family_id',eff.family_id,'principal_id',eff.principal_id,
+    'action',eff.action,'effective_from',eff.effective_from,'effective_until',eff.effective_until,
+    'family_version',eff.family_version,'principal_version',eff.principal_version);
+  receipt:=app_private.d1_family_principal_membership_receipt(
+    'family.principal_membership.change',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+    p_expected_family_version,NULL,NULL,'SUCCEEDED','D1_FAMILY_PRINCIPAL_MEMBERSHIP_CHANGE',eff.membership_id,summary,NULL);
+  PERFORM app_private.d1_family_principal_membership_audit(
+    ctx.actor_id,'DIRECT',p_family_id,p_target_principal_id,eff.membership_id,p_source_membership_id,
+    eff.source_family_id,p_action,receipt,NULL,eff.family_version,eff.principal_version,'SUCCEEDED',NULL,corr);
+  PERFORM app_private.d1_family_principal_membership_event(
+    ctx.actor_id,p_family_id,p_target_principal_id,eff.membership_id,p_source_membership_id,
+    eff.source_family_id,p_action,receipt,corr);
+  RETURN QUERY SELECT eff.membership_id,eff.source_membership_id,eff.source_family_id,eff.family_id,
+    eff.principal_id,eff.action,eff.effective_from,eff.effective_until,eff.family_version,eff.principal_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_family_principal_membership(uuid,bigint,uuid,bigint,text,uuid,date,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_family_principal_membership(uuid,bigint,uuid,bigint,text,uuid,date,text,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_family_executor;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_submit_family_principal_membership_change(
+  p_family_id uuid,p_expected_family_version bigint,p_target_principal_id uuid,p_expected_principal_version bigint,
+  p_action text,p_source_membership_id uuid,p_effective_on date,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy_row record; pre record; template_row record; src record;
+  new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid; candidate_count bigint; final_version bigint; receipt uuid;
+  old_snapshot jsonb; requested jsonb;
+BEGIN
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'family.principal_membership.change','request.submit',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_family_id,p_expected_family_version::text,p_target_principal_id,
+      p_expected_principal_version::text,p_action,p_source_membership_id,p_effective_on,p_reason));
+  PERFORM app_private.d1_family_principal_membership_lock_principals(ctx.actor_id,NULL,p_target_principal_id);
+  IF NOT app_private.d1_family_principal_membership_authorized(
+      ctx.actor_id,'family.principal_membership.change',NULL) THEN
+    RAISE EXCEPTION 'D1 Family membership request authority denied';
+  END IF;
+  SELECT * INTO policy_row FROM app_private.d1_family_principal_membership_policy();
+  IF policy_row.policy_id IS NULL OR policy_row.route_mode IS DISTINCT FROM 'APPROVAL' THEN
+    RAISE EXCEPTION 'D1 Family membership policy selects direct command';
+  END IF;
+
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+       OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
+       OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(ctx.result_summary))<>2
+       OR NOT (ctx.result_summary ?& ARRAY['request_version','state'])
+       OR ctx.result_summary->>'state'<>'PENDING' THEN
+      RAISE EXCEPTION 'D1 Family membership submit receipt invalid';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint; RETURN;
+  END IF;
+
+  SELECT * INTO pre FROM app_private.d1_family_principal_membership_preflight(
+    p_family_id,p_expected_family_version,p_target_principal_id,p_expected_principal_version,
+    p_action,p_source_membership_id,p_effective_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family membership request preflight denied: %',pre.error_code;
+  END IF;
+  IF p_source_membership_id IS NOT NULL THEN
+    SELECT m.* INTO src FROM app_private.family_principal_memberships m WHERE m.id=p_source_membership_id;
+  END IF;
+  old_snapshot:=pg_catalog.jsonb_build_object(
+    'source_membership_id',p_source_membership_id,
+    'source_family_id',pre.source_family_id,
+    'source_effective_from',CASE WHEN p_source_membership_id IS NULL THEN NULL ELSE src.effective_from END);
+  requested:=pg_catalog.jsonb_build_object(
+    'target_principal_id',p_target_principal_id,
+    'expected_principal_version',p_expected_principal_version,
+    'action',p_action,
+    'source_membership_id',p_source_membership_id,
+    'effective_on',p_effective_on,
+    'source_family_id',pre.source_family_id);
+
+  INSERT INTO app_private.approval_requests
+    (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
+     expected_target_version,reason,old_snapshot,requested_payload,created_by)
+  VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,NULL,p_family_id,
+    p_expected_family_version,p_reason,old_snapshot,requested,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
+    WHERE id=new_request;
+  FOR template_row IN
+    SELECT t.id,t.step_number,t.required_reviews FROM app_private.approval_step_templates t
+    WHERE t.policy_id=policy_row.policy_id ORDER BY t.step_number
+  LOOP
+    IF template_row.step_number=1 THEN first_step:=pg_catalog.gen_random_uuid(); END IF;
+    INSERT INTO app_private.approval_request_steps
+      (id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+    VALUES (CASE WHEN template_row.step_number=1 THEN first_step ELSE pg_catalog.gen_random_uuid() END,
+      new_request,policy_row.policy_id,template_row.id,template_row.step_number,template_row.required_reviews,ctx.actor_id);
+  END LOOP;
+  IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Family membership policy has no first step'; END IF;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+  SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
+  FROM app_private.d1_family_principal_membership_candidates(new_request,first_step) c;
+  GET DIAGNOSTICS candidate_count=ROW_COUNT;
+  IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Family membership step has no reviewer'; END IF;
+  receipt:=app_private.d1_family_principal_membership_receipt(
+    'request.submit',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,p_expected_family_version,
+    new_request,NULL,'SUCCEEDED','D1_FAMILY_PRINCIPAL_MEMBERSHIP_REQUEST',new_request,
+    pg_catalog.jsonb_build_object('request_version',final_version,'state','PENDING'),NULL);
+  PERFORM app_private.d1_family_principal_membership_audit(
+    ctx.actor_id,'SUBMIT',p_family_id,p_target_principal_id,p_source_membership_id,p_source_membership_id,
+    pre.source_family_id,p_action,receipt,new_request,p_expected_family_version,p_expected_principal_version,
+    'SUCCEEDED',NULL,pg_catalog.gen_random_uuid());
+  RETURN QUERY SELECT new_request,final_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_submit_family_principal_membership_change(uuid,bigint,uuid,bigint,text,uuid,date,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_family_principal_membership_change(uuid,bigint,uuid,bigint,text,uuid,date,text,text)
+  TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
