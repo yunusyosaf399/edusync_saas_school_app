@@ -1,0 +1,195 @@
+-- Effect 31 correction semantics aligned to the frozen HE lineage.
+-- family_id + principal_id are stable within supersedes lineage. Principal replacement remains END + ADD.
+-- CORRECT repairs a premature END by appending a same-Family/same-Principal successor exactly at the closed boundary.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_preflight(
+  p_family uuid,p_expected_family_version bigint,p_target_principal uuid,p_expected_principal_version bigint,
+  p_action text,p_source uuid,p_effective_on date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text,source_effective_from date,source_family_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE fam app_private.families%ROWTYPE; pr app_private.principals%ROWTYPE;
+  src app_private.family_principal_memberships%ROWTYPE; source_family uuid; overlap_count bigint;
+BEGIN
+  IF p_family IS NULL OR p_expected_family_version IS NULL OR p_expected_family_version<1
+     OR p_target_principal IS NULL OR p_expected_principal_version IS NULL OR p_expected_principal_version<1
+     OR p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT') OR p_effective_on IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_INTENT_INVALID',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  SELECT * INTO pr FROM app_private.principals p WHERE p.id=p_target_principal FOR UPDATE;
+  IF NOT FOUND OR pr.kind IS DISTINCT FROM 'FAMILY' THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_INVALID',NULL::date,NULL::uuid; RETURN;
+  END IF;
+  IF pr.row_version IS DISTINCT FROM p_expected_principal_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_VERSION_STALE',NULL::date,NULL::uuid; RETURN;
+  END IF;
+  IF p_action IN ('ADD','CORRECT')
+     AND app_private.d1_family_principal_membership_target_ready(p_target_principal) IS DISTINCT FROM true THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_NOT_READY',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  SELECT * INTO fam FROM app_private.families f WHERE f.id=p_family FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_MISSING',NULL::date,NULL::uuid; RETURN;
+  END IF;
+  IF fam.row_version IS DISTINCT FROM p_expected_family_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_VERSION_STALE',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  IF p_action='ADD' THEN
+    IF p_source IS NOT NULL OR fam.state IS DISTINCT FROM 'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_ADD_SHAPE_INVALID',NULL::date,NULL::uuid; RETURN;
+    END IF;
+  ELSE
+    IF p_source IS NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_REQUIRED',NULL::date,NULL::uuid; RETURN;
+    END IF;
+    SELECT * INTO src FROM app_private.family_principal_memberships m
+    WHERE m.id=p_source AND m.family_id=p_family AND m.principal_id=p_target_principal
+      AND m.principal_kind='FAMILY' FOR UPDATE;
+    IF NOT FOUND OR EXISTS (
+        SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=src.id) THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_STALE',NULL::date,NULL::uuid; RETURN;
+    END IF;
+    source_family:=src.family_id;
+    IF p_action='END' THEN
+      IF src.effective_until IS NOT NULL OR p_effective_on<=src.effective_from THEN
+        RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_END_SOURCE_INVALID',src.effective_from,source_family; RETURN;
+      END IF;
+    ELSE
+      IF src.effective_until IS NULL OR src.ended_at IS NULL OR src.ended_by IS NULL
+         OR p_effective_on IS DISTINCT FROM src.effective_until THEN
+        RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_CORRECT_SOURCE_INVALID',src.effective_from,source_family; RETURN;
+      END IF;
+    END IF;
+  END IF;
+
+  IF p_action IN ('ADD','CORRECT') THEN
+    SELECT count(*) INTO overlap_count
+    FROM app_private.family_principal_memberships m
+    WHERE m.family_id=p_family AND (p_source IS NULL OR m.id<>p_source)
+      AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date)
+      AND NOT EXISTS (SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=m.id);
+    IF overlap_count<>0 THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_OVERLAP',
+        CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family; RETURN;
+    END IF;
+  END IF;
+
+  RETURN QUERY SELECT true,NULL::text,CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family;
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_effect(
+  p_actor uuid,p_family uuid,p_expected_family_version bigint,p_target_principal uuid,p_expected_principal_version bigint,
+  p_action text,p_source uuid,p_effective_on date,p_reason text
+) RETURNS TABLE(membership_id uuid,source_membership_id uuid,source_family_id uuid,family_id uuid,
+  principal_id uuid,action text,effective_from date,effective_until date,family_version bigint,principal_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; new_id uuid:=pg_catalog.gen_random_uuid(); src app_private.family_principal_memberships%ROWTYPE;
+  fv bigint; pv bigint;
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id() THEN
+    RAISE EXCEPTION 'D1 Family membership actor denied';
+  END IF;
+  SELECT * INTO pre FROM app_private.d1_family_principal_membership_preflight(
+    p_family,p_expected_family_version,p_target_principal,p_expected_principal_version,
+    p_action,p_source,p_effective_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family membership preflight denied: %',pre.error_code;
+  END IF;
+  IF p_source IS NOT NULL THEN
+    SELECT * INTO src FROM app_private.family_principal_memberships m WHERE m.id=p_source;
+  END IF;
+  IF p_action='END' THEN
+    UPDATE app_private.family_principal_memberships
+    SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+    WHERE id=p_source AND family_id=p_family AND principal_id=p_target_principal AND effective_until IS NULL;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family membership source changed'; END IF;
+    new_id:=p_source;
+  ELSIF p_action='ADD' THEN
+    INSERT INTO app_private.family_principal_memberships
+      (id,family_id,principal_id,principal_kind,effective_from,reason,supersedes_id,created_by)
+    VALUES (new_id,p_family,p_target_principal,'FAMILY',p_effective_on,pg_catalog.btrim(p_reason),NULL,p_actor);
+  ELSE
+    -- Predecessor is already retained and closed. The correction restores continuity from its mistaken end.
+    INSERT INTO app_private.family_principal_memberships
+      (id,family_id,principal_id,principal_kind,effective_from,reason,supersedes_id,created_by)
+    VALUES (new_id,p_family,p_target_principal,'FAMILY',p_effective_on,pg_catalog.btrim(p_reason),p_source,p_actor);
+  END IF;
+  SELECT f.row_version INTO fv FROM app_private.families f WHERE f.id=p_family;
+  SELECT p.row_version INTO pv FROM app_private.principals p WHERE p.id=p_target_principal;
+  RETURN QUERY SELECT new_id,p_source,pre.source_family_id,p_family,p_target_principal,p_action,
+    CASE WHEN p_action='END' THEN src.effective_from ELSE p_effective_on END,
+    CASE WHEN p_action='END' THEN p_effective_on ELSE NULL::date END,fv,pv;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
+
+SET ROLE schoolos_schema_owner;
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_request_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; target_principal uuid; principal_version bigint; action text; source_id uuid;
+  effective_on date; source_family uuid; old_source uuid; old_family uuid; old_from date; stored record;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'family.principal_membership.change' THEN RETURN NEW; END IF;
+  IF NEW.campus_id IS NOT NULL OR NEW.target_ref IS NULL OR NEW.expected_target_version IS NULL
+     OR NEW.expected_target_version<1 OR NEW.reason IS NULL OR pg_catalog.length(pg_catalog.btrim(NEW.reason))=0
+     OR NEW.old_snapshot IS NULL OR pg_catalog.jsonb_typeof(NEW.old_snapshot)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(NEW.old_snapshot))<>3
+     OR NOT (NEW.old_snapshot ?& ARRAY['source_membership_id','source_family_id','source_effective_from'])
+     OR NEW.requested_payload IS NULL OR pg_catalog.jsonb_typeof(NEW.requested_payload)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(NEW.requested_payload))<>6
+     OR NOT (NEW.requested_payload ?& ARRAY['target_principal_id','expected_principal_version','action',
+       'source_membership_id','effective_on','source_family_id']) THEN
+    RAISE EXCEPTION 'D1 Family membership approval request shape invalid';
+  END IF;
+  BEGIN
+    target_principal:=NULLIF(NEW.requested_payload->>'target_principal_id','')::uuid;
+    principal_version:=(NEW.requested_payload->>'expected_principal_version')::bigint;
+    action:=NEW.requested_payload->>'action';
+    source_id:=NULLIF(NEW.requested_payload->>'source_membership_id','')::uuid;
+    effective_on:=NULLIF(NEW.requested_payload->>'effective_on','')::date;
+    source_family:=NULLIF(NEW.requested_payload->>'source_family_id','')::uuid;
+    old_source:=NULLIF(NEW.old_snapshot->>'source_membership_id','')::uuid;
+    old_family:=NULLIF(NEW.old_snapshot->>'source_family_id','')::uuid;
+    old_from:=NULLIF(NEW.old_snapshot->>'source_effective_from','')::date;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+    RAISE EXCEPTION 'D1 Family membership approval request values invalid';
+  END;
+  IF target_principal IS NULL OR principal_version<1 OR action IS NULL
+     OR action NOT IN ('ADD','END','CORRECT') OR effective_on IS NULL
+     OR old_source IS DISTINCT FROM source_id OR old_family IS DISTINCT FROM source_family THEN
+    RAISE EXCEPTION 'D1 Family membership approval request intent invalid';
+  END IF;
+  IF action='ADD' THEN
+    IF source_id IS NOT NULL OR source_family IS NOT NULL OR old_from IS NOT NULL THEN
+      RAISE EXCEPTION 'D1 Family membership ADD request invalid';
+    END IF;
+  ELSE
+    IF source_id IS NULL OR source_family IS NULL OR old_from IS NULL OR NEW.target_ref IS DISTINCT FROM source_family THEN
+      RAISE EXCEPTION 'D1 Family membership source request invalid';
+    END IF;
+    SELECT m.* INTO stored FROM app_private.family_principal_memberships m
+    WHERE m.id=source_id AND m.family_id=source_family AND m.principal_id=target_principal AND m.principal_kind='FAMILY';
+    IF NOT FOUND OR stored.effective_from IS DISTINCT FROM old_from THEN
+      RAISE EXCEPTION 'D1 Family membership source snapshot invalid';
+    END IF;
+    IF action='END' THEN
+      IF stored.effective_until IS NOT NULL OR effective_on<=old_from THEN
+        RAISE EXCEPTION 'D1 Family membership END request invalid';
+      END IF;
+    ELSE
+      IF stored.effective_until IS NULL OR effective_on IS DISTINCT FROM stored.effective_until
+         OR stored.ended_at IS NULL OR stored.ended_by IS NULL THEN
+        RAISE EXCEPTION 'D1 Family membership CORRECT request invalid';
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+RESET ROLE;
