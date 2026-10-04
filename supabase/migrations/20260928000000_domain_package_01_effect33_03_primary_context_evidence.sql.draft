@@ -1,0 +1,120 @@
+-- Effect 33 minimized command-receipt, audit, and outbox evidence.
+-- Private reason text and relationship display/contact values never enter broad evidence.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_family_primary_context_receipt(
+  p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_expected_student bigint,
+  p_action text,p_result uuid,p_summary jsonb
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid(); summary_keys bigint; summary_version bigint;
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_operation IS NULL OR NOT EXISTS (
+       SELECT 1 FROM app_private.operation_contracts o
+        WHERE o.id=p_operation AND o.code='family.primary_context.change' AND o.contract_version=1
+          AND o.handler_key='family.primary_context.change' AND o.enabled)
+     OR p_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_key))=0 OR p_hash IS NULL
+     OR p_expected_student IS NULL OR p_expected_student<1
+     OR p_action IS NULL OR p_action NOT IN ('SELECT','END','CORRECT')
+     OR p_result IS NULL OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object' THEN
+    RAISE EXCEPTION 'D1 Family primary context receipt intent denied';
+  END IF;
+  SELECT count(*) INTO summary_keys FROM pg_catalog.jsonb_object_keys(p_summary);
+  IF summary_keys<>8 OR NOT (p_summary ?& ARRAY['context_id','source_context_id','action','family_relationship_id',
+      'family_id','effective_from','effective_until','student_version'])
+     OR p_summary->>'action' IS DISTINCT FROM p_action
+     OR NULLIF(p_summary->>'context_id','')::uuid IS DISTINCT FROM p_result THEN
+    RAISE EXCEPTION 'D1 Family primary context receipt shape denied';
+  END IF;
+  BEGIN
+    summary_version:=(p_summary->>'student_version')::bigint;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+    RAISE EXCEPTION 'D1 Family primary context receipt summary invalid';
+  END;
+  IF summary_version<1 THEN RAISE EXCEPTION 'D1 Family primary context receipt result invalid'; END IF;
+
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,
+     canonicalization_version,expected_target_version,state,result_kind,result_ref,result_summary,
+     completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,'family.primary_context.change',p_key,p_hash,1,p_expected_student,
+    'SUCCEEDED','D1_FAMILY_PRIMARY_CONTEXT_CHANGE',p_result,p_summary,pg_catalog.statement_timestamp(),p_actor);
+  RETURN rid;
+EXCEPTION WHEN invalid_text_representation THEN
+  RAISE EXCEPTION 'D1 Family primary context receipt summary invalid';
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_primary_context_receipt(uuid,uuid,text,bytea,bigint,text,uuid,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_primary_context_receipt(uuid,uuid,text,bytea,bigint,text,uuid,jsonb)
+  TO schoolos_family_executor;
+
+CREATE FUNCTION app_private.d1_family_primary_context_audit(
+  p_actor uuid,p_student uuid,p_family uuid,p_context uuid,p_source uuid,p_relationship uuid,p_action text,
+  p_effective_from date,p_effective_until date,p_receipt uuid,p_student_version bigint,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_student IS NULL OR p_family IS NULL OR p_context IS NULL OR p_relationship IS NULL
+     OR p_action IS NULL OR p_action NOT IN ('SELECT','END','CORRECT')
+     OR p_effective_from IS NULL OR p_receipt IS NULL OR p_student_version IS NULL OR p_student_version<1
+     OR p_correlation IS NULL
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.command_receipts r
+       JOIN app_private.operation_contracts o ON o.id=r.operation_id
+        WHERE r.id=p_receipt AND r.principal_id=p_actor AND r.state='SUCCEEDED'
+          AND r.command_kind='family.primary_context.change'
+          AND r.result_kind='D1_FAMILY_PRIMARY_CONTEXT_CHANGE' AND r.result_ref=p_context
+          AND o.code='family.primary_context.change') THEN
+    RAISE EXCEPTION 'D1 Family primary context audit intent denied';
+  END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+     command_receipt_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL','SUCCEEDED',
+    pg_catalog.jsonb_build_object('operation','family.primary_context.change'),
+    p_student_version,'family.primary_context_changed','STUDENT',p_student,p_receipt,'API',p_correlation,
+    pg_catalog.jsonb_build_object('family_id',p_family,'context_id',p_context,'source_context_id',p_source,
+      'family_relationship_id',p_relationship,'action',p_action,
+      'effective_from',p_effective_from,'effective_until',p_effective_until),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_primary_context_audit(uuid,uuid,uuid,uuid,uuid,uuid,text,date,date,uuid,bigint,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_primary_context_audit(uuid,uuid,uuid,uuid,uuid,uuid,text,date,date,uuid,bigint,uuid)
+  TO schoolos_family_executor;
+
+CREATE FUNCTION app_private.d1_family_primary_context_event(
+  p_actor uuid,p_student uuid,p_family uuid,p_context uuid,p_source uuid,p_relationship uuid,p_action text,
+  p_effective_from date,p_effective_until date,p_receipt uuid,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_student IS NULL OR p_family IS NULL OR p_context IS NULL OR p_relationship IS NULL
+     OR p_action IS NULL OR p_action NOT IN ('SELECT','END','CORRECT')
+     OR p_effective_from IS NULL OR p_receipt IS NULL OR p_correlation IS NULL
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.command_receipts r
+       JOIN app_private.operation_contracts o ON o.id=r.operation_id
+        WHERE r.id=p_receipt AND r.principal_id=p_actor AND r.state='SUCCEEDED'
+          AND r.command_kind='family.primary_context.change'
+          AND r.result_kind='D1_FAMILY_PRIMARY_CONTEXT_CHANGE' AND r.result_ref=p_context
+          AND o.code='family.primary_context.change') THEN
+    RAISE EXCEPTION 'D1 Family primary context event intent denied';
+  END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+     event_ordinal,correlation_id,payload,created_by)
+  VALUES ('family.primary_context_changed','STUDENT_PRIMARY_FAMILY_CONTEXT',p_context,1,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('student_id',p_student,'family_id',p_family,'context_id',p_context,
+      'source_context_id',p_source,'family_relationship_id',p_relationship,'action',p_action,
+      'effective_from',p_effective_from,'effective_until',p_effective_until),p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_primary_context_event(uuid,uuid,uuid,uuid,uuid,uuid,text,date,date,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_primary_context_event(uuid,uuid,uuid,uuid,uuid,uuid,text,date,date,uuid,uuid)
+  TO schoolos_family_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
