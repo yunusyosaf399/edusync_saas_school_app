@@ -1,0 +1,105 @@
+-- Effect 31/36: family.principal_membership.change core contract.
+-- D1C2 working fragment only. NOT AN EXECUTABLE MIGRATION; do not deploy independently.
+-- Approved semantics: ADD / END / CORRECT retained membership history. Changing principal identity is END + ADD.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_family_principal_membership_authorized(
+  p_principal uuid,p_permission text,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+  SELECT EXISTS (
+    SELECT 1
+    FROM app_private.role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id AND r.state='ACTIVE'
+    JOIN app_private.role_permission_grants g ON g.role_id=r.id AND g.revoked_at IS NULL
+    JOIN app_private.permissions pm ON pm.id=g.permission_id AND pm.code=p_permission
+    JOIN app_private.assignment_scopes s ON s.assignment_id=a.id AND s.scope_kind='ALL'
+    WHERE a.principal_id=p_principal AND a.assignment_state='ACTIVE' AND a.withdrawn_at IS NULL
+      AND (p_reviewer_role IS NULL OR a.role_id=p_reviewer_role)
+      AND (a.effective_from IS NULL OR a.effective_from<=pg_catalog.statement_timestamp())
+      AND (a.effective_until IS NULL OR pg_catalog.statement_timestamp()<a.effective_until)
+  );
+$body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_authorized(uuid,text,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_authorized(uuid,text,uuid)
+  TO schoolos_family_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app_private.d1_family_principal_membership_preflight(
+  p_family uuid,p_expected_family_version bigint,p_target_principal uuid,
+  p_action text,p_source uuid,p_effective_on date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text,source_effective_from date)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE fam app_private.families%ROWTYPE; pr app_private.principals%ROWTYPE;
+  src app_private.family_principal_memberships%ROWTYPE; overlap_count bigint;
+BEGIN
+  IF p_family IS NULL OR p_expected_family_version IS NULL OR p_expected_family_version<1
+     OR p_target_principal IS NULL OR p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT')
+     OR p_effective_on IS NULL OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_INTENT_INVALID',NULL::date; RETURN;
+  END IF;
+
+  -- Global lock order: Foundation principal before Family before child history.
+  SELECT * INTO pr FROM app_private.principals p WHERE p.id=p_target_principal FOR UPDATE;
+  IF NOT FOUND OR pr.kind IS DISTINCT FROM 'FAMILY' THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_INVALID',NULL::date; RETURN;
+  END IF;
+  SELECT * INTO fam FROM app_private.families f WHERE f.id=p_family FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_MISSING',NULL::date; RETURN; END IF;
+  IF fam.row_version IS DISTINCT FROM p_expected_family_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_VERSION_STALE',NULL::date; RETURN;
+  END IF;
+
+  IF p_action='ADD' THEN
+    IF p_source IS NOT NULL OR fam.state IS DISTINCT FROM 'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_ADD_SHAPE_INVALID',NULL::date; RETURN;
+    END IF;
+  ELSE
+    IF p_source IS NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_REQUIRED',NULL::date; RETURN;
+    END IF;
+    SELECT * INTO src FROM app_private.family_principal_memberships m
+      WHERE m.id=p_source AND m.family_id=p_family AND m.principal_id=p_target_principal
+        AND m.principal_kind='FAMILY' FOR UPDATE;
+    IF NOT FOUND OR src.effective_until IS NOT NULL
+       OR EXISTS (SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=src.id) THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_STALE',NULL::date; RETURN;
+    END IF;
+    IF p_effective_on<=src.effective_from THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_DATE_INVALID',src.effective_from; RETURN;
+    END IF;
+    IF p_action='CORRECT' THEN
+      -- Principal/family identity is immutable within one correction lineage; only interval fact can be corrected.
+      -- A reason-only correction is therefore a no-op and is denied.
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_NOOP',src.effective_from; RETURN;
+    END IF;
+  END IF;
+
+  IF p_action='ADD' THEN
+    SELECT count(*) INTO overlap_count FROM app_private.family_principal_memberships m
+      WHERE m.family_id=p_family
+        AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date);
+    IF overlap_count<>0 THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_OVERLAP',NULL::date; RETURN;
+    END IF;
+    SELECT count(*) INTO overlap_count FROM app_private.family_principal_memberships m
+      WHERE m.principal_id=p_target_principal
+        AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date);
+    IF overlap_count<>0 THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_OVERLAP',NULL::date; RETURN;
+    END IF;
+  END IF;
+
+  RETURN QUERY SELECT true,NULL::text,CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_principal_membership_preflight(uuid,bigint,uuid,text,uuid,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_principal_membership_preflight(uuid,bigint,uuid,text,uuid,date,text)
+  TO schoolos_family_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
