@@ -1,0 +1,205 @@
+-- Effect 31 fixed evidence/replay hardening.
+-- Explicit NULL denial and exact JSON key allowlists close SQL three-valued-logic and summary-shape gaps.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_receipt(
+  p_command_kind text,p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_expected_family bigint,
+  p_request uuid,p_expected_request bigint,p_state text,p_result_kind text,p_result uuid,p_summary jsonb,p_error text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE rid uuid:=pg_catalog.gen_random_uuid(); k bigint; action text;
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_operation IS NULL OR NOT EXISTS (
+       SELECT 1 FROM app_private.operation_contracts o
+       WHERE o.id=p_operation AND o.code='family.principal_membership.change'
+         AND o.contract_version=1 AND o.handler_key='family.principal_membership.change' AND o.enabled)
+     OR p_command_kind IS NULL
+     OR p_command_kind NOT IN ('family.principal_membership.change','request.submit','request.review','request.apply')
+     OR p_key IS NULL OR pg_catalog.length(pg_catalog.btrim(p_key))=0 OR p_hash IS NULL
+     OR p_expected_family IS NULL OR p_expected_family<1
+     OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR p_state IS NULL OR p_state NOT IN ('SUCCEEDED','REJECTED') THEN
+    RAISE EXCEPTION 'D1 Family membership receipt intent denied';
+  END IF;
+  SELECT count(*) INTO k FROM pg_catalog.jsonb_object_keys(p_summary);
+  IF p_command_kind='family.principal_membership.change' THEN
+    action:=p_summary->>'action';
+    IF p_request IS NOT NULL OR p_expected_request IS NOT NULL OR p_state IS DISTINCT FROM 'SUCCEEDED'
+       OR p_result_kind IS DISTINCT FROM 'D1_FAMILY_PRINCIPAL_MEMBERSHIP_CHANGE' OR p_result IS NULL
+       OR p_error IS NOT NULL OR k<>10
+       OR NOT (p_summary ?& ARRAY['membership_id','source_membership_id','source_family_id','family_id','principal_id',
+         'action','effective_from','effective_until','family_version','principal_version'])
+       OR action IS NULL OR action NOT IN ('ADD','END','CORRECT')
+       OR NULLIF(p_summary->>'membership_id','')::uuid IS DISTINCT FROM p_result THEN
+      RAISE EXCEPTION 'D1 Family membership direct receipt shape denied';
+    END IF;
+  ELSIF p_command_kind='request.submit' THEN
+    IF p_request IS NULL OR p_expected_request IS NOT NULL OR p_state IS DISTINCT FROM 'SUCCEEDED'
+       OR p_result_kind IS DISTINCT FROM 'D1_FAMILY_PRINCIPAL_MEMBERSHIP_REQUEST'
+       OR p_result IS DISTINCT FROM p_request OR p_error IS NOT NULL OR k<>2
+       OR NOT (p_summary ?& ARRAY['request_version','state'])
+       OR p_summary->>'state' IS DISTINCT FROM 'PENDING' THEN
+      RAISE EXCEPTION 'D1 Family membership submit receipt shape denied';
+    END IF;
+  ELSIF p_command_kind='request.review' THEN
+    IF p_request IS NULL OR p_expected_request IS NULL OR p_expected_request<1 OR p_state IS DISTINCT FROM 'SUCCEEDED'
+       OR p_result_kind IS DISTINCT FROM 'D1_FAMILY_PRINCIPAL_MEMBERSHIP_REVIEW'
+       OR p_result IS DISTINCT FROM p_request OR p_error IS NOT NULL OR k<>2
+       OR NOT (p_summary ?& ARRAY['request_version','state'])
+       OR p_summary->>'state' IS NULL OR p_summary->>'state' NOT IN ('PENDING','APPROVED','REJECTED') THEN
+      RAISE EXCEPTION 'D1 Family membership review receipt shape denied';
+    END IF;
+  ELSIF p_state='SUCCEEDED' THEN
+    action:=p_summary->>'action';
+    IF p_request IS NULL OR p_expected_request IS NULL OR p_expected_request<1
+       OR p_result_kind IS DISTINCT FROM 'D1_FAMILY_PRINCIPAL_MEMBERSHIP_CHANGE' OR p_result IS NULL
+       OR p_error IS NOT NULL OR k<>12
+       OR NOT (p_summary ?& ARRAY['membership_id','source_membership_id','source_family_id','family_id','principal_id',
+         'action','effective_from','effective_until','family_version','principal_version','request_version','state'])
+       OR p_summary->>'state' IS DISTINCT FROM 'EXECUTED'
+       OR action IS NULL OR action NOT IN ('ADD','END','CORRECT')
+       OR NULLIF(p_summary->>'membership_id','')::uuid IS DISTINCT FROM p_result THEN
+      RAISE EXCEPTION 'D1 Family membership apply receipt shape denied';
+    END IF;
+  ELSE
+    IF p_request IS NULL OR p_expected_request IS NULL OR p_expected_request<1
+       OR p_result_kind IS NOT NULL OR p_result IS NOT NULL
+       OR p_error IS NULL OR pg_catalog.length(pg_catalog.btrim(p_error))=0
+       OR k<>2 OR NOT (p_summary ?& ARRAY['request_version','state'])
+       OR p_summary->>'state' IS DISTINCT FROM 'INVALIDATED' THEN
+      RAISE EXCEPTION 'D1 Family membership invalidation receipt shape denied';
+    END IF;
+  END IF;
+  INSERT INTO app_private.command_receipts
+    (id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+     expected_target_version,request_id,expected_request_version,state,result_kind,result_ref,result_summary,error_code,completed_at,created_by)
+  VALUES (rid,p_actor,p_operation,p_command_kind,p_key,p_hash,1,p_expected_family,p_request,p_expected_request,
+    p_state,p_result_kind,p_result,p_summary,p_error,pg_catalog.statement_timestamp(),p_actor);
+  RETURN rid;
+EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+  RAISE EXCEPTION 'D1 Family membership receipt values invalid';
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_audit(
+  p_actor uuid,p_phase text,p_family uuid,p_principal uuid,p_membership uuid,p_source uuid,p_source_family uuid,p_action text,
+  p_receipt uuid,p_request uuid,p_family_version bigint,p_principal_version bigint,p_outcome text,p_error text,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE expected_kind text;
+BEGIN
+  expected_kind:=CASE p_phase WHEN 'DIRECT' THEN 'family.principal_membership.change'
+    WHEN 'SUBMIT' THEN 'request.submit' WHEN 'REVIEW' THEN 'request.review' WHEN 'APPLY' THEN 'request.apply' END;
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_phase IS NULL OR p_phase NOT IN ('DIRECT','SUBMIT','REVIEW','APPLY')
+     OR p_family IS NULL OR p_principal IS NULL
+     OR p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT') OR p_receipt IS NULL
+     OR p_family_version IS NULL OR p_family_version<1 OR p_principal_version IS NULL OR p_principal_version<1
+     OR p_outcome IS NULL OR p_outcome NOT IN ('SUCCEEDED','REJECTED') OR p_correlation IS NULL
+     OR (p_outcome='REJECTED' AND (p_error IS NULL OR pg_catalog.length(pg_catalog.btrim(p_error))=0))
+     OR (p_outcome='SUCCEEDED' AND p_error IS NOT NULL)
+     OR expected_kind IS NULL
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.command_receipts r
+       JOIN app_private.operation_contracts o ON o.id=r.operation_id
+       WHERE r.id=p_receipt AND r.principal_id=p_actor AND r.command_kind=expected_kind
+         AND r.state=p_outcome AND o.code='family.principal_membership.change'
+         AND r.request_id IS NOT DISTINCT FROM p_request) THEN
+    RAISE EXCEPTION 'D1 Family membership audit intent denied';
+  END IF;
+  INSERT INTO app_private.audit_events
+    (actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+     command_receipt_id,approval_request_id,source_kind,correlation_id,details,created_by)
+  VALUES (p_actor,'INDIVIDUAL',p_outcome,
+    pg_catalog.jsonb_build_object('operation','family.principal_membership.change','phase',p_phase),
+    p_family_version,'family.principal_membership.change','FAMILY',p_family,p_receipt,p_request,'API',p_correlation,
+    pg_catalog.jsonb_build_object('principal_id',p_principal,'membership_id',p_membership,
+      'source_membership_id',p_source,'source_family_id',p_source_family,'action',p_action,
+      'principal_version',p_principal_version,'error_code',p_error),p_actor);
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_event(
+  p_actor uuid,p_family uuid,p_principal uuid,p_membership uuid,p_source uuid,p_source_family uuid,p_action text,
+  p_receipt uuid,p_correlation uuid
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR p_family IS NULL OR p_principal IS NULL OR p_membership IS NULL
+     OR p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT')
+     OR p_receipt IS NULL OR p_correlation IS NULL
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.command_receipts r
+       JOIN app_private.operation_contracts o ON o.id=r.operation_id
+       WHERE r.id=p_receipt AND r.principal_id=p_actor AND r.state='SUCCEEDED'
+         AND r.command_kind IN ('family.principal_membership.change','request.apply')
+         AND r.result_ref=p_membership AND o.code='family.principal_membership.change') THEN
+    RAISE EXCEPTION 'D1 Family membership event intent denied';
+  END IF;
+  INSERT INTO app_private.outbox_events
+    (event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+  VALUES ('family.principal_link_changed','FAMILY_PRINCIPAL_MEMBERSHIP',p_membership,1,p_receipt,1,p_correlation,
+    pg_catalog.jsonb_build_object('family_id',p_family,'principal_id',p_principal,'membership_id',p_membership,
+      'source_membership_id',p_source,'source_family_id',p_source_family,'action',p_action),p_actor);
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_result_match(
+  p_family uuid,p_principal uuid,p_action text,p_source uuid,p_result uuid,p_effective_on date,p_summary jsonb
+) RETURNS boolean
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE src app_private.family_principal_memberships%ROWTYPE; res app_private.family_principal_memberships%ROWTYPE;
+  k bigint; summary_result uuid; summary_source uuid; summary_family uuid; summary_principal uuid; summary_source_family uuid;
+  summary_from date; summary_until date; summary_fv bigint; summary_pv bigint;
+BEGIN
+  IF p_family IS NULL OR p_principal IS NULL OR p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT')
+     OR p_result IS NULL OR p_effective_on IS NULL OR p_summary IS NULL
+     OR pg_catalog.jsonb_typeof(p_summary)<>'object' THEN RETURN false; END IF;
+  SELECT count(*) INTO k FROM pg_catalog.jsonb_object_keys(p_summary);
+  IF k<>10 OR NOT (p_summary ?& ARRAY['membership_id','source_membership_id','source_family_id','family_id','principal_id',
+      'action','effective_from','effective_until','family_version','principal_version'])
+     OR p_summary->>'action' IS DISTINCT FROM p_action THEN RETURN false; END IF;
+  BEGIN
+    summary_result:=NULLIF(p_summary->>'membership_id','')::uuid;
+    summary_source:=NULLIF(p_summary->>'source_membership_id','')::uuid;
+    summary_source_family:=NULLIF(p_summary->>'source_family_id','')::uuid;
+    summary_family:=NULLIF(p_summary->>'family_id','')::uuid;
+    summary_principal:=NULLIF(p_summary->>'principal_id','')::uuid;
+    summary_from:=NULLIF(p_summary->>'effective_from','')::date;
+    summary_until:=NULLIF(p_summary->>'effective_until','')::date;
+    summary_fv:=(p_summary->>'family_version')::bigint;
+    summary_pv:=(p_summary->>'principal_version')::bigint;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+    RETURN false;
+  END;
+  IF summary_result IS DISTINCT FROM p_result OR summary_source IS DISTINCT FROM p_source
+     OR summary_family IS DISTINCT FROM p_family OR summary_principal IS DISTINCT FROM p_principal
+     OR summary_fv IS NULL OR summary_fv<1 OR summary_pv IS NULL OR summary_pv<1 THEN RETURN false; END IF;
+  SELECT * INTO res FROM app_private.family_principal_memberships m WHERE m.id=p_result;
+  IF NOT FOUND OR res.principal_id IS DISTINCT FROM p_principal OR res.principal_kind IS DISTINCT FROM 'FAMILY'
+     OR res.family_id IS DISTINCT FROM p_family THEN RETURN false; END IF;
+  IF p_action='ADD' THEN
+    RETURN p_source IS NULL AND summary_source_family IS NULL
+      AND res.effective_from IS NOT DISTINCT FROM p_effective_on AND res.supersedes_id IS NULL
+      AND summary_from IS NOT DISTINCT FROM p_effective_on AND summary_until IS NULL;
+  ELSIF p_action='END' THEN
+    RETURN p_result IS NOT DISTINCT FROM p_source AND summary_source_family IS NOT DISTINCT FROM p_family
+      AND res.effective_until IS NOT DISTINCT FROM p_effective_on
+      AND summary_from IS NOT DISTINCT FROM res.effective_from AND summary_until IS NOT DISTINCT FROM p_effective_on;
+  ELSE
+    IF p_source IS NULL OR summary_source_family IS DISTINCT FROM p_family
+       OR res.effective_from IS DISTINCT FROM p_effective_on OR res.supersedes_id IS DISTINCT FROM p_source
+       OR summary_from IS DISTINCT FROM p_effective_on OR summary_until IS NOT NULL THEN RETURN false; END IF;
+    SELECT * INTO src FROM app_private.family_principal_memberships m WHERE m.id=p_source;
+    RETURN FOUND AND src.family_id IS NOT DISTINCT FROM p_family
+      AND src.principal_id IS NOT DISTINCT FROM p_principal AND src.principal_kind IS NOT DISTINCT FROM 'FAMILY'
+      AND src.effective_until IS NOT DISTINCT FROM p_effective_on
+      AND src.ended_at IS NOT NULL AND src.ended_by IS NOT NULL;
+  END IF;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
