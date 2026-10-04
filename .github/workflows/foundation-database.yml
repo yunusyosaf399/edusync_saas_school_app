@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/foundation-database.yml'
+      - '.github/workflows/domain-draft-static.yml'
       - '.gitattributes'
       - 'supabase/migrations/**'
       - 'supabase/tests/database/**'
@@ -13,6 +14,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/foundation-database.yml'
+      - '.github/workflows/domain-draft-static.yml'
       - '.gitattributes'
       - 'supabase/migrations/**'
       - 'supabase/tests/database/**'
