@@ -1,0 +1,318 @@
+-- D1C1B Effect 32/36: family.child_access.change core.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+-- Approved actions are ADD and REVOKE only. Access is distinct from relationship and FAMILY membership.
+
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_family_child_access_history_read ON app_private.family_student_access
+  FOR SELECT TO schoolos_family_executor USING (true);
+CREATE POLICY d1_family_child_access_history_insert ON app_private.family_student_access
+  FOR INSERT TO schoolos_family_executor WITH CHECK (true);
+CREATE POLICY d1_family_child_access_history_update ON app_private.family_student_access
+  FOR UPDATE TO schoolos_family_executor USING (true) WITH CHECK (true);
+GRANT SELECT (id,family_id,student_id,effective_from,effective_until,reason,supersedes_id,created_at,created_by,ended_at,ended_by),
+  INSERT (id,family_id,student_id,effective_from,effective_until,reason,supersedes_id,created_by,ended_at,ended_by),
+  UPDATE (effective_until,ended_at,ended_by)
+  ON app_private.family_student_access TO schoolos_family_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_family_child_access_authorized(
+  p_principal uuid,p_permission text,p_student uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date:=at_time::date;
+  target_section uuid; target_class uuid; target_campus uuid; n bigint;
+BEGIN
+  IF p_principal IS NULL OR p_student IS NULL
+     OR p_permission NOT IN ('family.child_access.change','family.access.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+         AND p.person_id IS NOT NULL AND b.principal_kind='INDIVIDUAL' AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+    WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+      AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at))
+  THEN RETURN false; END IF;
+
+  SELECT count(*) INTO n FROM app_private.enrollments e
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+     AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+     AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  IF n>1 THEN RETURN false; END IF;
+  IF n=1 THEN
+    SELECT so.id,co.id,co.campus_id INTO target_section,target_class,target_campus
+      FROM app_private.enrollments e
+      JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+       AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+       AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  END IF;
+
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id
+    JOIN app_private.roles r ON r.id=sc.role_id
+    WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+      AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+      AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind
+      AND c.resolver_key=sc.resolver_key AND c.enabled
+      AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+      AND r.state='ACTIVE' AND NOT r.family_only
+      AND (p_reviewer_role IS NULL OR sc.role_id=p_reviewer_role)
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+      AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+      AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until)
+      AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+      AND sc.resolver_key='DIRECT'
+      AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+        OR (n=1 AND sc.scope_kind='CAMPUS' AND sc.campus_id=target_campus)
+        OR (n=1 AND sc.scope_kind='CLASS' AND sc.class_offering_id=target_class)
+        OR (n=1 AND sc.scope_kind='SECTION' AND sc.section_offering_id=target_section)));
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_child_access_authorized(uuid,text,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_child_access_authorized(uuid,text,uuid,uuid)
+  TO schoolos_family_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_family_child_access_policy(p_student uuid)
+RETURNS TABLE(policy_id uuid,route_mode text,campus_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date:=at_time::date; target_campus uuid; n bigint;
+  school_n bigint; campus_n bigint; school_p uuid; school_r text; campus_p uuid; campus_r text; chosen uuid; route text;
+  steps bigint; invalid bigint;
+BEGIN
+  IF p_student IS NULL THEN RETURN; END IF;
+  SELECT count(*) INTO n FROM app_private.enrollments e
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+     AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+     AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  IF n>1 THEN RETURN; END IF;
+  IF n=1 THEN
+    SELECT co.campus_id INTO target_campus FROM app_private.enrollments e
+      JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+       AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+       AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  END IF;
+  SELECT count(*),min(v.id::text)::uuid,min(v.d1_route_mode) INTO school_n,school_p,school_r
+    FROM app_private.approval_policy_versions v JOIN app_private.operation_contracts o ON o.id=v.operation_id
+   WHERE o.code='family.child_access.change' AND o.contract_version=1 AND o.enabled
+     AND v.state='ACTIVE' AND v.campus_id IS NULL AND v.d1_route_mode IN ('DIRECT','APPROVAL')
+     AND v.effective_from<=at_time AND (v.effective_until IS NULL OR at_time<v.effective_until);
+  IF target_campus IS NULL THEN
+    IF school_n<>1 THEN RETURN; END IF; chosen:=school_p; route:=school_r;
+  ELSE
+    SELECT count(*),min(v.id::text)::uuid,min(v.d1_route_mode) INTO campus_n,campus_p,campus_r
+      FROM app_private.approval_policy_versions v JOIN app_private.operation_contracts o ON o.id=v.operation_id
+     WHERE o.code='family.child_access.change' AND o.contract_version=1 AND o.enabled
+       AND v.state='ACTIVE' AND v.campus_id=target_campus AND v.d1_route_mode IN ('DIRECT','APPROVAL')
+       AND v.effective_from<=at_time AND (v.effective_until IS NULL OR at_time<v.effective_until);
+    IF campus_n>1 OR school_n>1 THEN RETURN; END IF;
+    IF campus_n=1 THEN chosen:=campus_p; route:=campus_r;
+    ELSIF school_n=1 THEN chosen:=school_p; route:=school_r;
+    ELSE RETURN; END IF;
+  END IF;
+  IF route='APPROVAL' THEN
+    SELECT count(*),count(*) FILTER (
+      WHERE r.id IS NULL OR r.state<>'ACTIVE' OR t.required_reviews<>1
+        OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE')
+      INTO steps,invalid
+    FROM app_private.approval_step_templates t
+    LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id
+    WHERE t.policy_id=chosen;
+    IF steps=0 OR invalid<>0 THEN RETURN; END IF;
+  END IF;
+  RETURN QUERY SELECT chosen,route,target_campus;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_child_access_policy(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_child_access_policy(uuid)
+  TO schoolos_family_executor,schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE FUNCTION app_private.d1_family_child_access_family_ready(p_family uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE on_date date:=pg_catalog.current_date; n bigint; principal_id uuid;
+BEGIN
+  IF p_family IS NULL THEN RETURN false; END IF;
+  SELECT count(*),min(m.principal_id::text)::uuid INTO n,principal_id
+    FROM app_private.family_principal_memberships m
+   WHERE m.family_id=p_family AND m.effective_from<=on_date
+     AND (m.effective_until IS NULL OR on_date<m.effective_until);
+  RETURN n=1 AND principal_id IS NOT NULL
+    AND app_private.d1_family_principal_membership_target_ready(principal_id) IS TRUE;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_child_access_family_ready(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_child_access_family_ready(uuid)
+  TO schoolos_family_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_family_child_access_lock_targets(
+  p_student uuid,p_family uuid,p_source uuid
+) RETURNS TABLE(student_version bigint,family_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE source_student uuid; source_family uuid; sver bigint; fver bigint; x uuid;
+BEGIN
+  IF p_student IS NULL OR p_family IS NULL THEN RETURN; END IF;
+  IF p_source IS NOT NULL THEN
+    SELECT a.student_id,a.family_id INTO source_student,source_family
+      FROM app_private.family_student_access a WHERE a.id=p_source;
+  END IF;
+  FOR x IN SELECT v FROM (VALUES (p_student),(source_student)) q(v)
+    WHERE v IS NOT NULL GROUP BY v ORDER BY v
+  LOOP
+    PERFORM 1 FROM app_private.students s WHERE s.id=x FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family child access Student missing'; END IF;
+  END LOOP;
+  SELECT s.row_version INTO sver FROM app_private.students s WHERE s.id=p_student;
+  FOR x IN SELECT v FROM (VALUES (p_family),(source_family)) q(v)
+    WHERE v IS NOT NULL GROUP BY v ORDER BY v
+  LOOP
+    PERFORM 1 FROM app_private.families f WHERE f.id=x FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family child access Family missing'; END IF;
+  END LOOP;
+  SELECT f.row_version INTO fver FROM app_private.families f WHERE f.id=p_family;
+  FOR x IN SELECT r.id FROM app_private.family_relationships r
+    WHERE r.student_id=p_student AND r.family_id=p_family ORDER BY r.id
+  LOOP
+    PERFORM 1 FROM app_private.family_relationships r WHERE r.id=x FOR UPDATE;
+  END LOOP;
+  FOR x IN SELECT a.id FROM app_private.family_student_access a
+    WHERE a.student_id=p_student AND a.family_id=p_family ORDER BY a.id
+  LOOP
+    PERFORM 1 FROM app_private.family_student_access a WHERE a.id=x FOR UPDATE;
+  END LOOP;
+  IF p_source IS NOT NULL AND (source_student IS DISTINCT FROM p_student OR source_family IS DISTINCT FROM p_family) THEN
+    RAISE EXCEPTION 'D1 Family child access source ancestry changed';
+  END IF;
+  RETURN QUERY SELECT sver,fver;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_child_access_lock_targets(uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_child_access_lock_targets(uuid,uuid,uuid)
+  TO schoolos_family_executor,schoolos_workflow_executor,schoolos_read_executor;
+
+CREATE FUNCTION app_private.d1_family_child_access_preflight(
+  p_student uuid,p_expected_student_version bigint,p_family uuid,p_expected_family_version bigint,
+  p_action text,p_source uuid,p_effective_on date,p_effective_until date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text,source_effective_from date)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE locks record; family_state text; src app_private.family_student_access%ROWTYPE; overlaps bigint; first_gap date;
+BEGIN
+  IF p_student IS NULL OR p_family IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1
+     OR p_expected_family_version IS NULL OR p_expected_family_version<1
+     OR p_action IS NULL OR p_action NOT IN ('ADD','REVOKE') OR p_effective_on IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+     OR (p_effective_until IS NOT NULL AND p_effective_until<=p_effective_on) THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_INTENT_INVALID',NULL::date; RETURN;
+  END IF;
+  SELECT * INTO locks FROM app_private.d1_family_child_access_lock_targets(p_student,p_family,p_source);
+  IF locks.student_version IS NULL OR locks.family_version IS NULL THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_TARGET_MISSING',NULL::date; RETURN;
+  END IF;
+  IF locks.student_version IS DISTINCT FROM p_expected_student_version
+     OR locks.family_version IS DISTINCT FROM p_expected_family_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_VERSION_STALE',NULL::date; RETURN;
+  END IF;
+  SELECT f.state INTO family_state FROM app_private.families f WHERE f.id=p_family;
+
+  IF p_action='ADD' THEN
+    IF p_source IS NOT NULL OR family_state IS DISTINCT FROM 'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_ADD_SHAPE_INVALID',NULL::date; RETURN;
+    END IF;
+    IF app_private.d1_family_child_access_family_ready(p_family) IS DISTINCT FROM true THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_FAMILY_CREDENTIAL_NOT_READY',NULL::date; RETURN;
+    END IF;
+    first_gap:=app_private.d1_family_relationship_access_first_gap(
+      p_family,p_student,NULL,p_effective_on,p_effective_until);
+    IF first_gap IS NOT NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_RELATIONSHIP_BASIS_GAP',NULL::date; RETURN;
+    END IF;
+    SELECT count(*) INTO overlaps FROM app_private.family_student_access a
+     WHERE a.family_id=p_family AND a.student_id=p_student
+       AND a.effective_from<pg_catalog.coalesce(p_effective_until,'infinity'::date)
+       AND p_effective_on<pg_catalog.coalesce(a.effective_until,'infinity'::date);
+    IF overlaps<>0 THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_OVERLAP',NULL::date; RETURN;
+    END IF;
+  ELSE
+    IF p_source IS NULL OR p_effective_until IS NOT NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_REVOKE_SHAPE_INVALID',NULL::date; RETURN;
+    END IF;
+    SELECT * INTO src FROM app_private.family_student_access a
+      WHERE a.id=p_source AND a.family_id=p_family AND a.student_id=p_student FOR UPDATE;
+    IF NOT FOUND OR src.effective_until IS NOT NULL OR p_effective_on<=src.effective_from THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_SOURCE_STALE',NULL::date; RETURN;
+    END IF;
+  END IF;
+  RETURN QUERY SELECT true,NULL::text,CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_child_access_preflight(uuid,bigint,uuid,bigint,text,uuid,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_child_access_preflight(uuid,bigint,uuid,bigint,text,uuid,date,date,text)
+  TO schoolos_family_executor,schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_family_child_access_effect(
+  p_actor uuid,p_student uuid,p_expected_student_version bigint,p_family uuid,p_expected_family_version bigint,
+  p_action text,p_source uuid,p_effective_on date,p_effective_until date,p_reason text
+) RETURNS TABLE(access_id uuid,source_access_id uuid,action text,effective_from date,effective_until date,
+  student_version bigint,family_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; src app_private.family_student_access%ROWTYPE; new_id uuid:=pg_catalog.gen_random_uuid(); sver bigint; fver bigint;
+BEGIN
+  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id() THEN
+    RAISE EXCEPTION 'D1 Family child access actor denied';
+  END IF;
+  SELECT * INTO pre FROM app_private.d1_family_child_access_preflight(
+    p_student,p_expected_student_version,p_family,p_expected_family_version,p_action,p_source,p_effective_on,p_effective_until,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family child access preflight denied: %',pre.error_code;
+  END IF;
+  IF p_action='ADD' THEN
+    INSERT INTO app_private.family_student_access
+      (id,family_id,student_id,effective_from,effective_until,reason,supersedes_id,created_by,ended_at,ended_by)
+    VALUES (new_id,p_family,p_student,p_effective_on,p_effective_until,pg_catalog.btrim(p_reason),NULL,p_actor,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE pg_catalog.statement_timestamp() END,
+      CASE WHEN p_effective_until IS NULL THEN NULL ELSE p_actor END);
+  ELSE
+    SELECT * INTO src FROM app_private.family_student_access a WHERE a.id=p_source;
+    UPDATE app_private.family_student_access SET effective_until=p_effective_on,
+      ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+      WHERE id=p_source AND family_id=p_family AND student_id=p_student AND effective_until IS NULL;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family child access source changed'; END IF;
+    new_id:=p_source;
+  END IF;
+  UPDATE app_private.students SET updated_at=pg_catalog.statement_timestamp()
+    WHERE id=p_student RETURNING row_version INTO sver;
+  UPDATE app_private.families SET updated_at=pg_catalog.statement_timestamp()
+    WHERE id=p_family RETURNING row_version INTO fver;
+  RETURN QUERY SELECT new_id,p_source,p_action,
+    CASE WHEN p_action='REVOKE' THEN src.effective_from ELSE p_effective_on END,
+    CASE WHEN p_action='REVOKE' THEN p_effective_on ELSE p_effective_until END,sver,fver;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_child_access_effect(uuid,uuid,bigint,uuid,bigint,text,uuid,date,date,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_child_access_effect(uuid,uuid,bigint,uuid,bigint,text,uuid,date,date,text)
+  TO schoolos_family_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
