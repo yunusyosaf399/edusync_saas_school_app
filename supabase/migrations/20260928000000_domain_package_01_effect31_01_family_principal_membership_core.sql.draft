@@ -46,7 +46,7 @@ BEGIN
 
   -- Global lock order: Foundation principal before Family before membership history.
   SELECT * INTO pr FROM app_private.principals p WHERE p.id=p_target_principal FOR UPDATE;
-  IF NOT FOUND OR pr.kind IS DISTINCT FROM 'FAMILY' OR pr.account_type IS DISTINCT FROM 'SHARED_FAMILY'
+  IF NOT FOUND OR pr.kind IS DISTINCT FROM 'ACCOUNT' OR pr.account_type IS DISTINCT FROM 'SHARED_FAMILY'
      OR pr.state IS DISTINCT FROM 'ACTIVE' THEN
     RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_INVALID',NULL::date; RETURN;
   END IF;
@@ -77,7 +77,6 @@ BEGIN
     IF p_action='CORRECT' THEN
       -- CORRECT changes the retained interval fact by ending the erroneous row at p_effective_on
       -- and appending a successor for the same Family/Principal identity. Identity replacement is END + ADD.
-      -- A successor beginning at the same boundary is meaningful even when the reason text is unchanged.
       NULL;
     END IF;
   END IF;
