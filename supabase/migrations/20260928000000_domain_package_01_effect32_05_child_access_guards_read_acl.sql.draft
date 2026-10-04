@@ -1,0 +1,205 @@
+-- Effect 32 protected workflow guards, participant read and explicit client ACL closure.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+
+SET ROLE schoolos_family_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_child_access_result_match(uuid,uuid,text,uuid,uuid,date,date,jsonb)
+  TO schoolos_schema_owner;
+RESET ROLE;
+
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_family_child_access_request_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; family_id uuid; family_version bigint; action text; source_id uuid; effective_on date; effective_until date;
+  old_family uuid; old_source uuid; old_from date; stored record;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'family.child_access.change' THEN RETURN NEW; END IF;
+  IF NEW.target_ref IS NULL OR NEW.expected_target_version IS NULL OR NEW.expected_target_version<1
+     OR NEW.reason IS NULL OR pg_catalog.length(pg_catalog.btrim(NEW.reason))=0
+     OR NEW.old_snapshot IS NULL OR pg_catalog.jsonb_typeof(NEW.old_snapshot)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(NEW.old_snapshot))<>3
+     OR NOT (NEW.old_snapshot ?& ARRAY['family_id','source_access_id','source_effective_from'])
+     OR NEW.requested_payload IS NULL OR pg_catalog.jsonb_typeof(NEW.requested_payload)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(NEW.requested_payload))<>6
+     OR NOT (NEW.requested_payload ?& ARRAY['family_id','expected_family_version','action','source_access_id','effective_on','effective_until']) THEN
+    RAISE EXCEPTION 'D1 Family child access approval request shape invalid';
+  END IF;
+  BEGIN
+    family_id:=NULLIF(NEW.requested_payload->>'family_id','')::uuid;
+    family_version:=(NEW.requested_payload->>'expected_family_version')::bigint;
+    action:=NEW.requested_payload->>'action';
+    source_id:=NULLIF(NEW.requested_payload->>'source_access_id','')::uuid;
+    effective_on:=NULLIF(NEW.requested_payload->>'effective_on','')::date;
+    effective_until:=NULLIF(NEW.requested_payload->>'effective_until','')::date;
+    old_family:=NULLIF(NEW.old_snapshot->>'family_id','')::uuid;
+    old_source:=NULLIF(NEW.old_snapshot->>'source_access_id','')::uuid;
+    old_from:=NULLIF(NEW.old_snapshot->>'source_effective_from','')::date;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+    RAISE EXCEPTION 'D1 Family child access approval request values invalid';
+  END;
+  IF family_id IS NULL OR family_version<1 OR action IS NULL OR action NOT IN ('ADD','REVOKE')
+     OR effective_on IS NULL OR old_family IS DISTINCT FROM family_id OR old_source IS DISTINCT FROM source_id
+     OR (effective_until IS NOT NULL AND effective_until<=effective_on) THEN
+    RAISE EXCEPTION 'D1 Family child access approval request intent invalid';
+  END IF;
+  IF action='ADD' THEN
+    IF source_id IS NOT NULL OR old_from IS NOT NULL THEN
+      RAISE EXCEPTION 'D1 Family child access ADD request invalid';
+    END IF;
+  ELSE
+    IF source_id IS NULL OR effective_until IS NOT NULL OR old_from IS NULL THEN
+      RAISE EXCEPTION 'D1 Family child access REVOKE request invalid';
+    END IF;
+    SELECT a.* INTO stored FROM app_private.family_student_access a
+      WHERE a.id=source_id AND a.student_id=NEW.target_ref AND a.family_id=family_id;
+    IF NOT FOUND OR stored.effective_from IS DISTINCT FROM old_from OR stored.effective_until IS NOT NULL
+       OR effective_on<=old_from THEN
+      RAISE EXCEPTION 'D1 Family child access source snapshot invalid';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_child_access_request_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_family_child_access_request_guard ON app_private.approval_requests;
+CREATE TRIGGER d1_family_child_access_request_guard
+  BEFORE INSERT ON app_private.approval_requests
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_family_child_access_request_guard();
+
+CREATE FUNCTION app_private.d1_family_child_access_application_guard()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE code text; req record; rec record; family_id uuid; action text; source_id uuid;
+  effective_on date; effective_until date; base_summary jsonb;
+BEGIN
+  SELECT o.code INTO code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF code IS DISTINCT FROM 'family.child_access.change' THEN RETURN NEW; END IF;
+  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=NEW.request_id;
+  SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.id=NEW.command_receipt_id;
+  IF req.id IS NULL OR rec.id IS NULL OR req.operation_id IS DISTINCT FROM NEW.operation_id
+     OR rec.operation_id IS DISTINCT FROM NEW.operation_id OR rec.request_id IS DISTINCT FROM NEW.request_id
+     OR rec.command_kind IS DISTINCT FROM 'request.apply' OR rec.state IS DISTINCT FROM 'SUCCEEDED'
+     OR req.state IS DISTINCT FROM 'EXECUTED' OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+     OR NEW.result_ref IS DISTINCT FROM rec.result_ref OR rec.result_ref IS NULL OR rec.result_summary IS NULL
+     OR rec.result_summary->>'state' IS DISTINCT FROM 'EXECUTED' OR rec.result_summary->>'request_version' IS NULL THEN
+    RAISE EXCEPTION 'D1 Family child access approval application evidence invalid';
+  END IF;
+  BEGIN
+    family_id:=NULLIF(req.requested_payload->>'family_id','')::uuid;
+    action:=req.requested_payload->>'action';
+    source_id:=NULLIF(req.requested_payload->>'source_access_id','')::uuid;
+    effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+    effective_until:=NULLIF(req.requested_payload->>'effective_until','')::date;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN
+    RAISE EXCEPTION 'D1 Family child access application request malformed';
+  END;
+  IF family_id IS NULL OR action IS NULL OR action NOT IN ('ADD','REVOKE') OR effective_on IS NULL THEN
+    RAISE EXCEPTION 'D1 Family child access application request malformed';
+  END IF;
+  base_summary:=rec.result_summary-'request_version'-'state';
+  IF app_private.d1_family_child_access_result_match(
+      req.target_ref,family_id,action,source_id,rec.result_ref,effective_on,effective_until,base_summary) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Family child access approval application result invalid';
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_child_access_application_guard()
+  FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_family_child_access_application_guard ON app_private.approval_applications;
+CREATE TRIGGER d1_family_child_access_application_guard
+  BEFORE INSERT ON app_private.approval_applications
+  FOR EACH ROW EXECUTE FUNCTION app_private.d1_family_child_access_application_guard();
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_family_child_access_participant_kind(p_request uuid,p_actor uuid)
+RETURNS text
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE req record; role_id uuid; n bigint;
+BEGIN
+  SELECT q.* INTO req FROM app_private.approval_requests q JOIN app_private.operation_contracts o ON o.id=q.operation_id
+    WHERE q.id=p_request AND o.code='family.child_access.change';
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  IF p_actor=req.requester_id
+     AND app_private.d1_family_child_access_authorized(p_actor,'family.child_access.change',req.target_ref,NULL) THEN
+    RETURN 'REQUESTER';
+  END IF;
+  role_id:=app_private.d1_final_approver_role(p_request,p_actor);
+  IF role_id IS NOT NULL
+     AND app_private.d1_family_child_access_authorized(p_actor,'family.access.approve',req.target_ref,role_id) THEN
+    RETURN 'FINAL_APPROVER';
+  END IF;
+  SELECT count(*) INTO n FROM app_private.approval_request_steps s
+    JOIN app_private.approval_step_reviewers a ON a.step_id=s.id
+    JOIN app_private.approval_step_templates t ON t.id=s.template_id
+   WHERE s.request_id=p_request AND s.state='OPEN' AND a.reviewer_id=p_actor
+     AND a.withdrawn_at IS NULL AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+     AND app_private.d1_family_child_access_authorized(p_actor,'family.access.approve',req.target_ref,t.reviewer_role_id);
+  IF n=1 THEN RETURN 'OPEN_REVIEWER'; ELSIF n>1 THEN RETURN NULL; END IF;
+  SELECT count(*) INTO n FROM app_private.approval_reviews v
+    JOIN app_private.approval_request_steps s ON s.id=v.step_id
+    JOIN app_private.approval_step_templates t ON t.id=s.template_id
+   WHERE s.request_id=p_request AND v.reviewer_id=p_actor
+     AND app_private.d1_family_child_access_authorized(p_actor,'family.access.approve',req.target_ref,t.reviewer_role_id);
+  IF n=1 THEN RETURN 'DECIDED_REVIEWER'; END IF;
+  RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_family_child_access_participant_kind(uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_family_child_access_participant_kind(uuid,uuid)
+  TO schoolos_read_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+CREATE FUNCTION app.d1_read_family_child_access_request(p_request_id uuid)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,student_id uuid,expected_student_version bigint,
+  family_id uuid,expected_family_version bigint,action text,source_access_id uuid,effective_on date,effective_until date,
+  request_reason text,participant_kind text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; req record; kind text; family_id uuid; family_version bigint; action text; source_id uuid;
+  effective_on date; effective_until date;
+BEGIN
+  IF p_request_id IS NULL THEN RETURN; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RETURN; END IF;
+  PERFORM app_private.d1_lock_current_principal(actor);
+  SELECT q.* INTO req FROM app_private.approval_requests q JOIN app_private.operation_contracts o ON o.id=q.operation_id
+    WHERE q.id=p_request_id AND o.code='family.child_access.change';
+  IF NOT FOUND OR req.requested_payload IS NULL OR pg_catalog.jsonb_typeof(req.requested_payload)<>'object' THEN RETURN; END IF;
+  BEGIN
+    family_id:=NULLIF(req.requested_payload->>'family_id','')::uuid;
+    family_version:=(req.requested_payload->>'expected_family_version')::bigint;
+    action:=req.requested_payload->>'action';
+    source_id:=NULLIF(req.requested_payload->>'source_access_id','')::uuid;
+    effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+    effective_until:=NULLIF(req.requested_payload->>'effective_until','')::date;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN RETURN; END;
+  IF family_id IS NULL OR family_version<1 OR action IS NULL OR action NOT IN ('ADD','REVOKE') OR effective_on IS NULL THEN RETURN; END IF;
+  PERFORM app_private.d1_family_child_access_lock_targets(req.target_ref,family_id,source_id);
+  kind:=app_private.d1_family_child_access_participant_kind(p_request_id,actor);
+  IF kind IS NULL THEN RETURN; END IF;
+  RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,req.expected_target_version,
+    family_id,family_version,action,source_id,effective_on,effective_until,req.reason,kind;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_read_family_child_access_request(uuid) FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_child_access_request(uuid) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
+
+REVOKE ALL ON FUNCTION app.d1_change_family_child_access(uuid,bigint,uuid,bigint,text,uuid,date,date,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_family_child_access(uuid,bigint,uuid,bigint,text,uuid,date,date,text,text) TO authenticated;
+REVOKE ALL ON FUNCTION app.d1_submit_family_child_access_change(uuid,bigint,uuid,bigint,text,uuid,date,date,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_family_child_access_change(uuid,bigint,uuid,bigint,text,uuid,date,date,text,text) TO authenticated;
+REVOKE ALL ON FUNCTION app.d1_review_family_child_access_change(uuid,text,bigint,text,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_review_family_child_access_change(uuid,text,bigint,text,text) TO authenticated;
+REVOKE ALL ON FUNCTION app.d1_apply_family_child_access_change(uuid,bigint,text)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_family_child_access_change(uuid,bigint,text) TO authenticated;
