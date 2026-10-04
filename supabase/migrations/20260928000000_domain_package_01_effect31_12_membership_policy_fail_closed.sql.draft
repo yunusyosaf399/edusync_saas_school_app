@@ -1,0 +1,42 @@
+-- Effect 31 P1 policy hardening for an ALL-only operation.
+-- Any additional/incompatible currently-effective policy version (including campus-specific) makes routing ambiguous and denies.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_policy()
+RETURNS TABLE(policy_id uuid,route_mode text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp();
+  total_n bigint; eligible_n bigint; chosen uuid; route text; steps bigint; invalid bigint;
+BEGIN
+  SELECT count(*) INTO total_n
+  FROM app_private.approval_policy_versions v
+  JOIN app_private.operation_contracts o ON o.id=v.operation_id
+  WHERE o.code='family.principal_membership.change' AND o.contract_version=1 AND o.enabled
+    AND v.state='ACTIVE' AND v.effective_from<=at_time
+    AND (v.effective_until IS NULL OR at_time<v.effective_until);
+
+  SELECT count(*),min(v.id::text)::uuid,min(v.d1_route_mode)
+    INTO eligible_n,chosen,route
+  FROM app_private.approval_policy_versions v
+  JOIN app_private.operation_contracts o ON o.id=v.operation_id
+  WHERE o.code='family.principal_membership.change' AND o.contract_version=1 AND o.enabled
+    AND v.state='ACTIVE' AND v.campus_id IS NULL
+    AND v.d1_route_mode IN ('DIRECT','APPROVAL')
+    AND v.effective_from<=at_time AND (v.effective_until IS NULL OR at_time<v.effective_until);
+
+  IF total_n<>1 OR eligible_n<>1 OR chosen IS NULL OR route IS NULL THEN RETURN; END IF;
+  IF route='APPROVAL' THEN
+    SELECT count(*),count(*) FILTER (
+      WHERE r.id IS NULL OR r.state<>'ACTIVE' OR t.required_reviews<>1
+        OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE')
+      INTO steps,invalid
+    FROM app_private.approval_step_templates t
+    LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id
+    WHERE t.policy_id=chosen;
+    IF steps=0 OR invalid<>0 THEN RETURN; END IF;
+  END IF;
+  RETURN QUERY SELECT chosen,route;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
