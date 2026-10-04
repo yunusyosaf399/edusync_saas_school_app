@@ -38,3 +38,22 @@ jobs:
         run: python tools/supabase/domain_draft_guard.py
       - name: Final Migration 10 function ownership and ACL audit
         run: python tools/supabase/domain_function_final_guard.py --verbose
+      - name: Bare CREATE function-name collision report
+        run: |
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          from tools.supabase import domain_function_final_guard as guard
+          drafts = guard.discover_drafts(Path('.'))
+          text = guard.sanitize_sql(guard.read_chain(drafts))
+          bare = Counter(
+              match.group('name').lower()
+              for match in guard.CREATE_RE.finditer(text)
+              if not match.group('replace')
+          )
+          collisions = sorted((name, count) for name, count in bare.items() if count > 1)
+          print('D1_BARE_CREATE_NAME_COLLISIONS ' + (
+              ','.join(f'{name}={count}' for name, count in collisions)
+              if collisions else '<none>'
+          ))
+          PY
