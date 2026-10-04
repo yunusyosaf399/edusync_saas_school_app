@@ -1,0 +1,95 @@
+-- Effect 31 revocation correctness: END must remain possible after credential disablement.
+-- ADD/CORRECT establish a usable FAMILY link and therefore require target readiness.
+-- END only removes/ends retained membership authority; it must not depend on the target
+-- still having an Auth binding or live family-safe grant. Principal kind/version and
+-- Family/source ancestry are still locked and revalidated.
+-- Static non-executable continuation only. Migration 10 remains .sql.draft.
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_family_executor;
+SET ROLE schoolos_family_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_family_principal_membership_preflight(
+  p_family uuid,p_expected_family_version bigint,p_target_principal uuid,p_expected_principal_version bigint,
+  p_action text,p_source uuid,p_effective_on date,p_reason text
+) RETURNS TABLE(eligible boolean,error_code text,source_effective_from date,source_family_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE principal_kind text; principal_version bigint; family_version bigint; family_state text;
+  src app_private.family_principal_memberships%ROWTYPE; source_family uuid; overlap_count bigint;
+BEGIN
+  IF p_family IS NULL OR p_expected_family_version IS NULL OR p_expected_family_version<1
+     OR p_target_principal IS NULL OR p_expected_principal_version IS NULL OR p_expected_principal_version<1
+     OR p_action IS NULL OR p_action NOT IN ('ADD','END','CORRECT') OR p_effective_on IS NULL
+     OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_INTENT_INVALID',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  -- Foundation target Principal precedes Family and retained membership history.
+  SELECT p.kind,p.row_version INTO principal_kind,principal_version
+  FROM app_private.principals p WHERE p.id=p_target_principal FOR UPDATE;
+  IF NOT FOUND OR principal_kind IS DISTINCT FROM 'FAMILY' THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_INVALID',NULL::date,NULL::uuid; RETURN;
+  END IF;
+  IF principal_version IS DISTINCT FROM p_expected_principal_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_VERSION_STALE',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  -- Creating/restoring an effective membership requires a currently usable shared-family credential.
+  -- Revocation does not: an already disabled credential must still be explicitly endable.
+  IF p_action IN ('ADD','CORRECT')
+     AND app_private.d1_family_principal_membership_target_ready(p_target_principal) IS DISTINCT FROM true THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_NOT_READY',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  SELECT f.row_version,f.state INTO family_version,family_state
+  FROM app_private.families f WHERE f.id=p_family FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_MISSING',NULL::date,NULL::uuid; RETURN;
+  END IF;
+  IF family_version IS DISTINCT FROM p_expected_family_version THEN
+    RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_VERSION_STALE',NULL::date,NULL::uuid; RETURN;
+  END IF;
+
+  IF p_action='ADD' THEN
+    IF p_source IS NOT NULL OR family_state IS DISTINCT FROM 'ACTIVE' THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_ADD_SHAPE_INVALID',NULL::date,NULL::uuid; RETURN;
+    END IF;
+  ELSE
+    IF p_source IS NULL THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_REQUIRED',NULL::date,NULL::uuid; RETURN;
+    END IF;
+    SELECT * INTO src FROM app_private.family_principal_memberships m
+    WHERE m.id=p_source AND m.family_id=p_family AND m.principal_id=p_target_principal
+      AND m.principal_kind='FAMILY' FOR UPDATE;
+    IF NOT FOUND OR EXISTS (
+        SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=src.id) THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_SOURCE_STALE',NULL::date,NULL::uuid; RETURN;
+    END IF;
+    source_family:=src.family_id;
+    IF p_action='END' THEN
+      IF src.effective_until IS NOT NULL OR p_effective_on<=src.effective_from THEN
+        RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_END_SOURCE_INVALID',src.effective_from,source_family; RETURN;
+      END IF;
+    ELSE
+      IF src.effective_until IS NULL OR src.ended_at IS NULL OR src.ended_by IS NULL
+         OR p_effective_on IS DISTINCT FROM src.effective_until THEN
+        RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_CORRECT_SOURCE_INVALID',src.effective_from,source_family; RETURN;
+      END IF;
+    END IF;
+  END IF;
+
+  -- New/restored effective interval must not overlap any retained interval for the Family.
+  IF p_action IN ('ADD','CORRECT') THEN
+    SELECT count(*) INTO overlap_count
+    FROM app_private.family_principal_memberships m
+    WHERE m.family_id=p_family AND (p_source IS NULL OR m.id<>p_source)
+      AND (m.effective_until IS NULL OR m.effective_until>p_effective_on);
+    IF overlap_count<>0 THEN
+      RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_OVERLAP',
+        CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family; RETURN;
+    END IF;
+  END IF;
+
+  RETURN QUERY SELECT true,NULL::text,
+    CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_family_executor;
