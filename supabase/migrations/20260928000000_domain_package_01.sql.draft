@@ -8598,6 +8598,14 @@ GRANT EXECUTE ON FUNCTION app_private.d1_employee_state_event(
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
+-- D1C2A runtime correction: Teaching resolves Foundation parent objects from
+-- its earliest academic dependency preflight onward. Namespace visibility only;
+-- relation privileges remain command-specific and explicit.
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;
+RESET ROLE;
+
 GRANT CREATE ON SCHEMA app_private TO schoolos_teaching_executor;
 SET ROLE schoolos_teaching_executor;
 -- Read-only deterministic dependency preflight. The caller already holds the
@@ -14192,13 +14200,6 @@ GRANT SELECT (id,created_at,created_by,ended_at,ended_by,section_offering_id,
 
 -- Effect 12/15 already installed lock-only teaching policies. Extend only the
 -- SELECT columns required to revalidate exact Section ancestry and eligibility.
--- D1C2A runtime correction: Teaching resolves Foundation parent objects from
--- Effect 16 onward. Namespace visibility only; table privileges remain explicit.
-RESET ROLE;
-SET ROLE schoolos_schema_owner;
-GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;
-RESET ROLE;
-
 GRANT SELECT (person_id) ON app_private.employees TO schoolos_teaching_executor;
 GRANT SELECT (school_id,state) ON app.campuses TO schoolos_teaching_executor;
 GRANT SELECT (school_id,state,starts_on,ends_on) ON app.academic_years
