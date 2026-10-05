@@ -57,6 +57,28 @@ class DomainLocalCITests(unittest.TestCase):
         with self.assertRaisesRegex(runtime.DomainLocalCIError, "RUNTIME_CATALOG_DRIFT"):
             runtime.validate_runtime_probe(observed)
 
+    def test_foundation_catalog_runs_only_at_baseline(self):
+        contract = {"frozen_foundation": {"database_tests": [
+            {"file": "01_foundation_catalog.sql", "assertions": 44},
+            {"file": "02_auth_helper_preflight.sql", "assertions": 5},
+        ]}}
+        with patch.object(runtime.subprocess, "run", return_value=CompletedProcess([], 0, "", "")) as command:
+            with patch.object(runtime, "parse_tap", side_effect=lambda output, expected: expected):
+                self.assertEqual(runtime.run_foundation_regression(contract, catalog_only=True), 44)
+        self.assertEqual(command.call_count, 1)
+        self.assertIn("01_foundation_catalog.sql", command.call_args.args[0][3])
+
+    def test_foundation_behavior_runs_after_domain_without_catalog_snapshot(self):
+        contract = {"frozen_foundation": {"database_tests": [
+            {"file": "01_foundation_catalog.sql", "assertions": 44},
+            {"file": "02_auth_helper_preflight.sql", "assertions": 5},
+        ]}}
+        with patch.object(runtime.subprocess, "run", return_value=CompletedProcess([], 0, "", "")) as command:
+            with patch.object(runtime, "parse_tap", side_effect=lambda output, expected: expected):
+                self.assertEqual(runtime.run_foundation_regression(contract), 5)
+        self.assertEqual(command.call_count, 1)
+        self.assertIn("02_auth_helper_preflight.sql", command.call_args.args[0][3])
+
     def test_local_lint_reports_errors_without_stderr_credentials(self):
         report = '[{"function":"app_private.example","issues":[{"level":"error","message":"bad column","sqlState":"42703"}]}]'
         with patch.object(runtime.subprocess, "run", return_value=CompletedProcess([], 1, report, "secret connection string")):
