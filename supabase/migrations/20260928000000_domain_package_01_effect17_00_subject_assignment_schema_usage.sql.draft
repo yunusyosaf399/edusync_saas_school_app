@@ -1,11 +1,14 @@
--- D1C2A runtime correction for Effect 17 packaging.
--- The Teaching executor already has exact column-level SELECT grants on the
--- Foundation Campus and Academic Year parents, but PostgreSQL also requires
--- namespace USAGE before those objects can be resolved. This fragment is placed
--- before Effect 17 begins any split function body so the grant executes at the
--- migration top level. It adds namespace visibility only: no schema CREATE,
--- table privilege, role membership, client grant, or authorization path.
+-- D1C2A branch-only diagnostic for the Effect 16/17 boundary.
+-- If this fragment executes, the base draft (including Effect 16) completed.
 RESET ROLE;
 SET ROLE schoolos_schema_owner;
 GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;
+DO $d1c2a$
+BEGIN
+  IF NOT pg_catalog.has_schema_privilege('schoolos_teaching_executor','app','USAGE') THEN
+    RAISE EXCEPTION 'D1C2A_TEACHING_APP_USAGE_NOT_EFFECTIVE';
+  END IF;
+  RAISE NOTICE 'D1C2A_EFFECT17_BOUNDARY_REACHED';
+END
+$d1c2a$;
 RESET ROLE;
