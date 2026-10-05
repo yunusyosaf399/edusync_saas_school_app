@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -140,6 +141,29 @@ def run_psql(container: str, sql: str, label: str, *, tuples: bool = False, time
         detail = _safe_tail((result.stderr or "") + "\n" + (result.stdout or ""))
         raise DomainLocalCIError(label + "_FAIL exit=" + str(result.returncode) + "\n" + detail)
     return result.stdout
+
+
+def run_local_lint(level: str) -> None:
+    """Expose structured local lint issues without logging connection/auth output."""
+    if level not in ("error", "warning"):
+        raise DomainLocalCIError("LOCAL_LINT_LEVEL_INVALID")
+    result = subprocess.run(
+        ["supabase", "db", "lint", "--local", "--level", level, "--fail-on", "error"],
+        cwd=ROOT, text=True, capture_output=True, timeout=300,
+    )
+    if result.returncode:
+        details = []
+        try:
+            report = json.loads(result.stdout)
+            for item in report:
+                for issue in item.get("issues", []):
+                    if issue.get("level") == "error":
+                        details.append({"function": item.get("function"),
+                            "message": issue.get("message"), "sqlState": issue.get("sqlState"),
+                            "statement": issue.get("statement")})
+        except (ValueError, TypeError, AttributeError):
+            pass
+        raise DomainLocalCIError("LOCAL_LINT_FAIL " + level + " " + json.dumps(details))
 
 
 def runtime_probe_sql() -> str:
@@ -343,7 +367,7 @@ def main() -> int:
         print("D1C2A_AUTH_FIXTURES_PASS 5/5")
 
         for level in ("error", "warning"):
-            run(["supabase", "db", "lint", "--local", "--level", level, "--fail-on", "error"], cwd=ROOT, timeout=300)
+            run_local_lint(level)
             print("D1C2A_LINT_PASS " + level)
 
         total = run_foundation_regression(contract)

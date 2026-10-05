@@ -1,6 +1,8 @@
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from subprocess import CompletedProcess
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -54,6 +56,23 @@ class DomainLocalCITests(unittest.TestCase):
         observed["authenticated_private_execute"] = 1
         with self.assertRaisesRegex(runtime.DomainLocalCIError, "RUNTIME_CATALOG_DRIFT"):
             runtime.validate_runtime_probe(observed)
+
+    def test_local_lint_reports_errors_without_stderr_credentials(self):
+        report = '[{"function":"app_private.example","issues":[{"level":"error","message":"bad column","sqlState":"42703"}]}]'
+        with patch.object(runtime.subprocess, "run", return_value=CompletedProcess([], 1, report, "secret connection string")):
+            with self.assertRaises(runtime.DomainLocalCIError) as caught:
+                runtime.run_local_lint("error")
+        self.assertIn("app_private.example", str(caught.exception))
+        self.assertIn("bad column", str(caught.exception))
+        self.assertNotIn("secret", str(caught.exception))
+
+    def test_local_lint_passes_success(self):
+        with patch.object(runtime.subprocess, "run", return_value=CompletedProcess([], 0, "[]", "")):
+            runtime.run_local_lint("warning")
+
+    def test_local_lint_rejects_invalid_level(self):
+        with self.assertRaisesRegex(runtime.DomainLocalCIError, "LOCAL_LINT_LEVEL_INVALID"):
+            runtime.run_local_lint("debug")
 
     def test_probe_parser_rejects_duplicates_and_nonintegers(self):
         with self.assertRaisesRegex(runtime.DomainLocalCIError, "RUNTIME_PROBE_MALFORMED"):
