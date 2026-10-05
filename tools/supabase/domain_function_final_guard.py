@@ -50,6 +50,9 @@ TRIGGER_RE = re.compile(
 QUALIFIED_CONDITIONAL_RE = re.compile(
     r"\bpg_catalog\s*\.\s*(coalesce|nullif|greatest|least)\s*\(", re.I,
 )
+BARE_CASE_COMPARISON_RE = re.compile(
+    r"\bIS\s+(?:NOT\s+)?DISTINCT\s+FROM\s+CASE\b", re.I,
+)
 DANGEROUS_EXPOSED = {"public", "anon", "service_role"}
 
 
@@ -191,9 +194,13 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
         return [str(exc)], {}, {}
 
     text = sanitize_sql(raw)
-    for match in QUALIFIED_CONDITIONAL_RE.finditer(sanitize_sql(raw, mask_bodies=False)):
+    body_code = sanitize_sql(raw, mask_bodies=False)
+    for match in QUALIFIED_CONDITIONAL_RE.finditer(body_code):
         line = raw.count("\n", 0, match.start()) + 1
         errors.append(f"schema-qualified SQL conditional expression: {match.group(1)} at chain line {line}")
+    for match in BARE_CASE_COMPARISON_RE.finditer(body_code):
+        line = raw.count("\n", 0, match.start()) + 1
+        errors.append(f"CASE comparison operand requires parentheses in draft SQL: chain line {line}")
     if SET_SESSION_RE.search(text):
         errors.append("D1 draft uses SET SESSION AUTHORIZATION")
 

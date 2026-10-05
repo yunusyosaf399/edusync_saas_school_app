@@ -133,6 +133,30 @@ RESET ROLE;
         errors, _, _ = guard.inspect(self.make_root(sql))
         self.assertEqual(errors, [])
 
+    def test_rejects_case_operand_without_parentheses(self):
+        sql = _base_sql() + """
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_case_guard() RETURNS boolean LANGUAGE plpgsql
+AS $body$ BEGIN
+IF 1 IS NOT DISTINCT FROM CASE WHEN true THEN 1 ELSE 2 END THEN RETURN true; END IF;
+RETURN false; END $body$;
+RESET ROLE;
+"""
+        errors, _, _ = guard.inspect(self.make_root(sql))
+        self.assertTrue(any("CASE comparison operand" in error for error in errors))
+
+    def test_accepts_parenthesized_case_operand(self):
+        sql = _base_sql() + """
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_case_guard() RETURNS boolean LANGUAGE plpgsql
+AS $body$ BEGIN
+IF 1 IS NOT DISTINCT FROM (CASE WHEN true THEN 1 ELSE 2 END) THEN RETURN true; END IF;
+RETURN false; END $body$;
+RESET ROLE;
+"""
+        errors, _, _ = guard.inspect(self.make_root(sql))
+        self.assertEqual(errors, [])
+
     def test_rejects_unknown_security_definer_owner(self):
         text = _base_sql() + """
 CREATE FUNCTION app_private.d1_unknown() RETURNS boolean

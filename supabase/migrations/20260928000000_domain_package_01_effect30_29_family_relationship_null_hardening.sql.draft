@@ -83,8 +83,8 @@ BEGIN
     IF p_action='CORRECT'
        AND src.adult_person_id IS NOT DISTINCT FROM p_adult_person
        AND src.relationship_kind IS NOT DISTINCT FROM p_relationship_kind
-       AND src.display_name IS NOT DISTINCT FROM CASE WHEN p_display_name IS NULL THEN NULL ELSE pg_catalog.btrim(p_display_name) END
-       AND src.relationship_contact IS NOT DISTINCT FROM CASE WHEN p_relationship_contact IS NULL THEN NULL ELSE pg_catalog.btrim(p_relationship_contact) END THEN
+       AND src.display_name IS NOT DISTINCT FROM (CASE WHEN p_display_name IS NULL THEN NULL ELSE pg_catalog.btrim(p_display_name) END)
+       AND src.relationship_contact IS NOT DISTINCT FROM (CASE WHEN p_relationship_contact IS NULL THEN NULL ELSE pg_catalog.btrim(p_relationship_contact) END) THEN
       RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_NOOP',src.effective_from,repl_family; RETURN;
     END IF;
   END IF;

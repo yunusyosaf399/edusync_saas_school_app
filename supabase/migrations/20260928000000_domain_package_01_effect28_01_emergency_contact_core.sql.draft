@@ -138,10 +138,10 @@ BEGIN
       RETURN QUERY SELECT false,'D1_EMERGENCY_CONTACT_SOURCE_STALE',NULL::date; RETURN; END IF;
     IF p_effective_on<=src.effective_from THEN RETURN QUERY SELECT false,'D1_EMERGENCY_CONTACT_DATE_INVALID',src.effective_from; RETURN; END IF;
     IF p_action='CORRECT' AND src.person_id IS NOT DISTINCT FROM p_person
-       AND src.contact_name IS NOT DISTINCT FROM CASE WHEN p_contact_name IS NULL THEN NULL ELSE pg_catalog.btrim(p_contact_name) END
+       AND src.contact_name IS NOT DISTINCT FROM (CASE WHEN p_contact_name IS NULL THEN NULL ELSE pg_catalog.btrim(p_contact_name) END)
        AND src.relationship_label IS NOT DISTINCT FROM pg_catalog.btrim(p_relationship)
        AND src.contact_phone IS NOT DISTINCT FROM pg_catalog.btrim(p_phone)
-       AND src.contact_email IS NOT DISTINCT FROM CASE WHEN p_email IS NULL THEN NULL ELSE pg_catalog.btrim(p_email) END THEN
+       AND src.contact_email IS NOT DISTINCT FROM (CASE WHEN p_email IS NULL THEN NULL ELSE pg_catalog.btrim(p_email) END) THEN
       RETURN QUERY SELECT false,'D1_EMERGENCY_CONTACT_NOOP',src.effective_from; RETURN; END IF;
   END IF;
   IF p_action<>'END' THEN
