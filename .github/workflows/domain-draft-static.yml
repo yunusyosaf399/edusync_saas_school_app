@@ -1,4 +1,5 @@
 name: D1 Migration 10 draft static
+# D1C2 runtime-found draft corrections must rerun this source gate together with Foundation and local runtime validation.
 
 on:
   push:
