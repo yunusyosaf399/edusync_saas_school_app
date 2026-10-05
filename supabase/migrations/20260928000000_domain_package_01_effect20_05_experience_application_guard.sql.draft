@@ -28,9 +28,19 @@ REVOKE ALL ON FUNCTION app_private.d1_employee_experience_application_receipt_gu
 DROP TRIGGER IF EXISTS d1_employee_experience_application_receipt_guard ON app_private.approval_applications;
 CREATE TRIGGER d1_employee_experience_application_receipt_guard BEFORE INSERT ON app_private.approval_applications
   FOR EACH ROW EXECUTE FUNCTION app_private.d1_employee_experience_application_receipt_guard();
+
+-- PostgreSQL requires the destination owner to have CREATE on the containing
+-- schema during ALTER ... OWNER. Restore the temporary packaging edge only for
+-- this transfer; the reviewed final state still leaves Workflow without CREATE.
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
 RESET ROLE;
 
 -- Public RPC ownership/ACL are explicit even if ordered fragments are assembled by a privileged migration role.
 ALTER FUNCTION app.d1_apply_employee_experience_request(uuid,bigint,text) OWNER TO schoolos_workflow_executor;
+
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+RESET ROLE;
+
 REVOKE ALL ON FUNCTION app.d1_apply_employee_experience_request(uuid,bigint,text) FROM PUBLIC,anon,service_role;
 GRANT EXECUTE ON FUNCTION app.d1_apply_employee_experience_request(uuid,bigint,text) TO authenticated;
