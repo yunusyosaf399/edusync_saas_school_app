@@ -124,6 +124,8 @@ GRANT EXECUTE ON FUNCTION app_private.d1_family_manage_event(
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
+-- The RPC owner needs schema lookup access for its function ACL statements.
+GRANT USAGE ON SCHEMA app TO schoolos_family_executor;
 GRANT CREATE ON SCHEMA app TO schoolos_family_executor;
 SET ROLE schoolos_family_executor;
 CREATE FUNCTION app.d1_manage_family(
