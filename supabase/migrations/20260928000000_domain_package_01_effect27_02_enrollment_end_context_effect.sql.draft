@@ -23,7 +23,7 @@ BEGIN
   IF NOT FOUND OR src.student_id IS DISTINCT FROM p_student OR src.placement_kind<>'PRIMARY'
      OR src.section_offering_id IS DISTINCT FROM p_expected_source_section OR src.effective_from IS DISTINCT FROM p_expected_source_effective_from
      OR src.placement_state<>'ACTIVE' OR src.effective_until IS NOT NULL
-     OR src.effective_from>pg_catalog.current_date() OR p_effective_until<=src.effective_from THEN
+     OR src.effective_from>CURRENT_DATE OR p_effective_until<=src.effective_from THEN
     RETURN QUERY SELECT s.row_version,p_expected_source_section,path.campus_id,path.academic_year_id,path.class_offering_id,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_SOURCE_STALE'; RETURN; END IF;
   SELECT count(*) INTO later_count FROM app_private.enrollments e
     WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.id<>p_source_enrollment AND e.effective_from>=src.effective_from;
@@ -92,12 +92,12 @@ BEGIN
     p_expected_source_section,p_expected_source_effective_from,p_effective_until);
   IF c.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment end source changed: %',c.error_code; END IF;
   UPDATE app_private.roll_allocations SET effective_until=p_effective_until,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
-   WHERE id=c.source_roll_id AND enrollment_id=p_source_enrollment AND student_id=p_student AND effective_until IS NULL;
+   WHERE roll_allocations.id=c.source_roll_id AND roll_allocations.enrollment_id=p_source_enrollment AND roll_allocations.student_id=p_student AND roll_allocations.effective_until IS NULL;
   IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment end source roll changed'; END IF;
   UPDATE app_private.enrollments SET placement_state='ENDED',effective_until=p_effective_until,end_reason=pg_catalog.btrim(p_reason),
     ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
-   WHERE id=p_source_enrollment AND student_id=p_student AND section_offering_id=p_expected_source_section
-     AND placement_state='ACTIVE' AND effective_until IS NULL;
+   WHERE enrollments.id=p_source_enrollment AND enrollments.student_id=p_student AND enrollments.section_offering_id=p_expected_source_section
+     AND enrollments.placement_state='ACTIVE' AND enrollments.effective_until IS NULL;
   IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment end source placement changed'; END IF;
   RETURN QUERY SELECT p_source_enrollment,c.source_roll_id,c.student_version,c.section_id,c.campus_id,c.academic_year_id,c.class_offering_id;
 END $body$;

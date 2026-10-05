@@ -141,7 +141,7 @@ BEGIN
     IF pre.eligible IS DISTINCT FROM true THEN invalidation:=COALESCE(pre.error_code,'D1_STUDENT_STATUS_PREFLIGHT_STALE'); END IF;
   END IF;
   IF invalidation IS NOT NULL THEN
-    UPDATE app_private.approval_requests SET state='INVALIDATED',decided_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+    UPDATE app_private.approval_requests SET state='INVALIDATED' WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     receipt:=app_private.d1_student_status_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
       req.expected_target_version,p_request_id,p_expected_request_version,'REJECTED','D1_STUDENT_STATUS_APPLY',NULL,
       pg_catalog.jsonb_build_object('request_version',final_version,'state','INVALIDATED'),invalidation);
@@ -150,7 +150,7 @@ BEGIN
     RETURN QUERY SELECT p_request_id,final_version,'INVALIDATED'::text; RETURN;
   END IF;
   SELECT * INTO eff FROM app_private.d1_student_status_effect(ctx.actor_id,req.target_ref,req.expected_target_version,old_status,source_transition,new_status,effective_on,req.reason);
-  UPDATE app_private.approval_requests SET state='EXECUTED',executed_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state='EXECUTED' WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_student_status_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_STATUS_APPLY',eff.transition_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state','EXECUTED','transition_id',eff.transition_id,

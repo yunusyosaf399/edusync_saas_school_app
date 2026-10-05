@@ -38,24 +38,24 @@ BEGIN
     IF pre.eligible IS DISTINCT FROM true THEN invalidation:=COALESCE(pre.error_code,'D1_STUDENT_STATUS_CORRECT_PREFLIGHT_STALE'); END IF;
   END IF;
   IF invalidation IS NOT NULL THEN
-    UPDATE app_private.approval_requests SET state='INVALIDATED',decided_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+    UPDATE app_private.approval_requests SET state='INVALIDATED' WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     receipt:=app_private.d1_student_status_correct_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
       req.expected_target_version,p_request_id,p_expected_request_version,'REJECTED','D1_STUDENT_STATUS_CORRECT_APPLY',NULL,
       pg_catalog.jsonb_build_object('request_version',final_version,'state','INVALIDATED'),invalidation);
-    SELECT COALESCE(max(sequence_number),0)+1 INTO seq FROM app_private.approval_transitions WHERE request_id=p_request_id;
+    SELECT COALESCE(max(sequence_number),0)+1 INTO seq FROM app_private.approval_transitions WHERE approval_transitions.request_id=p_request_id;
     INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
       VALUES (p_request_id,seq,'APPROVED','INVALIDATED',invalidation,receipt,ctx.actor_id);
     PERFORM app_private.d1_student_status_correct_audit(ctx.actor_id,'APPLY',req.target_ref,source_id,NULL,receipt,p_request_id,req.expected_target_version,new_status,new_date,'INVALIDATED',corr);
     RETURN QUERY SELECT p_request_id,final_version,'INVALIDATED'::text; RETURN; END IF;
   SELECT * INTO eff FROM app_private.d1_student_status_correct_effect(ctx.actor_id,req.target_ref,req.expected_target_version,source_id,source_status,source_date,new_status,new_date,req.reason,NULL);
-  UPDATE app_private.approval_requests SET state='EXECUTED',executed_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state='EXECUTED' WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_student_status_correct_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_STATUS_CORRECT_APPLY',eff.transition_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state','EXECUTED','transition_id',eff.transition_id,'sequence_number',eff.sequence_number,
       'student_version',eff.student_version,'resulting_status',eff.resulting_status),NULL);
   INSERT INTO app_private.approval_applications(request_id,operation_id,command_receipt_id,result_kind,result_ref,applied_target_version,created_by)
     VALUES (p_request_id,ctx.operation_id,receipt,'D1_STUDENT_STATUS_CORRECT_APPLY',eff.transition_id,eff.student_version,ctx.actor_id);
-  SELECT COALESCE(max(sequence_number),0)+1 INTO seq FROM app_private.approval_transitions WHERE request_id=p_request_id;
+  SELECT COALESCE(max(sequence_number),0)+1 INTO seq FROM app_private.approval_transitions WHERE approval_transitions.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
     VALUES (p_request_id,seq,'APPROVED','EXECUTED','D1_STUDENT_STATUS_CORRECT_EXECUTED',receipt,ctx.actor_id);
   PERFORM app_private.d1_student_status_correct_audit(ctx.actor_id,'APPLY',req.target_ref,source_id,eff.transition_id,receipt,p_request_id,eff.student_version,new_status,new_date,'EXECUTED',corr);

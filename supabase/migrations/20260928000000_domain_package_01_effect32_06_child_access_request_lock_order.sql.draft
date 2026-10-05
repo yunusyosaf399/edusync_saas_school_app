@@ -98,30 +98,30 @@ BEGIN
   VALUES (assignment_id,step_row.id,ctx.actor_id,p_decision,p_reason,p_expected_request_version,ctx.actor_id);
   UPDATE app_private.approval_request_steps SET
     state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
-    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+    closed_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=step_row.id;
   IF p_decision='REJECT' THEN
     UPDATE app_private.approval_request_steps SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp()
-      WHERE request_id=p_request_id AND state='WAITING';
+      WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING';
     final_state:='REJECTED';
-    UPDATE app_private.approval_requests SET state=final_state,decided_at=pg_catalog.statement_timestamp()
-      WHERE id=p_request_id RETURNING row_version INTO final_version;
+    UPDATE app_private.approval_requests SET state=final_state
+      WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
   ELSE
     SELECT s.* INTO next_step FROM app_private.approval_request_steps s
       WHERE s.request_id=p_request_id AND s.step_number=step_row.step_number+1 AND s.state='WAITING' FOR UPDATE;
     IF next_step.id IS NOT NULL THEN
-      UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+      UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=next_step.id;
       INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
       SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
         FROM app_private.d1_family_child_access_candidates(p_request_id,next_step.id) c;
       GET DIAGNOSTICS candidate_count=ROW_COUNT;
       IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Family child access next step has no reviewer'; END IF;
       final_state:='PENDING';
-      UPDATE app_private.approval_requests SET row_version=row_version+1,updated_at=pg_catalog.statement_timestamp()
-        WHERE id=p_request_id RETURNING row_version INTO final_version;
+      UPDATE app_private.approval_requests SET row_version=approval_requests.row_version+1,updated_at=pg_catalog.statement_timestamp()
+        WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     ELSE
       final_state:='APPROVED';
-      UPDATE app_private.approval_requests SET state=final_state,decided_at=pg_catalog.statement_timestamp()
-        WHERE id=p_request_id RETURNING row_version INTO final_version;
+      UPDATE app_private.approval_requests SET state=final_state
+        WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     END IF;
   END IF;
   receipt:=app_private.d1_family_child_access_receipt(
@@ -256,7 +256,7 @@ BEGIN
   END IF;
   IF invalidation_code IS NOT NULL THEN
     UPDATE app_private.approval_requests SET state='INVALIDATED'
-      WHERE id=p_request_id RETURNING row_version INTO final_version;
+      WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     receipt:=app_private.d1_family_child_access_receipt(
       'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
       p_request_id,p_expected_request_version,'REJECTED',NULL,NULL,
@@ -278,8 +278,8 @@ BEGIN
     'access_id',eff.access_id,'source_access_id',eff.source_access_id,'action',eff.action,
     'effective_from',eff.effective_from,'effective_until',eff.effective_until,
     'student_version',eff.student_version,'family_version',eff.family_version);
-  UPDATE app_private.approval_requests SET state='EXECUTED',executed_at=pg_catalog.statement_timestamp()
-    WHERE id=p_request_id RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state='EXECUTED'
+    WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_family_child_access_receipt(
     'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
     p_request_id,p_expected_request_version,'SUCCEEDED','D1_FAMILY_CHILD_ACCESS_CHANGE',eff.access_id,

@@ -122,7 +122,7 @@ BEGIN
   END IF;
 
   IF invalidation_code IS NOT NULL THEN
-    UPDATE app_private.approval_requests SET state='INVALIDATED' WHERE id=p_request_id RETURNING row_version INTO final_version;
+    UPDATE app_private.approval_requests SET state='INVALIDATED' WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     receipt:=app_private.d1_family_relationship_receipt(
       'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
       p_request_id,p_expected_request_version,'REJECTED',NULL,NULL,
@@ -145,8 +145,8 @@ BEGIN
     'relationship_id',eff.relationship_id,'source_relationship_id',eff.source_relationship_id,'action',action,
     'effective_from',eff.effective_from,'effective_until',eff.effective_until,'student_version',eff.student_version,
     'family_version',eff.family_version,'primary_context_id',eff.primary_context_id,'access_closed_count',eff.access_closed_count);
-  UPDATE app_private.approval_requests SET state='EXECUTED',executed_at=pg_catalog.statement_timestamp()
-    WHERE id=p_request_id RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state='EXECUTED'
+    WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_family_relationship_receipt(
     'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
     p_request_id,p_expected_request_version,'SUCCEEDED','D1_FAMILY_RELATIONSHIP_CHANGE',eff.relationship_id,

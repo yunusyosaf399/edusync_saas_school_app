@@ -26,25 +26,25 @@ CREATE FUNCTION app.d1_submit_subject_teacher_assignment_correction(
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE
   ctx record; lock_row record; policy_row record; preflight record; template_row record;
-  old_snapshot jsonb; requested_payload jsonb; payload jsonb;
+  v_old_snapshot jsonb; v_requested_payload jsonb; payload jsonb;
   new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid;
   candidate_count bigint; final_version bigint; receipt uuid;
 BEGIN
-  old_snapshot:=pg_catalog.jsonb_build_object(
+  v_old_snapshot:=pg_catalog.jsonb_build_object(
     'source_assignment_id',p_source_assignment_id,
     'source_employee_id',p_expected_source_employee_id,
     'source_assignment_kind',p_expected_source_assignment_kind,
     'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
     'source_supersedes_id',p_expected_source_supersedes_id);
-  requested_payload:=pg_catalog.jsonb_build_object(
+  v_requested_payload:=pg_catalog.jsonb_build_object(
     'action','CORRECT','subject_id',p_subject_id,'employee_id',p_employee_id,
     'assignment_kind',p_assignment_kind,
     'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,
     'effective_until',CASE WHEN p_effective_until IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_effective_until,'YYYY-MM-DD') END);
-  payload:=old_snapshot||requested_payload;
+  payload:=v_old_snapshot||v_requested_payload;
 
   IF p_section_offering_id IS NULL OR p_subject_id IS NULL
      OR p_expected_section_version IS NULL OR p_expected_section_version<1
@@ -85,8 +85,8 @@ BEGIN
           WHERE q.id=ctx.result_ref AND q.operation_id=ctx.operation_id
             AND q.target_ref=p_section_offering_id
             AND q.expected_target_version=p_expected_section_version
-            AND q.old_snapshot IS NOT DISTINCT FROM old_snapshot
-            AND q.requested_payload IS NOT DISTINCT FROM requested_payload)
+            AND q.old_snapshot IS NOT DISTINCT FROM v_old_snapshot
+            AND q.requested_payload IS NOT DISTINCT FROM v_requested_payload)
     THEN RAISE EXCEPTION 'D1 Subject assignment correction receipt is not replayable'; END IF;
     RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint;
     RETURN;
@@ -117,11 +117,11 @@ BEGIN
   VALUES (
     new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,
     policy_row.campus_id,p_section_offering_id,p_expected_section_version,p_reason,
-    old_snapshot,requested_payload,ctx.actor_id);
+    v_old_snapshot,v_requested_payload,ctx.actor_id);
 
   UPDATE app_private.approval_requests SET
     state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
-   WHERE id=new_request;
+   WHERE approval_requests.id=new_request;
 
   FOR template_row IN
     SELECT t.id,t.step_number,t.required_reviews
@@ -141,5 +141,5 @@ BEGIN
   END IF;
 
   UPDATE app_private.approval_requests SET state='PENDING'
-   WHERE id=new_request RETURNING row_version INTO final_version;
+   WHERE approval_requests.id=new_request RETURNING approval_requests.row_version INTO final_version;
   UPDATE app_private.approval_request_steps SET

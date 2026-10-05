@@ -35,7 +35,7 @@ BEGIN
   IF p_action IN ('END','CORRECT') THEN
     UPDATE app_private.family_relationships SET effective_until=p_effective_on,
       ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
-     WHERE id=p_source AND student_id=p_student AND family_id=p_family AND effective_until IS NULL;
+     WHERE family_relationships.id=p_source AND family_relationships.student_id=p_student AND family_relationships.family_id=p_family AND family_relationships.effective_until IS NULL;
     IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family relationship source changed'; END IF;
   END IF;
   IF p_action IN ('ADD','CORRECT') THEN
@@ -63,7 +63,7 @@ BEGIN
           RAISE EXCEPTION 'D1 Family relationship dependent access cannot be closed safely';
         END IF;
         UPDATE app_private.family_student_access SET effective_until=first_gap,
-          ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor WHERE id=a.id;
+          ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor WHERE family_student_access.id=a.id;
         closed_count:=closed_count+1;
       END IF;
     END LOOP;
@@ -76,7 +76,7 @@ BEGIN
      ORDER BY c.id LIMIT 1 FOR UPDATE;
     IF ctx.id IS NOT NULL THEN
       UPDATE app_private.student_primary_family_contexts SET effective_until=p_effective_on,
-        ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor WHERE id=ctx.id;
+        ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor WHERE student_primary_family_contexts.id=ctx.id;
       ctx_target:=CASE WHEN p_action='CORRECT' THEN rel_id ELSE p_primary_replacement END;
       IF ctx_target IS NOT NULL THEN
         ctx_new:=pg_catalog.gen_random_uuid();
@@ -90,9 +90,9 @@ BEGIN
   END IF;
 
   UPDATE app_private.students SET updated_at=pg_catalog.statement_timestamp()
-    WHERE id=p_student RETURNING row_version INTO sver;
+    WHERE students.id=p_student RETURNING students.row_version INTO sver;
   UPDATE app_private.families SET updated_at=pg_catalog.statement_timestamp()
-    WHERE id=p_family RETURNING row_version INTO fver;
+    WHERE families.id=p_family RETURNING families.row_version INTO fver;
   RETURN QUERY SELECT rel_id,p_source,p_action,
     CASE WHEN p_action='END' THEN src.effective_from ELSE p_effective_on END,
     CASE WHEN p_action='END' THEN p_effective_on ELSE NULL::date END,

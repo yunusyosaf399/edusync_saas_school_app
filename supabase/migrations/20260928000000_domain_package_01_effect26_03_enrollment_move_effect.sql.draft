@@ -54,11 +54,11 @@ BEGIN
     RAISE EXCEPTION 'D1 Enrollment move capacity changed'; END IF;
   source_roll:=c.source_roll_id;
   UPDATE app_private.roll_allocations SET effective_until=p_effective_from,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
-   WHERE id=source_roll AND enrollment_id=p_source_enrollment AND student_id=p_student AND effective_until IS NULL;
+   WHERE roll_allocations.id=source_roll AND roll_allocations.enrollment_id=p_source_enrollment AND roll_allocations.student_id=p_student AND roll_allocations.effective_until IS NULL;
   IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment move source roll changed'; END IF;
   UPDATE app_private.enrollments SET placement_state='ENDED',effective_until=p_effective_from,end_reason='MOVE_'||p_entry_kind,
     ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
-   WHERE id=p_source_enrollment AND student_id=p_student AND placement_state='ACTIVE' AND effective_until IS NULL;
+   WHERE enrollments.id=p_source_enrollment AND enrollments.student_id=p_student AND enrollments.placement_state='ACTIVE' AND enrollments.effective_until IS NULL;
   IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment move source placement changed'; END IF;
   INSERT INTO app_private.enrollments(id,created_by,student_id,section_offering_id,placement_kind,entry_kind,placement_state,
     effective_from,effective_until,predecessor_id,reason,end_reason,command_receipt_id)

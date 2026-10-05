@@ -59,7 +59,7 @@ BEGIN
   END IF;
   IF invalidation_code IS NOT NULL THEN
     final_state:='INVALIDATED';
-    UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id RETURNING row_version INTO final_version;
+    UPDATE app_private.approval_requests SET state=final_state WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     receipt:=app_private.d1_student_special_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
       req.expected_target_version,p_request_id,p_expected_request_version,'REJECTED',NULL,NULL,
       pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),invalidation_code);
@@ -69,7 +69,7 @@ BEGIN
     SELECT * INTO effect_row FROM app_private.d1_student_special_effect(req.target_ref,req.expected_target_version,
       source_id,sd,so,sb,source_from,source_sup,nd,no2,nb,req.reason);
     final_state:='EXECUTED';
-    UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id RETURNING row_version INTO final_version;
+    UPDATE app_private.approval_requests SET state=final_state WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     receipt:=app_private.d1_student_special_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
       req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_SPECIAL_APPLY',effect_row.special_snapshot_id,
       pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state,
@@ -81,7 +81,7 @@ BEGIN
     PERFORM app_private.d1_student_special_event(ctx.actor_id,req.target_ref,effect_row.special_snapshot_id,source_id,receipt,
       effect_row.student_version,effect_row.effective_from,correlation);
   END IF;
-  SELECT COALESCE(max(sequence_number),0) INTO sequence_no FROM app_private.approval_transitions WHERE request_id=p_request_id;
+  SELECT COALESCE(max(sequence_number),0) INTO sequence_no FROM app_private.approval_transitions WHERE approval_transitions.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
   VALUES (p_request_id,sequence_no+1,'APPROVED',final_state,
     CASE WHEN final_state='EXECUTED' THEN 'D1_STUDENT_SPECIAL_APPLIED' ELSE invalidation_code END,receipt,ctx.actor_id);

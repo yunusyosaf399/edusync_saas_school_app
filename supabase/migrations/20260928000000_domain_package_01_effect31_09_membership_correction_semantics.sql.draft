@@ -104,9 +104,8 @@ BEGIN
     SELECT * INTO src FROM app_private.family_principal_memberships m WHERE m.id=p_source;
   END IF;
   IF p_action='END' THEN
-    UPDATE app_private.family_principal_memberships
-    SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
-    WHERE id=p_source AND family_id=p_family AND principal_id=p_target_principal AND effective_until IS NULL;
+    UPDATE app_private.family_principal_memberships SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+    WHERE family_principal_memberships.id=p_source AND family_principal_memberships.family_id=p_family AND family_principal_memberships.principal_id=p_target_principal AND family_principal_memberships.effective_until IS NULL;
     IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family membership source changed'; END IF;
     new_id:=p_source;
   ELSIF p_action='ADD' THEN
