@@ -1,0 +1,45 @@
+name: D1 Migration 10 local runtime
+
+on:
+  push:
+    paths:
+      - '.github/workflows/domain-runtime-local.yml'
+      - '.github/workflows/domain-draft-static.yml'
+      - '.github/workflows/foundation-database.yml'
+      - '.gitattributes'
+      - 'supabase/migrations/20260928000000_domain_package_01*.sql.draft'
+      - 'supabase/migrations/20260924*.sql'
+      - 'supabase/tests/database/**'
+      - 'supabase/config/**'
+      - 'supabase/config.toml'
+      - 'tools/supabase/**'
+  pull_request:
+    paths:
+      - '.github/workflows/domain-runtime-local.yml'
+      - '.github/workflows/domain-draft-static.yml'
+      - '.github/workflows/foundation-database.yml'
+      - '.gitattributes'
+      - 'supabase/migrations/20260928000000_domain_package_01*.sql.draft'
+      - 'supabase/migrations/20260924*.sql'
+      - 'supabase/tests/database/**'
+      - 'supabase/config/**'
+      - 'supabase/config.toml'
+      - 'tools/supabase/**'
+  workflow_dispatch:
+
+jobs:
+  d1c2a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: D1C2A harness unit tests
+        run: python -m unittest discover -s tools/supabase/tests -p 'test_domain_local_ci.py' -v
+      - name: D1C2A disposable local runtime baseline
+        run: python tools/supabase/domain_local_ci.py
