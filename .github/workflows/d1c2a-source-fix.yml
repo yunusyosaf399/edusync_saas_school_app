@@ -1,0 +1,70 @@
+name: D1C2A guarded Effect 16 schema correction
+
+on:
+  push:
+    paths:
+      - '.github/workflows/d1c2a-source-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Verify exact correction base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "414347c533235acfbf8feb22a102fdbdbf94a9bb"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/d1c2a-source-fix.yml"
+      - name: Move Teaching app schema usage to Effect 16
+        shell: python
+        run: |
+          from pathlib import Path
+
+          base = Path('supabase/migrations/20260928000000_domain_package_01.sql.draft')
+          text = base.read_text(encoding='utf-8')
+          old = """GRANT SELECT (person_id) ON app_private.employees TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state) ON app.campuses TO schoolos_teaching_executor;"""
+          new = """-- D1C2A runtime correction: Teaching resolves Foundation parent objects from
+-- Effect 16 onward. Namespace visibility only; table privileges remain explicit.
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;
+RESET ROLE;
+
+GRANT SELECT (person_id) ON app_private.employees TO schoolos_teaching_executor;
+GRANT SELECT (school_id,state) ON app.campuses TO schoolos_teaching_executor;"""
+          if text.count(old) != 1:
+              raise SystemExit('guarded Effect 16 correction expected exactly one target')
+          if 'GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;' in text:
+              raise SystemExit('base draft already contains Teaching app schema usage')
+          base.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+
+          late = Path('supabase/migrations/20260928000000_domain_package_01_effect17_00_subject_assignment_schema_usage.sql.draft')
+          if not late.is_file():
+              raise SystemExit('expected late Effect 17 correction fragment is missing')
+          late_text = late.read_text(encoding='utf-8')
+          if late_text.count('GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;') != 1:
+              raise SystemExit('late Effect 17 correction shape drifted')
+          late.unlink()
+      - name: Verify and commit only intended D1 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          expected=$'supabase/migrations/20260928000000_domain_package_01.sql.draft\nsupabase/migrations/20260928000000_domain_package_01_effect17_00_subject_assignment_schema_usage.sql.draft'
+          test "$(git diff --name-only)" = "$expected"
+          test "$(grep -Fxc 'GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;' supabase/migrations/20260928000000_domain_package_01.sql.draft)" = "1"
+          test ! -e supabase/migrations/20260928000000_domain_package_01_effect17_00_subject_assignment_schema_usage.sql.draft
+          git config user.name 'EduSync D1C2 Runtime Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add supabase/migrations/20260928000000_domain_package_01.sql.draft
+          git rm supabase/migrations/20260928000000_domain_package_01_effect17_00_subject_assignment_schema_usage.sql.draft
+          git commit -m 'Move Teaching app schema usage to Effect 16'
+          git push origin HEAD:main
