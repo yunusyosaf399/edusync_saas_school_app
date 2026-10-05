@@ -1,0 +1,10 @@
+-- D1C2A runtime correction for Effect 17 packaging.
+-- The Teaching executor already has exact column-level SELECT grants on the
+-- Foundation Campus and Academic Year parents, but PostgreSQL also requires
+-- namespace USAGE before those objects can be resolved. This adds namespace
+-- visibility only: no schema CREATE, table privilege, role membership, client
+-- grant, or authorization path is introduced.
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;
+RESET ROLE;
