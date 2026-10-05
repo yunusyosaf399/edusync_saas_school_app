@@ -1,0 +1,59 @@
+name: D1C2A guarded CASE parser correction
+
+on:
+  push:
+    paths:
+      - '.github/workflows/d1c2a-source-fix-2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Verify exact correction base
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "8734a17ad50cb6f4cf55adab1f6c1c2ced72bec3"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/d1c2a-source-fix-2.yml"
+      - name: Parenthesize receipt result-kind CASE expression
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('supabase/migrations/20260928000000_domain_package_01.sql.draft')
+          text = path.read_text(encoding='utf-8')
+          old = """     OR p_result_kind IS DISTINCT FROM CASE op_code
+       WHEN 'academic.class.change' THEN 'D1_CLASS'
+       WHEN 'academic.subject.change' THEN 'D1_SUBJECT'
+       WHEN 'academic.offering.change' THEN 'D1_CLASS_OFFERING'
+       WHEN 'academic.section.change' THEN 'D1_SECTION_OFFERING'
+       WHEN 'academic.section_room.change' THEN 'D1_SECTION_ROOM_ASSIGNMENT'
+       WHEN 'academic.capacity.change' THEN 'D1_CAPACITY_REVISION' END THEN"""
+          new = """     OR p_result_kind IS DISTINCT FROM (CASE op_code
+       WHEN 'academic.class.change' THEN 'D1_CLASS'
+       WHEN 'academic.subject.change' THEN 'D1_SUBJECT'
+       WHEN 'academic.offering.change' THEN 'D1_CLASS_OFFERING'
+       WHEN 'academic.section.change' THEN 'D1_SECTION_OFFERING'
+       WHEN 'academic.section_room.change' THEN 'D1_SECTION_ROOM_ASSIGNMENT'
+       WHEN 'academic.capacity.change' THEN 'D1_CAPACITY_REVISION' END) THEN"""
+          if text.count(old) != 1:
+              raise SystemExit('guarded CASE correction expected exactly one target')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+          PY
+      - name: Verify and commit only intended draft change
+        run: |
+          set -euo pipefail
+          git diff --check
+          test "$(git diff --name-only)" = "supabase/migrations/20260928000000_domain_package_01.sql.draft"
+          test "$(git diff --numstat)" = $'2\t2\tsupabase/migrations/20260928000000_domain_package_01.sql.draft'
+          git config user.name 'EduSync D1C2 Runtime Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add supabase/migrations/20260928000000_domain_package_01.sql.draft
+          git commit -m 'Disambiguate D1 academic receipt CASE expression'
+          git push origin HEAD:main
