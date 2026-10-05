@@ -110,8 +110,8 @@ BEGIN
     req.created_at,
     (SELECT max(t.created_at) FROM app_private.approval_transitions t
       WHERE t.request_id=p_request_id AND t.to_state IN ('APPROVED','REJECTED')),
-    (SELECT max(t.created_at) FROM app_private.approval_transitions t
-      WHERE t.request_id=p_request_id AND t.to_state='EXECUTED');
+    (SELECT a.created_at FROM app_private.approval_applications a
+      WHERE a.request_id=p_request_id);
 END $body$;
 REVOKE ALL ON FUNCTION app.d1_read_student_status_request(uuid) FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app.d1_read_student_status_request(uuid) TO authenticated;
