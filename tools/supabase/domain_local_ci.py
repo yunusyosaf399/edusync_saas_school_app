@@ -285,9 +285,13 @@ def validate_runtime_probe(observed: dict[str, int]) -> None:
         raise DomainLocalCIError("RUNTIME_CATALOG_DRIFT " + str(drift))
 
 
-def run_foundation_regression(contract: dict) -> int:
+def run_foundation_regression(contract: dict, *, catalog_only: bool = False) -> int:
+    # The frozen catalog test describes the nine-migration baseline (33 tables,
+    # 12 roles and six read RPCs). Run it before D1; run behavior tests after D1.
+    selected = [item for item in contract["frozen_foundation"]["database_tests"]
+        if (item["file"] == "01_foundation_catalog.sql") == catalog_only]
     total = 0
-    for item in contract["frozen_foundation"]["database_tests"]:
+    for item in selected:
         path = "supabase/tests/database/" + item["file"]
         result = subprocess.run(
             ["supabase", "test", "db", path, "--local"],
@@ -301,7 +305,7 @@ def run_foundation_regression(contract: dict) -> int:
         count = parse_tap(result.stdout + "\n" + result.stderr, item["assertions"])
         total += count
         print("D1C2A_FOUNDATION_TEST_PASS " + item["file"] + " " + str(count) + "/" + str(count))
-    expected = contract["frozen_foundation"]["expected_tap_assertions"]
+    expected = sum(item["assertions"] for item in selected)
     if total != expected:
         raise DomainLocalCIError("FOUNDATION_TAP_TOTAL_MISMATCH " + str(total))
     return total
@@ -342,6 +346,8 @@ def main() -> int:
         local_status()
         run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=ROOT, timeout=900)
         print("D1C2A_FOUNDATION_RESET_PASS nine frozen migrations, no seed")
+        baseline_assertions = run_foundation_regression(contract, catalog_only=True)
+        print("D1C2A_FOUNDATION_BASELINE_CATALOG_PASS " + str(baseline_assertions))
 
         drafts, sql = assemble_draft_chain(ROOT)
         container = "supabase_db_" + project_id
@@ -370,8 +376,10 @@ def main() -> int:
             run_local_lint(level)
             print("D1C2A_LINT_PASS " + level)
 
-        total = run_foundation_regression(contract)
-        print("D1C2A_FOUNDATION_REGRESSION_PASS 9 files / " + str(total) + "/" + str(total))
+        total = baseline_assertions + run_foundation_regression(contract)
+        if total != contract["frozen_foundation"]["expected_tap_assertions"]:
+            raise DomainLocalCIError("FOUNDATION_TAP_TOTAL_MISMATCH " + str(total))
+        print("D1C2A_FOUNDATION_REGRESSION_PASS 1 baseline catalog + 8 post-D1 behavior files / " + str(total) + "/" + str(total))
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
