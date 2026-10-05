@@ -5240,13 +5240,13 @@ BEGIN
          AND p_summary->>'state' NOT IN ('PLANNED','OPEN','CLOSED','ARCHIVED'))
      OR (op_code='academic.capacity.change'
          AND p_summary->>'state'<>'CHANGED')
-     OR p_result_kind IS DISTINCT FROM CASE op_code
+     OR p_result_kind IS DISTINCT FROM (CASE op_code
        WHEN 'academic.class.change' THEN 'D1_CLASS'
        WHEN 'academic.subject.change' THEN 'D1_SUBJECT'
        WHEN 'academic.offering.change' THEN 'D1_CLASS_OFFERING'
        WHEN 'academic.section.change' THEN 'D1_SECTION_OFFERING'
        WHEN 'academic.section_room.change' THEN 'D1_SECTION_ROOM_ASSIGNMENT'
-       WHEN 'academic.capacity.change' THEN 'D1_CAPACITY_REVISION' END THEN
+       WHEN 'academic.capacity.change' THEN 'D1_CAPACITY_REVISION' END) THEN
     RAISE EXCEPTION 'D1 Academic receipt intent denied';
   END IF;
   INSERT INTO app_private.command_receipts
