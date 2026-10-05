@@ -217,7 +217,7 @@ CREATE FUNCTION app_private.d1_family_child_access_preflight(
   p_action text,p_source uuid,p_effective_on date,p_effective_until date,p_reason text
 ) RETURNS TABLE(eligible boolean,error_code text,source_effective_from date)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE locks record; family_state text; src app_private.family_student_access%ROWTYPE; overlaps bigint; first_gap date;
+DECLARE locks record; family_state text; src app_private.family_student_access%ROWTYPE; overlap_count bigint; first_gap date;
 BEGIN
   IF p_student IS NULL OR p_family IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1
      OR p_expected_family_version IS NULL OR p_expected_family_version<1
@@ -248,11 +248,11 @@ BEGIN
     IF first_gap IS NOT NULL THEN
       RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_RELATIONSHIP_BASIS_GAP',NULL::date; RETURN;
     END IF;
-    SELECT count(*) INTO overlaps FROM app_private.family_student_access a
+    SELECT count(*) INTO overlap_count FROM app_private.family_student_access a
      WHERE a.family_id=p_family AND a.student_id=p_student
        AND a.effective_from<COALESCE(p_effective_until,'infinity'::date)
        AND p_effective_on<COALESCE(a.effective_until,'infinity'::date);
-    IF overlaps<>0 THEN
+    IF overlap_count<>0 THEN
       RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_OVERLAP',NULL::date; RETURN;
     END IF;
   ELSE
