@@ -3675,7 +3675,7 @@ BEGIN
             (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=11)
          OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=11)
          OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
-         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2))) THEN
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
     RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
   END IF;
   PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
