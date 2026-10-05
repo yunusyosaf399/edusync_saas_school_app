@@ -120,7 +120,8 @@ def run_psql(container: str, sql: str, label: str, *, tuples: bool = False, time
         raise DomainLocalCIError("LOCAL_DB_CONTAINER_MISMATCH")
     args = [
         "docker", "exec", "-i", container, "psql",
-        "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres",
+        "-X", "-q", "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=verbose",
+        "-U", "postgres", "-d", "postgres", "-f", "-",
     ]
     if tuples:
         args.extend(["-A", "-t", "-F", "\t"])
