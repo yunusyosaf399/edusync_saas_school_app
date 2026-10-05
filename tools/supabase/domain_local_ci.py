@@ -180,15 +180,20 @@ d1_functions AS (
     FROM pg_catalog.pg_proc p
     JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
     JOIN pg_catalog.pg_roles r ON r.oid = p.proowner
-    WHERE n.nspname IN ('app','app_private') AND left(p.proname,3) = 'd1_'
+    -- Match the final-state source guard, including the two Foundation trigger
+    -- helpers explicitly extended by Migration 10.
+    WHERE n.nspname IN ('app','app_private') AND (left(p.proname,3) = 'd1_'
+      OR (n.nspname = 'app_private' AND p.proname IN
+        ('guard_assignment_permission_scopes','guard_scope_interval')))
 ),
 role_memberships AS (
-    SELECT target.rolname
+    -- Membership grants can have multiple grantors; count role/member pairs.
+    SELECT DISTINCT target.rolname
     FROM pg_catalog.pg_auth_members m
     JOIN pg_catalog.pg_roles target ON target.oid = m.roleid
     JOIN pg_catalog.pg_roles member_role ON member_role.oid = m.member
     JOIN expected_roles e ON e.name = target.rolname
-    WHERE member_role.rolname = 'postgres'
+    WHERE member_role.rolname = 'postgres' AND m.set_option
 ),
 metrics(key,value) AS (
     SELECT 'postgres_major', (current_setting('server_version_num')::integer / 10000)::text
