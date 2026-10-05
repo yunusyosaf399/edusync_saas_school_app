@@ -15,12 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 3
       - name: Verify exact correction base
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "8734a17ad50cb6f4cf55adab1f6c1c2ced72bec3"
-          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/d1c2a-source-fix-2.yml"
+          test "$(git rev-parse HEAD~2)" = "8734a17ad50cb6f4cf55adab1f6c1c2ced72bec3"
+          test "$(git diff --name-only 8734a17ad50cb6f4cf55adab1f6c1c2ced72bec3 HEAD)" = ".github/workflows/d1c2a-source-fix-2.yml"
       - name: Parenthesize receipt result-kind CASE expression
         run: |
           set -euo pipefail
@@ -28,23 +28,14 @@ jobs:
           from pathlib import Path
           path = Path('supabase/migrations/20260928000000_domain_package_01.sql.draft')
           text = path.read_text(encoding='utf-8')
-          old = """     OR p_result_kind IS DISTINCT FROM CASE op_code
-       WHEN 'academic.class.change' THEN 'D1_CLASS'
-       WHEN 'academic.subject.change' THEN 'D1_SUBJECT'
-       WHEN 'academic.offering.change' THEN 'D1_CLASS_OFFERING'
-       WHEN 'academic.section.change' THEN 'D1_SECTION_OFFERING'
-       WHEN 'academic.section_room.change' THEN 'D1_SECTION_ROOM_ASSIGNMENT'
-       WHEN 'academic.capacity.change' THEN 'D1_CAPACITY_REVISION' END THEN"""
-          new = """     OR p_result_kind IS DISTINCT FROM (CASE op_code
-       WHEN 'academic.class.change' THEN 'D1_CLASS'
-       WHEN 'academic.subject.change' THEN 'D1_SUBJECT'
-       WHEN 'academic.offering.change' THEN 'D1_CLASS_OFFERING'
-       WHEN 'academic.section.change' THEN 'D1_SECTION_OFFERING'
-       WHEN 'academic.section_room.change' THEN 'D1_SECTION_ROOM_ASSIGNMENT'
-       WHEN 'academic.capacity.change' THEN 'D1_CAPACITY_REVISION' END) THEN"""
-          if text.count(old) != 1:
-              raise SystemExit('guarded CASE correction expected exactly one target')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+          old_open = "     OR p_result_kind IS DISTINCT FROM CASE op_code"
+          new_open = "     OR p_result_kind IS DISTINCT FROM (CASE op_code"
+          old_close = "       WHEN 'academic.capacity.change' THEN 'D1_CAPACITY_REVISION' END THEN"
+          new_close = "       WHEN 'academic.capacity.change' THEN 'D1_CAPACITY_REVISION' END) THEN"
+          if text.count(old_open) != 1 or text.count(old_close) != 1:
+              raise SystemExit('guarded CASE correction expected exactly one open and close target')
+          text = text.replace(old_open, new_open, 1).replace(old_close, new_close, 1)
+          path.write_text(text, encoding='utf-8', newline='\n')
           PY
       - name: Verify and commit only intended draft change
         run: |
