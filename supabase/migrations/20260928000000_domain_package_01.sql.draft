@@ -13116,6 +13116,14 @@ GRANT EXECUTE ON FUNCTION app_private.d1_teaching_capability_event(
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
+-- D1C2A runtime correction: this SQL authorization resolver reads Foundation
+-- Academic Year facts, so its owning role needs app namespace visibility.
+-- Relation privileges remain explicit; no app CREATE or client grant is added.
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+GRANT USAGE ON SCHEMA app TO schoolos_authz_reader;
+RESET ROLE;
+
 GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
 SET ROLE schoolos_authz_reader;
 
