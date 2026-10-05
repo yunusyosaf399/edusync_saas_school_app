@@ -15,28 +15,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 3
       - name: Verify exact correction base
-        shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "81ffed9687273d7dd223cd8ac52380ce367ceddd"
-          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/d1c2a-source-fix.yml"
+          test "$(git rev-parse HEAD~2)" = "81ffed9687273d7dd223cd8ac52380ce367ceddd"
+          test "$(git diff --name-only 81ffed9687273d7dd223cd8ac52380ce367ceddd HEAD)" = ".github/workflows/d1c2a-source-fix.yml"
       - name: Correct receipt allowlist delimiter
-        shell: python
         run: |
+          set -euo pipefail
+          python - <<'PY'
           from pathlib import Path
           path = Path('supabase/migrations/20260928000000_domain_package_01.sql.draft')
           text = path.read_text(encoding='utf-8')
           old = """         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2))) THEN
-    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';"""
+              RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';"""
           new = """         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
-    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';"""
+              RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';"""
           if text.count(old) != 1:
               raise SystemExit('guarded source correction expected exactly one target')
           path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+          PY
       - name: Verify and commit only the intended draft
-        shell: bash
         run: |
           set -euo pipefail
           git diff --check
