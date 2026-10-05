@@ -42,6 +42,14 @@ ACL_RE = re.compile(
     re.I | re.S,
 )
 SET_SESSION_RE = re.compile(r"\bSET\s+SESSION\s+AUTHORIZATION\b", re.I)
+TRIGGER_RE = re.compile(
+    rf"\bCREATE(?:\s+OR\s+REPLACE)?(?:\s+CONSTRAINT)?\s+TRIGGER\s+"
+    rf"(?P<trigger>[a-z0-9_]+)\b[^;]*?\bEXECUTE\s+(?:FUNCTION|PROCEDURE)\s+"
+    rf"(?P<name>{FUNC_NAME_RE})\s*\(", re.I | re.S,
+)
+QUALIFIED_CONDITIONAL_RE = re.compile(
+    r"\bpg_catalog\s*\.\s*(coalesce|nullif|greatest|least)\s*\(", re.I,
+)
 DANGEROUS_EXPOSED = {"public", "anon", "service_role"}
 
 
@@ -86,8 +94,8 @@ def read_chain(drafts: list[Path]) -> str:
     return "\n".join(chunks)
 
 
-def sanitize_sql(text: str) -> str:
-    """Mask comments, single-quoted strings and dollar bodies while preserving offsets."""
+def sanitize_sql(text: str, *, mask_bodies: bool = True) -> str:
+    """Mask comments/literals; optionally mask dollar bodies, preserving offsets."""
     chars = list(text)
     n = len(chars)
     i = 0
@@ -133,6 +141,9 @@ def sanitize_sql(text: str) -> str:
             match = re.match(r"\$[a-zA-Z0-9_]*\$", "".join(chars[i : min(n, i + 80)]))
             if match:
                 delim = match.group(0)
+                if not mask_bodies:
+                    i += len(delim)
+                    continue
                 j = text.find(delim, i + len(delim))
                 if j >= 0:
                     for k in range(i + len(delim), j):
@@ -160,6 +171,7 @@ def _events(text: str):
         ("owner", OWNER_RE),
         ("rename", RENAME_RE),
         ("acl", ACL_RE),
+        ("trigger", TRIGGER_RE),
     ]
     events = []
     for kind, pattern in patterns:
@@ -179,6 +191,9 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
         return [str(exc)], {}, {}
 
     text = sanitize_sql(raw)
+    for match in QUALIFIED_CONDITIONAL_RE.finditer(sanitize_sql(raw, mask_bodies=False)):
+        line = raw.count("\n", 0, match.start()) + 1
+        errors.append(f"schema-qualified SQL conditional expression: {match.group(1)} at chain line {line}")
     if SET_SESSION_RE.search(text):
         errors.append("D1 draft uses SET SESSION AUTHORIZATION")
 
@@ -193,6 +208,21 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
             continue
         if kind == "reset_role":
             current_role = None
+            continue
+        if kind == "trigger":
+            name = match.group("name").lower()
+            state = states.get(name)
+            # Frozen Foundation helpers are defined before this draft chain.
+            # Their ownership/ACLs are validated by Foundation runtime tests.
+            if state is None and not name.split(".", 1)[1].startswith("d1_"):
+                continue
+            if state is None or not state.declarations:
+                errors.append(f"trigger function unresolved: {match.group('trigger')}->{name}")
+            elif current_role is not None and current_role != state.owner and current_role not in state.execute_roles:
+                errors.append(
+                    f"trigger creator lacks explicit EXECUTE: {match.group('trigger')} "
+                    f"role={current_role} function={name} owner={state.owner}"
+                )
             continue
         if kind == "create":
             name = match.group("name").lower()

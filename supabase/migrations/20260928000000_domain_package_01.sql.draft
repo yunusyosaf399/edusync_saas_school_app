@@ -2287,8 +2287,8 @@ BEGIN
       WHERE so.class_offering_id=class_row.id AND x.placement_kind='PRIMARY'
         AND x.placement_state IN ('ACTIVE','COMPLETED','ENDED')
         AND x.effective_from<=point_on AND (x.effective_until IS NULL OR x.effective_until>point_on);
-    class_peak := pg_catalog.greatest(class_peak,class_count);
-    section_peak := pg_catalog.greatest(section_peak,section_count);
+    class_peak := GREATEST(class_peak,class_count);
+    section_peak := GREATEST(section_peak,section_count);
   END LOOP;
   IF EXISTS (SELECT 1 FROM app_private.roll_allocations r WHERE r.enrollment_id=eid
       AND (r.student_id<>placement.student_id OR r.effective_from<placement.effective_from
@@ -6194,7 +6194,7 @@ BEGIN
          AND ((p_target_kind='CLASS_OFFERING'
                 AND s.class_offering_id=p_target_id)
            OR (p_target_kind='SECTION' AND s.id=p_target_id));
-      commitment_peak:=pg_catalog.greatest(commitment_peak,commitment_occupancy);
+      commitment_peak:=GREATEST(commitment_peak,commitment_occupancy);
     END LOOP;
     IF commitment_peak>p_new_capacity THEN
       -- The frozen rule permits a reduction below already accepted occupancy.
@@ -10611,7 +10611,7 @@ BEGIN
     ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
     p_request_id,p_expected_request_version,'SUCCEEDED','D1_EMPLOYEE_JOB_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions
@@ -10776,7 +10776,7 @@ BEGIN
       receipt,effect_row.employee_version,effect_row.effective_from,effect_row.effective_until,
       correlation);
   END IF;
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
@@ -12215,7 +12215,7 @@ BEGIN
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
     'D1_EMPLOYEE_CAMPUS_AFFILIATION_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions
@@ -12384,7 +12384,7 @@ BEGIN
       effect_row.source_campus_id,effect_row.campus_id,receipt,effect_row.employee_version,
       effect_row.effective_from,effect_row.effective_until,correlation);
   END IF;
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
@@ -13979,7 +13979,7 @@ BEGIN
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
     'D1_TEACHING_CAPABILITY_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions
@@ -14139,7 +14139,7 @@ BEGIN
       effect_row.employee_version,effect_row.effective_from,effect_row.effective_until,
       effect_row.dependency_closure,correlation);
   END IF;
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
@@ -15471,7 +15471,7 @@ BEGIN
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
     'D1_TEACHING_CLASS_ASSIGNMENT_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions
@@ -15626,7 +15626,7 @@ BEGIN
       source_employee,effect_row.employee_id,receipt,effect_row.section_version,
       effect_row.effective_from,NULL,correlation);
   END IF;
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)

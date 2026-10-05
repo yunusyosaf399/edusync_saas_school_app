@@ -82,7 +82,7 @@ BEGIN
   receipt:=app_private.d1_student_special_receipt('request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_SPECIAL_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(sequence_number),0) INTO seq FROM app_private.approval_transitions WHERE request_id=p_request_id;
+  SELECT COALESCE(max(sequence_number),0) INTO seq FROM app_private.approval_transitions WHERE request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
     VALUES (p_request_id,seq+1,'PENDING',final_state,'D1_STUDENT_SPECIAL_REVIEW_'||final_state,receipt,ctx.actor_id); END IF;

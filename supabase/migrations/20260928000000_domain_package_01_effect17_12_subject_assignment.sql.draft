@@ -40,7 +40,7 @@
     'D1_TEACHING_SUBJECT_ASSIGNMENT_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
 
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions

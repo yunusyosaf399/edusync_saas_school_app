@@ -35,7 +35,9 @@ See the [full repository tree](docs/architecture/REPOSITORY_STRUCTURE.md) and [a
 
 ## Current phase
 
-The next engineering phase is [database and backend architecture design](docs/database/DATABASE_DESIGN_NEXT_PHASE.md). Each customer school uses its own Supabase project. The Supabase folders currently contain placeholders; schema and backend implementation will follow the documented design process.
+Complete the database before Flutter and application modules. Each customer school uses its own Supabase project. Nine executable Foundation migrations and their validation tooling exist. Domain package 01 contains 34 candidate relations in an ordered non-executable Migration 10 draft chain; its local runtime gate must pass before that package is considered validated. Later domains still require physical design, migrations and workflow tests.
+
+Use the [database completion matrix](docs/database/DATABASE_COMPLETION_MATRIX.md) for requirement coverage, future database features, remaining packages and acceptance evidence. Flutter remains a scaffold intentionally during this phase.
 
 The v0.2 requirements preserve extension points for future biometric, camera and RFID attendance while keeping those features deferred. New requirements must be versioned, with decisions recorded under `docs/decisions/`.
 

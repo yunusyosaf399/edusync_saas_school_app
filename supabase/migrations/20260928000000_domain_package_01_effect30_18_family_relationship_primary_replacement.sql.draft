@@ -95,7 +95,7 @@ BEGIN
     normalized_contact:=CASE WHEN p_relationship_contact IS NULL THEN NULL ELSE pg_catalog.btrim(p_relationship_contact) END;
     SELECT count(*) INTO dup FROM app_private.family_relationships r
      WHERE r.family_id=p_family AND r.student_id=p_student AND (p_source IS NULL OR r.id<>p_source)
-       AND p_effective_on<pg_catalog.coalesce(r.effective_until,'infinity'::date)
+       AND p_effective_on<COALESCE(r.effective_until,'infinity'::date)
        AND r.relationship_kind=p_relationship_kind
        AND ((p_adult_person IS NOT NULL AND r.adult_person_id=p_adult_person)
          OR (p_adult_person IS NULL AND r.adult_person_id IS NULL
@@ -161,7 +161,7 @@ BEGIN
         AND (x.effective_until IS NULL OR p_effective_on<x.effective_until)
     LOOP
       first_gap:=app_private.d1_family_relationship_access_first_gap(
-        p_family,p_student,p_source,pg_catalog.greatest(a.effective_from,p_effective_on),a.effective_until);
+        p_family,p_student,p_source,GREATEST(a.effective_from,p_effective_on),a.effective_until);
       IF first_gap IS NOT NULL AND first_gap<=a.effective_from THEN
         RETURN QUERY SELECT false,'D1_FAMILY_RELATIONSHIP_FUTURE_ACCESS_CONFLICT',src.effective_from,repl_family; RETURN;
       END IF;

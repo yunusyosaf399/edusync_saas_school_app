@@ -74,7 +74,7 @@ BEGIN
     normalized_type,normalized_number);
   IF NOT FOUND OR pre.eligible IS DISTINCT FROM true THEN
     RAISE EXCEPTION 'D1 Employee identity request denied: %',
-      pg_catalog.coalesce(pre.error_code,'D1_EMPLOYEE_IDENTITY_PREFLIGHT_UNAVAILABLE');
+      COALESCE(pre.error_code,'D1_EMPLOYEE_IDENTITY_PREFLIGHT_UNAVAILABLE');
   END IF;
 
   old_snapshot:=pg_catalog.jsonb_build_object(
@@ -267,7 +267,7 @@ BEGIN
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
     'D1_EMPLOYEE_IDENTITY_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions
@@ -407,7 +407,7 @@ BEGIN
       effect_row.effective_from,effect_row.cleared,correlation);
   END IF;
 
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)

@@ -59,7 +59,7 @@ BEGIN
   END IF;
   receipt:=app_private.d1_student_status_correct_receipt('request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_STATUS_CORRECT_REVIEW',p_request_id,pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  IF final_state IN ('APPROVED','REJECTED') THEN SELECT pg_catalog.coalesce(max(sequence_number),0)+1 INTO seq FROM app_private.approval_transitions WHERE request_id=p_request_id;
+  IF final_state IN ('APPROVED','REJECTED') THEN SELECT COALESCE(max(sequence_number),0)+1 INTO seq FROM app_private.approval_transitions WHERE request_id=p_request_id;
     INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
     VALUES (p_request_id,seq,'PENDING',final_state,'D1_STUDENT_STATUS_CORRECT_'||final_state,receipt,ctx.actor_id); END IF;
   PERFORM app_private.d1_student_status_correct_audit(ctx.actor_id,'REVIEW',req.target_ref,source_id,NULL,receipt,p_request_id,req.expected_target_version,new_status,new_date,final_state,pg_catalog.gen_random_uuid());

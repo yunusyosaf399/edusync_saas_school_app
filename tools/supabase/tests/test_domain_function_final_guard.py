@@ -56,6 +56,83 @@ class DomainFunctionFinalGuardTests(unittest.TestCase):
         self.assertEqual(states["app.d1_read_sample"].owner, "schoolos_read_executor")
         self.assertIn("authenticated", states["app.d1_read_sample"].execute_roles)
 
+    def trigger_sql(self, before="", after="", creator="schoolos_schema_owner"):
+        return _base_sql() + f"""
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_guard_application() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$ BEGIN RETURN NEW; END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_guard_application() FROM PUBLIC,anon,authenticated,service_role;
+{before}
+RESET ROLE;
+SET ROLE {creator};
+CREATE TRIGGER d1_application_guard BEFORE INSERT ON app_private.approval_applications
+FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_application();
+RESET ROLE;
+{after}
+"""
+
+    def test_rejects_trigger_creator_without_execute(self):
+        errors, _, _ = guard.inspect(self.make_root(self.trigger_sql()))
+        self.assertTrue(any("trigger creator lacks explicit EXECUTE" in error for error in errors))
+
+    def test_accepts_temporary_trigger_packaging_grant(self):
+        sql = self.trigger_sql(
+            before="GRANT EXECUTE ON FUNCTION app_private.d1_guard_application() TO schoolos_schema_owner;",
+            after="SET ROLE schoolos_evidence_writer; REVOKE EXECUTE ON FUNCTION app_private.d1_guard_application() FROM schoolos_schema_owner; RESET ROLE;",
+        )
+        errors, _, states = guard.inspect(self.make_root(sql))
+        self.assertEqual(errors, [])
+        self.assertNotIn("schoolos_schema_owner", states["app_private.d1_guard_application"].execute_roles)
+
+    def test_later_grant_does_not_fix_trigger_creation(self):
+        sql = self.trigger_sql(after="GRANT EXECUTE ON FUNCTION app_private.d1_guard_application() TO schoolos_schema_owner;")
+        errors, _, _ = guard.inspect(self.make_root(sql))
+        self.assertTrue(any("trigger creator lacks explicit EXECUTE" in error for error in errors))
+
+    def test_function_owner_can_create_trigger(self):
+        errors, _, _ = guard.inspect(self.make_root(self.trigger_sql(creator="schoolos_evidence_writer")))
+        self.assertEqual(errors, [])
+
+    def test_foundation_trigger_helper_is_outside_d1_chain(self):
+        sql = _base_sql() + """
+SET ROLE schoolos_schema_owner;
+CREATE TRIGGER zz_d1_version BEFORE UPDATE ON app_private.students
+FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+RESET ROLE;
+"""
+        errors, _, _ = guard.inspect(self.make_root(sql))
+        self.assertEqual(errors, [])
+
+    def test_rejects_unresolved_d1_trigger_function(self):
+        sql = _base_sql() + """
+SET ROLE schoolos_schema_owner;
+CREATE TRIGGER d1_missing_guard BEFORE INSERT ON app_private.approval_applications
+FOR EACH ROW EXECUTE FUNCTION app_private.d1_missing();
+RESET ROLE;
+"""
+        errors, _, _ = guard.inspect(self.make_root(sql))
+        self.assertTrue(any("trigger function unresolved" in error for error in errors))
+
+    def test_rejects_qualified_conditionals_inside_function_body(self):
+        for expression in ("coalesce", "nullif", "greatest", "least"):
+            with self.subTest(expression=expression):
+                sql = _base_sql().replace("SELECT true;", f"SELECT pg_catalog.{expression}(1,2) IS NOT NULL;", 1)
+                errors, _, _ = guard.inspect(self.make_root(sql))
+                self.assertTrue(any("schema-qualified SQL conditional expression" in error for error in errors))
+
+    def test_conditional_guard_ignores_literals_and_comments(self):
+        sql = _base_sql().replace("SELECT true;", "SELECT COALESCE(NULL,true); -- pg_catalog.coalesce(1,2)", 1)
+        sql += """
+-- pg_catalog.least(1,2)
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_conditional_text() RETURNS text LANGUAGE sql
+AS $body$ SELECT 'pg_catalog.coalesce(1,2)'; /* pg_catalog.greatest(1,2) */ $body$;
+RESET ROLE;
+"""
+        errors, _, _ = guard.inspect(self.make_root(sql))
+        self.assertEqual(errors, [])
+
     def test_rejects_unknown_security_definer_owner(self):
         text = _base_sql() + """
 CREATE FUNCTION app_private.d1_unknown() RETURNS boolean

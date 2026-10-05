@@ -26,7 +26,7 @@ BEGIN
       1+(SELECT count(*) FROM app_private.enrollments e WHERE e.id<>p_source_enrollment AND e.placement_kind='PRIMARY'
         AND e.section_offering_id=p_section AND e.effective_from<=b.d AND (e.effective_until IS NULL OR b.d<e.effective_until)) AS section_n
     FROM breakpoints b WHERE b.d IS NOT NULL
-  ) SELECT pg_catalog.coalesce(max(class_n),1)::integer,pg_catalog.coalesce(max(section_n),1)::integer INTO cc,sc FROM counts;
+  ) SELECT COALESCE(max(class_n),1)::integer,COALESCE(max(section_n),1)::integer INTO cc,sc FROM counts;
   RETURN QUERY SELECT cc,sc,(cc>p_class_limit),(sc>p_section_limit);
 END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_capacity(uuid,uuid,uuid,date,integer,integer) FROM PUBLIC,anon,authenticated,service_role;

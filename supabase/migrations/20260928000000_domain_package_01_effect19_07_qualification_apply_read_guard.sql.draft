@@ -173,7 +173,7 @@ BEGIN
     PERFORM app_private.d1_employee_qualification_event(ctx.actor_id,action,req.target_ref,effect_row.snapshot_id,
       effect_row.qualification_record_id,source_id,receipt,req.expected_target_version,correlation);
   END IF;
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
   VALUES (p_request_id,sequence_no+1,'APPROVED',final_state,

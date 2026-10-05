@@ -158,14 +158,14 @@ BEGIN
   IF p_action IN ('ADD','CORRECT') THEN
     SELECT count(*) INTO overlap_count FROM app_private.family_principal_memberships m
       WHERE m.family_id=p_family AND (p_source IS NULL OR m.id<>p_source)
-        AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date)
+        AND p_effective_on<COALESCE(m.effective_until,'infinity'::date)
         AND NOT EXISTS (SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=m.id);
     IF overlap_count<>0 THEN
       RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_OVERLAP',CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family; RETURN;
     END IF;
     SELECT count(*) INTO overlap_count FROM app_private.family_principal_memberships m
       WHERE m.principal_id=p_target_principal AND (p_source IS NULL OR m.id<>p_source)
-        AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date)
+        AND p_effective_on<COALESCE(m.effective_until,'infinity'::date)
         AND NOT EXISTS (SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=m.id);
     IF overlap_count<>0 THEN
       RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_PRINCIPAL_OVERLAP',CASE WHEN p_source IS NULL THEN NULL ELSE src.effective_from END,source_family; RETURN;

@@ -45,7 +45,7 @@ BEGIN
       SELECT * INTO alloc FROM app_private.roll_allocator_states a
        WHERE a.policy_revision_id=pol.id AND a.class_offering_id IS NULL FOR UPDATE;
       IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment persistent roll allocator unavailable'; END IF;
-      candidate:=pg_catalog.greatest(alloc.next_value,pol.start_value);
+      candidate:=GREATEST(alloc.next_value,pol.start_value);
       WHILE EXISTS (
         SELECT 1 FROM app_private.roll_allocations r
         JOIN app_private.roll_policy_revisions pr ON pr.id=r.policy_revision_id
@@ -61,14 +61,14 @@ BEGIN
     SELECT * INTO alloc FROM app_private.roll_allocator_states a
      WHERE a.policy_revision_id=pol.id AND a.class_offering_id=p_class_offering FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment academic roll allocator unavailable'; END IF;
-    candidate:=pg_catalog.greatest(alloc.next_value,pol.start_value);
+    candidate:=GREATEST(alloc.next_value,pol.start_value);
     WHILE EXISTS (
       SELECT 1 FROM app_private.roll_allocations r
       JOIN app_private.enrollments e ON e.id=r.enrollment_id
       WHERE r.policy_revision_id=pol.id
         AND e.section_offering_id IN (SELECT x.section_id FROM app_private.d1_enrollment_place_class_sections(p_class_offering) x)
         AND r.numeric_value=candidate
-        AND p_effective_from<pg_catalog.coalesce(r.effective_until,'infinity'::date)
+        AND p_effective_from<COALESCE(r.effective_until,'infinity'::date)
     ) LOOP candidate:=candidate+1; END LOOP;
     UPDATE app_private.roll_allocator_states
        SET next_value=candidate+1,row_version=row_version+1,updated_at=pg_catalog.statement_timestamp()

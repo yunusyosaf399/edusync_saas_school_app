@@ -81,7 +81,7 @@ BEGIN
     PERFORM app_private.d1_student_special_event(ctx.actor_id,req.target_ref,effect_row.special_snapshot_id,source_id,receipt,
       effect_row.student_version,effect_row.effective_from,correlation);
   END IF;
-  SELECT pg_catalog.coalesce(max(sequence_number),0) INTO sequence_no FROM app_private.approval_transitions WHERE request_id=p_request_id;
+  SELECT COALESCE(max(sequence_number),0) INTO sequence_no FROM app_private.approval_transitions WHERE request_id=p_request_id;
   INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
   VALUES (p_request_id,sequence_no+1,'APPROVED',final_state,
     CASE WHEN final_state='EXECUTED' THEN 'D1_STUDENT_SPECIAL_APPLIED' ELSE invalidation_code END,receipt,ctx.actor_id);

@@ -250,8 +250,8 @@ BEGIN
     END IF;
     SELECT count(*) INTO overlaps FROM app_private.family_student_access a
      WHERE a.family_id=p_family AND a.student_id=p_student
-       AND a.effective_from<pg_catalog.coalesce(p_effective_until,'infinity'::date)
-       AND p_effective_on<pg_catalog.coalesce(a.effective_until,'infinity'::date);
+       AND a.effective_from<COALESCE(p_effective_until,'infinity'::date)
+       AND p_effective_on<COALESCE(a.effective_until,'infinity'::date);
     IF overlaps<>0 THEN
       RETURN QUERY SELECT false,'D1_FAMILY_CHILD_ACCESS_OVERLAP',NULL::date; RETURN;
     END IF;

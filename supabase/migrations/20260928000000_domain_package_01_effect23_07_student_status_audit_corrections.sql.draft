@@ -45,7 +45,7 @@ BEGIN
   SELECT * INTO c FROM app_private.d1_student_status_lock_context(p_student,p_expected_version);
   IF c.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Student status source changed: %',c.error_code; END IF;
   close_enrollment:=p_new_status IN ('WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED') AND c.enrollment_id IS NOT NULL;
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO next_seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
+  SELECT COALESCE(max(t.sequence_number),0)+1 INTO next_seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
   IF close_enrollment THEN
     end_reason:='STATUS_'||p_new_status;
     UPDATE app_private.roll_allocations r SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor

@@ -29,7 +29,7 @@ BEGIN
   IF NOT source_is_authoritative THEN RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_SOURCE_SUPERSEDED',NULL::text,NULL::bigint,NULL::text,NULL::date; RETURN; END IF;
   IF p_new_status IS NOT DISTINCT FROM src.new_status AND p_new_effective_on IS NOT DISTINCT FROM src.effective_on THEN
     RETURN QUERY SELECT false,'D1_STUDENT_STATUS_CORRECT_NOOP',NULL::text,NULL::bigint,NULL::text,NULL::date; RETURN; END IF;
-  SELECT pg_catalog.coalesce(pg_catalog.max(t.sequence_number),0)+1 INTO seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
+  SELECT COALESCE(pg_catalog.max(t.sequence_number),0)+1 INTO seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
 
   -- Rebuild the authoritative chain: existing non-superseded events except source, plus candidate correction.
   prev:=NULL; current_result:=NULL;

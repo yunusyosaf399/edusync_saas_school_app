@@ -129,7 +129,7 @@ BEGIN
     p_request_id,p_expected_request_version,'SUCCEEDED','D1_FAMILY_CHILD_ACCESS_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
   IF final_state IN ('APPROVED','REJECTED') THEN
-    SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+    SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
     INSERT INTO app_private.approval_transitions
       (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
     VALUES (p_request_id,seq,'PENDING',final_state,'D1_FAMILY_CHILD_ACCESS_REVIEW_'||final_state,receipt,ctx.actor_id);
@@ -251,7 +251,7 @@ BEGIN
     SELECT * INTO pre FROM app_private.d1_family_child_access_preflight(
       req.target_ref,req.expected_target_version,family_id,family_version,action,source_id,effective_on,effective_until,req.reason);
     IF pre.eligible IS DISTINCT FROM true THEN
-      invalidation_code:=pg_catalog.coalesce(pre.error_code,'D1_FAMILY_CHILD_ACCESS_PREFLIGHT_STALE');
+      invalidation_code:=COALESCE(pre.error_code,'D1_FAMILY_CHILD_ACCESS_PREFLIGHT_STALE');
     END IF;
   END IF;
   IF invalidation_code IS NOT NULL THEN
@@ -261,7 +261,7 @@ BEGIN
       'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
       p_request_id,p_expected_request_version,'REJECTED',NULL,NULL,
       pg_catalog.jsonb_build_object('request_version',final_version,'state','INVALIDATED'),invalidation_code);
-    SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t
+    SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t
       WHERE t.request_id=p_request_id;
     INSERT INTO app_private.approval_transitions
       (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
@@ -287,7 +287,7 @@ BEGIN
   INSERT INTO app_private.approval_applications
     (request_id,command_receipt_id,operation_id,applied_target_version,result_ref,created_by)
   VALUES (p_request_id,receipt,ctx.operation_id,req.expected_target_version,eff.access_id,ctx.actor_id);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
   VALUES (p_request_id,seq,'APPROVED','EXECUTED','D1_FAMILY_CHILD_ACCESS_APPLIED',receipt,ctx.actor_id);

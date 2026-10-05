@@ -29,6 +29,9 @@ BEGIN
   RETURN NEW;
 END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_guard_student_status_correct_application() FROM PUBLIC,anon,authenticated,service_role;
+-- Temporary packaging privilege: the trigger creator must be able to execute
+-- this evidence-owned function. Revoke immediately after trigger creation.
+GRANT EXECUTE ON FUNCTION app_private.d1_guard_student_status_correct_application() TO schoolos_schema_owner;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
@@ -36,4 +39,7 @@ SET ROLE schoolos_schema_owner;
 CREATE TRIGGER d1_effect24_status_correct_application_guard
 BEFORE INSERT ON app_private.approval_applications
 FOR EACH ROW EXECUTE FUNCTION app_private.d1_guard_student_status_correct_application();
+RESET ROLE;
+SET ROLE schoolos_evidence_writer;
+REVOKE EXECUTE ON FUNCTION app_private.d1_guard_student_status_correct_application() FROM schoolos_schema_owner;
 RESET ROLE;

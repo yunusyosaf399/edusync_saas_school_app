@@ -13,7 +13,7 @@ BEGIN
        'capacity_override_id','source_section_offering_id','destination_section_offering_id','source_class_offering_id','destination_class_offering_id',
        'source_campus_id','destination_campus_id','source_academic_year_id','destination_academic_year_id','entry_kind'])
      OR p_summary->>'entry_kind' IS DISTINCT FROM p_entry_kind THEN RETURN false; END IF;
-  over_cap:=pg_catalog.coalesce((p_summary->>'capacity_overridden')::boolean,false); override_id:=NULLIF(p_summary->>'capacity_override_id','')::uuid;
+  over_cap:=COALESCE((p_summary->>'capacity_overridden')::boolean,false); override_id:=NULLIF(p_summary->>'capacity_override_id','')::uuid;
   rid:=NULLIF(p_summary->>'roll_allocation_id','')::uuid;
   IF NULLIF(p_summary->>'enrollment_id','')::uuid IS DISTINCT FROM p_destination OR NULLIF(p_summary->>'source_enrollment_id','')::uuid IS DISTINCT FROM p_source
      OR NULLIF(p_summary->>'source_section_offering_id','')::uuid IS DISTINCT FROM p_source_section
@@ -124,7 +124,7 @@ BEGIN
     UPDATE app_private.approval_requests SET state='INVALIDATED' WHERE id=p_request_id RETURNING row_version INTO final_version;
     receipt:=app_private.d1_enrollment_move_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
       p_request_id,p_expected_request_version,'REJECTED',NULL,NULL,pg_catalog.jsonb_build_object('request_version',final_version,'state','INVALIDATED'),invalidation_code);
-    SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+    SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
     INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
     VALUES (p_request_id,seq,'APPROVED','INVALIDATED',invalidation_code,receipt,ctx.actor_id);
     PERFORM app_private.d1_enrollment_move_audit(ctx.actor_id,'APPLY',req.target_ref,source_id,NULL,receipt,p_request_id,req.expected_target_version,
@@ -151,7 +151,7 @@ BEGIN
       cap.class_count,cap.section_count,override_reason,receipt,ctx.actor_id); END IF;
   INSERT INTO app_private.approval_applications(request_id,command_receipt_id,operation_id,applied_target_version,result_ref,created_by)
   VALUES (p_request_id,receipt,ctx.operation_id,eff.student_version,eff.enrollment_id,ctx.actor_id);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
   VALUES (p_request_id,seq,'APPROVED','EXECUTED','Enrollment move applied',receipt,ctx.actor_id);
   PERFORM app_private.d1_enrollment_move_audit(ctx.actor_id,'APPLY',req.target_ref,source_id,eff.enrollment_id,receipt,p_request_id,eff.student_version,

@@ -138,7 +138,7 @@ BEGIN
     invalidation:='D1_STUDENT_STATUS_REQUESTER_AUTHORITY_STALE';
   ELSIF app_private.d1_student_status_reviews_live(p_request_id) IS DISTINCT FROM true THEN invalidation:='D1_STUDENT_STATUS_REVIEW_AUTHORITY_STALE';
   ELSE SELECT * INTO pre FROM app_private.d1_student_status_preflight(req.target_ref,req.expected_target_version,old_status,source_transition,new_status,effective_on);
-    IF pre.eligible IS DISTINCT FROM true THEN invalidation:=pg_catalog.coalesce(pre.error_code,'D1_STUDENT_STATUS_PREFLIGHT_STALE'); END IF;
+    IF pre.eligible IS DISTINCT FROM true THEN invalidation:=COALESCE(pre.error_code,'D1_STUDENT_STATUS_PREFLIGHT_STALE'); END IF;
   END IF;
   IF invalidation IS NOT NULL THEN
     UPDATE app_private.approval_requests SET state='INVALIDATED',decided_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;

@@ -82,7 +82,7 @@ BEGIN
       ORDER BY x.effective_from,x.id FOR UPDATE
     LOOP
       first_gap:=app_private.d1_family_relationship_access_first_gap(
-        p_family,p_student,p_source,pg_catalog.greatest(a.effective_from,p_effective_on),a.effective_until);
+        p_family,p_student,p_source,GREATEST(a.effective_from,p_effective_on),a.effective_until);
       IF first_gap IS NOT NULL THEN
         IF first_gap<=a.effective_from THEN
           RAISE EXCEPTION 'D1 Family relationship dependent access cannot be closed safely';
