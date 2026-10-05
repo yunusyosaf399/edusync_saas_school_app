@@ -17,65 +17,63 @@ jobs:
         with:
           fetch-depth: 2
       - name: Verify exact correction base
-        shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "308f8113aa1c7771c1d023441b739e0673c28d4e"
+          test "$(git rev-parse HEAD^)" = "31726acedab7fc82154b257983d4c3735d71c82d"
           test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/d1c2a-source-fix.yml"
           test "$(git rev-parse HEAD:supabase/migrations/20260928000000_domain_package_01.sql.draft)" = "53338297ed652fe048b1ab98b6824b72f8de735e"
-      - name: Move Teaching app schema usage to earliest Teaching dependency boundary
-        shell: python
+      - name: Move Teaching namespace grant to earliest dependency boundary
         run: |
+          set -euo pipefail
+          python - <<'PY'
           from pathlib import Path
           path = Path('supabase/migrations/20260928000000_domain_package_01.sql.draft')
           text = path.read_text(encoding='utf-8')
-
           late = """-- D1C2A runtime correction: Teaching resolves Foundation parent objects from
--- Effect 16 onward. Namespace visibility only; table privileges remain explicit.
-RESET ROLE;
-SET ROLE schoolos_schema_owner;
-GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;
-RESET ROLE;
+          -- Effect 16 onward. Namespace visibility only; table privileges remain explicit.
+          RESET ROLE;
+          SET ROLE schoolos_schema_owner;
+          GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;
+          RESET ROLE;
 
-"""
+          """.replace('          ', '')
           if text.count(late) != 1:
               raise SystemExit('expected exactly one late Teaching namespace correction')
           text = text.replace(late, '', 1)
-
           anchor = """RESET ROLE;
-REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+          REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
-GRANT CREATE ON SCHEMA app_private TO schoolos_teaching_executor;
-SET ROLE schoolos_teaching_executor;
--- Read-only deterministic dependency preflight. The caller already holds the
--- Employee row; this function locks the complete sorted academic ancestry and
--- affected teaching history, then returns a bounded result without mutation.
-CREATE FUNCTION app_private.d1_employee_state_teaching_preflight("""
+          GRANT CREATE ON SCHEMA app_private TO schoolos_teaching_executor;
+          SET ROLE schoolos_teaching_executor;
+          -- Read-only deterministic dependency preflight. The caller already holds the
+          -- Employee row; this function locks the complete sorted academic ancestry and
+          -- affected teaching history, then returns a bounded result without mutation.
+          CREATE FUNCTION app_private.d1_employee_state_teaching_preflight(""".replace('          ', '')
           replacement = """RESET ROLE;
-REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+          REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
--- D1C2A runtime correction: Teaching resolves Foundation parent objects from
--- its earliest academic dependency preflight onward. Namespace visibility only;
--- relation privileges remain command-specific and explicit.
-RESET ROLE;
-SET ROLE schoolos_schema_owner;
-GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;
-RESET ROLE;
+          -- D1C2A runtime correction: Teaching resolves Foundation parent objects from
+          -- its earliest academic dependency preflight onward. Namespace visibility only;
+          -- relation privileges remain command-specific and explicit.
+          RESET ROLE;
+          SET ROLE schoolos_schema_owner;
+          GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;
+          RESET ROLE;
 
-GRANT CREATE ON SCHEMA app_private TO schoolos_teaching_executor;
-SET ROLE schoolos_teaching_executor;
--- Read-only deterministic dependency preflight. The caller already holds the
--- Employee row; this function locks the complete sorted academic ancestry and
--- affected teaching history, then returns a bounded result without mutation.
-CREATE FUNCTION app_private.d1_employee_state_teaching_preflight("""
+          GRANT CREATE ON SCHEMA app_private TO schoolos_teaching_executor;
+          SET ROLE schoolos_teaching_executor;
+          -- Read-only deterministic dependency preflight. The caller already holds the
+          -- Employee row; this function locks the complete sorted academic ancestry and
+          -- affected teaching history, then returns a bounded result without mutation.
+          CREATE FUNCTION app_private.d1_employee_state_teaching_preflight(""".replace('          ', '')
           if text.count(anchor) != 1:
               raise SystemExit('earliest Teaching dependency boundary drifted')
           text = text.replace(anchor, replacement, 1)
           if text.count('GRANT USAGE ON SCHEMA app TO schoolos_teaching_executor;') != 1:
               raise SystemExit('Teaching app schema usage must remain singular')
           path.write_text(text, encoding='utf-8', newline='\n')
-      - name: Verify and commit only intended draft
-        shell: bash
+          PY
+      - name: Verify and commit intended draft only
         run: |
           set -euo pipefail
           git diff --check
