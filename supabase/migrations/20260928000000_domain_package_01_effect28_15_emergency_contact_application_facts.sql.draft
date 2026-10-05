@@ -43,7 +43,7 @@ BEGIN
        AND x.supersedes_id IS NOT DISTINCT FROM (CASE WHEN action='CORRECT' THEN source_contact ELSE NULL::uuid END))
   THEN RAISE EXCEPTION 'D1 Emergency Contact approval application reviewed facts mismatch'; END IF;
   IF action IN ('END','CORRECT') THEN
-    IF result_id IS DISTINCT FROM (CASE WHEN action='END)' THEN source_contact ELSE result_id END
+    IF result_id IS DISTINCT FROM (CASE WHEN action='END' THEN source_contact ELSE result_id END)
        OR NOT EXISTS (
         SELECT 1 FROM app_private.student_emergency_contacts s
          WHERE s.id=source_contact AND s.student_id=req.target_ref
