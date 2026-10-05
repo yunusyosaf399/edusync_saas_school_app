@@ -153,6 +153,21 @@ ALTER FUNCTION app_private.d1_transferred() OWNER TO schoolos_schema_owner;
         self.assertEqual(errors, [])
         self.assertEqual(states["app_private.d1_transferred"].owner, "schoolos_schema_owner")
 
+    def test_rejects_redundant_owner_alter_under_unrelated_role(self):
+        sql = _base_sql() + """
+SET ROLE schoolos_schema_owner;
+ALTER FUNCTION app.d1_read_sample() OWNER TO schoolos_read_executor;
+RESET ROLE;
+"""
+        errors, _, _ = guard.inspect(self.make_root(sql))
+        self.assertTrue(any("ownership packaging role mismatch" in error for error in errors))
+
+    def test_outer_deployment_authority_can_repeat_owner_contract(self):
+        sql = _base_sql() + "ALTER FUNCTION app.d1_read_sample() OWNER TO schoolos_read_executor;"
+        errors, _, states = guard.inspect(self.make_root(sql))
+        self.assertEqual(errors, [])
+        self.assertEqual(states["app.d1_read_sample"].owner, "schoolos_read_executor")
+
     def test_rejects_authenticated_private_execute(self):
         text = _base_sql() + """
 GRANT EXECUTE ON FUNCTION app_private.d1_private() TO authenticated;

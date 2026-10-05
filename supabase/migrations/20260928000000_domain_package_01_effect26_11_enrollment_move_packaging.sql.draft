@@ -5,7 +5,9 @@ GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_move_result_rows_match(uuid,
   TO schoolos_schema_owner;
 RESET ROLE;
 
-SET ROLE schoolos_schema_owner;
+-- These RPCs are already owned by their reviewed executors. Repeat the
+-- ownership/ACL contract under outer deployment DDL authority; the table
+-- schema-owner role cannot manage executor-owned functions.
 ALTER FUNCTION app.d1_move_student_enrollment(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text)
   OWNER TO schoolos_student_executor;
 REVOKE ALL ON FUNCTION app.d1_move_student_enrollment(uuid,bigint,uuid,uuid,date,uuid,text,date,text,text,text)

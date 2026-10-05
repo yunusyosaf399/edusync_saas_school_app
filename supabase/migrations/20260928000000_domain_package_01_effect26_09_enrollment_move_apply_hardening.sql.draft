@@ -192,6 +192,9 @@ REVOKE ALL ON FUNCTION app_private.d1_enrollment_move_application_guard() FROM P
 DROP TRIGGER IF EXISTS d1_enrollment_move_application_guard ON app_private.approval_applications;
 CREATE TRIGGER d1_enrollment_move_application_guard BEFORE INSERT ON app_private.approval_applications
  FOR EACH ROW EXECUTE FUNCTION app_private.d1_enrollment_move_application_guard();
+-- Public RPC ownership/ACL packaging requires outer deployment DDL authority,
+-- not the table-schema role used to install the application guard above.
+RESET ROLE;
 ALTER FUNCTION app.d1_apply_student_enrollment_move(uuid,bigint,text) OWNER TO schoolos_workflow_executor;
 REVOKE ALL ON FUNCTION app.d1_apply_student_enrollment_move(uuid,bigint,text) FROM PUBLIC,anon,service_role;
 GRANT EXECUTE ON FUNCTION app.d1_apply_student_enrollment_move(uuid,bigint,text) TO authenticated;

@@ -246,6 +246,8 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
             name = match.group("name").lower()
             role = match.group("role").lower()
             state = states.setdefault(name, FunctionState(name=name))
+            if current_role is not None and state.owner is not None and current_role != state.owner:
+                errors.append(f"function ownership packaging role mismatch: {name} role={current_role} owner={state.owner}")
             state.owner = role
             state.owner_transfer_count += 1
             continue
