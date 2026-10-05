@@ -8,10 +8,20 @@
 SET ROLE schoolos_schema_owner;
 GRANT SELECT (id), UPDATE (id)
   ON app_private.school_profiles TO schoolos_employee_executor;
+
+-- PostgreSQL requires the destination function owner to have CREATE on the
+-- containing schema during ALTER ... OWNER. Restore that temporary packaging
+-- edge only for the transfer, then revoke it immediately to preserve the
+-- frozen executor boundary.
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
 RESET ROLE;
 
 ALTER FUNCTION app.d1_apply_employee_qualification_request(uuid,bigint,text)
   OWNER TO schoolos_workflow_executor;
+
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+RESET ROLE;
 
 REVOKE ALL ON FUNCTION app.d1_apply_employee_qualification_request(uuid,bigint,text)
   FROM PUBLIC,anon,service_role;
