@@ -7,7 +7,7 @@ from pathlib import Path
 from foundation_local_ci import parse_tap
 
 ROOT = Path(__file__).resolve().parents[2]
-DOMAIN_TESTS = [["01_employee_create.sql",37],["02_academic_class.sql",25],["03_employee_state.sql",22]]
+DOMAIN_TESTS = [["01_employee_create.sql",37],["02_academic_class.sql",25],["03_employee_state.sql",22],["04_employee_state_approval.sql",26]]
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
