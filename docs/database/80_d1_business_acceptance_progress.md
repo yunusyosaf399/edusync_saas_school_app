@@ -18,7 +18,7 @@ The transaction-local shared fixture uses five synthetic Auth fixtures already p
 
 ## Current validation evidence
 
-The local tooling suite has 169 passing tests, including six new acceptance-runner tests. The D1 source and final-function guards pass locally. Frozen Foundation migration/test bytes remain unchanged.
+The local tooling suite has 172 passing tests, including nine new acceptance-runner tests. The D1 source and final-function guards pass locally. Frozen Foundation migration/test bytes remain unchanged.
 
 At database-code commit d5d36cb19378890bb746d32db92e5dcd3729c3a7, Foundation/static/runtime checks passed as recorded in DATABASE_COMPLETION_MATRIX.md. That baseline did not execute D1 business commands.
 
@@ -28,9 +28,9 @@ The expanded runtime run [37408619138](https://github.com/yunusyosaf399/edusync_
 
 Upstream [Supabase Postgres issue 2112](https://github.com/supabase/postgres/issues/2112) describes a matching segmentation fault in supautils' denied-function permission-hint path for reserved authenticated/anon roles.
 
-The first diagnostic attempt disabled permission-error hints transaction-locally. That workaround has been removed. Supabase's maintainer confirms supautils 3.2.0/3.2.1 caused the crash and the fix shipped with 3.2.2, in Postgres image 17.6.1.113 onward. CLI 2.98.2's source pins the affected 17.6.1.106 image.
+The first diagnostic attempt to disable permission-error hints transaction-locally failed because the setting cannot be changed at that point. That workaround has been removed. Supabase's maintainer confirms supautils 3.2.0/3.2.1 caused the crash and the fix shipped with 3.2.2, in Postgres image 17.6.1.113 onward. CLI 2.98.2's source pins the affected 17.6.1.106 image.
 
-The D1 disposable harness keeps CLI 2.98.2 and temporarily pins image 17.6.1.113 using the CLI's supported supabase/.temp/postgres-version cache. It restores prior cache bytes on exit and rejects any running container with a different image. Business denial assertions remain executed with default permission hints and unchanged grants/RLS. No managed school engine/configuration is changed. A pin is not passing evidence until its exact runtime run succeeds.
+The D1 disposable harness keeps CLI 2.98.2 and temporarily pins image 17.6.1.113 using the CLI's source-verified supabase/.temp/postgres-version cache. It restores prior cache bytes on exit and rejects any running container with a different image. Business denial assertions remain executed with default permission hints and unchanged grants/RLS. No managed school engine/configuration is changed. A pin is not passing evidence until its exact runtime run succeeds.
 
 The runtime harness prints sanitized PostgreSQL process diagnostics on failure before destroying its disposable stack. It filters process failures and redacts JWT/DSN patterns; it does not dump environment variables or application tables.
 
