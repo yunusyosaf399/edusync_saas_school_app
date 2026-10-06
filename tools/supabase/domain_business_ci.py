@@ -9,6 +9,12 @@ from foundation_local_ci import parse_tap
 ROOT = Path(__file__).resolve().parents[2]
 DOMAIN_TESTS = [["01_employee_create.sql",37],["02_academic_class.sql",25],["03_employee_state.sql",22]]
 
+def render_fixture(source: str,fixture: str) -> str:
+    marker = chr(92)+"ir fixtures/command_actor.sql"
+    if source.count(marker) != 1:
+        raise RuntimeError("D1_BUSINESS_FIXTURE_MARKER")
+    return source.replace(marker,fixture)
+
 def run_business_tests() -> int:
     total = 0
     for filename, expected in DOMAIN_TESTS:
@@ -19,7 +25,7 @@ def run_business_tests() -> int:
         # CLI runs SQL in its test container; inline the shared fixture instead
         # of relying on psql include paths inside that container.
         fixture = (ROOT/"supabase/tests/domain/fixtures/command_actor.sql").read_text(encoding="utf-8")
-        rendered = source.replace("\\\\ir fixtures/command_actor.sql",fixture)
+        rendered = render_fixture(source,fixture)
         with tempfile.TemporaryDirectory(prefix="d1_acceptance_",dir=ROOT/"supabase/tests/database") as directory:
             generated = Path(directory)/filename
             generated.write_text(rendered,encoding="utf-8")
@@ -27,9 +33,10 @@ def run_business_tests() -> int:
                 cwd=ROOT,text=True,capture_output=True,timeout=300)
         output = result.stdout + "\n" + result.stderr
         if result.returncode:
-            # SQL fixtures are synthetic; include TAP/error diagnostics, never CLI connection output.
-            lines = [line for line in output.splitlines()
-                if re.search(r"not ok|^\s*#|ERROR:|Failed.*(?:tests|subtests)",line)]
+            # Local synthetic tests contain no credentials. Redact any connection URI/token.
+            sanitized = re.sub(r"postgres(?:ql)?://[^\s]+","[local connection redacted]",output)
+            sanitized = re.sub(r"[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}","[token redacted]",sanitized)
+            lines = [line for line in sanitized.splitlines() if "Connecting to" not in line]
             raise RuntimeError("D1_BUSINESS_TEST_FAIL " + filename + "\n" + "\n".join(lines[-100:]))
         count = parse_tap(output,expected)
         total += count

@@ -3,8 +3,16 @@ import unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import domain_concurrency_ci as races
+import domain_business_ci as business
 
 class DomainAcceptanceToolsTests(unittest.TestCase):
+    def test_fixture_renderer_inlines_exactly_one_include(self):
+        marker = chr(92)+"ir fixtures/command_actor.sql"
+        self.assertEqual(business.render_fixture("BEGIN;"+marker+"ROLLBACK;","fixture"),"BEGIN;fixtureROLLBACK;")
+        for source in ("BEGIN;ROLLBACK;",marker+marker):
+            with self.assertRaisesRegex(RuntimeError,"FIXTURE_MARKER"):
+                business.render_fixture(source,"fixture")
+
     def test_result_parser_ignores_synthetic_request_settings(self):
         value = races.parse_result('{"sub":"synthetic"}\n11111111-1111-4111-8111-111111111111\t1\n')
         self.assertEqual(value,("11111111-1111-4111-8111-111111111111",1))
