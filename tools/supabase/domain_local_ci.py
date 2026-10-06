@@ -10,6 +10,7 @@ from pathlib import Path
 
 from _process import CommandFailure, run
 from domain_business_ci import run_business_tests
+from domain_concurrency_ci import run_concurrency_tests
 from domain_draft_guard import EXPECTED_TABLES, ROOT, discover_drafts, inspect as inspect_draft
 from domain_function_final_guard import inspect as inspect_function_final
 from foundation_guard import inspect_local_config, inspect_source, load_contract
@@ -382,6 +383,7 @@ def main() -> int:
             raise DomainLocalCIError("FOUNDATION_TAP_TOTAL_MISMATCH " + str(total))
         print("D1C2A_FOUNDATION_REGRESSION_PASS 1 baseline catalog + 8 post-D1 behavior files / " + str(total) + "/" + str(total))
         run_business_tests()
+        run_concurrency_tests(container, run_psql)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
