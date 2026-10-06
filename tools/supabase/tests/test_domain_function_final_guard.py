@@ -72,6 +72,29 @@ RESET ROLE;
 {after}
 """
 
+    def test_rejects_receipt_column_on_approval_application_trigger(self):
+        sql = self.trigger_sql(creator="schoolos_evidence_writer").replace(
+            "BEGIN RETURN NEW;", "BEGIN IF NEW.result_kind IS NULL THEN RETURN NEW; END IF; RETURN NEW;")
+        errors, _, _ = guard.inspect(self.make_root(sql))
+        self.assertTrue(any("unavailable approval application column" in error for error in errors))
+
+    def test_application_column_guard_ignores_comments_and_literals(self):
+        sql = self.trigger_sql(creator="schoolos_evidence_writer").replace(
+            "BEGIN RETURN NEW;", "BEGIN PERFORM 'NEW.result_kind'; -- NEW.result_kind\n RETURN NEW;")
+        errors, _, _ = guard.inspect(self.make_root(sql))
+        self.assertEqual(errors, [])
+
+    def test_application_column_guard_checks_later_replacement(self):
+        sql = self.trigger_sql(creator="schoolos_evidence_writer") + """
+SET ROLE schoolos_evidence_writer;
+CREATE OR REPLACE FUNCTION app_private.d1_guard_application() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$ BEGIN PERFORM OLD.receipt_kind; RETURN NEW; END $body$;
+RESET ROLE;
+"""
+        errors, _, _ = guard.inspect(self.make_root(sql))
+        self.assertTrue(any("OLD.receipt_kind" in error for error in errors))
+
     def test_rejects_trigger_creator_without_execute(self):
         errors, _, _ = guard.inspect(self.make_root(self.trigger_sql()))
         self.assertTrue(any("trigger creator lacks explicit EXECUTE" in error for error in errors))

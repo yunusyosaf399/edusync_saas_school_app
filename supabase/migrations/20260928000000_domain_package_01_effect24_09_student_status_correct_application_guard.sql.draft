@@ -3,15 +3,17 @@ GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
 SET ROLE schoolos_evidence_writer;
 CREATE FUNCTION app_private.d1_guard_student_status_correct_application()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE req record; rec record; result_row record; source_row record; student_version bigint; source_id uuid; new_status text; new_date date;
+DECLARE op_code text; req record; rec record; result_row record; source_row record; student_version bigint; source_id uuid; new_status text; new_date date;
 BEGIN
-  IF NEW.result_kind IS DISTINCT FROM 'D1_STUDENT_STATUS_CORRECT_APPLY' THEN RETURN NEW; END IF;
+  SELECT o.code INTO op_code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+  IF op_code IS DISTINCT FROM 'student.status.correct' THEN RETURN NEW; END IF;
   SELECT q.* INTO req FROM app_private.approval_requests q JOIN app_private.operation_contracts o ON o.id=q.operation_id
    WHERE q.id=NEW.request_id AND q.operation_id=NEW.operation_id AND o.code='student.status.correct' AND o.contract_version=1 AND o.enabled;
   IF NOT FOUND OR req.state<>'EXECUTED' OR NEW.result_ref IS NULL OR NEW.command_receipt_id IS NULL THEN
     RAISE EXCEPTION 'D1 Student status correction application request binding invalid'; END IF;
   SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.id=NEW.command_receipt_id AND r.request_id=req.id
-    AND r.operation_id=req.operation_id AND r.command_kind='request.apply' AND r.state='SUCCEEDED' AND r.result_ref=NEW.result_ref;
+    AND r.operation_id=req.operation_id AND r.command_kind='request.apply' AND r.state='SUCCEEDED'
+    AND r.result_kind='D1_STUDENT_STATUS_CORRECT_APPLY' AND r.result_ref=NEW.result_ref;
   IF NOT FOUND OR rec.result_summary IS NULL OR rec.result_summary->>'state'<>'EXECUTED' OR rec.result_summary->>'transition_id' IS DISTINCT FROM NEW.result_ref::text
      OR (rec.result_summary->>'student_version')::bigint IS DISTINCT FROM NEW.applied_target_version THEN
     RAISE EXCEPTION 'D1 Student status correction application receipt binding invalid'; END IF;

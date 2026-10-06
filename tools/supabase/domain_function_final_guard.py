@@ -44,7 +44,8 @@ ACL_RE = re.compile(
 SET_SESSION_RE = re.compile(r"\bSET\s+SESSION\s+AUTHORIZATION\b", re.I)
 TRIGGER_RE = re.compile(
     rf"\bCREATE(?:\s+OR\s+REPLACE)?(?:\s+CONSTRAINT)?\s+TRIGGER\s+"
-    rf"(?P<trigger>[a-z0-9_]+)\b[^;]*?\bEXECUTE\s+(?:FUNCTION|PROCEDURE)\s+"
+    rf"(?P<trigger>[a-z0-9_]+)\b[^;]*?\bON\s+"
+    rf"(?P<table>(?:app|app_private)\.[a-z0-9_]+)\b[^;]*?\bEXECUTE\s+(?:FUNCTION|PROCEDURE)\s+"
     rf"(?P<name>{FUNC_NAME_RE})\s*\(", re.I | re.S,
 )
 QUALIFIED_CONDITIONAL_RE = re.compile(
@@ -208,6 +209,7 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
     current_role: str | None = None
     possible_name_collisions = 0
     rename_events = 0
+    application_triggers: set[str] = set()
 
     for _, kind, match in _events(text):
         if kind == "set_role":
@@ -218,6 +220,8 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
             continue
         if kind == "trigger":
             name = match.group("name").lower()
+            if match.group("table").lower() == "app_private.approval_applications":
+                application_triggers.add(name)
             state = states.get(name)
             # Frozen Foundation helpers are defined before this draft chain.
             # Their ownership/ACLs are validated by Foundation runtime tests.
@@ -268,6 +272,9 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
                 state = FunctionState(name=new_name)
             if new_name in states and states[new_name].declarations:
                 errors.append(f"function rename target already exists: {new_name}")
+            if old_name in application_triggers:
+                application_triggers.remove(old_name)
+                application_triggers.add(new_name)
             state.name = new_name
             state.rename_count += 1
             states[new_name] = state
@@ -281,6 +288,27 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
                 state.execute_roles.update(roles)
             else:
                 state.execute_roles.difference_update(roles)
+
+    # Frozen Foundation approval_applications has no receipt discriminator.
+    # Inspect final trigger bodies, including replacements, rather than trusting
+    # PL/pgSQL lint to resolve an untyped NEW/OLD record.
+    application_columns = {"id", "request_id", "command_receipt_id",
+        "operation_id", "applied_target_version", "result_ref",
+        "created_at", "created_by"}
+    for name in sorted(application_triggers):
+        state = states.get(name)
+        if state is None or state.last_definition_offset < 0:
+            continue
+        fragment = raw[state.last_definition_offset:]
+        opening = re.search(r"\bAS\s+(\$[a-z0-9_]*\$)", fragment, re.I)
+        if opening is None:
+            continue
+        end = fragment.find(opening.group(1), opening.end())
+        code = sanitize_sql(fragment[opening.end():end], mask_bodies=False)
+        for field in re.finditer(r"\b(NEW|OLD)\s*\.\s*([a-z0-9_]+)\b", code, re.I):
+            column = field.group(2).lower()
+            if column not in application_columns:
+                errors.append(f"unavailable approval application column: {name} {field.group(1).upper()}.{column}")
 
     if current_role is not None:
         errors.append(f"D1 draft leaves SET ROLE active at end of lexical chain: {current_role}")
