@@ -389,6 +389,20 @@ def main() -> int:
         return 0
     except (ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print("D1C2A_FAIL " + str(exc), file=sys.stderr)
+        if started:
+            try:
+                diagnostic = subprocess.run(
+                    ["docker", "logs", "--tail", "200",
+                     "supabase_db_" + EXPECTED_PROJECT_ID],
+                    cwd=ROOT, text=True, capture_output=True, timeout=20,
+                )
+                for line in (diagnostic.stdout + "\n" + diagnostic.stderr).splitlines():
+                    if re.search(r"terminated by signal|segmentation|PANIC|FATAL|server process|out of memory|reinitializing|assertion", line, re.I):
+                        line = re.sub(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[REDACTED_JWT]", line)
+                        line = re.sub(r"postgres(?:ql)?://[^\s]+", "[REDACTED_DSN]", line)
+                        print("D1_DB_DIAGNOSTIC " + line, file=sys.stderr)
+            except (OSError, subprocess.TimeoutExpired):
+                print("D1_DB_DIAGNOSTIC_UNAVAILABLE", file=sys.stderr)
         return 1
     finally:
         if started:
