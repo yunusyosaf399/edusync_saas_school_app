@@ -17,18 +17,6 @@ SELECT throws_ok($sql$SELECT * FROM app.d1_create_employee(NULL,'INVALID',CURREN
 SELECT throws_ok($sql$SELECT * FROM app_private.employees$sql$,'42501'::char(5),NULL::text,'client cannot read private employee rows');
 SELECT throws_ok($sql$UPDATE app_private.employees SET current_state='ENDED'$sql$,'42501'::char(5),NULL::text,'client cannot mutate employee state directly');
 SELECT throws_ok($sql$SELECT app_private.d1_register_catalog_v1()$sql$,'42501'::char(5),NULL::text,'client cannot invoke catalog registrar');
-RESET ROLE;
-DO $probe$
-BEGIN
-  RAISE NOTICE 'D1_TRACE canonicalization';
-  PERFORM app_private.d1_jcs_typed(jsonb_build_object('canonicalization_version',1,'intent',jsonb_build_array('10000000-0000-4000-8000-000000000001','EMP-ONE',to_char(CURRENT_DATE-10,'YYYY-MM-DD'))));
-  RAISE NOTICE 'D1_TRACE receipt lookup';
-  PERFORM app_private.d1_command_receipt_lookup('employee.create','employee.create','employee-one',jsonb_build_array('10000000-0000-4000-8000-000000000001','EMP-ONE',to_char(CURRENT_DATE-10,'YYYY-MM-DD')));
-  RAISE NOTICE 'D1_TRACE authority';
-  PERFORM app_private.d1_authorized('employee.create','SCHOOL','22222222-2222-4222-8222-222222222222');
-  RAISE NOTICE 'D1_TRACE authenticated create';
-END $probe$;
-SET ROLE authenticated;
 SELECT * FROM app.d1_create_employee('10000000-0000-4000-8000-000000000001','EMP-ONE',CURRENT_DATE-10,'employee-one') \gset first_
 SELECT is(:'first_row_version'::bigint,1::bigint,'create returns initial version');
 SELECT * FROM app.d1_create_employee('10000000-0000-4000-8000-000000000001','EMP-ONE',CURRENT_DATE-10,'employee-one') \gset replay_
