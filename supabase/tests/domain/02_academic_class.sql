@@ -8,17 +8,17 @@ SET ROLE authenticated;
 SELECT * FROM app.d1_change_academic_class('CREATE',NULL,'22222222-2222-4222-8222-222222222222','G1','Grade One',1,'Primary',NULL,'class-create') \gset created_
 SELECT is(:'created_row_version'::bigint,1::bigint,'new class version one');
 SELECT * FROM app.d1_change_academic_class('UPDATE',:'created_class_id','22222222-2222-4222-8222-222222222222','G1','Grade 1',2,'Primary',1,'class-update') \gset updated_
-SELECT is(:'updated_class_id',:'created_class_id','update retains identity');
+SELECT is(:'updated_class_id'::uuid,:'created_class_id'::uuid,'update retains identity');
 SELECT is(:'updated_row_version'::bigint,2::bigint,'update advances version');
 SELECT * FROM app.d1_change_academic_class('CREATE',NULL,'22222222-2222-4222-8222-222222222222','G1','Grade One',1,'Primary',NULL,'class-create') \gset replay_
-SELECT is(:'replay_class_id',:'created_class_id','creation replay after update returns original identity');
+SELECT is(:'replay_class_id'::uuid,:'created_class_id'::uuid,'creation replay after update returns original identity');
 SELECT is(:'replay_row_version'::bigint,1::bigint,'creation replay returns original version');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_class('UPDATE',%L,'22222222-2222-4222-8222-222222222222','G1','Stale',3,'Primary',1,'stale')$sql$,:'created_class_id'),'P0001'::char(5),'D1 academic Class stale version/state'::text,'stale update rejected');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_class('UPDATE',%L,'22222222-2222-4222-8222-222222222222','WRONG','Wrong',3,'Primary',2,'wrong-code')$sql$,:'created_class_id'),'P0001'::char(5),'D1 academic Class target/ancestry changed'::text,'identity code cannot be rewritten');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_class('UPDATE',%L,'22222222-2222-4222-8222-222222222222','G1','Conflict',2,'Primary',1,'class-update')$sql$,:'created_class_id'),'P0001'::char(5),'D1 idempotency key conflicts with prior intent'::text,'same update key cannot change intent');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_class('ARCHIVE',%L,'22222222-2222-4222-8222-222222222222','G1','Unexpected',NULL,NULL,2,'archive-shape')$sql$,:'created_class_id'),'P0001'::char(5),'D1 academic Class archive has unexpected profile fields'::text,'archive shape enforced');
 SELECT * FROM app.d1_change_academic_class('ARCHIVE',:'created_class_id','22222222-2222-4222-8222-222222222222','G1',NULL,NULL,NULL,2,'class-archive') \gset archived_
-SELECT is(:'archived_class_id',:'created_class_id','archive retains class identity');
+SELECT is(:'archived_class_id'::uuid,:'created_class_id'::uuid,'archive retains class identity');
 SELECT is(:'archived_row_version'::bigint,3::bigint,'archive advances version');
 SELECT * FROM app.d1_change_academic_class('UPDATE',:'created_class_id','22222222-2222-4222-8222-222222222222','G1','Grade 1',2,'Primary',1,'class-update') \gset old_update_
 SELECT is(:'old_update_row_version'::bigint,2::bigint,'retained update receipt replays after archive');
@@ -42,5 +42,7 @@ SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_class('ARCHIVE
 RESET ROLE;
 ROLLBACK TO SAVEPOINT denial;
 SELECT is((SELECT count(*) FROM app_private.command_receipts),3::bigint,'denied replay creates no receipt');
+-- Force deferred commit guards before rolling synthetic rows back.
+SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
 ROLLBACK;

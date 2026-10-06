@@ -20,7 +20,7 @@ SELECT throws_ok($sql$SELECT app_private.d1_register_catalog_v1()$sql$,'42501'::
 SELECT * FROM app.d1_create_employee('10000000-0000-4000-8000-000000000001','EMP-ONE',CURRENT_DATE-10,'employee-one') \gset first_
 SELECT is(:'first_row_version'::bigint,1::bigint,'create returns initial version');
 SELECT * FROM app.d1_create_employee('10000000-0000-4000-8000-000000000001','EMP-ONE',CURRENT_DATE-10,'employee-one') \gset replay_
-SELECT is(:'replay_employee_id',:'first_employee_id','same key replays same employee');
+SELECT is(:'replay_employee_id'::uuid,:'first_employee_id'::uuid,'same key replays same employee');
 SELECT is(:'replay_row_version'::bigint,1::bigint,'same key replays original version');
 SELECT throws_ok($sql$SELECT * FROM app.d1_create_employee('10000000-0000-4000-8000-000000000002','EMP-TWO',CURRENT_DATE-10,'employee-one')$sql$,'P0001'::char(5),'D1 idempotency key conflicts with prior intent'::text,'changed intent with same key rejected');
 SELECT throws_ok($sql$SELECT * FROM app.d1_create_employee('10000000-0000-4000-8000-000000000001','EMP-OTHER',CURRENT_DATE-10,'duplicate-person')$sql$,'P0001'::char(5),'D1 Person already has an Employee'::text,'different key cannot duplicate person');
@@ -85,5 +85,7 @@ SELECT throws_ok($sql$SELECT * FROM app.d1_create_employee('10000000-0000-4000-8
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.employees),1::bigint,'denials leave no partial employee');
 SELECT is((SELECT count(*) FROM app_private.command_receipts),1::bigint,'denials leave no command receipts');
+-- Force deferred commit guards before rolling synthetic rows back.
+SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
 ROLLBACK;

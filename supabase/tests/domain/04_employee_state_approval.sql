@@ -75,7 +75,7 @@ SELECT is(:'applied_request_version'::bigint,5::bigint,'application advances req
 SELECT * FROM app.d1_apply_employee_state_request(:'request_request_id',4,'approval-apply') \gset replay_
 SELECT is(:'replay_request_version'::bigint,5::bigint,'terminal apply receipt replays');
 SELECT * FROM app.d1_submit_employee_state_change(:'employee_employee_id','INACTIVE',1,'Leave','approval-submit') \gset submit_replay_
-SELECT is(:'submit_replay_request_id',:'request_request_id','submission receipt retained after application');
+SELECT is(:'submit_replay_request_id'::uuid,:'request_request_id'::uuid,'submission receipt retained after application');
 SELECT is(:'submit_replay_request_version'::bigint,3::bigint,'submission replay preserves original version');
 RESET ROLE;
 SELECT is((SELECT current_state FROM app_private.employees),'INACTIVE'::text,'successful workflow updates projection');
@@ -92,5 +92,7 @@ SELECT * FROM app.d1_review_employee_state_request(:'request_request_id','APPROV
 SELECT is(:'review_replay_request_state','APPROVED'::text,'review receipt replays after execution');
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.approval_reviews),1::bigint,'review replay adds no decision');
+-- Force deferred commit guards before rolling synthetic rows back.
+SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
 ROLLBACK;

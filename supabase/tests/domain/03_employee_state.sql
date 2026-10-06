@@ -17,7 +17,7 @@ UPDATE app_private.approval_policy_versions SET state='ACTIVE',effective_from=st
 RESET ROLE;
 SET ROLE authenticated;
 SELECT * FROM app.d1_change_employee_state(:'employee_employee_id','INACTIVE',1,'Leave','state-inactive') \gset inactive_
-SELECT is(:'inactive_employee_id',:'employee_employee_id','state change retains identity');
+SELECT is(:'inactive_employee_id'::uuid,:'employee_employee_id'::uuid,'state change retains identity');
 SELECT is(:'inactive_row_version'::bigint,2::bigint,'state change advances version');
 SELECT * FROM app.d1_change_employee_state(:'employee_employee_id','INACTIVE',1,'Leave','state-inactive') \gset replay_
 SELECT is(:'replay_row_version'::bigint,2::bigint,'state replay returns committed version');
@@ -48,5 +48,7 @@ SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_state(%L,'INAC
 RESET ROLE;
 ROLLBACK TO SAVEPOINT denial;
 SELECT is((SELECT count(*) FROM app_private.employment_periods),2::bigint,'denied and replayed changes add no history rows');
+-- Force deferred commit guards before rolling synthetic rows back.
+SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
 ROLLBACK;
