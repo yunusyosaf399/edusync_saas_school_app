@@ -9,9 +9,7 @@ SELECT is((SELECT count(*) FROM app_private.permissions),97::bigint,'registrar i
 SELECT is((SELECT count(*) FROM app_private.permission_scope_contracts),322::bigint,'registrar installs all supported scopes');
 SELECT is((SELECT count(*) FROM app_private.operation_contracts),36::bigint,'registrar installs all operations');
 SELECT is((SELECT enabled FROM app_private.operation_contracts WHERE code='student.create'),false,'student creation remains disabled');
-SET ROLE schoolos_bootstrap_executor;
-SELECT lives_ok('SELECT app_private.d1_register_catalog_v1()','catalog registration is idempotent after fixture activation');
-RESET ROLE;
+SELECT lives_ok('SET LOCAL ROLE schoolos_bootstrap_executor; SELECT app_private.d1_register_catalog_v1(); RESET ROLE','catalog registration is idempotent after fixture activation');
 SELECT is((SELECT count(*) FROM app_private.operation_contracts),36::bigint,'second registration creates no duplicates');
 
 SET ROLE authenticated;
