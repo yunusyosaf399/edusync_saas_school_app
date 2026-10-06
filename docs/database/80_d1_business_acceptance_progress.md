@@ -28,9 +28,9 @@ The expanded runtime run [37408619138](https://github.com/yunusyosaf399/edusync_
 
 Upstream [Supabase Postgres issue 2112](https://github.com/supabase/postgres/issues/2112) describes a matching segmentation fault in supautils' denied-function permission-hint path for reserved authenticated/anon roles.
 
-The domain test fixture now applies SET LOCAL supautils.hint_roles = '' solely in its synthetic transaction. This disables supplemental error hints, not authorization. It adds no grants, role membership, RLS bypass, function replacement or weakened expected-denial assertion. The test still executes the denied private function and requires SQLSTATE 42501.
+The first diagnostic attempt disabled permission-error hints transaction-locally. That workaround has been removed. Supabase's maintainer confirms supautils 3.2.0/3.2.1 caused the crash and the fix shipped with 3.2.2, in Postgres image 17.6.1.113 onward. CLI 2.98.2's source pins the affected 17.6.1.106 image.
 
-This compatibility setting must be disclosed in results. It does not certify the pinned image's default denial path or configure a deployed school. Release readiness requires a reviewed patched engine/image and denial tests under that image's default configuration, or an independently reviewed deployment configuration decision. A green compatibility run alone cannot close that gate.
+The D1 disposable harness keeps CLI 2.98.2 and temporarily pins image 17.6.1.113 using the CLI's supported supabase/.temp/postgres-version cache. It restores prior cache bytes on exit and rejects any running container with a different image. Business denial assertions remain executed with default permission hints and unchanged grants/RLS. No managed school engine/configuration is changed. A pin is not passing evidence until its exact runtime run succeeds.
 
 The runtime harness prints sanitized PostgreSQL process diagnostics on failure before destroying its disposable stack. It filters process failures and redacts JWT/DSN patterns; it does not dump environment variables or application tables.
 

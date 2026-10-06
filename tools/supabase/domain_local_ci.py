@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 import re
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from foundation_local_ci import cli_version, ensure_local_auth_route, parse_tap
 from prepare_local_auth_fixtures import local_status, prepare
 
 EXPECTED_PROJECT_ID = "saas_OS_school_app"
+EXPECTED_POSTGRES_TAG = "17.6.1.113"
 D1_EXECUTOR_ROLES = (
     "schoolos_academic_executor",
     "schoolos_student_executor",
@@ -75,6 +77,22 @@ EXPECTED_RUNTIME_METRICS = {
 
 class DomainLocalCIError(RuntimeError):
     pass
+
+@contextmanager
+def local_postgres_image_pin(root: Path = ROOT):
+    """CLI 2.98.2 reads this transient tag; restore any prior cache bytes."""
+    path = Path(root) / "supabase/.temp/postgres-version"
+    previous = path.read_bytes() if path.exists() else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text(EXPECTED_POSTGRES_TAG, encoding="utf-8")
+        yield
+    finally:
+        if previous is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(previous)
+
 
 
 def local_project_id(root: Path = ROOT) -> str:
@@ -313,7 +331,7 @@ def run_foundation_regression(contract: dict, *, catalog_only: bool = False) -> 
     return total
 
 
-def main() -> int:
+def _main() -> int:
     started = False
     try:
         contract = load_contract()
@@ -346,6 +364,14 @@ def main() -> int:
             started = True
             print("D1C2A_LOCAL_STACK_STARTED")
         local_status()
+        image = run(["docker", "inspect", "--format", "{{.Config.Image}}",
+            "supabase_db_" + project_id], cwd=ROOT, timeout=20).strip()
+        allowed_images = {"supabase/postgres:" + EXPECTED_POSTGRES_TAG,
+            "ghcr.io/supabase/postgres:" + EXPECTED_POSTGRES_TAG,
+            "public.ecr.aws/supabase/postgres:" + EXPECTED_POSTGRES_TAG}
+        if image not in allowed_images:
+            raise DomainLocalCIError("LOCAL_POSTGRES_IMAGE_MISMATCH")
+        print("D1_POSTGRES_IMAGE_PASS " + image + " default permission hints")
         run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=ROOT, timeout=900)
         print("D1C2A_FOUNDATION_RESET_PASS nine frozen migrations, no seed")
         baseline_assertions = run_foundation_regression(contract, catalog_only=True)
@@ -411,6 +437,11 @@ def main() -> int:
                 print("D1C2A_LOCAL_STACK_STOPPED")
             except CommandFailure:
                 print("D1C2A_LOCAL_STACK_STOP_FAILED", file=sys.stderr)
+
+
+def main() -> int:
+    with local_postgres_image_pin():
+        return _main()
 
 
 if __name__ == "__main__":

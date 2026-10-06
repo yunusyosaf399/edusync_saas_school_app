@@ -1,8 +1,4 @@
 -- Synthetic local-only fixture; caller owns transaction/rollback.
--- Pinned local image has a supautils permission-hint SIGSEGV (upstream #2112).
--- Disable only error hints in this transaction; SQL grants/RLS remain intact.
--- Default-image denial stability remains an external acceptance limitation.
-SET LOCAL supautils.hint_roles = '';
 SELECT set_config('schoolos_test.auth_subject',
   (SELECT id::text FROM auth.users WHERE email='foundation-rbac-001@example.invalid'),true);
 SET ROLE schoolos_schema_owner;
