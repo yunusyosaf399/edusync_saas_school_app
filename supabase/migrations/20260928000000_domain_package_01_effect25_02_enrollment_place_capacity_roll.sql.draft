@@ -32,7 +32,7 @@ BEGIN
       1+(SELECT count(*) FROM app_private.enrollments e WHERE e.section_offering_id=p_section AND e.placement_kind='PRIMARY'
             AND e.effective_from<=b.d AND (e.effective_until IS NULL OR b.d<e.effective_until)) AS section_n
     FROM breakpoints b WHERE b.d IS NOT NULL
-  ) SELECT pg_catalog.coalesce(max(class_n),1)::integer,pg_catalog.coalesce(max(section_n),1)::integer INTO cc,sc FROM counts;
+  ) SELECT COALESCE(max(class_n),1)::integer,COALESCE(max(section_n),1)::integer INTO cc,sc FROM counts;
   RETURN QUERY SELECT cl,sl,cc,sc,(cc>cl),(sc>sl);
 END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_enrollment_place_capacity(uuid,uuid,date) FROM PUBLIC,anon,authenticated,service_role;
@@ -55,7 +55,7 @@ BEGIN
   mode:=pol.mode;
   IF mode NOT IN ('ACADEMIC_CONTEXT','PERSISTENT_STUDENT') THEN RAISE EXCEPTION 'D1 Enrollment roll policy malformed'; END IF;
   IF mode='PERSISTENT_STUDENT' THEN
-    SELECT r.id,r.numeric_value,pg_catalog.coalesce(r.origin_allocation_id,r.id) origin_id INTO prior
+    SELECT r.id,r.numeric_value,COALESCE(r.origin_allocation_id,r.id) origin_id INTO prior
       FROM app_private.roll_allocations r JOIN app_private.roll_policy_revisions pr ON pr.id=r.policy_revision_id
       WHERE r.student_id=p_student AND pr.school_id=p_school AND pr.mode='PERSISTENT_STUDENT'
       ORDER BY r.effective_from,r.created_at,r.id LIMIT 1;
@@ -63,7 +63,7 @@ BEGIN
     ELSE
       SELECT * INTO alloc FROM app_private.roll_allocator_states a WHERE a.policy_revision_id=pol.id AND a.class_offering_id IS NULL FOR UPDATE;
       IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment persistent roll allocator unavailable'; END IF;
-      candidate:=pg_catalog.greatest(alloc.next_value,pol.start_value);
+      candidate:=GREATEST(alloc.next_value,pol.start_value);
       WHILE EXISTS (
         SELECT 1 FROM app_private.roll_allocations r JOIN app_private.roll_policy_revisions pr ON pr.id=r.policy_revision_id
         WHERE pr.school_id=p_school AND pr.mode='PERSISTENT_STUDENT' AND r.numeric_value=candidate
@@ -73,12 +73,12 @@ BEGIN
   ELSE
     SELECT * INTO alloc FROM app_private.roll_allocator_states a WHERE a.policy_revision_id=pol.id AND a.class_offering_id=p_class_offering FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment academic roll allocator unavailable'; END IF;
-    candidate:=pg_catalog.greatest(alloc.next_value,pol.start_value);
+    candidate:=GREATEST(alloc.next_value,pol.start_value);
     WHILE EXISTS (
       SELECT 1 FROM app_private.roll_allocations r JOIN app_private.enrollments e ON e.id=r.enrollment_id
       JOIN app_private.section_offerings s ON s.id=e.section_offering_id
       WHERE r.policy_revision_id=pol.id AND s.class_offering_id=p_class_offering AND r.numeric_value=candidate
-        AND p_effective_from<pg_catalog.coalesce(r.effective_until,'infinity'::date)
+        AND p_effective_from<COALESCE(r.effective_until,'infinity'::date)
     ) LOOP candidate:=candidate+1; END LOOP;
     UPDATE app_private.roll_allocator_states SET next_value=candidate+1,row_version=row_version+1,updated_at=pg_catalog.statement_timestamp() WHERE id=alloc.id;
   END IF;

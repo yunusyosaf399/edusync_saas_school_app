@@ -30,7 +30,7 @@ BEGIN
       ORDER BY t.effective_on DESC,t.sequence_number DESC LIMIT 1 FOR UPDATE;
     IF NOT FOUND OR last_status.new_status IS DISTINCT FROM c.current_status OR last_status.new_status NOT IN ('WITHDRAWN','TRANSFERRED')
        OR p_effective_from<last_status.effective_on THEN RAISE EXCEPTION 'D1 Enrollment re-enrollment status source changed'; END IF;
-    SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
+    SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
     sid:=pg_catalog.gen_random_uuid();
     INSERT INTO app_private.student_status_transitions(id,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id)
     VALUES (sid,p_actor,p_student,last_status.new_status,'ACTIVE',p_effective_from,seq,'REENROLLMENT',NULL,NULL);

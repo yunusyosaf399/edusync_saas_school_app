@@ -71,7 +71,7 @@ BEGIN
     SELECT count(*) INTO overlap_count
     FROM app_private.family_principal_memberships m
     WHERE m.family_id=p_family AND (p_source IS NULL OR m.id<>p_source)
-      AND p_effective_on<pg_catalog.coalesce(m.effective_until,'infinity'::date)
+      AND p_effective_on<COALESCE(m.effective_until,'infinity'::date)
       AND NOT EXISTS (SELECT 1 FROM app_private.family_principal_memberships z WHERE z.supersedes_id=m.id);
     IF overlap_count<>0 THEN
       RETURN QUERY SELECT false,'D1_FAMILY_PRINCIPAL_MEMBERSHIP_FAMILY_OVERLAP',
@@ -104,9 +104,8 @@ BEGIN
     SELECT * INTO src FROM app_private.family_principal_memberships m WHERE m.id=p_source;
   END IF;
   IF p_action='END' THEN
-    UPDATE app_private.family_principal_memberships
-    SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
-    WHERE id=p_source AND family_id=p_family AND principal_id=p_target_principal AND effective_until IS NULL;
+    UPDATE app_private.family_principal_memberships SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+    WHERE family_principal_memberships.id=p_source AND family_principal_memberships.family_id=p_family AND family_principal_memberships.principal_id=p_target_principal AND family_principal_memberships.effective_until IS NULL;
     IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family membership source changed'; END IF;
     new_id:=p_source;
   ELSIF p_action='ADD' THEN

@@ -42,6 +42,18 @@ ACL_RE = re.compile(
     re.I | re.S,
 )
 SET_SESSION_RE = re.compile(r"\bSET\s+SESSION\s+AUTHORIZATION\b", re.I)
+TRIGGER_RE = re.compile(
+    rf"\bCREATE(?:\s+OR\s+REPLACE)?(?:\s+CONSTRAINT)?\s+TRIGGER\s+"
+    rf"(?P<trigger>[a-z0-9_]+)\b[^;]*?\bON\s+"
+    rf"(?P<table>(?:app|app_private)\.[a-z0-9_]+)\b[^;]*?\bEXECUTE\s+(?:FUNCTION|PROCEDURE)\s+"
+    rf"(?P<name>{FUNC_NAME_RE})\s*\(", re.I | re.S,
+)
+QUALIFIED_CONDITIONAL_RE = re.compile(
+    r"\bpg_catalog\s*\.\s*(coalesce|nullif|greatest|least)\s*\(", re.I,
+)
+BARE_CASE_COMPARISON_RE = re.compile(
+    r"\bIS\s+(?:NOT\s+)?DISTINCT\s+FROM\s+CASE\b", re.I,
+)
 DANGEROUS_EXPOSED = {"public", "anon", "service_role"}
 
 
@@ -86,8 +98,8 @@ def read_chain(drafts: list[Path]) -> str:
     return "\n".join(chunks)
 
 
-def sanitize_sql(text: str) -> str:
-    """Mask comments, single-quoted strings and dollar bodies while preserving offsets."""
+def sanitize_sql(text: str, *, mask_bodies: bool = True) -> str:
+    """Mask comments/literals; optionally mask dollar bodies, preserving offsets."""
     chars = list(text)
     n = len(chars)
     i = 0
@@ -133,6 +145,9 @@ def sanitize_sql(text: str) -> str:
             match = re.match(r"\$[a-zA-Z0-9_]*\$", "".join(chars[i : min(n, i + 80)]))
             if match:
                 delim = match.group(0)
+                if not mask_bodies:
+                    i += len(delim)
+                    continue
                 j = text.find(delim, i + len(delim))
                 if j >= 0:
                     for k in range(i + len(delim), j):
@@ -160,6 +175,7 @@ def _events(text: str):
         ("owner", OWNER_RE),
         ("rename", RENAME_RE),
         ("acl", ACL_RE),
+        ("trigger", TRIGGER_RE),
     ]
     events = []
     for kind, pattern in patterns:
@@ -179,6 +195,13 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
         return [str(exc)], {}, {}
 
     text = sanitize_sql(raw)
+    body_code = sanitize_sql(raw, mask_bodies=False)
+    for match in QUALIFIED_CONDITIONAL_RE.finditer(body_code):
+        line = raw.count("\n", 0, match.start()) + 1
+        errors.append(f"schema-qualified SQL conditional expression: {match.group(1)} at chain line {line}")
+    for match in BARE_CASE_COMPARISON_RE.finditer(body_code):
+        line = raw.count("\n", 0, match.start()) + 1
+        errors.append(f"CASE comparison operand requires parentheses in draft SQL: chain line {line}")
     if SET_SESSION_RE.search(text):
         errors.append("D1 draft uses SET SESSION AUTHORIZATION")
 
@@ -186,6 +209,7 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
     current_role: str | None = None
     possible_name_collisions = 0
     rename_events = 0
+    application_triggers: set[str] = set()
 
     for _, kind, match in _events(text):
         if kind == "set_role":
@@ -193,6 +217,23 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
             continue
         if kind == "reset_role":
             current_role = None
+            continue
+        if kind == "trigger":
+            name = match.group("name").lower()
+            if match.group("table").lower() == "app_private.approval_applications":
+                application_triggers.add(name)
+            state = states.get(name)
+            # Frozen Foundation helpers are defined before this draft chain.
+            # Their ownership/ACLs are validated by Foundation runtime tests.
+            if state is None and not name.split(".", 1)[1].startswith("d1_"):
+                continue
+            if state is None or not state.declarations:
+                errors.append(f"trigger function unresolved: {match.group('trigger')}->{name}")
+            elif current_role is not None and current_role != state.owner and current_role not in state.execute_roles:
+                errors.append(
+                    f"trigger creator lacks explicit EXECUTE: {match.group('trigger')} "
+                    f"role={current_role} function={name} owner={state.owner}"
+                )
             continue
         if kind == "create":
             name = match.group("name").lower()
@@ -216,6 +257,8 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
             name = match.group("name").lower()
             role = match.group("role").lower()
             state = states.setdefault(name, FunctionState(name=name))
+            if current_role is not None and state.owner is not None and current_role != state.owner:
+                errors.append(f"function ownership packaging role mismatch: {name} role={current_role} owner={state.owner}")
             state.owner = role
             state.owner_transfer_count += 1
             continue
@@ -229,6 +272,9 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
                 state = FunctionState(name=new_name)
             if new_name in states and states[new_name].declarations:
                 errors.append(f"function rename target already exists: {new_name}")
+            if old_name in application_triggers:
+                application_triggers.remove(old_name)
+                application_triggers.add(new_name)
             state.name = new_name
             state.rename_count += 1
             states[new_name] = state
@@ -242,6 +288,27 @@ def inspect(root: Path) -> tuple[list[str], dict[str, object], dict[str, Functio
                 state.execute_roles.update(roles)
             else:
                 state.execute_roles.difference_update(roles)
+
+    # Frozen Foundation approval_applications has no receipt discriminator.
+    # Inspect final trigger bodies, including replacements, rather than trusting
+    # PL/pgSQL lint to resolve an untyped NEW/OLD record.
+    application_columns = {"id", "request_id", "command_receipt_id",
+        "operation_id", "applied_target_version", "result_ref",
+        "created_at", "created_by"}
+    for name in sorted(application_triggers):
+        state = states.get(name)
+        if state is None or state.last_definition_offset < 0:
+            continue
+        fragment = raw[state.last_definition_offset:]
+        opening = re.search(r"\bAS\s+(\$[a-z0-9_]*\$)", fragment, re.I)
+        if opening is None:
+            continue
+        end = fragment.find(opening.group(1), opening.end())
+        code = sanitize_sql(fragment[opening.end():end], mask_bodies=False)
+        for field in re.finditer(r"\b(NEW|OLD)\s*\.\s*([a-z0-9_]+)\b", code, re.I):
+            column = field.group(2).lower()
+            if column not in application_columns:
+                errors.append(f"unavailable approval application column: {name} {field.group(1).upper()}.{column}")
 
     if current_role is not None:
         errors.append(f"D1 draft leaves SET ROLE active at end of lexical chain: {current_role}")

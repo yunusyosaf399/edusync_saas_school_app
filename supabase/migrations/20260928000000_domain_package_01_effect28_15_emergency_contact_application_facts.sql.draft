@@ -40,10 +40,10 @@ BEGIN
        AND x.contact_name IS NOT DISTINCT FROM requested_name AND x.relationship_label IS NOT DISTINCT FROM requested_relationship
        AND x.contact_phone IS NOT DISTINCT FROM requested_phone AND x.contact_email IS NOT DISTINCT FROM requested_email
        AND x.reason=pg_catalog.btrim(req.reason) AND x.effective_from=effective_on
-       AND x.supersedes_id IS NOT DISTINCT FROM CASE WHEN action='CORRECT' THEN source_contact ELSE NULL::uuid END)
+       AND x.supersedes_id IS NOT DISTINCT FROM (CASE WHEN action='CORRECT' THEN source_contact ELSE NULL::uuid END))
   THEN RAISE EXCEPTION 'D1 Emergency Contact approval application reviewed facts mismatch'; END IF;
   IF action IN ('END','CORRECT') THEN
-    IF result_id IS DISTINCT FROM CASE WHEN action='END' THEN source_contact ELSE result_id END
+    IF result_id IS DISTINCT FROM (CASE WHEN action='END' THEN source_contact ELSE result_id END)
        OR NOT EXISTS (
         SELECT 1 FROM app_private.student_emergency_contacts s
          WHERE s.id=source_contact AND s.student_id=req.target_ref

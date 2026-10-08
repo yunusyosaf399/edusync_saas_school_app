@@ -1245,7 +1245,8 @@ BEGIN
     IF TG_ARGV[0] = 'M' THEN
       NEW.row_version := 1;
       NEW.updated_at := NEW.created_at;
-    ELSIF TG_ARGV[0] = 'HE' AND NEW.effective_until IS NOT NULL THEN
+    ELSIF TG_ARGV[0] = 'HE'
+       AND (pg_catalog.to_jsonb(NEW) ->> 'effective_until') IS NOT NULL THEN
       NEW.ended_at := NEW.created_at;
       NEW.ended_by := actor;
     END IF;
@@ -2174,23 +2175,23 @@ CREATE CONSTRAINT TRIGGER d1_capability_dependents_commit AFTER INSERT OR UPDATE
 CREATE FUNCTION app_private.d1_check_capacity_revision_commit() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE
-  old_capacity integer;
+  prior_capacity integer;
   revisions integer;
 BEGIN
   IF TG_OP='UPDATE' THEN
     IF OLD.capacity=NEW.capacity THEN RETURN NULL; END IF;
-    old_capacity := OLD.capacity;
+    prior_capacity := OLD.capacity;
   END IF;
   IF TG_TABLE_NAME='class_offerings' THEN
     SELECT count(*) INTO revisions FROM app_private.capacity_revisions r
       WHERE r.class_offering_id=NEW.id AND r.section_offering_id IS NULL
-        AND r.old_capacity IS NOT DISTINCT FROM old_capacity
+        AND r.old_capacity IS NOT DISTINCT FROM prior_capacity
         AND r.new_capacity=NEW.capacity
         AND r.created_at=pg_catalog.transaction_timestamp();
   ELSE
     SELECT count(*) INTO revisions FROM app_private.capacity_revisions r
       WHERE r.section_offering_id=NEW.id AND r.class_offering_id IS NULL
-        AND r.old_capacity IS NOT DISTINCT FROM old_capacity
+        AND r.old_capacity IS NOT DISTINCT FROM prior_capacity
         AND r.new_capacity=NEW.capacity
         AND r.created_at=pg_catalog.transaction_timestamp();
   END IF;
@@ -2287,8 +2288,8 @@ BEGIN
       WHERE so.class_offering_id=class_row.id AND x.placement_kind='PRIMARY'
         AND x.placement_state IN ('ACTIVE','COMPLETED','ENDED')
         AND x.effective_from<=point_on AND (x.effective_until IS NULL OR x.effective_until>point_on);
-    class_peak := pg_catalog.greatest(class_peak,class_count);
-    section_peak := pg_catalog.greatest(section_peak,section_count);
+    class_peak := GREATEST(class_peak,class_count);
+    section_peak := GREATEST(section_peak,section_count);
   END LOOP;
   IF EXISTS (SELECT 1 FROM app_private.roll_allocations r WHERE r.enrollment_id=eid
       AND (r.student_id<>placement.student_id OR r.effective_from<placement.effective_from
@@ -3156,7 +3157,7 @@ LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 DECLARE
   at_time timestamptz := pg_catalog.clock_timestamp();
   matches bigint;
-  policy_id uuid;
+  v_policy_id uuid;
   selected_route text;
   step_count bigint;
   invalid_steps bigint;
@@ -3176,7 +3177,7 @@ BEGIN
   ) THEN RETURN NULL; END IF;
 
   SELECT count(*), min(p.id::text)::uuid, min(p.d1_route_mode)
-    INTO matches, policy_id, selected_route
+    INTO matches, v_policy_id, selected_route
     FROM app_private.operation_contracts o
     JOIN app_private.approval_policy_versions p ON p.operation_id = o.id
    WHERE o.code = p_operation_code AND o.enabled AND NOT o.requires_approval
@@ -3194,7 +3195,7 @@ BEGIN
       INTO step_count, invalid_steps, first_step, last_step
       FROM app_private.approval_step_templates t
       LEFT JOIN app_private.roles r ON r.id = t.reviewer_role_id
-     WHERE t.policy_id = policy_id;
+     WHERE t.policy_id = v_policy_id;
     IF step_count > 0 AND invalid_steps = 0 AND first_step = 1
        AND last_step::bigint = step_count THEN RETURN 'APPROVAL'; END IF;
   END IF;
@@ -3674,6 +3675,11 @@ BEGIN
        OR (p_operation_code='teaching.class_assignment.change' AND (
             (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=11)
          OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=11)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='teaching.subject_assignment.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=14)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=14)
          OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
          OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
     RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
@@ -5814,7 +5820,7 @@ BEGIN
     INSERT INTO app_private.capacity_revisions
       (id,class_offering_id,old_capacity,new_capacity,effective_on,reason,
        command_receipt_id,created_by)
-    VALUES(revision_id,new_id,NULL,p_capacity,pg_catalog.current_date,
+    VALUES(revision_id,new_id,NULL,p_capacity,CURRENT_DATE,
       'INITIAL_CONFIGURATION',receipt,ctx.actor_id);
   END IF;
   PERFORM app_private.d1_academic_audit(ctx.actor_id,'academic.offering.change',
@@ -5907,21 +5913,20 @@ BEGIN
     END IF;
     new_id:=old_row.id;
     IF p_action='UPDATE' THEN
-      UPDATE app_private.section_offerings s
-       SET label=p_label,display_order=p_display_order,state=p_state
+      UPDATE app_private.section_offerings s SET label=p_label,display_order=p_display_order,state=p_state
        WHERE s.id=new_id RETURNING s.row_version INTO new_version;
       new_state:=p_state;
     ELSE
       IF EXISTS (SELECT 1 FROM app_private.section_room_assignments r
                   WHERE r.section_offering_id=new_id
                     AND (r.effective_until IS NULL
-                      OR r.effective_until>pg_catalog.current_date)) THEN
+                      OR r.effective_until>CURRENT_DATE)) THEN
         RAISE EXCEPTION 'D1 Academic Section has current/future Room assignment';
       END IF;
       IF EXISTS (SELECT 1 FROM app_private.enrollments e
                   WHERE e.section_offering_id=new_id
                     AND (e.effective_until IS NULL
-                      OR e.effective_until>pg_catalog.current_date)) THEN
+                      OR e.effective_until>CURRENT_DATE)) THEN
         RAISE EXCEPTION 'D1 Academic Section has current/future placements';
       END IF;
       UPDATE app_private.section_offerings s SET state='ARCHIVED',
@@ -5938,7 +5943,7 @@ BEGIN
     INSERT INTO app_private.capacity_revisions
       (id,section_offering_id,old_capacity,new_capacity,effective_on,reason,
        command_receipt_id,created_by)
-    VALUES(revision_id,new_id,NULL,p_capacity,pg_catalog.current_date,
+    VALUES(revision_id,new_id,NULL,p_capacity,CURRENT_DATE,
       'INITIAL_CONFIGURATION',receipt,ctx.actor_id);
   END IF;
   PERFORM app_private.d1_academic_audit(ctx.actor_id,'academic.section.change',
@@ -6194,7 +6199,7 @@ BEGIN
          AND ((p_target_kind='CLASS_OFFERING'
                 AND s.class_offering_id=p_target_id)
            OR (p_target_kind='SECTION' AND s.id=p_target_id));
-      commitment_peak:=pg_catalog.greatest(commitment_peak,commitment_occupancy);
+      commitment_peak:=GREATEST(commitment_peak,commitment_occupancy);
     END LOOP;
     IF commitment_peak>p_new_capacity THEN
       -- The frozen rule permits a reduction below already accepted occupancy.
@@ -8254,10 +8259,10 @@ BEGIN
     p_expected_request_version,ctx.actor_id);
   UPDATE app_private.approval_request_steps SET
     state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
-    closed_at=statement_timestamp() WHERE id=step_row.id;
+    closed_at=statement_timestamp() WHERE approval_request_steps.id=step_row.id;
   IF p_decision='REJECT' THEN
     UPDATE app_private.approval_request_steps SET state='CANCELLED',closed_at=statement_timestamp()
-     WHERE request_id=p_request_id AND state='WAITING';
+     WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING';
     final_state:='REJECTED';
   ELSE
     SELECT * INTO next_step FROM app_private.approval_request_steps s
@@ -8265,7 +8270,7 @@ BEGIN
        AND s.state='WAITING' FOR UPDATE;
     IF FOUND THEN
       UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=statement_timestamp()
-       WHERE id=next_step.id;
+       WHERE approval_request_steps.id=next_step.id;
       INSERT INTO app_private.approval_step_reviewers
         (step_id,reviewer_id,assignment_reason,created_by)
       SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -8275,8 +8280,8 @@ BEGIN
       final_state:='PENDING';
     ELSE final_state:='APPROVED'; END IF;
   END IF;
-  UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
-   RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state=final_state WHERE approval_requests.id=p_request_id
+   RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_employee_state_receipt('request.review',ctx.actor_id,
     ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
     p_request_id,p_expected_request_version,'SUCCEEDED','D1_EMPLOYEE_STATE_REVIEW',
@@ -9137,7 +9142,7 @@ BEGIN
   INSERT INTO app_private.employees
     (person_id,employee_code,current_state,profile_photo_file_id,created_by)
   VALUES (p_person_id,p_employee_code,'ACTIVE',NULL,ctx.actor_id)
-  RETURNING id,row_version INTO new_employee_id,new_row_version;
+  RETURNING employees.id,employees.row_version INTO new_employee_id,new_row_version;
   INSERT INTO app_private.employment_periods
     (employee_id,state,effective_from,effective_until,reason,supersedes_id,created_by)
   VALUES (new_employee_id,'ACTIVE',p_effective_from,NULL,
@@ -10366,23 +10371,23 @@ CREATE FUNCTION app.d1_submit_employee_job_assignment_change(
 ) RETURNS TABLE(request_id uuid,request_version bigint)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE ctx record; lock_row record; policy_row record; preflight record; template_row record;
-  payload jsonb; old_snapshot jsonb; requested_payload jsonb;
+  payload jsonb; v_old_snapshot jsonb; v_requested_payload jsonb;
   new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid;
   candidate_count bigint; final_version bigint; receipt uuid;
 BEGIN
-  old_snapshot:=pg_catalog.jsonb_build_object('source_assignment_id',p_source_assignment_id,
+  v_old_snapshot:=pg_catalog.jsonb_build_object('source_assignment_id',p_source_assignment_id,
     'source_department_id',p_expected_source_department_id,
     'source_designation_id',p_expected_source_designation_id,
     'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
     'source_supersedes_id',p_expected_source_supersedes_id);
-  requested_payload:=pg_catalog.jsonb_build_object('action',p_action,
+  v_requested_payload:=pg_catalog.jsonb_build_object('action',p_action,
     'department_id',p_department_id,'designation_id',p_designation_id,
     'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,
     'effective_until',CASE WHEN p_effective_until IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_effective_until,'YYYY-MM-DD') END);
-  payload:=old_snapshot||requested_payload;
+  payload:=v_old_snapshot||v_requested_payload;
   IF p_employee_id IS NULL OR p_expected_employee_version IS NULL OR p_expected_employee_version<1
      OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
      OR NOT app_private.d1_employee_job_assignment_payload_valid(payload) THEN
@@ -10414,8 +10419,8 @@ BEGIN
        OR NOT EXISTS (SELECT 1 FROM app_private.approval_requests r
          WHERE r.id=ctx.result_ref AND r.operation_id=ctx.operation_id
            AND r.target_ref=p_employee_id AND r.expected_target_version=p_expected_employee_version
-           AND r.old_snapshot IS NOT DISTINCT FROM old_snapshot
-           AND r.requested_payload IS NOT DISTINCT FROM requested_payload) THEN
+           AND r.old_snapshot IS NOT DISTINCT FROM v_old_snapshot
+           AND r.requested_payload IS NOT DISTINCT FROM v_requested_payload) THEN
       RAISE EXCEPTION 'D1 Employee job request receipt is not replayable';
     END IF;
     RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint;
@@ -10440,9 +10445,9 @@ BEGIN
     (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
      expected_target_version,reason,old_snapshot,requested_payload,created_by)
   VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,NULL,p_employee_id,
-    p_expected_employee_version,p_reason,old_snapshot,requested_payload,ctx.actor_id);
+    p_expected_employee_version,p_reason,v_old_snapshot,v_requested_payload,ctx.actor_id);
   UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
-   WHERE id=new_request;
+   WHERE approval_requests.id=new_request;
   FOR template_row IN SELECT t.id,t.step_number,t.required_reviews
     FROM app_private.approval_step_templates t WHERE t.policy_id=policy_row.policy_id
     ORDER BY t.step_number LOOP
@@ -10454,10 +10459,10 @@ BEGIN
       template_row.required_reviews,ctx.actor_id);
   END LOOP;
   IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Employee job policy has no first step'; END IF;
-  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request
-   RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE approval_requests.id=new_request
+   RETURNING approval_requests.row_version INTO final_version;
   UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp()
-   WHERE id=first_step;
+   WHERE approval_request_steps.id=first_step;
   INSERT INTO app_private.approval_step_reviewers
     (step_id,reviewer_id,assignment_reason,created_by)
   SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -10582,10 +10587,10 @@ BEGIN
     p_expected_request_version,ctx.actor_id);
   UPDATE app_private.approval_request_steps SET
     state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
-    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+    closed_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=step_row.id;
   IF p_decision='REJECT' THEN
     UPDATE app_private.approval_request_steps SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp()
-     WHERE request_id=p_request_id AND state='WAITING';
+     WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING';
     final_state:='REJECTED';
   ELSE
     SELECT * INTO next_step FROM app_private.approval_request_steps s
@@ -10593,7 +10598,7 @@ BEGIN
        AND s.state='WAITING' FOR UPDATE;
     IF FOUND THEN
       UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp()
-       WHERE id=next_step.id;
+       WHERE approval_request_steps.id=next_step.id;
       INSERT INTO app_private.approval_step_reviewers
         (step_id,reviewer_id,assignment_reason,created_by)
       SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -10605,13 +10610,13 @@ BEGIN
       final_state:='APPROVED';
     END IF;
   END IF;
-  UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
-   RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state=final_state WHERE approval_requests.id=p_request_id
+   RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_employee_job_assignment_receipt('request.review',ctx.actor_id,
     ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
     p_request_id,p_expected_request_version,'SUCCEEDED','D1_EMPLOYEE_JOB_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions
@@ -10776,7 +10781,7 @@ BEGIN
       receipt,effect_row.employee_version,effect_row.effective_from,effect_row.effective_until,
       correlation);
   END IF;
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
@@ -11956,22 +11961,22 @@ CREATE FUNCTION app.d1_submit_employee_campus_affiliation_change(
 ) RETURNS TABLE(request_id uuid,request_version bigint)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE ctx record; lock_row record; policy_row record; preflight record; template_row record;
-  old_snapshot jsonb; requested_payload jsonb; payload jsonb;
+  v_old_snapshot jsonb; v_requested_payload jsonb; payload jsonb;
   new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid;
   candidate_count bigint; final_version bigint; receipt uuid;
 BEGIN
-  old_snapshot:=pg_catalog.jsonb_build_object(
+  v_old_snapshot:=pg_catalog.jsonb_build_object(
     'source_affiliation_id',p_source_affiliation_id,
     'source_campus_id',p_expected_source_campus_id,
     'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
     'source_supersedes_id',p_expected_source_supersedes_id);
-  requested_payload:=pg_catalog.jsonb_build_object('action',p_action,'campus_id',p_campus_id,
+  v_requested_payload:=pg_catalog.jsonb_build_object('action',p_action,'campus_id',p_campus_id,
     'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,
     'effective_until',CASE WHEN p_effective_until IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_effective_until,'YYYY-MM-DD') END);
-  payload:=old_snapshot||requested_payload;
+  payload:=v_old_snapshot||v_requested_payload;
   IF p_employee_id IS NULL OR p_expected_employee_version IS NULL OR p_expected_employee_version<1
      OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
      OR NOT app_private.d1_employee_campus_affiliation_payload_valid(payload) THEN
@@ -12003,8 +12008,8 @@ BEGIN
          WHERE r.id=ctx.result_ref AND r.operation_id=ctx.operation_id
            AND r.target_ref=p_employee_id
            AND r.expected_target_version=p_expected_employee_version
-           AND r.old_snapshot IS NOT DISTINCT FROM old_snapshot
-           AND r.requested_payload IS NOT DISTINCT FROM requested_payload) THEN
+           AND r.old_snapshot IS NOT DISTINCT FROM v_old_snapshot
+           AND r.requested_payload IS NOT DISTINCT FROM v_requested_payload) THEN
       RAISE EXCEPTION 'D1 Employee campus affiliation request receipt is not replayable';
     END IF;
     RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint;
@@ -12030,10 +12035,9 @@ BEGIN
     (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
      expected_target_version,reason,old_snapshot,requested_payload,created_by)
   VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,NULL,p_employee_id,
-    p_expected_employee_version,p_reason,old_snapshot,requested_payload,ctx.actor_id);
-  UPDATE app_private.approval_requests
-     SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
-   WHERE id=new_request;
+    p_expected_employee_version,p_reason,v_old_snapshot,v_requested_payload,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
+   WHERE approval_requests.id=new_request;
   FOR template_row IN SELECT t.id,t.step_number,t.required_reviews
     FROM app_private.approval_step_templates t WHERE t.policy_id=policy_row.policy_id
     ORDER BY t.step_number LOOP
@@ -12048,10 +12052,9 @@ BEGIN
   IF first_step IS NULL THEN
     RAISE EXCEPTION 'D1 Employee campus affiliation policy has no first step';
   END IF;
-  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request
-   RETURNING row_version INTO final_version;
-  UPDATE app_private.approval_request_steps
-     SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE approval_requests.id=new_request
+   RETURNING approval_requests.row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=first_step;
   INSERT INTO app_private.approval_step_reviewers
     (step_id,reviewer_id,assignment_reason,created_by)
   SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -12180,20 +12183,18 @@ BEGIN
     p_expected_request_version,ctx.actor_id);
   UPDATE app_private.approval_request_steps SET
     state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
-    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+    closed_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=step_row.id;
   IF p_decision='REJECT' THEN
-    UPDATE app_private.approval_request_steps
-       SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp()
-     WHERE request_id=p_request_id AND state='WAITING';
+    UPDATE app_private.approval_request_steps SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp()
+     WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING';
     final_state:='REJECTED';
   ELSE
     SELECT * INTO next_step FROM app_private.approval_request_steps s
      WHERE s.request_id=p_request_id AND s.step_number=step_row.step_number+1
        AND s.state='WAITING' FOR UPDATE;
     IF FOUND THEN
-      UPDATE app_private.approval_request_steps
-         SET state='OPEN',opened_at=pg_catalog.statement_timestamp()
-       WHERE id=next_step.id;
+      UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp()
+       WHERE approval_request_steps.id=next_step.id;
       INSERT INTO app_private.approval_step_reviewers
         (step_id,reviewer_id,assignment_reason,created_by)
       SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -12208,14 +12209,14 @@ BEGIN
       final_state:='APPROVED';
     END IF;
   END IF;
-  UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
-   RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state=final_state WHERE approval_requests.id=p_request_id
+   RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_employee_campus_affiliation_receipt(
     'request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
     'D1_EMPLOYEE_CAMPUS_AFFILIATION_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions
@@ -12384,7 +12385,7 @@ BEGIN
       effect_row.source_campus_id,effect_row.campus_id,receipt,effect_row.employee_version,
       effect_row.effective_from,effect_row.effective_until,correlation);
   END IF;
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
@@ -13732,21 +13733,21 @@ CREATE FUNCTION app.d1_submit_teacher_capability_change(
 ) RETURNS TABLE(request_id uuid,request_version bigint)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE ctx record; lock_row record; policy_row record; preflight record; template_row record;
-  old_snapshot jsonb; requested_payload jsonb; payload jsonb;
+  v_old_snapshot jsonb; v_requested_payload jsonb; payload jsonb;
   new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid;
   candidate_count bigint; final_version bigint; receipt uuid;
 BEGIN
-  old_snapshot:=pg_catalog.jsonb_build_object(
+  v_old_snapshot:=pg_catalog.jsonb_build_object(
     'source_capability_id',p_source_capability_id,
     'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
     'source_supersedes_id',p_expected_source_supersedes_id);
-  requested_payload:=pg_catalog.jsonb_build_object('action',p_action,
+  v_requested_payload:=pg_catalog.jsonb_build_object('action',p_action,
     'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,
     'effective_until',CASE WHEN p_effective_until IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_effective_until,'YYYY-MM-DD') END);
-  payload:=old_snapshot||requested_payload;
+  payload:=v_old_snapshot||v_requested_payload;
   IF p_employee_id IS NULL OR p_expected_employee_version IS NULL OR p_expected_employee_version<1
      OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
      OR NOT app_private.d1_teaching_capability_payload_valid(payload) THEN
@@ -13777,8 +13778,8 @@ BEGIN
          WHERE q.id=ctx.result_ref AND q.operation_id=ctx.operation_id
            AND q.target_ref=p_employee_id
            AND q.expected_target_version=p_expected_employee_version
-           AND q.old_snapshot IS NOT DISTINCT FROM old_snapshot
-           AND q.requested_payload IS NOT DISTINCT FROM requested_payload) THEN
+           AND q.old_snapshot IS NOT DISTINCT FROM v_old_snapshot
+           AND q.requested_payload IS NOT DISTINCT FROM v_requested_payload) THEN
       RAISE EXCEPTION 'D1 Teacher capability request receipt is not replayable';
     END IF;
     RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint;
@@ -13803,10 +13804,9 @@ BEGIN
     (id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,target_ref,
      expected_target_version,reason,old_snapshot,requested_payload,created_by)
   VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,policy_row.campus_id,
-    p_employee_id,p_expected_employee_version,p_reason,old_snapshot,requested_payload,ctx.actor_id);
-  UPDATE app_private.approval_requests
-     SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
-   WHERE id=new_request;
+    p_employee_id,p_expected_employee_version,p_reason,v_old_snapshot,v_requested_payload,ctx.actor_id);
+  UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
+   WHERE approval_requests.id=new_request;
   FOR template_row IN SELECT t.id,t.step_number,t.required_reviews
     FROM app_private.approval_step_templates t WHERE t.policy_id=policy_row.policy_id
     ORDER BY t.step_number LOOP
@@ -13819,10 +13819,9 @@ BEGIN
       template_row.required_reviews,ctx.actor_id);
   END LOOP;
   IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Teacher capability policy has no first step'; END IF;
-  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request
-   RETURNING row_version INTO final_version;
-  UPDATE app_private.approval_request_steps
-     SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE approval_requests.id=new_request
+   RETURNING approval_requests.row_version INTO final_version;
+  UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=first_step;
   INSERT INTO app_private.approval_step_reviewers
     (step_id,reviewer_id,assignment_reason,created_by)
   SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -13946,11 +13945,11 @@ BEGIN
     p_expected_request_version,ctx.actor_id);
   UPDATE app_private.approval_request_steps SET
     state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
-    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+    closed_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=step_row.id;
   IF p_decision='REJECT' THEN
     UPDATE app_private.approval_request_steps SET state='CANCELLED',
       closed_at=pg_catalog.statement_timestamp()
-     WHERE request_id=p_request_id AND state='WAITING';
+     WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING';
     final_state:='REJECTED';
   ELSE
     SELECT * INTO next_step FROM app_private.approval_request_steps s
@@ -13958,7 +13957,7 @@ BEGIN
        AND s.state='WAITING' FOR UPDATE;
     IF FOUND THEN
       UPDATE app_private.approval_request_steps SET state='OPEN',
-        opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+        opened_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=next_step.id;
       INSERT INTO app_private.approval_step_reviewers
         (step_id,reviewer_id,assignment_reason,created_by)
       SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -13972,14 +13971,14 @@ BEGIN
       final_state:='APPROVED';
     END IF;
   END IF;
-  UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
-   RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state=final_state WHERE approval_requests.id=p_request_id
+   RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_teaching_capability_receipt(
     'request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
     'D1_TEACHING_CAPABILITY_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions
@@ -14139,7 +14138,7 @@ BEGIN
       effect_row.employee_version,effect_row.effective_from,effect_row.effective_until,
       effect_row.dependency_closure,correlation);
   END IF;
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
@@ -15234,19 +15233,19 @@ CREATE FUNCTION app.d1_submit_class_teacher_assignment_correction(
 ) RETURNS TABLE(request_id uuid,request_version bigint)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE ctx record; lock_row record; policy_row record; preflight record; template_row record;
-  old_snapshot jsonb; requested_payload jsonb; payload jsonb;
+  v_old_snapshot jsonb; v_requested_payload jsonb; payload jsonb;
   new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid;
   candidate_count bigint; final_version bigint; receipt uuid;
 BEGIN
-  old_snapshot:=pg_catalog.jsonb_build_object('source_assignment_id',p_source_assignment_id,
+  v_old_snapshot:=pg_catalog.jsonb_build_object('source_assignment_id',p_source_assignment_id,
     'source_employee_id',p_expected_source_employee_id,
     'source_effective_from',CASE WHEN p_expected_source_effective_from IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_expected_source_effective_from,'YYYY-MM-DD') END,
     'source_supersedes_id',p_expected_source_supersedes_id);
-  requested_payload:=pg_catalog.jsonb_build_object('action','CORRECT','employee_id',p_employee_id,
+  v_requested_payload:=pg_catalog.jsonb_build_object('action','CORRECT','employee_id',p_employee_id,
     'effective_from',CASE WHEN p_effective_from IS NULL THEN NULL
       ELSE pg_catalog.to_char(p_effective_from,'YYYY-MM-DD') END,'effective_until',NULL);
-  payload:=old_snapshot||requested_payload;
+  payload:=v_old_snapshot||v_requested_payload;
   IF p_section_offering_id IS NULL OR p_expected_section_version IS NULL
      OR p_expected_section_version<1 OR p_effective_from IS NULL
      OR p_effective_from>=CURRENT_DATE OR p_reason IS NULL
@@ -15280,8 +15279,8 @@ BEGIN
          WHERE q.id=ctx.result_ref AND q.operation_id=ctx.operation_id
            AND q.target_ref=p_section_offering_id
            AND q.expected_target_version=p_expected_section_version
-           AND q.old_snapshot IS NOT DISTINCT FROM old_snapshot
-           AND q.requested_payload IS NOT DISTINCT FROM requested_payload) THEN
+           AND q.old_snapshot IS NOT DISTINCT FROM v_old_snapshot
+           AND q.requested_payload IS NOT DISTINCT FROM v_requested_payload) THEN
       RAISE EXCEPTION 'D1 Class assignment correction receipt is not replayable';
     END IF;
     RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint; RETURN;
@@ -15306,9 +15305,9 @@ BEGIN
      expected_target_version,reason,old_snapshot,requested_payload,created_by)
   VALUES (new_request,ctx.operation_id,1,policy_row.policy_id,ctx.actor_id,
     policy_row.campus_id,p_section_offering_id,p_expected_section_version,p_reason,
-    old_snapshot,requested_payload,ctx.actor_id);
+    v_old_snapshot,v_requested_payload,ctx.actor_id);
   UPDATE app_private.approval_requests SET state='SUBMITTED',
-    submitted_at=pg_catalog.statement_timestamp() WHERE id=new_request;
+    submitted_at=pg_catalog.statement_timestamp() WHERE approval_requests.id=new_request;
   FOR template_row IN SELECT t.id,t.step_number,t.required_reviews
     FROM app_private.approval_step_templates t WHERE t.policy_id=policy_row.policy_id
     ORDER BY t.step_number LOOP
@@ -15320,10 +15319,10 @@ BEGIN
       template_row.required_reviews,ctx.actor_id);
   END LOOP;
   IF first_step IS NULL THEN RAISE EXCEPTION 'D1 Class assignment policy has no first step'; END IF;
-  UPDATE app_private.approval_requests SET state='PENDING' WHERE id=new_request
-    RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state='PENDING' WHERE approval_requests.id=new_request
+    RETURNING approval_requests.row_version INTO final_version;
   UPDATE app_private.approval_request_steps SET state='OPEN',
-    opened_at=pg_catalog.statement_timestamp() WHERE id=first_step;
+    opened_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=first_step;
   INSERT INTO app_private.approval_step_reviewers
     (step_id,reviewer_id,assignment_reason,created_by)
   SELECT first_step,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -15442,11 +15441,11 @@ BEGIN
     p_expected_request_version,ctx.actor_id);
   UPDATE app_private.approval_request_steps SET
     state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
-    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+    closed_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=step_row.id;
   IF p_decision='REJECT' THEN
     UPDATE app_private.approval_request_steps SET state='CANCELLED',
       closed_at=pg_catalog.statement_timestamp()
-     WHERE request_id=p_request_id AND state='WAITING';
+     WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING';
     final_state:='REJECTED';
   ELSE
     SELECT * INTO next_step FROM app_private.approval_request_steps s
@@ -15454,7 +15453,7 @@ BEGIN
        AND s.state='WAITING' FOR UPDATE;
     IF FOUND THEN
       UPDATE app_private.approval_request_steps SET state='OPEN',
-        opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+        opened_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=next_step.id;
       INSERT INTO app_private.approval_step_reviewers
         (step_id,reviewer_id,assignment_reason,created_by)
       SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -15464,14 +15463,14 @@ BEGIN
       final_state:='PENDING';
     ELSE final_state:='APPROVED'; END IF;
   END IF;
-  UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
-    RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state=final_state WHERE approval_requests.id=p_request_id
+    RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_teaching_class_assignment_receipt(
     'request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
     'D1_TEACHING_CLASS_ASSIGNMENT_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions
@@ -15626,7 +15625,7 @@ BEGIN
       source_employee,effect_row.employee_id,receipt,effect_row.section_version,
       effect_row.effective_from,NULL,correlation);
   END IF;
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)

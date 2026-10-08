@@ -1,5 +1,9 @@
 # Codex Project Context - School OS SaaS v0.2
 
+## Current engineering handoff — 2026-10-05
+
+Complete and validate the database before Flutter and application modules, including defined future database features. Use [AGENTS.md](AGENTS.md) for current authorization and [database completion matrix](docs/database/DATABASE_COMPLETION_MATRIX.md) for exact coverage/status. Foundation is validated. D1 Migration 10 remains a non-executable draft, but its **disposable local D1C2A runtime baseline passes at `ff4b612eefa77f25e1fe1220eeff8f25ad`** (PR #2; local runtime Actions #70 / `37793587538`). The local gate applies 197 draft fragments and passes 135 incremental D1 business assertions, three concurrency races and 220 frozen Foundation regression assertions. Full D1 business acceptance, populated upgrade, Admissions implementation and later database packages remain open. Later domains are not implemented merely because this product-context document describes them. Database-first sequencing does not authorize production/staging deployment or select unresolved vendor/privacy/commercial policies.
+
 ## Mission
 
 Build a commercially distributable, secure, configurable **School Operating System SaaS** for schools from Play Group/Nursery through Grade 12. The system must handle multiple campuses, retain historical records, support strict role/scope permissions, use approval workflows for sensitive changes, work offline where required, and remain extensible to future hardware and AI capabilities.

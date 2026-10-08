@@ -38,7 +38,7 @@ BEGIN
       RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,p_predecessor,'D1_ENROLLMENT_PLACE_PREDECESSOR_NOT_LATEST'; RETURN; END IF;
   END IF;
   SELECT count(*) INTO overlap_count FROM app_private.enrollments e WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
-    AND p_effective_from<pg_catalog.coalesce(e.effective_until,'infinity'::date);
+    AND p_effective_from<COALESCE(e.effective_until,'infinity'::date);
   IF overlap_count<>0 THEN
     RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,p_predecessor,'D1_ENROLLMENT_PLACE_PRIMARY_OVERLAP'; RETURN; END IF;
   RETURN QUERY SELECT s.row_version,s.current_status,d.school_id,d.campus_id,d.academic_year_id,d.class_offering_id,d.class_id,d.section_id,d.class_capacity,d.section_capacity,p_predecessor,NULL::text;
@@ -97,7 +97,7 @@ BEGIN
       1+(SELECT count(*) FROM app_private.enrollments e WHERE e.section_offering_id=p_section AND e.placement_kind='PRIMARY'
             AND e.effective_from<=b.d AND (e.effective_until IS NULL OR b.d<e.effective_until)) AS section_n
     FROM breakpoints b WHERE b.d IS NOT NULL
-  ) SELECT pg_catalog.coalesce(max(class_n),1)::integer,pg_catalog.coalesce(max(section_n),1)::integer INTO cc,sc FROM counts;
+  ) SELECT COALESCE(max(class_n),1)::integer,COALESCE(max(section_n),1)::integer INTO cc,sc FROM counts;
   RETURN QUERY SELECT cl,sl,cc,sc,(cc>cl),(sc>sl);
 END $body$;
 RESET ROLE;

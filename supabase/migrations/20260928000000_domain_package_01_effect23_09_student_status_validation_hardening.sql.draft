@@ -19,14 +19,14 @@ BEGIN
   IF NOT FOUND OR st.new_status IS DISTINCT FROM s.current_status THEN
     RETURN QUERY SELECT s.row_version,s.current_status,NULL::uuid,NULL::date,NULL::bigint,NULL::uuid,NULL::date,'D1_STUDENT_STATUS_PROJECTION_DIVERGED'; RETURN; END IF;
   SELECT count(*) INTO n FROM app_private.enrollments x WHERE x.student_id=p_student AND x.placement_kind='PRIMARY'
-    AND x.placement_state='ACTIVE' AND x.effective_from<=pg_catalog.current_date() AND x.effective_until IS NULL;
+    AND x.placement_state='ACTIVE' AND x.effective_from<=CURRENT_DATE AND x.effective_until IS NULL;
   IF n>1 THEN RETURN QUERY SELECT s.row_version,s.current_status,st.id,st.effective_on,st.sequence_number,NULL::uuid,NULL::date,
     'D1_STUDENT_STATUS_ACTIVE_PLACEMENT_AMBIGUOUS'; RETURN; END IF;
   IF n=1 THEN
     SELECT * INTO e FROM app_private.enrollments x WHERE x.student_id=p_student AND x.placement_kind='PRIMARY'
-      AND x.placement_state='ACTIVE' AND x.effective_from<=pg_catalog.current_date() AND x.effective_until IS NULL FOR UPDATE;
+      AND x.placement_state='ACTIVE' AND x.effective_from<=CURRENT_DATE AND x.effective_until IS NULL FOR UPDATE;
     PERFORM r.id FROM app_private.roll_allocations r WHERE r.student_id=p_student AND r.enrollment_id=e.id
-      AND r.effective_from<=pg_catalog.current_date() AND r.effective_until IS NULL ORDER BY r.id FOR UPDATE;
+      AND r.effective_from<=CURRENT_DATE AND r.effective_until IS NULL ORDER BY r.id FOR UPDATE;
   END IF;
   RETURN QUERY SELECT s.row_version,s.current_status,st.id,st.effective_on,st.sequence_number,e.id,e.effective_from,NULL::text;
 END $body$;

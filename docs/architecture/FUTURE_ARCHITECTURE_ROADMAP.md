@@ -1,6 +1,6 @@
 # Future Architecture Roadmap
 
-These features are **not current implementation commitments**. They are listed so today's architecture does not unnecessarily block them.
+The 2026-10-05 database-first instruction brings the defined future **database designs** into current scope; track them in the [database completion matrix](../database/DATABASE_COMPLETION_MATRIX.md). Hardware, vendor adapters and application services remain later implementation. Complete the data contracts without inventing unresolved privacy, retention or provider choices.
 
 ## 1. Attendance hardware ecosystem
 

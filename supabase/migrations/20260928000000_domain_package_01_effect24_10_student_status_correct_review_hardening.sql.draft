@@ -42,24 +42,24 @@ BEGIN
     THEN RAISE EXCEPTION 'D1 Student status correction reviewer authority denied'; END IF;
   INSERT INTO app_private.approval_reviews(reviewer_assignment_id,step_id,reviewer_id,decision,reason,expected_request_version,created_by)
   VALUES (assignment_id,step_row.id,ctx.actor_id,p_decision,pg_catalog.btrim(p_reason),p_expected_request_version,ctx.actor_id);
-  UPDATE app_private.approval_request_steps SET state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+  UPDATE app_private.approval_request_steps SET state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,closed_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=step_row.id;
   IF p_decision='REJECT' THEN
-    UPDATE app_private.approval_request_steps SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp() WHERE request_id=p_request_id AND state='WAITING';
-    final_state:='REJECTED'; UPDATE app_private.approval_requests SET state='REJECTED',decided_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+    UPDATE app_private.approval_request_steps SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING';
+    final_state:='REJECTED'; UPDATE app_private.approval_requests SET state='REJECTED' WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
   ELSE
     SELECT s.* INTO next_step FROM app_private.approval_request_steps s WHERE s.request_id=p_request_id AND s.step_number=step_row.step_number+1 AND s.state='WAITING' FOR UPDATE;
-    IF next_step.id IS NOT NULL THEN UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+    IF next_step.id IS NOT NULL THEN UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=next_step.id;
       INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
         SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id FROM app_private.d1_student_status_correct_candidates(p_request_id,next_step.id) c;
       GET DIAGNOSTICS candidate_count=ROW_COUNT; IF candidate_count=0 THEN RAISE EXCEPTION 'D1 Student status correction next step has no reviewer'; END IF;
-      final_state:='PENDING'; UPDATE app_private.approval_requests SET row_version=row_version+1,updated_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+      final_state:='PENDING'; UPDATE app_private.approval_requests SET row_version=approval_requests.row_version+1,updated_at=pg_catalog.statement_timestamp() WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     ELSE IF EXISTS (SELECT 1 FROM app_private.approval_request_steps s WHERE s.request_id=p_request_id AND s.state<>'APPROVED') THEN RAISE EXCEPTION 'D1 Student status correction approval sequence incomplete'; END IF;
-      final_state:='APPROVED'; UPDATE app_private.approval_requests SET state='APPROVED',decided_at=pg_catalog.statement_timestamp() WHERE id=p_request_id RETURNING row_version INTO final_version;
+      final_state:='APPROVED'; UPDATE app_private.approval_requests SET state='APPROVED' WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     END IF;
   END IF;
   receipt:=app_private.d1_student_status_correct_receipt('request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_STATUS_CORRECT_REVIEW',p_request_id,pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  IF final_state IN ('APPROVED','REJECTED') THEN SELECT pg_catalog.coalesce(max(sequence_number),0)+1 INTO seq FROM app_private.approval_transitions WHERE request_id=p_request_id;
+  IF final_state IN ('APPROVED','REJECTED') THEN SELECT COALESCE(max(sequence_number),0)+1 INTO seq FROM app_private.approval_transitions WHERE approval_transitions.request_id=p_request_id;
     INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
     VALUES (p_request_id,seq,'PENDING',final_state,'D1_STUDENT_STATUS_CORRECT_'||final_state,receipt,ctx.actor_id); END IF;
   PERFORM app_private.d1_student_status_correct_audit(ctx.actor_id,'REVIEW',req.target_ref,source_id,NULL,receipt,p_request_id,req.expected_target_version,new_status,new_date,final_state,pg_catalog.gen_random_uuid());

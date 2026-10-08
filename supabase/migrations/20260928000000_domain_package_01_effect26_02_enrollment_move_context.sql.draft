@@ -82,8 +82,8 @@ BEGIN
       path.destination_campus_id,path.destination_year_id,path.destination_class_offering_id,path.destination_class_capacity,path.destination_section_capacity,path.error_code; RETURN; END IF;
   SELECT count(*) INTO other_count FROM app_private.enrollments e
    WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.id<>p_source_enrollment
-     AND e.effective_from<pg_catalog.coalesce(e.effective_until,'infinity'::date)
-     AND p_effective_from<pg_catalog.coalesce(e.effective_until,'infinity'::date);
+     AND e.effective_from<COALESCE(e.effective_until,'infinity'::date)
+     AND p_effective_from<COALESCE(e.effective_until,'infinity'::date);
   IF other_count<>0 THEN
     RETURN QUERY SELECT s.row_version,src.section_offering_id,NULL::uuid,path.school_id,path.source_campus_id,path.source_year_id,path.source_class_offering_id,
       path.destination_campus_id,path.destination_year_id,path.destination_class_offering_id,path.destination_class_capacity,path.destination_section_capacity,'D1_ENROLLMENT_MOVE_PRIMARY_OVERLAP'; RETURN; END IF;

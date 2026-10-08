@@ -1,12 +1,12 @@
   UPDATE app_private.approval_request_steps SET
     state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
     closed_at=pg_catalog.statement_timestamp()
-   WHERE id=step_row.id;
+   WHERE approval_request_steps.id=step_row.id;
 
   IF p_decision='REJECT' THEN
     UPDATE app_private.approval_request_steps SET
       state='CANCELLED',closed_at=pg_catalog.statement_timestamp()
-     WHERE request_id=p_request_id AND state='WAITING';
+     WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING';
     final_state:='REJECTED';
   ELSE
     SELECT * INTO next_step FROM app_private.approval_request_steps s
@@ -15,7 +15,7 @@
     IF FOUND THEN
       UPDATE app_private.approval_request_steps SET
         state='OPEN',opened_at=pg_catalog.statement_timestamp()
-       WHERE id=next_step.id;
+       WHERE approval_request_steps.id=next_step.id;
       INSERT INTO app_private.approval_step_reviewers
         (step_id,reviewer_id,assignment_reason,created_by)
       SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -32,7 +32,7 @@
   END IF;
 
   UPDATE app_private.approval_requests SET state=final_state
-   WHERE id=p_request_id RETURNING row_version INTO final_version;
+   WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
 
   receipt:=app_private.d1_teaching_subject_assignment_receipt(
     'request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
@@ -40,7 +40,7 @@
     'D1_TEACHING_SUBJECT_ASSIGNMENT_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
 
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions

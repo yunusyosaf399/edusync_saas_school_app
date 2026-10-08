@@ -48,7 +48,8 @@ BEGIN
        OR NOT app_private.d1_employee_identity_authorized(
          ctx.actor_id,'employee.identity.approve',req.target_ref,reviewer_role)
        OR ctx.receipt_state<>'SUCCEEDED'
-       OR ctx.result_kind IS DISTINCT FROM 'D1_EMPLOYEE_IDENTITY_REVIEW'
+       OR NOT EXISTS (SELECT 1 FROM app_private.command_receipts cr
+          WHERE cr.id=ctx.receipt_id AND cr.result_kind='D1_EMPLOYEE_IDENTITY_REVIEW')
        OR ctx.result_ref IS DISTINCT FROM p_request_id
        OR ctx.result_summary IS NULL
        OR pg_catalog.jsonb_typeof(ctx.result_summary)<>'object'
@@ -103,12 +104,12 @@ BEGIN
     p_expected_request_version,ctx.actor_id);
   UPDATE app_private.approval_request_steps SET
     state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
-    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+    closed_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=step_row.id;
 
   IF p_decision='REJECT' THEN
     UPDATE app_private.approval_request_steps SET state='CANCELLED',
       closed_at=pg_catalog.statement_timestamp()
-     WHERE request_id=p_request_id AND state='WAITING';
+     WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING';
     final_state:='REJECTED';
   ELSE
     SELECT s.* INTO next_step FROM app_private.approval_request_steps s
@@ -116,7 +117,7 @@ BEGIN
        AND s.state='WAITING' FOR UPDATE;
     IF FOUND THEN
       UPDATE app_private.approval_request_steps SET state='OPEN',
-        opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+        opened_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=next_step.id;
       INSERT INTO app_private.approval_step_reviewers
         (step_id,reviewer_id,assignment_reason,created_by)
       SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
@@ -133,14 +134,14 @@ BEGIN
     END IF;
   END IF;
 
-  UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id
-   RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state=final_state WHERE approval_requests.id=p_request_id
+   RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_employee_identity_receipt(
     'request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED',
     'D1_EMPLOYEE_IDENTITY_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0) INTO sequence_no
+  SELECT COALESCE(max(t.sequence_number),0) INTO sequence_no
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN
     INSERT INTO app_private.approval_transitions

@@ -107,7 +107,11 @@ BEGIN
   RETURN QUERY SELECT req.id,req.state,req.row_version,req.target_ref,req.expected_target_version,
     req.old_snapshot->>'current_status',req.requested_payload->>'new_status',NULLIF(req.requested_payload->>'effective_on','')::date,
     NULLIF(req.old_snapshot->>'source_transition_id','')::uuid,NULLIF(req.old_snapshot->>'enrollment_id','')::uuid,
-    req.created_at,req.decided_at,req.executed_at;
+    req.created_at,
+    (SELECT max(t.created_at) FROM app_private.approval_transitions t
+      WHERE t.request_id=p_request_id AND t.to_state IN ('APPROVED','REJECTED')),
+    (SELECT a.created_at FROM app_private.approval_applications a
+      WHERE a.request_id=p_request_id);
 END $body$;
 REVOKE ALL ON FUNCTION app.d1_read_student_status_request(uuid) FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app.d1_read_student_status_request(uuid) TO authenticated;

@@ -31,7 +31,7 @@ CREATE FUNCTION app_private.d1_enrollment_end_result_rows_match_exact(
   p_effective_from date,p_effective_until date,p_summary jsonb
 ) RETURNS boolean
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE roll_id uuid; class_id uuid; campus_id uuid; year_id uuid; summary_version bigint;
+DECLARE v_roll_id uuid; v_class_id uuid; v_campus_id uuid; v_year_id uuid; summary_version bigint;
 BEGIN
   IF p_student IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1
      OR p_enrollment IS NULL OR p_section IS NULL OR p_effective_from IS NULL OR p_effective_until IS NULL
@@ -41,16 +41,16 @@ BEGIN
        'class_offering_id','campus_id','academic_year_id','effective_until'])
   THEN RETURN false; END IF;
   BEGIN
-    roll_id:=NULLIF(p_summary->>'roll_allocation_id','')::uuid;
-    class_id:=NULLIF(p_summary->>'class_offering_id','')::uuid;
-    campus_id:=NULLIF(p_summary->>'campus_id','')::uuid;
-    year_id:=NULLIF(p_summary->>'academic_year_id','')::uuid;
+    v_roll_id:=NULLIF(p_summary->>'roll_allocation_id','')::uuid;
+    v_class_id:=NULLIF(p_summary->>'class_offering_id','')::uuid;
+    v_campus_id:=NULLIF(p_summary->>'campus_id','')::uuid;
+    v_year_id:=NULLIF(p_summary->>'academic_year_id','')::uuid;
     summary_version:=NULLIF(p_summary->>'student_version','')::bigint;
     IF NULLIF(p_summary->>'enrollment_id','')::uuid IS DISTINCT FROM p_enrollment
        OR NULLIF(p_summary->>'section_offering_id','')::uuid IS DISTINCT FROM p_section
        OR NULLIF(p_summary->>'effective_until','')::date IS DISTINCT FROM p_effective_until
        OR summary_version IS DISTINCT FROM p_expected_student_version
-       OR roll_id IS NULL OR class_id IS NULL OR campus_id IS NULL OR year_id IS NULL
+       OR v_roll_id IS NULL OR v_class_id IS NULL OR v_campus_id IS NULL OR v_year_id IS NULL
     THEN RETURN false; END IF;
   EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow OR numeric_value_out_of_range THEN
     RETURN false;
@@ -65,10 +65,10 @@ BEGIN
          AND e.effective_from=p_effective_from AND e.effective_until=p_effective_until
          AND e.end_reason IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(e.end_reason))>0
          AND e.ended_at IS NOT NULL AND e.ended_by IS NOT NULL
-         AND co.id=class_id AND co.campus_id=campus_id AND co.academic_year_id=year_id)
+         AND co.id=v_class_id AND co.campus_id=v_campus_id AND co.academic_year_id=v_year_id)
      OR NOT EXISTS (
       SELECT 1 FROM app_private.roll_allocations r
-       WHERE r.id=roll_id AND r.enrollment_id=p_enrollment AND r.student_id=p_student
+       WHERE r.id=v_roll_id AND r.enrollment_id=p_enrollment AND r.student_id=p_student
          AND r.effective_until=p_effective_until AND r.ended_at IS NOT NULL AND r.ended_by IS NOT NULL)
   THEN RETURN false; END IF;
   RETURN true;
@@ -204,11 +204,11 @@ BEGIN
       invalidation_code:='D1_ENROLLMENT_END_SOURCE_ROLL_STALE'; END IF;
   END IF;
   IF invalidation_code IS NOT NULL THEN
-    UPDATE app_private.approval_requests SET state='INVALIDATED' WHERE id=p_request_id RETURNING row_version INTO final_version;
+    UPDATE app_private.approval_requests SET state='INVALIDATED' WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     receipt:=app_private.d1_enrollment_end_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
       req.expected_target_version,p_request_id,p_expected_request_version,'REJECTED',NULL,NULL,
       pg_catalog.jsonb_build_object('request_version',final_version,'state','INVALIDATED'),invalidation_code);
-    SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+    SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
     INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
     VALUES (p_request_id,seq,'APPROVED','INVALIDATED',invalidation_code,receipt,ctx.actor_id);
     PERFORM app_private.d1_enrollment_end_audit(ctx.actor_id,'APPLY',req.target_ref,source_enrollment,receipt,p_request_id,
@@ -221,14 +221,14 @@ BEGIN
   summary:=pg_catalog.jsonb_build_object('enrollment_id',eff.enrollment_id,'roll_allocation_id',eff.source_roll_id,
     'student_version',eff.student_version,'section_offering_id',eff.section_id,'class_offering_id',eff.class_offering_id,
     'campus_id',eff.campus_id,'academic_year_id',eff.academic_year_id,'effective_until',effective_until);
-  UPDATE app_private.approval_requests SET state='EXECUTED',executed_at=pg_catalog.statement_timestamp()
-    WHERE id=p_request_id RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state='EXECUTED'
+    WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_enrollment_end_receipt('request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_ENROLLMENT_END',eff.enrollment_id,
     summary||pg_catalog.jsonb_build_object('request_version',final_version,'state','EXECUTED'),NULL);
   INSERT INTO app_private.approval_applications(request_id,command_receipt_id,operation_id,applied_target_version,result_ref,created_by)
   VALUES (p_request_id,receipt,ctx.operation_id,req.expected_target_version,eff.enrollment_id,ctx.actor_id);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+  SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions(request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
   VALUES (p_request_id,seq,'APPROVED','EXECUTED','Enrollment end applied',receipt,ctx.actor_id);
   PERFORM app_private.d1_enrollment_end_audit(ctx.actor_id,'APPLY',req.target_ref,eff.enrollment_id,receipt,p_request_id,

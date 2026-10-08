@@ -5,6 +5,21 @@
 -- retroactive CORRECT P2; exact Section+Subject context; kind may change on CORRECT;
 -- PRIMARY uniqueness, CO_TEACHER coexistence, bounded SUBSTITUTE; no self-assignment.
 
+-- The public P0 command is owned by the Teaching executor and begins with the
+-- shared typed receipt lookup, whose owner keeps its EXECUTE allowlist private.
+SET ROLE schoolos_evidence_writer;
+GRANT EXECUTE ON FUNCTION app_private.d1_command_receipt_lookup(text,text,text,jsonb)
+  TO schoolos_teaching_executor;
+RESET ROLE;
+SET ROLE schoolos_identity_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_lock_current_principal(uuid)
+  TO schoolos_teaching_executor;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION app_private.d1_teacher_capability_covers_interval(uuid,date,date)
+  TO schoolos_teaching_executor,schoolos_workflow_executor;
+RESET ROLE;
+
 -- Relation 34 overlap identity remains Employee+Section+Subject+kind, but correction
 -- lineage retains Section+Subject only so an approved CORRECT may change kind.
 SET ROLE schoolos_schema_owner;

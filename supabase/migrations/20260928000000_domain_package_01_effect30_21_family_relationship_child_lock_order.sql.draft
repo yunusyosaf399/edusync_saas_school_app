@@ -47,8 +47,8 @@ BEGIN
     SELECT 1 FROM app_private.family_relationships r
      WHERE r.id=p_source AND r.student_id=p_student AND r.family_id=p_family
        AND r.adult_person_id IS NOT DISTINCT FROM source_person)
-    OR source_family IS DISTINCT FROM CASE WHEN p_source IS NULL THEN source_family ELSE p_family END
-    OR source_student IS DISTINCT FROM CASE WHEN p_source IS NULL THEN source_student ELSE p_student END THEN
+    OR source_family IS DISTINCT FROM (CASE WHEN p_source IS NULL THEN source_family ELSE p_family END)
+    OR source_student IS DISTINCT FROM (CASE WHEN p_source IS NULL THEN source_student ELSE p_student END) THEN
     RAISE EXCEPTION 'D1 Family relationship source ancestry changed';
   END IF;
   IF p_primary_replacement IS NOT NULL AND NOT EXISTS (

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from contextlib import contextmanager
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 from _process import CommandFailure, run
+from domain_business_ci import run_business_tests
+from domain_concurrency_ci import run_concurrency_tests
 from domain_draft_guard import EXPECTED_TABLES, ROOT, discover_drafts, inspect as inspect_draft
 from domain_function_final_guard import inspect as inspect_function_final
 from foundation_guard import inspect_local_config, inspect_source, load_contract
@@ -15,6 +19,7 @@ from foundation_local_ci import cli_version, ensure_local_auth_route, parse_tap
 from prepare_local_auth_fixtures import local_status, prepare
 
 EXPECTED_PROJECT_ID = "saas_OS_school_app"
+EXPECTED_POSTGRES_TAG = "17.6.1.113"
 D1_EXECUTOR_ROLES = (
     "schoolos_academic_executor",
     "schoolos_student_executor",
@@ -73,6 +78,22 @@ EXPECTED_RUNTIME_METRICS = {
 class DomainLocalCIError(RuntimeError):
     pass
 
+@contextmanager
+def local_postgres_image_pin(root: Path = ROOT):
+    """CLI 2.98.2 reads this transient tag; restore any prior cache bytes."""
+    path = Path(root) / "supabase/.temp/postgres-version"
+    previous = path.read_bytes() if path.exists() else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text(EXPECTED_POSTGRES_TAG, encoding="utf-8")
+        yield
+    finally:
+        if previous is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(previous)
+
+
 
 def local_project_id(root: Path = ROOT) -> str:
     path = Path(root) / "supabase/config.toml"
@@ -120,7 +141,8 @@ def run_psql(container: str, sql: str, label: str, *, tuples: bool = False, time
         raise DomainLocalCIError("LOCAL_DB_CONTAINER_MISMATCH")
     args = [
         "docker", "exec", "-i", container, "psql",
-        "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres",
+        "-X", "-q", "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=verbose",
+        "-U", "postgres", "-d", "postgres", "-f", "-",
     ]
     if tuples:
         args.extend(["-A", "-t", "-F", "\t"])
@@ -139,6 +161,29 @@ def run_psql(container: str, sql: str, label: str, *, tuples: bool = False, time
         detail = _safe_tail((result.stderr or "") + "\n" + (result.stdout or ""))
         raise DomainLocalCIError(label + "_FAIL exit=" + str(result.returncode) + "\n" + detail)
     return result.stdout
+
+
+def run_local_lint(level: str) -> None:
+    """Expose structured local lint issues without logging connection/auth output."""
+    if level not in ("error", "warning"):
+        raise DomainLocalCIError("LOCAL_LINT_LEVEL_INVALID")
+    result = subprocess.run(
+        ["supabase", "db", "lint", "--local", "--level", level, "--fail-on", "error"],
+        cwd=ROOT, text=True, capture_output=True, timeout=300,
+    )
+    if result.returncode:
+        details = []
+        try:
+            report = json.loads(result.stdout)
+            for item in report:
+                for issue in item.get("issues", []):
+                    if issue.get("level") == "error":
+                        details.append({"function": item.get("function"),
+                            "message": issue.get("message"), "sqlState": issue.get("sqlState"),
+                            "statement": issue.get("statement")})
+        except (ValueError, TypeError, AttributeError):
+            pass
+        raise DomainLocalCIError("LOCAL_LINT_FAIL " + level + " " + json.dumps(details))
 
 
 def runtime_probe_sql() -> str:
@@ -179,15 +224,20 @@ d1_functions AS (
     FROM pg_catalog.pg_proc p
     JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
     JOIN pg_catalog.pg_roles r ON r.oid = p.proowner
-    WHERE n.nspname IN ('app','app_private') AND left(p.proname,3) = 'd1_'
+    -- Match the final-state source guard, including the two Foundation trigger
+    -- helpers explicitly extended by Migration 10.
+    WHERE n.nspname IN ('app','app_private') AND (left(p.proname,3) = 'd1_'
+      OR (n.nspname = 'app_private' AND p.proname IN
+        ('guard_assignment_permission_scopes','guard_scope_interval')))
 ),
 role_memberships AS (
-    SELECT target.rolname
+    -- Membership grants can have multiple grantors; count role/member pairs.
+    SELECT DISTINCT target.rolname
     FROM pg_catalog.pg_auth_members m
     JOIN pg_catalog.pg_roles target ON target.oid = m.roleid
     JOIN pg_catalog.pg_roles member_role ON member_role.oid = m.member
     JOIN expected_roles e ON e.name = target.rolname
-    WHERE member_role.rolname = 'postgres'
+    WHERE member_role.rolname = 'postgres' AND m.set_option
 ),
 metrics(key,value) AS (
     SELECT 'postgres_major', (current_setting('server_version_num')::integer / 10000)::text
@@ -255,9 +305,13 @@ def validate_runtime_probe(observed: dict[str, int]) -> None:
         raise DomainLocalCIError("RUNTIME_CATALOG_DRIFT " + str(drift))
 
 
-def run_foundation_regression(contract: dict) -> int:
+def run_foundation_regression(contract: dict, *, catalog_only: bool = False) -> int:
+    # The frozen catalog test describes the nine-migration baseline (33 tables,
+    # 12 roles and six read RPCs). Run it before D1; run behavior tests after D1.
+    selected = [item for item in contract["frozen_foundation"]["database_tests"]
+        if (item["file"] == "01_foundation_catalog.sql") == catalog_only]
     total = 0
-    for item in contract["frozen_foundation"]["database_tests"]:
+    for item in selected:
         path = "supabase/tests/database/" + item["file"]
         result = subprocess.run(
             ["supabase", "test", "db", path, "--local"],
@@ -271,13 +325,13 @@ def run_foundation_regression(contract: dict) -> int:
         count = parse_tap(result.stdout + "\n" + result.stderr, item["assertions"])
         total += count
         print("D1C2A_FOUNDATION_TEST_PASS " + item["file"] + " " + str(count) + "/" + str(count))
-    expected = contract["frozen_foundation"]["expected_tap_assertions"]
+    expected = sum(item["assertions"] for item in selected)
     if total != expected:
         raise DomainLocalCIError("FOUNDATION_TAP_TOTAL_MISMATCH " + str(total))
     return total
 
 
-def main() -> int:
+def _main() -> int:
     started = False
     try:
         contract = load_contract()
@@ -310,8 +364,18 @@ def main() -> int:
             started = True
             print("D1C2A_LOCAL_STACK_STARTED")
         local_status()
+        image = run(["docker", "inspect", "--format", "{{.Config.Image}}",
+            "supabase_db_" + project_id], cwd=ROOT, timeout=20).strip()
+        allowed_images = {"supabase/postgres:" + EXPECTED_POSTGRES_TAG,
+            "ghcr.io/supabase/postgres:" + EXPECTED_POSTGRES_TAG,
+            "public.ecr.aws/supabase/postgres:" + EXPECTED_POSTGRES_TAG}
+        if image not in allowed_images:
+            raise DomainLocalCIError("LOCAL_POSTGRES_IMAGE_MISMATCH")
+        print("D1_POSTGRES_IMAGE_PASS " + image + " default permission hints")
         run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=ROOT, timeout=900)
         print("D1C2A_FOUNDATION_RESET_PASS nine frozen migrations, no seed")
+        baseline_assertions = run_foundation_regression(contract, catalog_only=True)
+        print("D1C2A_FOUNDATION_BASELINE_CATALOG_PASS " + str(baseline_assertions))
 
         drafts, sql = assemble_draft_chain(ROOT)
         container = "supabase_db_" + project_id
@@ -337,16 +401,34 @@ def main() -> int:
         print("D1C2A_AUTH_FIXTURES_PASS 5/5")
 
         for level in ("error", "warning"):
-            run(["supabase", "db", "lint", "--local", "--level", level, "--fail-on", "error"], cwd=ROOT, timeout=300)
+            run_local_lint(level)
             print("D1C2A_LINT_PASS " + level)
 
-        total = run_foundation_regression(contract)
-        print("D1C2A_FOUNDATION_REGRESSION_PASS 9 files / " + str(total) + "/" + str(total))
+        total = baseline_assertions + run_foundation_regression(contract)
+        if total != contract["frozen_foundation"]["expected_tap_assertions"]:
+            raise DomainLocalCIError("FOUNDATION_TAP_TOTAL_MISMATCH " + str(total))
+        print("D1C2A_FOUNDATION_REGRESSION_PASS 1 baseline catalog + 8 post-D1 behavior files / " + str(total) + "/" + str(total))
+        run_business_tests()
+        run_concurrency_tests(container, run_psql)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
     except (ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print("D1C2A_FAIL " + str(exc), file=sys.stderr)
+        if started:
+            try:
+                diagnostic = subprocess.run(
+                    ["docker", "logs", "--tail", "200",
+                     "supabase_db_" + EXPECTED_PROJECT_ID],
+                    cwd=ROOT, text=True, capture_output=True, timeout=20,
+                )
+                for line in (diagnostic.stdout + "\n" + diagnostic.stderr).splitlines():
+                    if re.search(r"terminated by signal|segmentation|PANIC|FATAL|server process|out of memory|reinitializing|assertion", line, re.I):
+                        line = re.sub(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[REDACTED_JWT]", line)
+                        line = re.sub(r"postgres(?:ql)?://[^\s]+", "[REDACTED_DSN]", line)
+                        print("D1_DB_DIAGNOSTIC " + line, file=sys.stderr)
+            except (OSError, subprocess.TimeoutExpired):
+                print("D1_DB_DIAGNOSTIC_UNAVAILABLE", file=sys.stderr)
         return 1
     finally:
         if started:
@@ -355,6 +437,11 @@ def main() -> int:
                 print("D1C2A_LOCAL_STACK_STOPPED")
             except CommandFailure:
                 print("D1C2A_LOCAL_STACK_STOP_FAILED", file=sys.stderr)
+
+
+def main() -> int:
+    with local_postgres_image_pin():
+        return _main()
 
 
 if __name__ == "__main__":

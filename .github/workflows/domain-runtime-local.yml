@@ -10,6 +10,7 @@ on:
       - 'supabase/migrations/20260928000000_domain_package_01*.sql.draft'
       - 'supabase/migrations/20260924*.sql'
       - 'supabase/tests/database/**'
+      - 'supabase/tests/domain/**'
       - 'supabase/config/**'
       - 'supabase/config.toml'
       - 'tools/supabase/**'
@@ -22,6 +23,7 @@ on:
       - 'supabase/migrations/20260928000000_domain_package_01*.sql.draft'
       - 'supabase/migrations/20260924*.sql'
       - 'supabase/tests/database/**'
+      - 'supabase/tests/domain/**'
       - 'supabase/config/**'
       - 'supabase/config.toml'
       - 'tools/supabase/**'
@@ -39,7 +41,7 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: 2.98.2
-      - name: D1C2A harness unit tests
-        run: python -m unittest discover -s tools/supabase/tests -p 'test_domain_local_ci.py' -v
+      - name: D1 local harness and acceptance tooling unit tests
+        run: python -m unittest discover -s tools/supabase/tests -p 'test_domain_*ci.py' -v
       - name: D1C2A disposable local runtime baseline
         run: python tools/supabase/domain_local_ci.py

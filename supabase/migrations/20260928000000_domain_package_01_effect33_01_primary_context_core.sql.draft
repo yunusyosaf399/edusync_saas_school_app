@@ -180,7 +180,7 @@ CREATE FUNCTION app_private.d1_family_primary_context_preflight(
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE locks record; src app_private.student_primary_family_contexts%ROWTYPE;
   target app_private.family_relationships%ROWTYPE; target_family_state text;
-  current_count bigint; current_id uuid; overlaps bigint;
+  current_count bigint; current_id uuid; overlap_count bigint;
 BEGIN
   IF p_student IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1
      OR p_action IS NULL OR p_action NOT IN ('SELECT','END','CORRECT')
@@ -249,11 +249,11 @@ BEGIN
        AND (p_action='SELECT' OR (p_action='CORRECT' AND p_effective_until IS NULL)) THEN
       RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_NOOP',src.effective_from,target.family_id; RETURN;
     END IF;
-    SELECT count(*) INTO overlaps FROM app_private.student_primary_family_contexts c
+    SELECT count(*) INTO overlap_count FROM app_private.student_primary_family_contexts c
      WHERE c.student_id=p_student AND (p_source_context IS NULL OR c.id<>p_source_context)
-       AND c.effective_from<pg_catalog.coalesce(p_effective_until,'infinity'::date)
-       AND p_effective_on<pg_catalog.coalesce(c.effective_until,'infinity'::date);
-    IF overlaps<>0 THEN
+       AND c.effective_from<COALESCE(p_effective_until,'infinity'::date)
+       AND p_effective_on<COALESCE(c.effective_until,'infinity'::date);
+    IF overlap_count<>0 THEN
       RETURN QUERY SELECT false,'D1_FAMILY_PRIMARY_CONTEXT_OVERLAP',
         CASE WHEN p_source_context IS NULL THEN NULL ELSE src.effective_from END,target.family_id; RETURN;
     END IF;

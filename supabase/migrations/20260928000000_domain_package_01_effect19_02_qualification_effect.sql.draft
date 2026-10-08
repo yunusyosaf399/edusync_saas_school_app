@@ -140,7 +140,7 @@ BEGIN
   END IF;
   SELECT * INTO src FROM app_private.employee_qualifications q WHERE q.id=p_source FOR UPDATE;
   UPDATE app_private.employee_qualifications SET effective_until=accepted_at,ended_at=accepted_at,ended_by=p_actor
-   WHERE id=src.id AND effective_until IS NULL;
+   WHERE employee_qualifications.id=src.id AND employee_qualifications.effective_until IS NULL;
   IF NOT FOUND THEN RAISE EXCEPTION 'D1 Employee qualification source changed'; END IF;
   IF p_action='ARCHIVE' THEN
     RETURN QUERY SELECT src.id,src.qualification_record_id,src.effective_from,accepted_at; RETURN;

@@ -115,19 +115,19 @@ BEGIN
       req.target_ref,req.expected_target_version,family_id,family_version,action,source_id,adult_person,
       relationship_kind,display_name,relationship_contact,effective_on,req.reason,replacement_id);
     IF pre.eligible IS DISTINCT FROM true THEN
-      invalidation_code:=pg_catalog.coalesce(pre.error_code,'D1_FAMILY_RELATIONSHIP_PREFLIGHT_STALE');
+      invalidation_code:=COALESCE(pre.error_code,'D1_FAMILY_RELATIONSHIP_PREFLIGHT_STALE');
     ELSIF pre.replacement_family_id IS DISTINCT FROM stored_replacement_family THEN
       invalidation_code:='D1_FAMILY_RELATIONSHIP_REPLACEMENT_STALE';
     END IF;
   END IF;
 
   IF invalidation_code IS NOT NULL THEN
-    UPDATE app_private.approval_requests SET state='INVALIDATED' WHERE id=p_request_id RETURNING row_version INTO final_version;
+    UPDATE app_private.approval_requests SET state='INVALIDATED' WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
     receipt:=app_private.d1_family_relationship_receipt(
       'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
       p_request_id,p_expected_request_version,'REJECTED',NULL,NULL,
       pg_catalog.jsonb_build_object('request_version',final_version,'state','INVALIDATED'),invalidation_code);
-    SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq
+    SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq
       FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
     INSERT INTO app_private.approval_transitions
       (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
@@ -145,8 +145,8 @@ BEGIN
     'relationship_id',eff.relationship_id,'source_relationship_id',eff.source_relationship_id,'action',action,
     'effective_from',eff.effective_from,'effective_until',eff.effective_until,'student_version',eff.student_version,
     'family_version',eff.family_version,'primary_context_id',eff.primary_context_id,'access_closed_count',eff.access_closed_count);
-  UPDATE app_private.approval_requests SET state='EXECUTED',executed_at=pg_catalog.statement_timestamp()
-    WHERE id=p_request_id RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state='EXECUTED'
+    WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_family_relationship_receipt(
     'request.apply',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,req.expected_target_version,
     p_request_id,p_expected_request_version,'SUCCEEDED','D1_FAMILY_RELATIONSHIP_CHANGE',eff.relationship_id,
@@ -154,7 +154,7 @@ BEGIN
   INSERT INTO app_private.approval_applications
     (request_id,command_receipt_id,operation_id,applied_target_version,result_ref,created_by)
   VALUES (p_request_id,receipt,ctx.operation_id,req.expected_target_version,eff.relationship_id,ctx.actor_id);
-  SELECT pg_catalog.coalesce(max(t.sequence_number),0)+1 INTO seq
+  SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq
     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
   INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)

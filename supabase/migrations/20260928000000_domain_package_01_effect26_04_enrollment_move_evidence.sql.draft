@@ -92,7 +92,7 @@ BEGIN
        'capacity_overridden','capacity_override_id','source_section_offering_id','destination_section_offering_id','source_class_offering_id',
        'destination_class_offering_id','source_campus_id','destination_campus_id','source_academic_year_id','destination_academic_year_id','entry_kind'])
      OR p_summary->>'entry_kind' IS DISTINCT FROM p_entry_kind THEN RETURN false; END IF;
-  over_cap:=pg_catalog.coalesce((p_summary->>'capacity_overridden')::boolean,false);
+  over_cap:=COALESCE((p_summary->>'capacity_overridden')::boolean,false);
   override_id:=NULLIF(p_summary->>'capacity_override_id','')::uuid;
   rid:=NULLIF(p_summary->>'roll_allocation_id','')::uuid;
   IF NULLIF(p_summary->>'enrollment_id','')::uuid IS DISTINCT FROM p_destination

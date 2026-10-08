@@ -38,7 +38,7 @@ BEGIN
     RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'request_version')::bigint; RETURN;
   END IF;
   IF locked.student_version IS NULL OR locked.error_code IS NOT NULL THEN
-    RAISE EXCEPTION 'D1 Student special source unavailable: %',pg_catalog.coalesce(locked.error_code,'UNKNOWN'); END IF;
+    RAISE EXCEPTION 'D1 Student special source unavailable: %',COALESCE(locked.error_code,'UNKNOWN'); END IF;
   SELECT * INTO policy_row FROM app_private.d1_student_special_p2_policy(p_student_id);
   IF policy_row.policy_id IS NULL THEN RAISE EXCEPTION 'D1 Student special approval policy unavailable'; END IF;
   IF NOT EXISTS (
@@ -50,7 +50,7 @@ BEGIN
     locked.source_snapshot_id,locked.disability_indicator,locked.orphan_indicator,locked.blood_group_code,
     locked.source_effective_from,locked.source_supersedes_id,p_disability_indicator,p_orphan_indicator,blood);
   IF NOT FOUND OR pre.eligible IS DISTINCT FROM true THEN
-    RAISE EXCEPTION 'D1 Student special request denied: %',pg_catalog.coalesce(pre.error_code,'PREFLIGHT_UNAVAILABLE'); END IF;
+    RAISE EXCEPTION 'D1 Student special request denied: %',COALESCE(pre.error_code,'PREFLIGHT_UNAVAILABLE'); END IF;
   old_snapshot:=pg_catalog.jsonb_build_object('source_snapshot_id',locked.source_snapshot_id,
     'disability_indicator',locked.disability_indicator,'orphan_indicator',locked.orphan_indicator,
     'blood_group_code',locked.blood_group_code,'source_effective_from',locked.source_effective_from,

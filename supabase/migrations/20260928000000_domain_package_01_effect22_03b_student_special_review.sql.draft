@@ -61,15 +61,15 @@ BEGIN
   INSERT INTO app_private.approval_reviews(reviewer_assignment_id,step_id,reviewer_id,decision,reason,expected_request_version,created_by)
   VALUES (assignment_id,step_row.id,ctx.actor_id,p_decision,p_reason,p_expected_request_version,ctx.actor_id);
   UPDATE app_private.approval_request_steps SET state=CASE p_decision WHEN 'APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
-    closed_at=pg_catalog.statement_timestamp() WHERE id=step_row.id;
+    closed_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=step_row.id;
   IF p_decision='REJECT' THEN
     UPDATE app_private.approval_request_steps SET state='CANCELLED',closed_at=pg_catalog.statement_timestamp()
-      WHERE request_id=p_request_id AND state='WAITING'; final_state:='REJECTED';
+      WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING'; final_state:='REJECTED';
   ELSE
     SELECT s.* INTO next_step FROM app_private.approval_request_steps s WHERE s.request_id=p_request_id
       AND s.step_number=step_row.step_number+1 AND s.state='WAITING' FOR UPDATE;
     IF FOUND THEN
-      UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE id=next_step.id;
+      UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=pg_catalog.statement_timestamp() WHERE approval_request_steps.id=next_step.id;
       INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
         SELECT next_step.id,c.candidate_principal_id,'D1_REVIEWER_ROLE_SCOPE',ctx.actor_id
         FROM app_private.d1_student_special_candidates(p_request_id,next_step.id) c;
@@ -78,11 +78,11 @@ BEGIN
       final_state:='PENDING';
     ELSE final_state:='APPROVED'; END IF;
   END IF;
-  UPDATE app_private.approval_requests SET state=final_state WHERE id=p_request_id RETURNING row_version INTO final_version;
+  UPDATE app_private.approval_requests SET state=final_state WHERE approval_requests.id=p_request_id RETURNING approval_requests.row_version INTO final_version;
   receipt:=app_private.d1_student_special_receipt('request.review',ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
     req.expected_target_version,p_request_id,p_expected_request_version,'SUCCEEDED','D1_STUDENT_SPECIAL_REVIEW',p_request_id,
     pg_catalog.jsonb_build_object('request_version',final_version,'state',final_state),NULL);
-  SELECT pg_catalog.coalesce(max(sequence_number),0) INTO seq FROM app_private.approval_transitions WHERE request_id=p_request_id;
+  SELECT COALESCE(max(sequence_number),0) INTO seq FROM app_private.approval_transitions WHERE approval_transitions.request_id=p_request_id;
   IF final_state IN ('APPROVED','REJECTED') THEN INSERT INTO app_private.approval_transitions
     (request_id,sequence_number,from_state,to_state,reason,command_receipt_id,created_by)
     VALUES (p_request_id,seq+1,'PENDING',final_state,'D1_STUDENT_SPECIAL_REVIEW_'||final_state,receipt,ctx.actor_id); END IF;
