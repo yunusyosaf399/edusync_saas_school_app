@@ -1245,7 +1245,8 @@ BEGIN
     IF TG_ARGV[0] = 'M' THEN
       NEW.row_version := 1;
       NEW.updated_at := NEW.created_at;
-    ELSIF TG_ARGV[0] = 'HE' AND NEW.effective_until IS NOT NULL THEN
+    ELSIF TG_ARGV[0] = 'HE'
+       AND (pg_catalog.to_jsonb(NEW) ->> 'effective_until') IS NOT NULL THEN
       NEW.ended_at := NEW.created_at;
       NEW.ended_by := actor;
     END IF;
@@ -2174,23 +2175,23 @@ CREATE CONSTRAINT TRIGGER d1_capability_dependents_commit AFTER INSERT OR UPDATE
 CREATE FUNCTION app_private.d1_check_capacity_revision_commit() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE
-  old_capacity integer;
+  prior_capacity integer;
   revisions integer;
 BEGIN
   IF TG_OP='UPDATE' THEN
     IF OLD.capacity=NEW.capacity THEN RETURN NULL; END IF;
-    old_capacity := OLD.capacity;
+    prior_capacity := OLD.capacity;
   END IF;
   IF TG_TABLE_NAME='class_offerings' THEN
     SELECT count(*) INTO revisions FROM app_private.capacity_revisions r
       WHERE r.class_offering_id=NEW.id AND r.section_offering_id IS NULL
-        AND r.old_capacity IS NOT DISTINCT FROM old_capacity
+        AND r.old_capacity IS NOT DISTINCT FROM prior_capacity
         AND r.new_capacity=NEW.capacity
         AND r.created_at=pg_catalog.transaction_timestamp();
   ELSE
     SELECT count(*) INTO revisions FROM app_private.capacity_revisions r
       WHERE r.section_offering_id=NEW.id AND r.class_offering_id IS NULL
-        AND r.old_capacity IS NOT DISTINCT FROM old_capacity
+        AND r.old_capacity IS NOT DISTINCT FROM prior_capacity
         AND r.new_capacity=NEW.capacity
         AND r.created_at=pg_catalog.transaction_timestamp();
   END IF;
@@ -3674,6 +3675,11 @@ BEGIN
        OR (p_operation_code='teaching.class_assignment.change' AND (
             (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=11)
          OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=11)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='teaching.subject_assignment.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=14)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=14)
          OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
          OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
     RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';

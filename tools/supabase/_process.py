@@ -9,7 +9,10 @@ class CommandFailure(RuntimeError):
 
 def run(args, *, cwd, timeout=300, env=None):
     try:
-        result = subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout)
+        result = subprocess.run(
+            args, cwd=cwd, env=env, text=True, encoding="utf-8", errors="replace",
+            capture_output=True, timeout=timeout,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CommandFailure("command unavailable or timed out: " + args[0]) from exc
     if result.returncode:

@@ -1,6 +1,6 @@
 # D1 business acceptance progress
 
-Date: 2026-10-06. Status: incomplete; no migration activation or deployment readiness claim.
+Date: 2026-10-08. Status: incomplete; no migration activation or deployment readiness claim.
 
 ## Written acceptance coverage
 
@@ -10,13 +10,16 @@ Date: 2026-10-06. Status: incomplete; no migration activation or deployment read
 | Academic Class lifecycle | 25 | Create/update/archive, identity retention, optimistic version, replay after later changes, denied raw deletion, permission revocation, audit/event preservation |
 | Employee state direct route | 22 | Effective policy gate, current version, retained periods, same-day interval rejection, typed receipts, replay and current authorization |
 | Employee state approval route | 26 | Submit/select/review/apply, direct bypass denial, revoked-reviewer invalidation, no premature effect, retained review/application/transition history, terminal replay |
+| Subject Teacher assignment direct route | 25 | Current/future ADD/END/CORRECT, exact authority, self-assignment denial, PRIMARY uniqueness, compatible CO_TEACHER assignment, kind-changing correction lineage, typed replay, retained history, audit/outbox evidence and live scope revocation |
 | Concurrent employee creation | 3 two-session races | Same-key replay, changed-intent conflict, competing keys for one Person; require observed lock waiting and one result/history/receipt/audit/event per accepted intent |
 
-All listed cases pass at validated commit aaa56b96e25366cb5932e1b872c3ccbf07f42ac0. They cover three D1 operations and selected branches. Other protected operations, scoped reads, family/Student/teaching integration, correction/rejection/cancellation branches, populated upgrades and the Admissions dependency remain open. Student creation stays disabled.
+The expanded local gate passes 135 business assertions and three two-session races. It covers four D1 operations and selected branches, including the Effect 17 direct route. Other protected operations, scoped reads, family/Student integration, teaching approval/rejection paths, other correction/cancellation branches, populated upgrades and the Admissions dependency remain open. Student creation stays disabled.
 
 The transaction-local shared fixture uses five synthetic Auth fixtures already provided by Foundation. Business tests roll back all application rows and request settings. Race tests commit synthetic setup on the disposable stack and destroy that stack afterward. No managed school, staging or production database is used.
 
 ## Current validation evidence
+
+The 2026-10-08 local disposable run used Postgres image 17.6.1.113 and passed draft assembly, catalog/RLS/ACL probes, both lint levels, 220 Foundation assertions, 135 D1 business assertions and all three observed-lock races. It also exposed and fixed generic record-trigger access on non-temporal event rows, missing Teaching-executor helper privileges, the absent Subject-assignment receipt shape, and an ambiguous deferred capacity variable. Exact-commit GitHub evidence for this expansion remains pending.
 
 Validated commit: aaa56b96e25366cb5932e1b872c3ccbf07f42ac0. Exact-commit [Foundation](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37410411568), [static](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37410411522), and [runtime](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37410411685) checks passed: 110 business assertions, three observed-lock races, 220 Foundation assertions, both lint levels and the fixed image with default permission hints.
 
@@ -46,7 +49,7 @@ The final-state static guard now validates direct NEW/OLD column references in t
 
 ## Next acceptance gates
 
-1. Preserve the passing 110-assertion/three-race baseline and frozen Foundation regression.
+1. Preserve the passing 135-assertion/three-race local baseline and frozen Foundation regression; obtain exact-commit GitHub evidence.
 2. Extend acceptance across remaining D1 operations and read scopes; add correction, rejection, cancellation and concurrency coverage at relevant boundaries.
 3. Implement the Admissions physical design and real final-handoff/atomic intake dependency, including Finance-required clearance behavior.
 4. Validate a populated upgrade, default engine denial stability and exact resulting Foundation/static/runtime checks before activating Migration 10.
