@@ -54,3 +54,7 @@ The final-state static guard now validates direct NEW/OLD column references in t
 3. Implement the Admissions physical design and real final-handoff/atomic intake dependency, including Finance-required clearance behavior.
 4. Validate a populated upgrade, default engine denial stability and exact resulting Foundation/static/runtime checks before activating Migration 10.
 5. Continue the complete school-domain matrix; Flutter remains after the final database gate.
+
+## Exact-SHA PR #2 acceptance gate (2026-10-08)
+
+The earlier pending exact-commit CI qualification is superseded. On `ff4b612eefa77f25e1fe1220eeff5ab0ff8f25ad`, the [D1 runtime workflow #70](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37793587538) passed **135/135 D1 business assertions** across the five suites listed above and **three two-session employee-creation races with observed lock waiting**. The companion [static #62](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37793587525) and [Foundation #284](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37793587873) passed the same SHA. This records the D1C2A disposable-local baseline only; tests for other operations and future Admissions remain open. See the [review](81_d1c2a_pr2_independent_review.md).
