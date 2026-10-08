@@ -161,8 +161,9 @@ SELECT is((SELECT count(*) FROM app_private.employment_periods
 SELECT is((SELECT state FROM app_private.approval_requests
  WHERE id=:'rejected_request_request_id'),'REJECTED'::text,
  'rejected request state remains terminal');
-SELECT is((SELECT count(*) FROM app_private.approval_reviews
- WHERE request_id=:'rejected_request_request_id'),1::bigint,
+SELECT is((SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ WHERE s.request_id=:'rejected_request_request_id'),1::bigint,
  'reviewer decision and replay leave exactly one immutable review');
 SELECT is((SELECT count(*) FROM app_private.approval_applications
  WHERE request_id=:'rejected_request_request_id'),0::bigint,
