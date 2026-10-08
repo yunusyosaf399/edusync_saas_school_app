@@ -157,9 +157,11 @@ SELECT throws_ok(format($sql$
  'P0001'::char(5),
  'D1 Subject assignment retroactive correction requires approval'::text,
  'retroactive CORRECT cannot bypass mandatory P2 review');
+RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.subject_teacher_assignments),1::bigint,
  'rejected direct attempt does not append history');
 
+SET ROLE authenticated;
 SELECT * FROM app.d1_submit_subject_teacher_assignment_correction(
  '52000000-0000-4000-8000-000000000006','52000000-0000-4000-8000-000000000004',1,
  '53000000-0000-4000-8000-000000000001',:'teacher_one_employee_id','PRIMARY',CURRENT_DATE-10,NULL,
@@ -167,6 +169,7 @@ SELECT * FROM app.d1_submit_subject_teacher_assignment_correction(
  'Correct historical primary assignment','p2-submission') \gset request_
 SELECT is(:'request_request_version'::bigint,3::bigint,
  'P2 request opens at version three');
+RESET ROLE;
 SELECT is((SELECT state FROM app_private.approval_requests
  WHERE id=:'request_request_id'),'PENDING'::text,'P2 submit becomes PENDING');
 SELECT is((SELECT effective_until FROM app_private.subject_teacher_assignments
@@ -175,6 +178,7 @@ SELECT is((SELECT count(*) FROM app_private.approval_step_reviewers a
  JOIN app_private.approval_request_steps s ON s.id=a.step_id
  WHERE s.request_id=:'request_request_id' AND a.reviewer_id='53000000-0000-4000-8000-000000000002'),1::bigint,
  'independent reviewer is selected from configured role and ALL scope');
+SET ROLE authenticated;
 SELECT throws_ok(format($sql$
  SELECT * FROM app.d1_review_subject_teacher_assignment_request(%L,'APPROVE',3,
  'Self decision','p2-self-review')$sql$,:'request_request_id'),
