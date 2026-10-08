@@ -9,11 +9,11 @@ Date: 2026-10-08. Status: incomplete; no migration activation or deployment read
 | Employee creation | 37 | Deployment registrar counts/idempotency, verified actor, private-table and function denial, employee/history/receipt/audit/outbox atomicity, replay, changed intent, uniqueness, dates, live grant/scope/operation revocation |
 | Academic Class lifecycle | 25 | Create/update/archive, identity retention, optimistic version, replay after later changes, denied raw deletion, permission revocation, audit/event preservation |
 | Employee state direct route | 22 | Effective policy gate, current version, retained periods, same-day interval rejection, typed receipts, replay and current authorization |
-| Employee state approval route | 26 | Submit/select/review/apply, direct bypass denial, revoked-reviewer invalidation, no premature effect, retained review/application/transition history, terminal replay |
+| Employee state approval route | 42 | Submit/select/review/apply, direct bypass denial, revoked-reviewer invalidation, explicit reviewer REJECT, denied post-rejection apply, one immutable rejection review/receipt, preserved Employee history, no success event, no premature effect, retained review/application/transition history and terminal replay |
 | Subject Teacher assignment direct route | 25 | Current/future ADD/END/CORRECT, exact authority, self-assignment denial, PRIMARY uniqueness, compatible CO_TEACHER assignment, kind-changing correction lineage, typed replay, retained history, audit/outbox evidence and live scope revocation |
 | Concurrent employee creation | 3 two-session races | Same-key replay, changed-intent conflict, competing keys for one Person; require observed lock waiting and one result/history/receipt/audit/event per accepted intent |
 
-The expanded local gate passes 135 business assertions and three two-session races. It covers four D1 operations and selected branches, including the Effect 17 direct route. Other protected operations, scoped reads, family/Student integration, teaching approval/rejection paths, other correction/cancellation branches, populated upgrades and the Admissions dependency remain open. Student creation stays disabled.
+The latest accepted local gate passes 151 business assertions and three two-session races. It covers four D1 operations and selected branches, including the Effect 17 direct route. Other protected operations, scoped reads, family/Student integration, teaching approval/rejection paths, other correction/cancellation branches, populated upgrades and the Admissions dependency remain open. Student creation stays disabled.
 
 The transaction-local shared fixture uses five synthetic Auth fixtures already provided by Foundation. Business tests roll back all application rows and request settings. Race tests commit synthetic setup on the disposable stack and destroy that stack afterward. No managed school, staging or production database is used.
 
@@ -49,7 +49,7 @@ The final-state static guard now validates direct NEW/OLD column references in t
 
 ## Next acceptance gates
 
-1. Preserve the passing 135-assertion/three-race local baseline and frozen Foundation regression; obtain exact-commit GitHub evidence.
+1. Preserve the passing 151-assertion/three-race local checkpoint and frozen Foundation regression; extend exact-SHA business acceptance without weakening already frozen behavior.
 2. Extend acceptance across remaining D1 operations and read scopes; add correction, rejection, cancellation and concurrency coverage at relevant boundaries.
 3. Implement the Admissions physical design and real final-handoff/atomic intake dependency, including Finance-required clearance behavior.
 4. Validate a populated upgrade, default engine denial stability and exact resulting Foundation/static/runtime checks before activating Migration 10.
@@ -58,3 +58,7 @@ The final-state static guard now validates direct NEW/OLD column references in t
 ## Exact-SHA PR #2 acceptance gate (2026-10-08)
 
 The earlier pending exact-commit CI qualification is superseded. On `ff4b612eefa77f25e1fe1220eeff5ab0ff8f25ad`, the [D1 runtime workflow #70](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37793587538) passed **135/135 D1 business assertions** across the five suites listed above and **three two-session employee-creation races with observed lock waiting**. The companion [static #62](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37793587525) and [Foundation #284](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37793587873) passed the same SHA. This records the D1C2A disposable-local baseline only; tests for other operations and future Admissions remain open. See the [review](81_d1c2a_pr2_independent_review.md).
+
+## Employee state rejection acceptance increment (2026-10-08)
+
+The new [incremental review](83_d1_employee_state_rejection_acceptance.md) records 16 additional assertions for `employee.state.change` approval rejection/replay: suite 04 now **42/42**, total D1 business assertions **151/151** across the same five suites. Exact-source [D1 runtime #75](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37823838987) and [Foundation #289](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/37823845846) passed commit `288afa81232ffa409a21a41423041a43914e1b51`. Test-only corrections are merged as `3422420c8b7bb3a4cdb77b292352837ffdc04e44` (PR #3); the merge introduced no additional file changes. This is incremental evidence, not full D1 business acceptance or Migration 10 activation.
