@@ -2,7 +2,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(28);
+SELECT plan(32);
 \ir fixtures/command_actor.sql
 
 SET ROLE schoolos_schema_owner;
@@ -73,6 +73,21 @@ RESET ROLE;
 
 -- P2 historical source is synthetic, as direct ADD cannot backdate a new assignment.
 -- Only the reviewed CORRECT command may alter this retained history.
+-- Guard owner must execute the exact two transitive validation helpers;
+-- no client role may execute these private functions.
+SELECT ok(has_function_privilege('schoolos_schema_owner',
+ 'app_private.d1_teaching_subject_assignment_request_payload_valid(jsonb,jsonb)',
+ 'EXECUTE'),'application trigger owner can verify P2 request facts');
+SELECT ok(has_function_privilege('schoolos_schema_owner',
+ 'app_private.d1_teaching_subject_assignment_payload_valid(jsonb)',
+ 'EXECUTE'),'application trigger owner can validate nested payload');
+SELECT ok(NOT has_function_privilege('authenticated',
+ 'app_private.d1_teaching_subject_assignment_request_payload_valid(jsonb,jsonb)',
+ 'EXECUTE'),'authenticated actor cannot call private request verifier');
+SELECT ok(NOT has_function_privilege('authenticated',
+ 'app_private.d1_teaching_subject_assignment_payload_valid(jsonb)',
+ 'EXECUTE'),'authenticated actor cannot call private payload validator');
+
 SET ROLE authenticated;
 SELECT * FROM app.d1_create_employee(
  '10000000-0000-4000-8000-000000000001','P2-TEACHER-ONE',CURRENT_DATE-20,'p2-teacher-one') \gset teacher_one_

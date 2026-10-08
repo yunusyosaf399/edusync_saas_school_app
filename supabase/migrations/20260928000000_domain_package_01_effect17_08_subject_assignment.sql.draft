@@ -16,6 +16,16 @@ GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_event(
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
 
+-- This schema-owner SECURITY DEFINER trigger validates immutable request facts
+-- through two teaching-owned SECURITY INVOKER helpers. Permit only its owner
+-- to execute them; do not grant any client or public role private access.
+SET ROLE schoolos_teaching_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_request_payload_valid(jsonb,jsonb)
+  TO schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION app_private.d1_teaching_subject_assignment_payload_valid(jsonb)
+  TO schoolos_schema_owner;
+RESET ROLE;
+
 SET ROLE schoolos_schema_owner;
 CREATE FUNCTION app_private.d1_teaching_subject_assignment_application_receipt_guard()
 RETURNS trigger
