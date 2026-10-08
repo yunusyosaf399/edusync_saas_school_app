@@ -2,7 +2,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(26);
+SELECT plan(42);
 \ir fixtures/command_actor.sql
 SELECT set_config('schoolos_test.reviewer_subject',(SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),true);
 SET ROLE schoolos_schema_owner;
@@ -92,6 +92,91 @@ SELECT * FROM app.d1_review_employee_state_request(:'request_request_id','APPROV
 SELECT is(:'review_replay_request_state','APPROVED'::text,'review receipt replays after execution');
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.approval_reviews),1::bigint,'review replay adds no decision');
+-- Explicit reviewer REJECT is distinct from successful APPROVE and INVALIDATED apply.
+-- Build a second Employee in this same rolled-back fixture so no pre-existing
+-- status effect can satisfy the rejection-path assertions accidentally.
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.auth_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.auth_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings
+ WHERE id='66666666-6666-4666-8666-666666666666'),'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT * FROM app.d1_create_employee(
+ '10000000-0000-4000-8000-000000000002','EMP-REJECT',CURRENT_DATE-10,
+ 'reject-create') \gset rejected_employee_
+SELECT * FROM app.d1_submit_employee_state_change(
+ :'rejected_employee_employee_id','ENDED',1,'Employment ended','reject-submit') \gset rejected_request_
+SELECT is(:'rejected_request_request_version'::bigint,3::bigint,
+ 'rejection candidate submitted with expected request version');
+RESET ROLE;
+
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.reviewer_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.reviewer_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings
+ WHERE id='99900000-0000-4000-8000-000000000001'),'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT * FROM app.d1_review_employee_state_request(
+ :'rejected_request_request_id','REJECT',3,'Insufficient evidence','reject-review') \gset rejected_review_
+SELECT is(:'rejected_review_request_state','REJECTED'::text,
+ 'explicit reviewer rejection terminates pending request');
+SELECT is(:'rejected_review_request_version'::bigint,4::bigint,
+ 'rejection increments the request version');
+SELECT * FROM app.d1_review_employee_state_request(
+ :'rejected_request_request_id','REJECT',3,'Insufficient evidence','reject-review') \gset rejected_review_replay_
+SELECT is(:'rejected_review_replay_request_state','REJECTED'::text,
+ 'review rejection replays its original terminal result');
+SELECT is(:'rejected_review_replay_request_version'::bigint,4::bigint,
+ 'review replay retains original version instead of executing twice');
+RESET ROLE;
+
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.auth_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.auth_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings
+ WHERE id='66666666-6666-4666-8666-666666666666'),'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT throws_ok(
+ format($sql$SELECT * FROM app.d1_apply_employee_state_request(%L,4,'reject-apply')$sql$,
+ :'rejected_request_request_id'),
+ 'P0001'::char(5),NULL::text,
+ 'rejected request cannot be applied');
+SELECT * FROM app.d1_submit_employee_state_change(
+ :'rejected_employee_employee_id','ENDED',1,'Employment ended','reject-submit') \gset rejected_submit_replay_
+SELECT is(:'rejected_submit_replay_request_id'::uuid,:'rejected_request_request_id'::uuid,
+ 'submission replay preserves rejected request identity');
+SELECT is(:'rejected_submit_replay_request_version'::bigint,3::bigint,
+ 'submission replay preserves pre-review request version');
+RESET ROLE;
+
+SELECT is((SELECT current_state FROM app_private.employees
+ WHERE id=:'rejected_employee_employee_id'),'ACTIVE'::text,
+ 'reject leaves target Employee ACTIVE');
+SELECT is((SELECT count(*) FROM app_private.employment_periods
+ WHERE employee_id=:'rejected_employee_employee_id'),1::bigint,
+ 'reject creates no new employment-period history');
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'rejected_request_request_id'),'REJECTED'::text,
+ 'rejected request state remains terminal');
+SELECT is((SELECT count(*) FROM app_private.approval_reviews
+ WHERE request_id=:'rejected_request_request_id'),1::bigint,
+ 'reviewer decision and replay leave exactly one immutable review');
+SELECT is((SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id=:'rejected_request_request_id'),0::bigint,
+ 'rejected request creates no approval application');
+SELECT is((SELECT count(*) FROM app_private.approval_transitions
+ WHERE request_id=:'rejected_request_request_id' AND to_state='REJECTED'),1::bigint,
+ 'rejection transition occurs exactly once');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'rejected_request_request_id' AND command_kind='request.review'),1::bigint,
+ 'review rejection replay creates no duplicate review receipt');
+SELECT is((SELECT count(*) FROM app_private.outbox_events
+ WHERE event_type='employee.state_changed'),1::bigint,
+ 'rejected workflow adds no employee-state success event');
+
 -- Force deferred commit guards before rolling synthetic rows back.
 SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
