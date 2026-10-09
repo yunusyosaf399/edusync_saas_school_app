@@ -70,6 +70,8 @@ SELECT is((SELECT count(*) FROM app_private.family_student_access),0::bigint,
 
 -- Create a REAL, currently valid FAMILY-only / family-safe / OWN child authorization chain.
 -- Being eligible for Family membership is still not a child-specific access entitlement.
+SELECT set_config('schoolos_test.family_subject',
+ (SELECT id::text FROM auth.users WHERE email='foundation-family-001@example.invalid'),true);
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
  WHERE code='family.summary.view';
@@ -80,9 +82,11 @@ INSERT INTO app_private.principals(id,kind,label,state,created_by) VALUES
  ('64000000-0000-4000-8000-000000000005','FAMILY','Shared Family A login','ACTIVE','11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.principal_auth_bindings(
  id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
-SELECT '64000000-0000-4000-8000-000000000010','64000000-0000-4000-8000-000000000005','FAMILY',u.id,
- clock_timestamp(),to_timestamp(floor(extract(epoch FROM clock_timestamp()))),'11111111-1111-4111-8111-111111111111'
-FROM auth.users u WHERE u.email=''foundation-family-001@example.invalid'';
+VALUES ('64000000-0000-4000-8000-000000000010',
+ '64000000-0000-4000-8000-000000000005','FAMILY',
+ current_setting('schoolos_test.family_subject')::uuid,
+ clock_timestamp(),to_timestamp(floor(extract(epoch FROM clock_timestamp()))),
+ '11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.roles(id,code,label,family_only,state,created_by) VALUES
  ('64000000-0000-4000-8000-000000000006','d1-test-family-child-role','Family child view',true,'ACTIVE','11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.principal_role_assignments(
