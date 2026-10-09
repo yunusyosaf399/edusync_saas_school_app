@@ -126,9 +126,6 @@ SELECT is((SELECT count(*) FROM app_private.family_student_access),0::bigint,
 SET ROLE authenticated;
 SELECT * FROM app.d1_change_family_principal_membership('64000000-0000-4000-8000-000000000001',1,'64000000-0000-4000-8000-000000000005',1,'ADD',NULL,CURRENT_DATE-10,'Create shared FAMILY link','membership-add') \gset first_
 SELECT is(:'first_action','ADD'::text,'authorized staff ADD returns ADD');
-SELECT is(:'first_membership_id'::uuid,
- (SELECT id FROM app_private.family_principal_memberships WHERE family_id='64000000-0000-4000-8000-000000000001'),
- 'accepted ADD creates one retained FAMILY membership');
 SELECT is(:'first_family_id'::uuid,'64000000-0000-4000-8000-000000000001'::uuid,
  'membership is scoped to the requested Family');
 SELECT is(:'first_principal_id'::uuid,'64000000-0000-4000-8000-000000000005'::uuid,
@@ -155,6 +152,9 @@ SELECT throws_ok(format($sql$
  'P0001'::char(5),'D1 idempotency key conflicts with prior intent'::text,
  'same idempotency key with changed intent is rejected');
 RESET ROLE;
+SELECT is(:'first_membership_id'::uuid,
+ (SELECT id FROM app_private.family_principal_memberships WHERE family_id='64000000-0000-4000-8000-000000000001'),
+ 'accepted ADD creates one retained FAMILY membership');
 SELECT is((SELECT count(*) FROM app_private.family_principal_memberships),1::bigint,
  'overlap and replay cannot insert duplicate membership');
 SELECT is((SELECT count(*) FROM app_private.family_student_access),0::bigint,
@@ -167,7 +167,7 @@ UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp()
  WHERE id='64000000-0000-4000-8000-000000000012';
 RESET ROLE;
 SET ROLE authenticated;
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_family_principal_membership('64000000-0000-4000-8000-000000000001',1,'64000000-0000-4000-8000-000000000005',1,'END',:'first_membership_id',CURRENT_DATE-1,'Close shared FAMILY link','denied-end')$sql$),
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_family_principal_membership('64000000-0000-4000-8000-000000000001',1,'64000000-0000-4000-8000-000000000005',1,'END',%L::uuid,CURRENT_DATE-1,'Close shared FAMILY link','denied-end')$sql$,:'first_membership_id'),
  'P0001'::char(5),'D1 Family membership authority denied'::text,
  'revoked staff grant cannot END existing membership');
 RESET ROLE;
