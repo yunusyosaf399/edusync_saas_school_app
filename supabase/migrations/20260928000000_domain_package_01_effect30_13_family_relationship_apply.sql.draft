@@ -65,10 +65,13 @@ BEGIN
   END IF;
 
   IF ctx.receipt_id IS NOT NULL THEN
-    IF NOT app_private.d1_family_relationship_authorized(req.requester_id,'family.relationship.change',req.target_ref,NULL) THEN
-      RAISE EXCEPTION 'D1 Family relationship requester authority revoked';
-    END IF;
     IF ctx.receipt_state='SUCCEEDED' THEN
+      -- A successful application replay still requires the requester's
+      -- current authority and verifies the immutable relationship evidence.
+      IF NOT app_private.d1_family_relationship_authorized(
+          req.requester_id,'family.relationship.change',req.target_ref,NULL) THEN
+        RAISE EXCEPTION 'D1 Family relationship requester authority revoked';
+      END IF;
       IF app_private.d1_family_relationship_reviews_live(p_request_id) IS DISTINCT FROM true
          OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
          OR ctx.result_summary->>'state'<>'EXECUTED' OR ctx.result_summary->>'request_version' IS NULL THEN
