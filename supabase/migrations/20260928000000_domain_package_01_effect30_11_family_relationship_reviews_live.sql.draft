@@ -39,5 +39,10 @@ REVOKE ALL ON FUNCTION app_private.d1_family_relationship_reviews_live(uuid)
   FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app_private.d1_family_relationship_reviews_live(uuid)
   TO schoolos_workflow_executor,schoolos_read_executor;
+-- Effect 30's explicit APPLY and checked participant read call this shared,
+-- authz-reader-owned final-review evidence helper. Grant EXECUTE only to the
+-- trusted NOLOGIN workflow/read executors, never to client-facing roles.
+GRANT EXECUTE ON FUNCTION app_private.d1_final_approver_role(uuid,uuid)
+  TO schoolos_workflow_executor,schoolos_read_executor;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;

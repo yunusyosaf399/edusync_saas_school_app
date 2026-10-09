@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(55);
+SELECT plan(59);
 \ir fixtures/command_actor.sql
 -- Retain Auth fixture ID before schema owner role switch, as with prior D1 P1 tests.
 SELECT set_config('schoolos_test.reviewer_subject',
@@ -91,6 +91,21 @@ UPDATE app_private.approval_policy_versions
  SET state='ACTIVE',effective_from=statement_timestamp()-interval '1 hour',
  activated_at=statement_timestamp() WHERE id='76000000-0000-4000-8000-000000000009';
 RESET ROLE;
+
+-- The helper is not client callable. Only trusted NOLOGIN D1
+-- workflow/checked-read executors may evaluate final reviewer evidence.
+SELECT ok(has_function_privilege('schoolos_workflow_executor',
+ 'app_private.d1_final_approver_role(uuid,uuid)','EXECUTE'),
+ 'workflow executor may check final approver role for explicit P1 application');
+SELECT ok(has_function_privilege('schoolos_read_executor',
+ 'app_private.d1_final_approver_role(uuid,uuid)','EXECUTE'),
+ 'checked-read executor may verify final approver status');
+SELECT ok(NOT has_function_privilege('authenticated',
+ 'app_private.d1_final_approver_role(uuid,uuid)','EXECUTE'),
+ 'authenticated cannot execute private final approver helper');
+SELECT ok(NOT has_function_privilege('anon',
+ 'app_private.d1_final_approver_role(uuid,uuid)','EXECUTE'),
+ 'anonymous cannot execute private final approver helper');
 
 SELECT is((SELECT person_id FROM app_private.principals WHERE id='76000000-0000-4000-8000-000000000001'),
  '10000000-0000-4000-8000-000000000004'::uuid,
