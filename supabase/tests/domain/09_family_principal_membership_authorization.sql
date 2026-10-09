@@ -88,8 +88,6 @@ UPDATE app_private.permissions SET state='ENABLED'
 UPDATE app_private.permission_scope_contracts SET enabled=true
  WHERE scope_kind='OWN' AND resolver_key='D1_FAMILY_CHILD'
  AND permission_id=(SELECT id FROM app_private.permissions WHERE code='family.summary.view');
-INSERT INTO app_private.principals(id,kind,label,state,created_by) VALUES
- ('64000000-0000-4000-8000-000000000005','FAMILY','Shared Family A login','ACTIVE','11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.principal_auth_bindings(
  id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
 VALUES ('64000000-0000-4000-8000-000000000010',
