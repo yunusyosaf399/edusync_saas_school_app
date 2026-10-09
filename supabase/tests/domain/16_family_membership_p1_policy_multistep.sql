@@ -145,8 +145,11 @@ VALUES ('76000000-0000-4000-8000-000000000010','76000000-0000-4000-8000-00000000
 -- Add an independent second reviewer's real auth and ALL-only configured
 -- reviewer role before the P1 policy is activated. The first and second steps
 -- use different reviewer roles, with distinct verified Persons and Principals.
+-- Auth fixture lookups run as the test owner (not the restricted schema owner).
+RESET ROLE;
 SELECT set_config('schoolos_test.second_reviewer_subject',
  (SELECT id::text FROM auth.users WHERE email='foundation-own-001@example.invalid'),true);
+SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.people(id,display_name,created_by)
 VALUES ('86000000-0000-4000-8000-000000000001','Independent second-stage reviewer',
  '11111111-1111-4111-8111-111111111111');
