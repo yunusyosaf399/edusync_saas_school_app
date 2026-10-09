@@ -55,8 +55,10 @@ RESET ROLE;
 -- Enable a separate exact Student-scoped relationship command for the same
 -- authenticated Foundation staff fixture; child entitlement permission is independent.
 SET ROLE schoolos_schema_owner;
+-- The final P1 policy resolver requires its configured reviewer
+-- permission to be enabled even when this synthetic policy chooses DIRECT.
 UPDATE app_private.permissions SET state='ENABLED'
- WHERE code='family.relationship.change';
+ WHERE code IN ('family.relationship.change','family.access.approve');
 UPDATE app_private.operation_contracts SET enabled=true
  WHERE code='family.relationship.change';
 UPDATE app_private.permission_scope_contracts SET enabled=true
