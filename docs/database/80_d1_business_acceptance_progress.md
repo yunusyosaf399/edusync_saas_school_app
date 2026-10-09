@@ -51,7 +51,7 @@ The final-state static guard now validates direct NEW/OLD column references in t
 
 ## Next acceptance gates
 
-1. Preserve the passing 183-assertion/three-race local checkpoint and frozen Foundation regression; extend exact-SHA business acceptance without weakening already frozen behavior.
+1. Preserve the passing 220-assertion/three-race local checkpoint and frozen Foundation regression; extend exact-SHA business acceptance without weakening already frozen behavior.
 2. Extend acceptance across remaining D1 operations and read scopes; add correction, rejection, cancellation and concurrency coverage at relevant boundaries.
 3. Implement the Admissions physical design and real final-handoff/atomic intake dependency, including Finance-required clearance behavior.
 4. Validate a populated upgrade, default engine denial stability and exact resulting Foundation/static/runtime checks before activating Migration 10.
