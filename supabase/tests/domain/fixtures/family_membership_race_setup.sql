@@ -1,6 +1,16 @@
 -- Disposable race-specific test material, executed after shared command_actor fixture.
 -- Derived from the same independently verified P1 ready-credential fixture as suite 12.
 -- Never execute in a hosted school DB.
+-- The employee race setup committed before this independent transaction.
+-- Restore its verified staff JWT: transaction-local claims did not survive COMMIT.
+SELECT set_config('request.jwt.claim.sub',
+ (SELECT id::text FROM auth.users WHERE email='foundation-rbac-001@example.invalid'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('request.jwt.claim.sub'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings
+ WHERE id='66666666-6666-4666-8666-666666666666'),
+ 'is_anonymous',false)::text,true);
 
 
 SET ROLE schoolos_schema_owner;
