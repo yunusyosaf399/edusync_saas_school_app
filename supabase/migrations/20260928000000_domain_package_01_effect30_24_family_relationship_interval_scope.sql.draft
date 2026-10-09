@@ -101,3 +101,11 @@ BEGIN
 END $body$;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+-- The finalized d1_family_relationship_policy also verifies the immutable
+-- operation handler_key. Foundation grants the authz reader only the other
+-- route-metadata columns; add that one internal column, never client access.
+SET ROLE schoolos_schema_owner;
+GRANT SELECT (handler_key) ON app_private.operation_contracts
+  TO schoolos_authz_reader;
+RESET ROLE;
