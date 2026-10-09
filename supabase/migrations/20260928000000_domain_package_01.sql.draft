@@ -3681,6 +3681,13 @@ BEGIN
             (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=14)
          OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=14)
          OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       -- Effect 32: the Family child-access public RPCs use the same fixed
+       -- receipt boundary. Never accept an arbitrary command phase or shape.
+       OR (p_operation_code='family.child_access.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
          OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
     RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
   END IF;
