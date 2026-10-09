@@ -89,9 +89,11 @@ BEGIN
     END IF;
   END IF;
 
-  UPDATE app_private.students SET updated_at=pg_catalog.statement_timestamp()
+  -- Do not write the Foundation-managed updated_at timestamp explicitly:
+  -- its existing zz_d1_version trigger increments parent aggregate versions.
+  UPDATE app_private.students SET updated_at=students.updated_at
     WHERE students.id=p_student RETURNING students.row_version INTO sver;
-  UPDATE app_private.families SET updated_at=pg_catalog.statement_timestamp()
+  UPDATE app_private.families SET updated_at=families.updated_at
     WHERE families.id=p_family RETURNING families.row_version INTO fver;
   RETURN QUERY SELECT rel_id,p_source,p_action,
     CASE WHEN p_action='END' THEN src.effective_from ELSE p_effective_on END,
