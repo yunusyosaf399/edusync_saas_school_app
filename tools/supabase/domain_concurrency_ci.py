@@ -114,6 +114,10 @@ def family_membership_apply_sql(reason: str, key: str, hold: bool = False) -> st
     allowed = {
         "D1 simultaneous family membership first": "family-race-first-apply",
         "D1 simultaneous family membership second": "family-race-second-apply",
+        "D1 simultaneous family END first": "family-race-end-first-apply",
+        "D1 simultaneous family END second": "family-race-end-second-apply",
+        "D1 simultaneous family CORRECT first": "family-race-correct-first-apply",
+        "D1 simultaneous family CORRECT second": "family-race-correct-second-apply",
     }
     if allowed.get(reason) != key:
         raise RuntimeError("D1_FAMILY_RACE_INTENT_INVALID")
@@ -217,3 +221,190 @@ SELECT count(*) FROM app_private.family_student_access;
     print("D1_FAMILY_MEMBERSHIP_RACE_PASS 1 two-session P1 competing ADD race; "
           "lock_wait_observed=true; one EXECUTED, one INVALIDATED; "
           "one membership/application/outbox event")
+    run_family_membership_lineage_races(container, execute_sql)
+
+
+# Exercise two distinct write conflicts after the previously verified P1 ADD race.
+# The first approved END closes its original membership. Two approved CORRECT
+# requests then contend for one predecessor; only one may append its successor.
+# All setup uses public typed RPCs and an independently verified reviewer.
+_FAMILY_RACE_ID = "64000000-0000-4000-8000-000000000001"
+_FAMILY_RACE_PRINCIPAL = "64000000-0000-4000-8000-000000000005"
+_FAMILY_RACE_UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+
+
+def family_lineage_setup_sql(action: str, source_id: str) -> str:
+    if action not in ("END", "CORRECT") or _FAMILY_RACE_UUID.fullmatch(source_id) is None:
+        raise RuntimeError("D1_FAMILY_LINEAGE_RACE_INTENT_INVALID")
+    # A fixed historical boundary is valid for both END and the correction
+    # following that END. Identity never changes through CORRECT.
+    return fr"""BEGIN;
+{settings_sql()}
+SELECT * FROM app.d1_submit_family_principal_membership_change(
+ '{_FAMILY_RACE_ID}',1,'{_FAMILY_RACE_PRINCIPAL}',1,
+ '{action}','{source_id}'::uuid,CURRENT_DATE-3,
+ 'D1 simultaneous family {action} first','family-race-{action.lower()}-first-submit')
+ \gset first_
+SELECT * FROM app.d1_submit_family_principal_membership_change(
+ '{_FAMILY_RACE_ID}',1,'{_FAMILY_RACE_PRINCIPAL}',1,
+ '{action}','{source_id}'::uuid,CURRENT_DATE-3,
+ 'D1 simultaneous family {action} second','family-race-{action.lower()}-second-submit')
+ \gset second_
+RESET ROLE;
+SELECT set_config('request.jwt.claim.sub',
+ (SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('request.jwt.claim.sub'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings
+ WHERE id='76000000-0000-4000-8000-000000000005'),
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT * FROM app.d1_review_family_principal_membership_change(
+ :'first_request_id','APPROVE',3,'Independent historical {action} review first',
+ 'family-race-{action.lower()}-first-review') \gset first_review_
+SELECT * FROM app.d1_review_family_principal_membership_change(
+ :'second_request_id','APPROVE',3,'Independent historical {action} review second',
+ 'family-race-{action.lower()}-second-review') \gset second_review_
+RESET ROLE;
+COMMIT;
+"""
+
+
+def run_family_membership_lineage_races(container: str, execute_sql) -> None:
+    args = worker_args(container)
+    source_id = execute_sql(
+        container,
+        "SELECT id::text FROM app_private.family_principal_memberships "
+        "WHERE family_id='" + _FAMILY_RACE_ID + "' "
+        "AND principal_id='" + _FAMILY_RACE_PRINCIPAL + "' "
+        "AND supersedes_id IS NULL AND effective_until IS NULL;",
+        "D1_FAMILY_LINEAGE_SOURCE", tuples=True,
+    ).strip()
+    if _FAMILY_RACE_UUID.fullmatch(source_id) is None:
+        raise RuntimeError("D1_FAMILY_LINEAGE_SOURCE_INVALID")
+    missing = "00000000-0000-0000-0000-000000000000"
+
+    for phase_index, action in enumerate(("END", "CORRECT"), start=1):
+        setup = family_lineage_setup_sql(action, source_id)
+        execute_sql(container, setup, "D1_FAMILY_LINEAGE_" + action + "_SETUP")
+        workers = []
+        outcomes = []
+        try:
+            for position, hold in (("first", True), ("second", False)):
+                reason = "D1 simultaneous family " + action + " " + position
+                key = "family-race-" + action.lower() + "-" + position + "-apply"
+                worker = subprocess.Popen(
+                    args, cwd=ROOT, stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                workers.append(worker)
+                worker.stdin.write(family_membership_apply_sql(reason, key, hold))
+                worker.stdin.close()
+                worker.stdin = None
+                deadline = time.monotonic() + 10
+                # Observe an actual held transaction lock and then a pending
+                # second-session lock; two sequential calls do not qualify.
+                lock_sql = (
+                    "SELECT CASE WHEN EXISTS(SELECT 1 FROM pg_catalog.pg_locks "
+                    "WHERE locktype='advisory' AND classid=71002 AND granted) "
+                    "THEN 1 ELSE 0 END;"
+                    if hold else
+                    "SELECT CASE WHEN EXISTS(SELECT 1 FROM pg_catalog.pg_locks "
+                    "WHERE NOT granted AND locktype IN "
+                    "('advisory','transactionid','tuple')) THEN 1 ELSE 0 END;"
+                )
+                while time.monotonic() < deadline:
+                    if worker.poll() is not None:
+                        raise RuntimeError("D1_FAMILY_LINEAGE_WORKER_EXITED_EARLY")
+                    if execute_sql(
+                        container, lock_sql, "D1_FAMILY_LINEAGE_LOCK",
+                        tuples=True, timeout=10,
+                    ).strip() == "1":
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise RuntimeError("D1_FAMILY_LINEAGE_LOCK_NOT_OBSERVED")
+
+            for worker in workers:
+                output, stderr = worker.communicate(timeout=30)
+                if worker.returncode:
+                    # Do not include credentials or SQL text in logs.
+                    raise RuntimeError(
+                        "D1_FAMILY_LINEAGE_" + action + "_APPLY_FAILED "
+                        + re.sub(r"[^A-Za-z0-9_ .:-]", "", stderr[-400:])
+                    )
+                matches = re.findall(
+                    r"(?m)^([0-9a-f-]{36})\t(EXECUTED|INVALIDATED)\t([0-9]+)$",
+                    output,
+                )
+                if len(matches) != 1:
+                    raise RuntimeError("D1_FAMILY_LINEAGE_RESULT_SHAPE")
+                outcomes.append(matches[0])
+
+            winning_id, winning_state, winning_version = outcomes[0]
+            if (winning_state, winning_version) != ("EXECUTED", "5"):
+                raise RuntimeError("D1_FAMILY_LINEAGE_WINNER_NOT_EXECUTED")
+            if outcomes[1] != (missing, "INVALIDATED", "5"):
+                raise RuntimeError("D1_FAMILY_LINEAGE_LOSER_NOT_INVALIDATED")
+            if action == "END" and winning_id != source_id:
+                raise RuntimeError("D1_FAMILY_LINEAGE_END_CHANGED_ID")
+            if action == "CORRECT" and (winning_id == source_id or winning_id == missing):
+                raise RuntimeError("D1_FAMILY_LINEAGE_CORRECT_NOT_SUCCESSOR")
+        finally:
+            for worker in workers:
+                if worker.poll() is None:
+                    worker.kill()
+                    worker.communicate(timeout=10)
+
+        # Each accepted operation writes one application/outbox event. A loser
+        # retains its INVALIDATED workflow receipt but no domain effect.
+        counts = execute_sql(container, f"""
+SELECT count(*) FROM app_private.family_principal_memberships;
+SELECT count(*) FROM app_private.approval_applications;
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='EXECUTED'
+ AND operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.principal_membership.change');
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='INVALIDATED'
+ AND operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.principal_membership.change');
+SELECT count(*) FROM app_private.command_receipts
+ WHERE operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.principal_membership.change');
+SELECT count(*) FROM app_private.outbox_events
+ WHERE event_type='family.principal_link_changed';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE family_id='{_FAMILY_RACE_ID}';
+SELECT count(*) FROM app_private.family_student_access;
+SELECT count(*) FROM app_private.family_principal_memberships
+ WHERE id='{source_id}' AND family_id='{_FAMILY_RACE_ID}'
+ AND principal_id='{_FAMILY_RACE_PRINCIPAL}'
+ AND supersedes_id IS NULL AND effective_from=CURRENT_DATE-10
+ AND effective_until=CURRENT_DATE-3 AND ended_at IS NOT NULL AND ended_by IS NOT NULL;
+""", "D1_FAMILY_LINEAGE_" + action + "_EFFECTS", tuples=True).split()
+        expected = [str(phase_index), str(phase_index+1),
+                    str(phase_index+1), str(phase_index+1),
+                    str(6 * (phase_index+1)), str(phase_index+1),
+                    "1", "0", "1"]
+        # END retains the original row (one total); CORRECT appends one
+        # successor (two total). The other metrics increase once per phase.
+        expected[0] = "1" if action == "END" else "2"
+        if counts != expected:
+            raise RuntimeError("D1_FAMILY_LINEAGE_" + action +
+                               "_EVIDENCE_MISMATCH " + ",".join(counts))
+
+        if action == "CORRECT":
+            successor_count = execute_sql(container, f"""
+SELECT count(*) FROM app_private.family_principal_memberships
+ WHERE id='{winning_id}' AND supersedes_id='{source_id}'
+ AND family_id='{_FAMILY_RACE_ID}' AND principal_id='{_FAMILY_RACE_PRINCIPAL}'
+ AND effective_from=CURRENT_DATE-3 AND effective_until IS NULL;
+""", "D1_FAMILY_LINEAGE_SUCCESSOR", tuples=True).strip()
+            if successor_count != "1":
+                raise RuntimeError("D1_FAMILY_LINEAGE_SUCCESSOR_NOT_RETAINED")
+        print("D1_FAMILY_MEMBERSHIP_" + action + "_RACE_PASS "
+              "two-session P1 race; lock_wait_observed=true; "
+              "one EXECUTED, one INVALIDATED; retained membership lineage")
+    print("D1_FAMILY_MEMBERSHIP_LINEAGE_RACES_PASS 2 END/CORRECT races")

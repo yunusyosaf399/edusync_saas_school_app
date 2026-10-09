@@ -72,5 +72,39 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertIn("SET ROLE authenticated;",sql)
         self.assertIn("pg_sleep(2)",sql)
 
+    def test_family_lineage_sql_only_allows_test_owned_source_and_actions(self):
+        source = "64000000-0000-4000-8000-000000000099"
+        for action in ("END", "CORRECT"):
+            sql = races.family_lineage_setup_sql(action, source)
+            self.assertTrue(sql.startswith("BEGIN;"))
+            self.assertTrue(sql.rstrip().endswith("COMMIT;"))
+            self.assertEqual(sql.count("app.d1_submit_family_principal_membership_change("), 2)
+            self.assertEqual(sql.count("app.d1_review_family_principal_membership_change("), 2)
+            self.assertIn("SET ROLE authenticated;", sql)
+            self.assertIn("CURRENT_DATE-3", sql)
+            self.assertIn("'"+action+"','"+source+"'::uuid", sql)
+        for action, source in (
+            ("ADD", "64000000-0000-4000-8000-000000000099"),
+            ("CORRECT", "x';DROP TABLE app_private.families;--"),
+            ("END", "00000000-0000-0000-0000-000000000000';--"),
+        ):
+            with self.subTest(action=action, source=source):
+                with self.assertRaisesRegex(RuntimeError, "LINEAGE_RACE_INTENT_INVALID"):
+                    races.family_lineage_setup_sql(action, source)
+
+    def test_family_lineage_apply_worker_allows_only_known_race_keys(self):
+        good = races.family_membership_apply_sql(
+            "D1 simultaneous family CORRECT first",
+            "family-race-correct-first-apply", True,
+        )
+        self.assertIn("SET ROLE authenticated;", good)
+        self.assertIn("pg_sleep(3)", good)
+        with self.assertRaisesRegex(RuntimeError, "D1_FAMILY_RACE_INTENT_INVALID"):
+            races.family_membership_apply_sql(
+                "D1 simultaneous family END first",
+                "family-race-end-second-apply",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
