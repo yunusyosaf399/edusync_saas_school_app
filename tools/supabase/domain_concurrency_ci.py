@@ -179,7 +179,7 @@ def run_family_membership_race(container: str, execute_sql) -> None:
                 raise RuntimeError("D1_FAMILY_RACE_APPLY_FAILED " +
                     re.sub(r"[^A-Za-z0-9_ .:-]","",err[-600:]))
             match=re.findall(
-                r"(?m)^([0-9a-f-]{36})\\t(EXECUTED|INVALIDATED)\\t([0-9]+)$",out
+                r"(?m)^([0-9a-f-]{36})\t(EXECUTED|INVALIDATED)\t([0-9]+)$",out
             )
             if len(match)!=1:
                 raise RuntimeError("D1_FAMILY_RACE_RESULT_SHAPE")
