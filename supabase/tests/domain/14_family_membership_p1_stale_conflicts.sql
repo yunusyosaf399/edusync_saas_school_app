@@ -322,7 +322,8 @@ SELECT is(:'policy_review_request_state','APPROVED'::text,
 RESET ROLE;
 SAVEPOINT expire_family_membership_policy;
 SET ROLE schoolos_schema_owner;
-UPDATE app_private.approval_policy_versions SET effective_until=statement_timestamp()-interval '1 second'
+-- Foundation permits ACTIVE -> RETIRED; effective dates are immutable after activation.
+UPDATE app_private.approval_policy_versions SET state='RETIRED'
  WHERE id='76000000-0000-4000-8000-000000000009';
 RESET ROLE;
 
@@ -337,7 +338,7 @@ SET ROLE authenticated;
 SELECT * FROM app.d1_apply_family_principal_membership_change(
  :'policy_request_id',4,'p1-stale-policy-apply') \gset policy_apply_
 SELECT is(:'policy_apply_request_state','INVALIDATED'::text,
- 'outdated approval policy cannot apply previously approved END');
+ 'retired approval policy cannot apply previously approved END');
 SELECT is(:'policy_apply_request_version'::bigint,5::bigint,
  'policy-stale invalidation advances request terminal version');
 SELECT * FROM app.d1_apply_family_principal_membership_change(
