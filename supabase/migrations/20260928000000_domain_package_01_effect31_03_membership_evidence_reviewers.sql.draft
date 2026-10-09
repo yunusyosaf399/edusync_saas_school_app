@@ -145,10 +145,10 @@ RETURNS TABLE(candidate_principal_id uuid)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE req record; templ record; requester_person uuid;
 BEGIN
-  SELECT q.* INTO req FROM app_private.approval_requests q
+  SELECT q.id,q.requester_id INTO req FROM app_private.approval_requests q
     JOIN app_private.operation_contracts o ON o.id=q.operation_id
     WHERE q.id=p_request AND o.code='family.principal_membership.change';
-  SELECT t.* INTO templ FROM app_private.approval_request_steps s
+  SELECT t.id,t.reviewer_role_id,t.selection_resolver_key INTO templ FROM app_private.approval_request_steps s
     JOIN app_private.approval_step_templates t ON t.id=s.template_id
     WHERE s.id=p_step AND s.request_id=p_request;
   IF req.id IS NULL OR templ.id IS NULL
@@ -174,7 +174,7 @@ RETURNS boolean
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE req record; requester_person uuid; s record; n bigint; reviewer uuid; reviewer_person uuid; seen bigint:=0;
 BEGIN
-  SELECT q.* INTO req FROM app_private.approval_requests q
+  SELECT q.id,q.requester_id INTO req FROM app_private.approval_requests q
     JOIN app_private.operation_contracts o ON o.id=q.operation_id
     WHERE q.id=p_request AND o.code='family.principal_membership.change';
   IF NOT FOUND THEN RETURN false; END IF;
