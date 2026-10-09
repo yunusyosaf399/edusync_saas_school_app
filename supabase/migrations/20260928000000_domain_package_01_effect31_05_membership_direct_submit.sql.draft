@@ -86,7 +86,7 @@ CREATE FUNCTION app.d1_submit_family_principal_membership_change(
   p_action text,p_source_membership_id uuid,p_effective_on date,p_reason text,p_idempotency_key text
 ) RETURNS TABLE(request_id uuid,request_version bigint)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE ctx record; policy_row record; pre record; template_row record; src record;
+DECLARE ctx record; policy_row record; pre record; template_row record;
   new_request uuid:=pg_catalog.gen_random_uuid(); first_step uuid; candidate_count bigint; final_version bigint; receipt uuid;
   old_snapshot jsonb; requested jsonb;
 BEGIN
@@ -121,13 +121,12 @@ BEGIN
   IF pre.eligible IS DISTINCT FROM true THEN
     RAISE EXCEPTION 'D1 Family membership request preflight denied: %',pre.error_code;
   END IF;
-  IF p_source_membership_id IS NOT NULL THEN
-    SELECT m.* INTO src FROM app_private.family_principal_memberships m WHERE m.id=p_source_membership_id;
-  END IF;
+  -- The already-locked preflight supplies the typed predecessor date (NULL for
+  -- ADD). Never dereference a non-existent source record for first-time links.
   old_snapshot:=pg_catalog.jsonb_build_object(
     'source_membership_id',p_source_membership_id,
     'source_family_id',pre.source_family_id,
-    'source_effective_from',CASE WHEN p_source_membership_id IS NULL THEN NULL ELSE src.effective_from END);
+    'source_effective_from',pre.source_effective_from);
   requested:=pg_catalog.jsonb_build_object(
     'target_principal_id',p_target_principal_id,
     'expected_principal_version',p_expected_principal_version,
