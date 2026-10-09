@@ -301,6 +301,12 @@ SELECT '86000000-0000-4000-8000-00000000000b',
  '11111111-1111-4111-8111-111111111111'
 FROM app_private.operation_contracts o
 WHERE o.code='family.principal_membership.change';
+INSERT INTO app_private.approval_step_templates(
+ id,policy_id,step_number,reviewer_role_id,required_reviews,selection_resolver_key,created_by)
+VALUES ('86000000-0000-4000-8000-00000000000c',
+ '86000000-0000-4000-8000-00000000000b',1,
+ '76000000-0000-4000-8000-000000000004',1,'D1_REVIEWER_ROLE_SCOPE',
+ '11111111-1111-4111-8111-111111111111');
 UPDATE app_private.approval_policy_versions
  SET state='ACTIVE',effective_from=statement_timestamp()-interval '1 hour',
  activated_at=statement_timestamp()
