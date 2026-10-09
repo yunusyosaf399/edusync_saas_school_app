@@ -413,9 +413,9 @@ SELECT is(:'stage_one_request_state','PENDING'::text,
  'first APPROVE leaves request pending second independent reviewer');
 SELECT is(:'stage_one_request_version'::bigint,4::bigint,
  'first review increments request to version four');
-SELECT is((SELECT row_version FROM app_private.approval_requests
- WHERE id=:'multi_request_id'),4::bigint,
- 'Foundation version trigger advances pending request once, without direct row_version DML');
+SELECT is((SELECT request_version FROM app.d1_read_family_principal_membership_request(
+ :'multi_request_id')),4::bigint,
+ 'Foundation-managed pending request version is four through participant-only checked read');
 SELECT * FROM app.d1_review_family_principal_membership_change(
  :'multi_request_id','APPROVE',3,'Approve independent first stage',
  'policy-first-approve') \gset stage_one_replay_
