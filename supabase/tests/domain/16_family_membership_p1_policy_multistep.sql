@@ -409,9 +409,9 @@ SELECT * FROM app.d1_review_family_principal_membership_change(
  'policy-first-approve') \gset stage_one_replay_
 SELECT is(:'stage_one_replay_request_version'::bigint,4::bigint,
  'first review idempotent replay preserves first-stage receipt');
-SELECT is((SELECT count(*) FROM app.d1_read_family_principal_membership_request(
- :'multi_request_id')),0::bigint,
- 'first reviewer no longer sees request after its step is closed');
+SELECT is((SELECT participant_kind FROM app.d1_read_family_principal_membership_request(
+ :'multi_request_id')),'DECIDED_REVIEWER'::text,
+ 'first reviewer retains checked historical visibility as a decided reviewer');
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.approval_request_steps
  WHERE request_id=:'multi_request_id' AND step_number=1 AND state='APPROVED'),1::bigint,
