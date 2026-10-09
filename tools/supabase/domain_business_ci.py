@@ -7,7 +7,7 @@ from pathlib import Path
 from foundation_local_ci import parse_tap
 
 ROOT = Path(__file__).resolve().parents[2]
-DOMAIN_TESTS = [["01_employee_create.sql",37],["02_academic_class.sql",25],["03_employee_state.sql",22],["04_employee_state_approval.sql",42],["05_subject_teacher_assignment.sql",25],["06_subject_teacher_retroactive_p2.sql",32],["07_subject_teacher_p2_reject_requester_stale.sql",37],["08_family_child_access_boundaries.sql",34],["09_family_principal_membership_authorization.sql",38],["10_family_relationship_direct_access.sql",52],["11_family_relationship_p1_approval.sql",66],["12_family_principal_membership_p1_approval.sql",40],["13_family_membership_p1_end_correct.sql",85]]
+DOMAIN_TESTS = [["01_employee_create.sql",37],["02_academic_class.sql",25],["03_employee_state.sql",22],["04_employee_state_approval.sql",42],["05_subject_teacher_assignment.sql",25],["06_subject_teacher_retroactive_p2.sql",32],["07_subject_teacher_p2_reject_requester_stale.sql",37],["08_family_child_access_boundaries.sql",34],["09_family_principal_membership_authorization.sql",38],["10_family_relationship_direct_access.sql",52],["11_family_relationship_p1_approval.sql",66],["12_family_principal_membership_p1_approval.sql",40],["13_family_membership_p1_end_correct.sql",85],["14_family_membership_p1_stale_conflicts.sql",35]]
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
