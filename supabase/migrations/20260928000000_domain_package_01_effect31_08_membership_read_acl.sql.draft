@@ -13,7 +13,7 @@ RETURNS text
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE req record; role_id uuid; n bigint;
 BEGIN
-  SELECT q.* INTO req FROM app_private.approval_requests q
+  SELECT q.id,q.requester_id INTO req FROM app_private.approval_requests q
     JOIN app_private.operation_contracts o ON o.id=q.operation_id
     WHERE q.id=p_request AND o.code='family.principal_membership.change';
   IF NOT FOUND THEN RETURN NULL; END IF;

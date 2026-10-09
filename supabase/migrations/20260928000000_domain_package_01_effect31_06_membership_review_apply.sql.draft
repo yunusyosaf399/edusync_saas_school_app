@@ -212,11 +212,13 @@ BEGIN
   END IF;
 
   IF ctx.receipt_id IS NOT NULL THEN
-    IF NOT app_private.d1_family_principal_membership_authorized(
-        req.requester_id,'family.principal_membership.change',NULL) THEN
-      RAISE EXCEPTION 'D1 Family membership requester authority revoked';
-    END IF;
     IF ctx.receipt_state='SUCCEEDED' THEN
+      -- Successful replay must still prove live requester authority; immutable
+      -- REJECTED/INVALIDATED replay instead checks the current participant.
+      IF NOT app_private.d1_family_principal_membership_authorized(
+          req.requester_id,'family.principal_membership.change',NULL) THEN
+        RAISE EXCEPTION 'D1 Family membership requester authority revoked';
+      END IF;
       IF app_private.d1_family_principal_membership_reviews_live(p_request_id) IS DISTINCT FROM true
          OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
          OR ctx.result_summary->>'state'<>'EXECUTED' OR ctx.result_summary->>'request_version' IS NULL THEN
@@ -320,3 +322,17 @@ GRANT EXECUTE ON FUNCTION app.d1_apply_family_principal_membership_change(uuid,b
   TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+
+-- Exact operation-only application evidence read for trusted P1 replay.
+-- Foundation table remains forced-RLS; no client or service-role access.
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_family_membership_workflow_application_replay
+  ON app_private.approval_applications FOR SELECT TO schoolos_workflow_executor
+  USING (EXISTS (
+    SELECT 1 FROM app_private.operation_contracts o
+     WHERE o.id=approval_applications.operation_id
+       AND o.code='family.principal_membership.change'
+  ));
+GRANT SELECT (request_id,command_receipt_id,operation_id,result_ref,applied_target_version)
+  ON app_private.approval_applications TO schoolos_workflow_executor;
+RESET ROLE;
