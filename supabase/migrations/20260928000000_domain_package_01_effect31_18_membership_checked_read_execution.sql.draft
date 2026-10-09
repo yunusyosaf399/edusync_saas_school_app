@@ -57,6 +57,8 @@ CREATE POLICY d1_effect31_checked_approval_reviews
   TO schoolos_authz_reader USING (true);
 RESET ROLE;
 
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+
 -- The original Effect31 read body selected q.*, which requires SELECT on every
 -- approval_requests column. Replace its body without changing its signature,
 -- ownership, typed projection or participant authorization procedure. Selecting
@@ -101,3 +103,4 @@ REVOKE ALL ON FUNCTION app.d1_read_family_principal_membership_request(uuid)
 GRANT EXECUTE ON FUNCTION app.d1_read_family_principal_membership_request(uuid)
   TO authenticated;
 RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
