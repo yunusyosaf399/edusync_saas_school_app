@@ -88,9 +88,9 @@ RESET ROLE;
 SET ROLE authenticated;
 SELECT throws_ok($sql$SELECT * FROM app_private.family_relationships$sql$,
  '42501'::char(5),NULL::text,'authenticated cannot enumerate private relationship facts');
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_family_relationship('64000000-0000-4000-8000-000000000002',1,'64000000-0000-4000-8000-000000000001',1,'ADD',NULL,'10000000-0000-4000-8000-000000000003','GUARDIAN',NULL,NULL,CURRENT_DATE-19,'Approved Family relationship',NULL,'rel-invalid-facts')$sql$),
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_family_relationship('64000000-0000-4000-8000-000000000002',1,'64000000-0000-4000-8000-000000000001',1,'ADD',NULL,NULL,'GUARDIAN',NULL,NULL,CURRENT_DATE-19,'Approved Family relationship',NULL,'rel-invalid-facts')$sql$),
  'P0001'::char(5),'D1 Family relationship preflight denied: D1_FAMILY_RELATIONSHIP_FACTS_INVALID'::text,
- 'relationship ADD with empty display facts is rejected before mutation');
+ 'ADD requires an Adult Person or a display name; absent both is denied');
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.family_relationships),0::bigint,
  'invalid relationship ADD inserts no history');
