@@ -1,0 +1,103 @@
+-- Effect 31 trusted checked-request read completion: purpose-bound internal SQL access.
+-- Append-only continuation of frozen effect31_08; Migration 10 remains .sql.draft.
+-- A passing caller role alone is never proof of request-participant authority.
+-- Only the existing SECURITY DEFINER read function can expose a typed projection;
+-- NO app_private SELECT privilege is given to authenticated, anon or service_role.
+
+-- The read executor needs the submitted request's exact typed projection, not
+-- generic approval_requests SELECT *. The authorization helper (owned by
+-- schoolos_authz_reader) needs only the columns used by its participant checks.
+GRANT SELECT (id,operation_id,requester_id,requested_payload,row_version,
+              state,target_ref,expected_target_version,reason)
+  ON app_private.approval_requests TO schoolos_read_executor;
+GRANT SELECT (id,operation_id,requester_id)
+  ON app_private.approval_requests TO schoolos_authz_reader;
+GRANT SELECT (id,code) ON app_private.operation_contracts
+  TO schoolos_read_executor,schoolos_authz_reader;
+GRANT SELECT (id,request_id,state,template_id)
+  ON app_private.approval_request_steps TO schoolos_authz_reader;
+GRANT SELECT (step_id,reviewer_id,withdrawn_at,assignment_reason)
+  ON app_private.approval_step_reviewers TO schoolos_authz_reader;
+GRANT SELECT (id,reviewer_role_id)
+  ON app_private.approval_step_templates TO schoolos_authz_reader;
+GRANT SELECT (step_id,reviewer_id)
+  ON app_private.approval_reviews TO schoolos_authz_reader;
+
+-- The Foundation tables FORCE RLS. An internal grant without a corresponding
+-- narrowly designated role SELECT policy cannot permit trusted execution.
+-- Scope approval_requests to Effect 31, preserving other workflow secrecy.
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_effect31_checked_approval_requests
+  ON app_private.approval_requests FOR SELECT
+  TO schoolos_read_executor,schoolos_authz_reader
+  USING (
+    EXISTS (
+      SELECT 1 FROM app_private.operation_contracts o
+       WHERE o.id=operation_id
+         AND o.code='family.principal_membership.change'
+    )
+  );
+CREATE POLICY d1_effect31_checked_operation_contracts
+  ON app_private.operation_contracts FOR SELECT
+  TO schoolos_read_executor,schoolos_authz_reader
+  USING (code='family.principal_membership.change');
+-- Only the participant helper uses the following workflow step/evidence rows.
+-- No direct client/table RLS role or table ACL is added.
+CREATE POLICY d1_effect31_checked_request_steps
+  ON app_private.approval_request_steps FOR SELECT
+  TO schoolos_authz_reader USING (true);
+CREATE POLICY d1_effect31_checked_step_reviewers
+  ON app_private.approval_step_reviewers FOR SELECT
+  TO schoolos_authz_reader USING (true);
+CREATE POLICY d1_effect31_checked_step_templates
+  ON app_private.approval_step_templates FOR SELECT
+  TO schoolos_authz_reader USING (true);
+CREATE POLICY d1_effect31_checked_approval_reviews
+  ON app_private.approval_reviews FOR SELECT
+  TO schoolos_authz_reader USING (true);
+RESET ROLE;
+
+-- The original Effect31 read body selected q.*, which requires SELECT on every
+-- approval_requests column. Replace its body without changing its signature,
+-- ownership, typed projection or participant authorization procedure. Selecting
+-- only needed columns lets the trusted read executor keep column-limited ACL.
+SET ROLE schoolos_read_executor;
+CREATE OR REPLACE FUNCTION app.d1_read_family_principal_membership_request(p_request_id uuid)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,family_id uuid,expected_family_version bigint,
+  target_principal_id uuid,expected_principal_version bigint,action text,source_membership_id uuid,source_family_id uuid,
+  effective_on date,request_reason text,participant_kind text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; req record; kind text; target_principal uuid; principal_version bigint; action text;
+  source_id uuid; source_family uuid; effective_on date;
+BEGIN
+  IF p_request_id IS NULL THEN RETURN; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RETURN; END IF;
+  SELECT q.id,q.operation_id,q.requester_id,q.requested_payload,q.row_version,q.state,
+         q.target_ref,q.expected_target_version,q.reason
+    INTO req FROM app_private.approval_requests q
+    JOIN app_private.operation_contracts o ON o.id=q.operation_id
+    WHERE q.id=p_request_id AND o.code='family.principal_membership.change';
+  IF NOT FOUND OR req.requested_payload IS NULL OR pg_catalog.jsonb_typeof(req.requested_payload)<>'object' THEN RETURN; END IF;
+  BEGIN
+    target_principal:=NULLIF(req.requested_payload->>'target_principal_id','')::uuid;
+    principal_version:=(req.requested_payload->>'expected_principal_version')::bigint;
+    action:=req.requested_payload->>'action';
+    source_id:=NULLIF(req.requested_payload->>'source_membership_id','')::uuid;
+    source_family:=NULLIF(req.requested_payload->>'source_family_id','')::uuid;
+    effective_on:=NULLIF(req.requested_payload->>'effective_on','')::date;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN RETURN; END;
+  IF target_principal IS NULL OR principal_version<1 OR action IS NULL
+     OR action NOT IN ('ADD','END','CORRECT') OR effective_on IS NULL THEN RETURN; END IF;
+  PERFORM app_private.d1_family_principal_membership_lock_principals(actor,req.requester_id,target_principal);
+  kind:=app_private.d1_family_principal_membership_participant_kind(p_request_id,actor);
+  IF kind IS NULL THEN RETURN; END IF;
+  RETURN QUERY SELECT req.id,req.row_version,req.state,req.target_ref,req.expected_target_version,
+    target_principal,principal_version,action,source_id,source_family,effective_on,req.reason,kind;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_read_family_principal_membership_request(uuid)
+  FROM PUBLIC,anon,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_read_family_principal_membership_request(uuid)
+  TO authenticated;
+RESET ROLE;

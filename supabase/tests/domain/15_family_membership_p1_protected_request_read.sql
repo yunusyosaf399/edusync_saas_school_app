@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(45);
+SELECT plan(49);
 \ir fixtures/command_actor.sql
 
 SET ROLE schoolos_schema_owner;
@@ -168,6 +168,19 @@ SELECT ok(NOT has_column_privilege('authenticated',
 SELECT ok(NOT has_column_privilege('authenticated',
  'app_private.approval_reviews','reviewer_id','SELECT'),
  'authenticated cannot read private reviewer evidence directly');
+SELECT ok(has_column_privilege('schoolos_read_executor',
+ 'app_private.approval_requests','reason','SELECT'),
+ 'trusted read executor can fetch protected reason for subsequent participant filter');
+SELECT ok(NOT has_column_privilege('schoolos_read_executor',
+ 'app_private.approval_requests','old_snapshot','SELECT'),
+ 'trusted read executor cannot fetch unrelated workflow snapshot');
+SELECT ok(has_column_privilege('schoolos_authz_reader',
+ 'app_private.approval_request_steps','request_id','SELECT'),
+ 'private participant helper can resolve assigned request steps');
+SELECT ok(NOT has_column_privilege('schoolos_authz_reader',
+ 'app_private.approval_requests','requested_payload','SELECT'),
+ 'private participant checker does not receive protected request payload');
+
 
 -- An unrelated, correctly authenticated INDIVIDUAL has the *same* current
 -- membership change permission, yet is not the requester for this request.
