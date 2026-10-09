@@ -7,7 +7,9 @@ RETURNS boolean
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE req record; requester_person uuid; s record; n bigint; reviewer uuid; reviewer_person uuid; seen bigint:=0;
 BEGIN
-  SELECT q.* INTO req FROM app_private.approval_requests q
+  -- The authorization reader has explicitly projected columns, not
+  -- unrestricted SELECT on approval_requests.
+  SELECT q.id,q.requester_id,q.target_ref INTO req FROM app_private.approval_requests q
     JOIN app_private.operation_contracts o ON o.id=q.operation_id
    WHERE q.id=p_request AND o.code='family.relationship.change';
   IF NOT FOUND THEN RETURN false; END IF;
@@ -36,6 +38,11 @@ END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_family_relationship_reviews_live(uuid)
   FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app_private.d1_family_relationship_reviews_live(uuid)
+  TO schoolos_workflow_executor,schoolos_read_executor;
+-- Effect 30's explicit APPLY and checked participant read call this shared,
+-- authz-reader-owned final-review evidence helper. Grant EXECUTE only to the
+-- trusted NOLOGIN workflow/read executors, never to client-facing roles.
+GRANT EXECUTE ON FUNCTION app_private.d1_final_approver_role(uuid,uuid)
   TO schoolos_workflow_executor,schoolos_read_executor;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;

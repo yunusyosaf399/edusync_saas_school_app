@@ -7,10 +7,13 @@ RETURNS TABLE(candidate_principal_id uuid)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE req record; templ record; requester_person uuid;
 BEGIN
-  SELECT q.* INTO req FROM app_private.approval_requests q
+  -- The authorization reader has explicitly projected columns, not
+  -- unrestricted SELECT on approval_requests.
+  SELECT q.id,q.requester_id,q.target_ref INTO req FROM app_private.approval_requests q
     JOIN app_private.operation_contracts o ON o.id=q.operation_id
    WHERE q.id=p_request AND o.code='family.relationship.change';
-  SELECT t.* INTO templ FROM app_private.approval_request_steps s
+  SELECT t.id,t.selection_resolver_key,t.reviewer_role_id INTO templ
+    FROM app_private.approval_request_steps s
     JOIN app_private.approval_step_templates t ON t.id=s.template_id
    WHERE s.id=p_step AND s.request_id=p_request;
   IF req.id IS NULL OR templ.id IS NULL OR templ.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE' THEN RETURN; END IF;

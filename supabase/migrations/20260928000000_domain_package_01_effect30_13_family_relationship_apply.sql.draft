@@ -65,10 +65,13 @@ BEGIN
   END IF;
 
   IF ctx.receipt_id IS NOT NULL THEN
-    IF NOT app_private.d1_family_relationship_authorized(req.requester_id,'family.relationship.change',req.target_ref,NULL) THEN
-      RAISE EXCEPTION 'D1 Family relationship requester authority revoked';
-    END IF;
     IF ctx.receipt_state='SUCCEEDED' THEN
+      -- A successful application replay still requires the requester's
+      -- current authority and verifies the immutable relationship evidence.
+      IF NOT app_private.d1_family_relationship_authorized(
+          req.requester_id,'family.relationship.change',req.target_ref,NULL) THEN
+        RAISE EXCEPTION 'D1 Family relationship requester authority revoked';
+      END IF;
       IF app_private.d1_family_relationship_reviews_live(p_request_id) IS DISTINCT FROM true
          OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
          OR ctx.result_summary->>'state'<>'EXECUTED' OR ctx.result_summary->>'request_version' IS NULL THEN
@@ -171,3 +174,21 @@ REVOKE ALL ON FUNCTION app.d1_apply_family_relationship_change(uuid,bigint,text)
 GRANT EXECUTE ON FUNCTION app.d1_apply_family_relationship_change(uuid,bigint,text) TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+
+-- Family relationship APPLY replay must prove its previously accepted
+-- application row matches the immutable successful typed receipt. The common
+-- workflow executor can INSERT application evidence but previously had no
+-- SELECT privilege or SELECT RLS policy. Restrict its read to exact columns
+-- and rows for the Effect 30 operation; do not expose to client roles.
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_family_relationship_workflow_application_replay
+  ON app_private.approval_applications
+  FOR SELECT TO schoolos_workflow_executor
+  USING (EXISTS (
+    SELECT 1 FROM app_private.operation_contracts o
+     WHERE o.id=approval_applications.operation_id
+       AND o.code='family.relationship.change'
+  ));
+GRANT SELECT (request_id,command_receipt_id,operation_id,result_ref,applied_target_version)
+  ON app_private.approval_applications TO schoolos_workflow_executor;
+RESET ROLE;
