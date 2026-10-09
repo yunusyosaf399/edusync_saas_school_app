@@ -302,9 +302,12 @@ BEGIN
     IF NOT FOUND THEN RAISE EXCEPTION 'D1 Family child access source changed'; END IF;
     new_id:=p_source;
   END IF;
-  UPDATE app_private.students SET updated_at=pg_catalog.statement_timestamp()
+  -- The D1 mutable-record guard reserves updated_at and row_version for
+  -- server-managed triggers. Issue a permitted no-op parent UPDATE so the
+  -- existing zz_d1_version trigger advances the aggregate versions itself.
+  UPDATE app_private.students SET updated_at=students.updated_at
     WHERE students.id=p_student RETURNING students.row_version INTO sver;
-  UPDATE app_private.families SET updated_at=pg_catalog.statement_timestamp()
+  UPDATE app_private.families SET updated_at=families.updated_at
     WHERE families.id=p_family RETURNING families.row_version INTO fver;
   RETURN QUERY SELECT new_id,p_source,p_action,
     CASE WHEN p_action='REVOKE' THEN src.effective_from ELSE p_effective_on END,
