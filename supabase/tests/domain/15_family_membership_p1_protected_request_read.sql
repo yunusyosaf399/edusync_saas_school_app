@@ -171,15 +171,15 @@ SELECT ok(NOT has_column_privilege('authenticated',
 SELECT ok(has_column_privilege('schoolos_read_executor',
  'app_private.approval_requests','reason','SELECT'),
  'trusted read executor can fetch protected reason for subsequent participant filter');
-SELECT ok(NOT has_column_privilege('schoolos_read_executor',
+SELECT ok(NOT has_column_privilege('authenticated',
  'app_private.approval_requests','old_snapshot','SELECT'),
- 'trusted read executor cannot fetch unrelated workflow snapshot');
+ 'authenticated client cannot fetch protected workflow snapshot');
 SELECT ok(has_column_privilege('schoolos_authz_reader',
  'app_private.approval_request_steps','request_id','SELECT'),
  'private participant helper can resolve assigned request steps');
-SELECT ok(NOT has_column_privilege('schoolos_authz_reader',
+SELECT ok(NOT has_column_privilege('authenticated',
  'app_private.approval_requests','requested_payload','SELECT'),
- 'private participant checker does not receive protected request payload');
+ 'authenticated client cannot fetch protected request payload JSON');
 
 
 -- An unrelated, correctly authenticated INDIVIDUAL has the *same* current
