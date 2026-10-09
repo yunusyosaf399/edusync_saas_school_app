@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(59);
+SELECT plan(66);
 \ir fixtures/command_actor.sql
 -- Retain Auth fixture ID before schema owner role switch, as with prior D1 P1 tests.
 SELECT set_config('schoolos_test.reviewer_subject',
@@ -91,6 +91,31 @@ UPDATE app_private.approval_policy_versions
  SET state='ACTIVE',effective_from=statement_timestamp()-interval '1 hour',
  activated_at=statement_timestamp() WHERE id='76000000-0000-4000-8000-000000000009';
 RESET ROLE;
+
+-- Approval application evidence may be read by the workflow executor
+-- exclusively for typed replay verification. These are column-level grants
+-- backed by operation-specific SELECT RLS, never end-user table reads.
+SELECT ok(has_column_privilege('schoolos_workflow_executor',
+ 'app_private.approval_applications','request_id','SELECT'),
+ 'workflow can verify original approval request in replay evidence');
+SELECT ok(has_column_privilege('schoolos_workflow_executor',
+ 'app_private.approval_applications','command_receipt_id','SELECT'),
+ 'workflow can verify matching immutable approval command receipt');
+SELECT ok(has_column_privilege('schoolos_workflow_executor',
+ 'app_private.approval_applications','operation_id','SELECT'),
+ 'workflow can scope replay evidence to the family relationship operation');
+SELECT ok(has_column_privilege('schoolos_workflow_executor',
+ 'app_private.approval_applications','result_ref','SELECT'),
+ 'workflow can verify retained result identity during replay');
+SELECT ok(has_column_privilege('schoolos_workflow_executor',
+ 'app_private.approval_applications','applied_target_version','SELECT'),
+ 'workflow can verify original target version in replay evidence');
+SELECT ok(NOT has_column_privilege('authenticated',
+ 'app_private.approval_applications','request_id','SELECT'),
+ 'authenticated user has no private approval application history read');
+SELECT ok(NOT has_column_privilege('anon',
+ 'app_private.approval_applications','request_id','SELECT'),
+ 'anonymous user has no private approval application history read');
 
 -- The helper is not client callable. Only trusted NOLOGIN D1
 -- workflow/checked-read executors may evaluate final reviewer evidence.
