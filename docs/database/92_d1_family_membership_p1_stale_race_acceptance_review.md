@@ -5,7 +5,7 @@ Verdict: **PASS — incremental D1C2A local runtime acceptance; full D1 release 
 
 ## Frozen operation and test coverage
 
-The tested operation `family.principal_membership.change` is non-family-safe, ALL-only, and P1 DIRECT/APPROVAL according to exactly one compatible effective policy. The APPPROVAL route requires an independently authorized INDIVIDUAL reviewer (different Principal and Person) holding the configured role and live `family.access.approve` ALL/DIRECT chain. An approved request does not apply automatically. At explicit APPLY, current policy, requester, reviewer, Principal/Family version and membership history must be rechecked.
+The tested operation `family.principal_membership.change` is non-family-safe, ALL-only, and P1 DIRECT/APPROVAL according to exactly one compatible effective policy. The APPROVAL route requires an independently authorized INDIVIDUAL reviewer (different Principal and Person) holding the configured role and live `family.access.approve` ALL/DIRECT chain. An approved request does not apply automatically. At explicit APPLY, current policy, requester, reviewer, Principal/Family version and membership history must be rechecked.
 
 This increment proves:
 - **Separate approved competing ADD intents:** before application two SUBMIT/APPROVE sequences each leave membership untouched. A successful first explicit APPLY creates one retained membership and approved application; the second revalidates against current state and becomes INVALIDATED, with a typed rejected receipt and replay, no second application or domain event.
