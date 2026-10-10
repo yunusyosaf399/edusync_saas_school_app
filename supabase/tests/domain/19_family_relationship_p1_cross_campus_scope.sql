@@ -135,6 +135,52 @@ INSERT INTO app_private.enrollments(
  '64000000-0000-4000-8000-000000000003','89000000-0000-4000-8000-000000000008',
  'PRIMARY','INITIAL','ACTIVE',CURRENT_DATE-20,'Current Campus B placement',
  '11111111-1111-4111-8111-111111111111');
+-- Real current placements require the same-transaction capacity revision
+-- facts for both Class and both Section projections. The authoritative
+-- deferred capacity guards must remain enabled and are explicitly forced below.
+INSERT INTO app_private.capacity_revisions(
+ id,class_offering_id,section_offering_id,old_capacity,new_capacity,effective_on,reason,created_by) VALUES
+ ('89000000-0000-4000-8000-000000000014','89000000-0000-4000-8000-000000000005',
+  NULL,NULL,30,CURRENT_DATE-20,'Initial Campus A Class capacity',
+  '11111111-1111-4111-8111-111111111111'),
+ ('89000000-0000-4000-8000-000000000015','89000000-0000-4000-8000-000000000006',
+  NULL,NULL,30,CURRENT_DATE-20,'Initial Campus B Class capacity',
+  '11111111-1111-4111-8111-111111111111'),
+ ('89000000-0000-4000-8000-000000000016',NULL,
+  '89000000-0000-4000-8000-000000000007',NULL,30,CURRENT_DATE-20,
+  'Initial Campus A Section capacity','11111111-1111-4111-8111-111111111111'),
+ ('89000000-0000-4000-8000-000000000017',NULL,
+  '89000000-0000-4000-8000-000000000008',NULL,30,CURRENT_DATE-20,
+  'Initial Campus B Section capacity','11111111-1111-4111-8111-111111111111');
+
+-- Every accepted PRIMARY enrollment must also have exactly one pointwise
+-- matching retained roll-allocation fact through its entire effective span.
+-- One school-wide persistent roll namespace with two distinct student values.
+INSERT INTO app_private.roll_policy_revisions(
+ id,school_id,revision,mode,start_value,effective_from,reason,created_by)
+ VALUES ('89000000-0000-4000-8000-000000000018',
+ '22222222-2222-4222-8222-222222222222',1,'PERSISTENT_STUDENT',10000,
+ CURRENT_DATE-30,'Initial persistent roll policy for cross-campus placements',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.roll_allocator_states(
+ id,policy_revision_id,class_offering_id,next_value,created_by)
+ VALUES ('89000000-0000-4000-8000-000000000019',
+ '89000000-0000-4000-8000-000000000018',NULL,10002,
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.roll_allocations(
+ id,enrollment_id,student_id,policy_revision_id,numeric_value,effective_from,created_by)
+ VALUES
+ ('89000000-0000-4000-8000-000000000020',
+  '89000000-0000-4000-8000-000000000009',
+  '64000000-0000-4000-8000-000000000002',
+  '89000000-0000-4000-8000-000000000018',10000,CURRENT_DATE-20,
+  '11111111-1111-4111-8111-111111111111'),
+ ('89000000-0000-4000-8000-000000000021',
+  '89000000-0000-4000-8000-000000000010',
+  '64000000-0000-4000-8000-000000000003',
+  '89000000-0000-4000-8000-000000000018',10001,CURRENT_DATE-20,
+  '11111111-1111-4111-8111-111111111111');
+
 UPDATE app_private.permission_scope_contracts SET enabled=true
  WHERE scope_kind IN ('CAMPUS','CLASS','SECTION') AND resolver_key='DIRECT'
    AND permission_id=(SELECT id FROM app_private.permissions WHERE code='family.access.approve');
