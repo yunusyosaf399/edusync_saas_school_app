@@ -657,12 +657,18 @@ SELECT count(*) FROM app_private.approval_reviews v
 SELECT count(DISTINCT requested_payload->>'display_name')
  FROM app_private.approval_requests
  WHERE reason LIKE 'D1 competing relationship CORRECT %';
+SELECT count(DISTINCT v.reviewer_id) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.reason LIKE 'D1 competing relationship CORRECT %'
+ AND r.operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
 SELECT count(*) FROM app_private.student_primary_family_contexts
  WHERE id='81000000-0000-4000-8000-000000000011'
  AND family_relationship_id='81000000-0000-4000-8000-000000000010'
  AND effective_until IS NULL;
 """, "D1_RELATIONSHIP_CORRECT_RACE_APPROVED", tuples=True).split()
-    if approved != ["2", "2", "2", "1"]:
+    if approved != ["2", "2", "2", "2", "1"]:
         raise RuntimeError("D1_RELATIONSHIP_CORRECT_RACE_PREAPPROVAL_INVALID "
                            + ",".join(approved))
     workers = []
