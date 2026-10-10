@@ -1,0 +1,126 @@
+-- Effect30 cross-campus real-enrollment acceptance discovered a generic HE guard
+-- shape error. The enrollments history row uses predecessor_id (not supersedes_id).
+-- The shared trigger must not dereference a missing record field. Using the
+-- trusted row JSON projection checks whether a real supersedes_id value exists;
+-- every table that DOES expose supersedes_id still receives all existing
+-- supersession ancestry, timestamp and consumed-head validation unchanged.
+-- Append-only Migration10 draft-only continuation; no hosted deployment.
+
+SET ROLE schoolos_schema_owner;
+CREATE OR REPLACE FUNCTION app_private.d1_guard_effective_history() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  parent_id uuid;
+  key_name text;
+  predicate text := 'true';
+  predecessor jsonb;
+  conflict_found boolean;
+  school_id uuid;
+  locked_id uuid;
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  parent_id := (pg_catalog.to_jsonb(NEW)->>TG_ARGV[1])::uuid;
+  IF TG_TABLE_NAME IN ('employee_qualifications','employee_experience_entries') THEN
+    SELECT sp.id INTO school_id FROM app_private.school_profiles sp ORDER BY sp.id LIMIT 1 FOR UPDATE;
+    IF school_id IS NULL THEN RAISE EXCEPTION 'D1 school anchor missing'; END IF;
+    IF TG_TABLE_NAME='employee_qualifications' AND EXISTS (
+      SELECT 1 FROM app_private.employee_qualifications x
+      WHERE x.qualification_record_id=NEW.qualification_record_id
+        AND x.employee_id<>NEW.employee_id) THEN
+      RAISE EXCEPTION 'D1 qualification lineage belongs to another Employee';
+    ELSIF TG_TABLE_NAME='employee_experience_entries' AND EXISTS (
+      SELECT 1 FROM app_private.employee_experience_entries x
+      WHERE x.experience_record_id=NEW.experience_record_id
+        AND x.employee_id<>NEW.employee_id) THEN
+      RAISE EXCEPTION 'D1 experience lineage belongs to another Employee';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'roll_allocations' THEN
+    SELECT rp.school_id INTO school_id FROM app_private.roll_policy_revisions rp
+      WHERE rp.id=NEW.policy_revision_id;
+    IF school_id IS NULL THEN RAISE EXCEPTION 'D1 roll policy missing'; END IF;
+    PERFORM 1 FROM app_private.school_profiles sp WHERE sp.id=school_id FOR UPDATE;
+    -- The policy/allocator namespace is fixed before the Student anchor.
+    PERFORM 1 FROM app_private.roll_policy_revisions p WHERE p.id=NEW.policy_revision_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 roll policy missing after school lock'; END IF;
+    IF (SELECT p.mode FROM app_private.roll_policy_revisions p WHERE p.id=NEW.policy_revision_id)
+       = 'PERSISTENT_STUDENT' THEN
+      PERFORM 1 FROM app_private.roll_allocator_states a
+        WHERE a.policy_revision_id=NEW.policy_revision_id AND a.class_offering_id IS NULL FOR UPDATE;
+    ELSE
+      PERFORM 1 FROM app_private.roll_allocator_states a
+        WHERE a.policy_revision_id=NEW.policy_revision_id
+          AND a.class_offering_id=(SELECT so.class_offering_id
+            FROM app_private.enrollments e JOIN app_private.section_offerings so
+              ON so.id=e.section_offering_id WHERE e.id=NEW.enrollment_id) FOR UPDATE;
+    END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 roll allocator namespace missing'; END IF;
+  END IF;
+  IF TG_TABLE_NAME='section_room_assignments' THEN
+    PERFORM app_private.d1_lock_academic_path(NEW.section_offering_id,NEW.room_id,NULL);
+  END IF;
+  EXECUTE pg_catalog.format('SELECT id FROM app_private.%I WHERE id=$1 FOR UPDATE',TG_ARGV[0])
+    INTO locked_id USING parent_id;
+  IF locked_id IS NULL THEN RAISE EXCEPTION 'D1 temporal parent missing: %',TG_TABLE_NAME; END IF;
+  IF TG_TABLE_NAME IN ('family_relationships','family_student_access') THEN
+    PERFORM 1 FROM app_private.families f WHERE f.id=NEW.family_id FOR UPDATE;
+  END IF;
+  IF TG_TABLE_NAME IN ('class_teacher_assignments','subject_teacher_assignments') THEN
+    -- Different Employees can target the same Section. Serialize on the
+    -- Section before checking the cross-Employee overlap/PRIMARY rule.
+    PERFORM app_private.d1_lock_academic_path(NEW.section_offering_id,NULL,
+      CASE WHEN TG_TABLE_NAME='subject_teacher_assignments'
+        THEN (pg_catalog.to_jsonb(NEW)->>'subject_id')::uuid ELSE NULL END);
+  END IF;
+  FOREACH key_name IN ARRAY pg_catalog.string_to_array(TG_ARGV[2],',') LOOP
+    predicate := predicate || pg_catalog.format(
+      ' AND (pg_catalog.to_jsonb(x)->%L) IS NOT DISTINCT FROM (pg_catalog.to_jsonb($4)->%L)',
+      key_name,key_name);
+  END LOOP;
+  IF TG_TABLE_NAME = 'family_relationships' AND (pg_catalog.to_jsonb(NEW)->>'adult_person_id') IS NULL THEN
+    predicate := predicate ||
+      ' AND pg_catalog.lower(pg_catalog.btrim(x.display_name)) IS NOT DISTINCT FROM pg_catalog.lower(pg_catalog.btrim(pg_catalog.to_jsonb($4)->>''display_name''))'
+      || ' AND pg_catalog.lower(pg_catalog.btrim(x.relationship_contact)) IS NOT DISTINCT FROM pg_catalog.lower(pg_catalog.btrim(pg_catalog.to_jsonb($4)->>''relationship_contact''))';
+  ELSIF TG_TABLE_NAME = 'student_emergency_contacts' AND (pg_catalog.to_jsonb(NEW)->>'person_id') IS NULL THEN
+    predicate := predicate ||
+      ' AND pg_catalog.lower(pg_catalog.btrim(x.contact_name)) IS NOT DISTINCT FROM pg_catalog.lower(pg_catalog.btrim(pg_catalog.to_jsonb($4)->>''contact_name''))'
+      || ' AND x.relationship_label = (pg_catalog.to_jsonb($4)->>''relationship_label'') AND x.contact_phone = (pg_catalog.to_jsonb($4)->>''contact_phone'')';
+  END IF;
+  EXECUTE pg_catalog.format(
+    'SELECT EXISTS (SELECT 1 FROM app_private.%I x WHERE x.id<>$1 AND %s'
+    || ' AND (x.effective_until IS NULL OR x.effective_until>$2)'
+    || ' AND ($3 IS NULL OR x.effective_from<$3))',TG_TABLE_NAME,predicate)
+    INTO conflict_found USING NEW.id,NEW.effective_from,NEW.effective_until,NEW;
+  IF conflict_found THEN RAISE EXCEPTION 'D1 overlapping effective history: %',TG_TABLE_NAME; END IF;
+  IF TG_TABLE_NAME = 'subject_teacher_assignments' AND (pg_catalog.to_jsonb(NEW)->>'assignment_kind')='PRIMARY' THEN
+    SELECT EXISTS (SELECT 1 FROM app_private.subject_teacher_assignments x
+      WHERE x.id<>NEW.id AND x.section_offering_id=NEW.section_offering_id
+        AND x.subject_id=NEW.subject_id AND x.assignment_kind='PRIMARY'
+        AND (x.effective_until IS NULL OR x.effective_until>NEW.effective_from)
+        AND (NEW.effective_until IS NULL OR x.effective_from<NEW.effective_until))
+      INTO conflict_found;
+    IF conflict_found THEN RAISE EXCEPTION 'D1 overlapping PRIMARY subject assignment'; END IF;
+  END IF;
+  IF (pg_catalog.to_jsonb(NEW)->>'supersedes_id') IS NOT NULL THEN
+    EXECUTE pg_catalog.format('SELECT pg_catalog.to_jsonb(x) FROM app_private.%I x WHERE x.id=$1',TG_TABLE_NAME)
+      INTO predecessor USING NEW.supersedes_id;
+    IF predecessor IS NULL OR NEW.supersedes_id=NEW.id THEN
+      RAISE EXCEPTION 'D1 invalid supersession target: %',TG_TABLE_NAME;
+    END IF;
+    IF (predecessor->>'created_at')::timestamptz>NEW.created_at THEN
+      RAISE EXCEPTION 'D1 supersession cannot point to a later retained row: %',TG_TABLE_NAME;
+    END IF;
+    FOREACH key_name IN ARRAY pg_catalog.string_to_array(TG_ARGV[3],',') LOOP
+      IF predecessor->key_name IS DISTINCT FROM pg_catalog.to_jsonb(NEW)->key_name THEN
+        RAISE EXCEPTION 'D1 cross-parent supersession: %',TG_TABLE_NAME;
+      END IF;
+    END LOOP;
+    EXECUTE pg_catalog.format(
+      'SELECT EXISTS (SELECT 1 FROM app_private.%I x WHERE x.supersedes_id=$1 AND x.id<>$2)',
+      TG_TABLE_NAME) INTO conflict_found USING NEW.supersedes_id,NEW.id;
+    IF conflict_found THEN RAISE EXCEPTION 'D1 supersession head already consumed: %',TG_TABLE_NAME; END IF;
+  END IF;
+  RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_guard_effective_history()
+ FROM PUBLIC,anon,authenticated,service_role;
+RESET ROLE;
