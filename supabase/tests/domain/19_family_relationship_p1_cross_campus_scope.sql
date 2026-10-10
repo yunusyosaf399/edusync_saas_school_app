@@ -181,16 +181,16 @@ SELECT * FROM app.d1_submit_family_relationship_change(
  '10000000-0000-4000-8000-000000000003','GUARDIAN','Campus A guardian',
  NULL,CURRENT_DATE-18,'Campus A approval proposal',NULL,
  'effect30-scope-submit-a') \gset req_a_
-SELECT is(:'req_a_request_state','PENDING'::text,
- 'Campus A request enters pending independently of reviewer later scope');
+SELECT is(:'req_a_request_version'::bigint,3::bigint,
+ 'Campus A request enters PENDING version three independently of reviewer later scope');
 SELECT * FROM app.d1_submit_family_relationship_change(
  '64000000-0000-4000-8000-000000000003',1,
  '64000000-0000-4000-8000-000000000001',1,'ADD',NULL,
  '10000000-0000-4000-8000-000000000003','GUARDIAN','Campus B guardian',
  NULL,CURRENT_DATE-18,'Campus B approval proposal',NULL,
  'effect30-scope-submit-b') \gset req_b_
-SELECT is(:'req_b_request_state','PENDING'::text,
- 'Campus B request enters pending before reviewer scope reduction');
+SELECT is(:'req_b_request_version'::bigint,3::bigint,
+ 'Campus B request enters PENDING version three before reviewer scope reduction');
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.approval_step_reviewers a
  JOIN app_private.approval_request_steps s ON a.step_id=s.id
