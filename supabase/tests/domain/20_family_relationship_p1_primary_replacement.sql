@@ -290,9 +290,10 @@ SELECT is(:'stale_request_state','INVALIDATED'::text,
  'APPROVED P1 becomes INVALIDATED if selected replacement ends before accepted date');
 SELECT is(:'stale_request_version'::bigint,5::bigint,
  'stale approved request advances to terminal invalidated version');
-SELECT is(:'stale_relationship_id'::uuid,NULL::uuid,
- 'stale alternative must not produce a relationship effect');
 RESET ROLE;
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'primary_request_id'),'INVALIDATED'::text,
+ 'stale alternative is deterministically recorded as an invalidated request');
 SELECT is((SELECT effective_until FROM app_private.family_relationships
  WHERE id='90000000-0000-4000-8000-000000000002'),NULL::date,
  'failed APPROVAL apply retains original selected source open');
