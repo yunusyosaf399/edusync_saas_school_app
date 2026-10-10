@@ -106,5 +106,29 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             )
 
 
+    def test_family_relationship_end_worker_sql_rejects_unowned_cases(self):
+        for pos in ("first", "second"):
+            sql = races.family_relationship_end_apply_sql(pos, True)
+            self.assertTrue(sql.startswith("BEGIN;"))
+            self.assertTrue(sql.rstrip().endswith("COMMIT;"))
+            self.assertIn("SET ROLE authenticated;", sql)
+            self.assertIn("pg_sleep(3)", sql)
+            self.assertIn("d1-relationship-end-" + pos, sql)
+            self.assertIn("app.d1_apply_family_relationship_change(", sql)
+        for pos, hold in (("third", False), ("first';--", False),
+                          ("first", "true")):
+            with self.subTest(pos=pos, hold=hold):
+                with self.assertRaisesRegex(RuntimeError,
+                    "D1_RELATIONSHIP_END_RACE_INTENT_INVALID"):
+                    races.family_relationship_end_apply_sql(pos, hold)
+
+    def test_family_relationship_end_uses_distinct_request_keys(self):
+        first = races.family_relationship_end_apply_sql("first")
+        second = races.family_relationship_end_apply_sql("second")
+        self.assertIn("family-relationship-end-first-apply", first)
+        self.assertIn("family-relationship-end-second-apply", second)
+        self.assertNotEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()
