@@ -130,5 +130,29 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotEqual(first, second)
 
 
+    def test_family_relationship_correct_worker_validates_intents(self):
+        for pos in ("first", "second"):
+            sql = races.family_relationship_correct_apply_sql(pos, True)
+            self.assertTrue(sql.startswith("BEGIN;"))
+            self.assertTrue(sql.rstrip().endswith("COMMIT;"))
+            self.assertIn("SET ROLE authenticated;", sql)
+            self.assertIn("pg_sleep(3)", sql)
+            self.assertIn("d1-relationship-correct-" + pos, sql)
+            self.assertIn("app.d1_apply_family_relationship_change(", sql)
+        for pos, hold in (("third", False), ("first';--", False),
+                          ("first", "true")):
+            with self.subTest(pos=pos, hold=hold):
+                with self.assertRaisesRegex(
+                        RuntimeError, "D1_RELATIONSHIP_CORRECT_RACE_INTENT_INVALID"):
+                    races.family_relationship_correct_apply_sql(pos, hold)
+
+    def test_family_relationship_correct_workers_have_distinct_approved_intents(self):
+        first = races.family_relationship_correct_apply_sql("first")
+        second = races.family_relationship_correct_apply_sql("second")
+        self.assertIn("family-relationship-correct-first-apply", first)
+        self.assertIn("family-relationship-correct-second-apply", second)
+        self.assertNotEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()
