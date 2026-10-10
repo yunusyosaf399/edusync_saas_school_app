@@ -2,6 +2,17 @@
 -- distinct proposed facts, two independent APPROVE decisions.
 -- This runs after the accepted END race, whose original source is closed.
 -- No hosted database, no direct workflow-state insertion or policy bypass.
+-- This is a fresh transaction after the prior END race committed. Rebuild
+-- the verified Foundation staff JWT before synthetic schema-owner writes;
+-- transaction-local claims from the preceding race cannot carry across.
+SELECT set_config('request.jwt.claim.sub',
+ (SELECT id::text FROM auth.users WHERE email='foundation-rbac-001@example.invalid'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('request.jwt.claim.sub'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings
+ WHERE id='66666666-6666-4666-8666-666666666666'),
+ 'is_anonymous',false)::text,true);
 SET ROLE schoolos_schema_owner;
 -- A different open, current guardian source is a synthetic pre-existing fact.
 -- Its start is after the prior END race's exclusive boundary.
