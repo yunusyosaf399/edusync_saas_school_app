@@ -408,3 +408,175 @@ SELECT count(*) FROM app_private.family_principal_memberships
               "two-session P1 race; lock_wait_observed=true; "
               "one EXECUTED, one INVALIDATED; retained membership lineage")
     print("D1_FAMILY_MEMBERSHIP_LINEAGE_RACES_PASS 2 END/CORRECT races")
+    run_family_relationship_end_race(container, execute_sql)
+
+
+# Effect30 P1: two distinct preapproved END intents for the same retained
+# Student relationship. Require a real WAITING PostgreSQL lock, not sequential
+# executions, before accepting one winner and one terminal INVALIDATED loser.
+_REL_END_SOURCE = "64000000-0000-4000-8000-000000000004"
+_REL_END_STUDENT = "64000000-0000-4000-8000-000000000002"
+_REL_END_FAMILY = "64000000-0000-4000-8000-000000000001"
+_REL_END_MISSING = "00000000-0000-0000-0000-000000000000"
+
+
+def family_relationship_end_apply_sql(position: str, hold: bool = False) -> str:
+    if position not in ("first", "second") or type(hold) is not bool:
+        raise RuntimeError("D1_RELATIONSHIP_END_RACE_INTENT_INVALID")
+    reason = "D1 competing relationship END " + position
+    key = "family-relationship-end-" + position + "-apply"
+    return (
+        "BEGIN;\n"
+        "SET LOCAL application_name='d1-relationship-end-" + position + "';\n"
+        "SELECT id::text AS request_id FROM app_private.approval_requests "
+        "WHERE reason='" + reason + "' \\gset\n"
+        + settings_sql()
+        + "SELECT COALESCE(relationship_id::text,'" + _REL_END_MISSING + "')"
+        "||E'\\t'||request_state||E'\\t'||request_version::text "
+        "FROM app.d1_apply_family_relationship_change("
+        ":'request_id'::uuid,4,'" + key + "');\n"
+        + ("SELECT pg_sleep(3);\n" if hold else "")
+        + "COMMIT;\n"
+    )
+
+
+def run_family_relationship_end_race(container: str, execute_sql) -> None:
+    args = worker_args(container)
+    setup = (ROOT / "supabase/tests/domain/fixtures/family_relationship_end_race_setup.sql").read_text(
+        encoding="utf-8"
+    )
+    if ("d1-family-relationship-end-race-p1" not in setup
+        or setup.count("app.d1_submit_family_relationship_change(") != 2
+        or setup.count("app.d1_review_family_relationship_change(") != 2):
+        raise RuntimeError("D1_RELATIONSHIP_END_RACE_FIXTURE_INVALID")
+    # Prior membership races leave the original relationship intact; this gate
+    # fails closed if any earlier step unexpectedly touched the source.
+    before = execute_sql(container, """
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='64000000-0000-4000-8000-000000000004'
+ AND student_id='64000000-0000-4000-8000-000000000002'
+ AND family_id='64000000-0000-4000-8000-000000000001'
+ AND effective_from=CURRENT_DATE-20 AND effective_until IS NULL
+ AND supersedes_id IS NULL;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='64000000-0000-4000-8000-000000000002';
+SELECT count(*) FROM app_private.family_student_access
+ WHERE student_id='64000000-0000-4000-8000-000000000002';
+""", "D1_RELATIONSHIP_END_RACE_PRECONDITION", tuples=True).split()
+    if before != ["1", "0", "0"]:
+        raise RuntimeError("D1_RELATIONSHIP_END_RACE_SOURCE_CHANGED")
+    execute_sql(container, "BEGIN;\n"+setup+"\nCOMMIT;",
+                "D1_RELATIONSHIP_END_RACE_SETUP")
+    approved = execute_sql(container, """
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='APPROVED' AND reason LIKE 'D1 competing relationship END %'
+ AND operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.reason LIKE 'D1 competing relationship END %'
+ AND r.operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+""", "D1_RELATIONSHIP_END_RACE_APPROVED", tuples=True).split()
+    if approved != ["2", "2"]:
+        raise RuntimeError("D1_RELATIONSHIP_END_RACE_PREAPPROVAL_INVALID")
+    workers = []
+    outcomes = []
+    try:
+        for position, hold in (("first", True), ("second", False)):
+            worker = subprocess.Popen(
+                args,cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,text=True,
+            )
+            workers.append(worker)
+            worker.stdin.write(family_relationship_end_apply_sql(position, hold))
+            worker.stdin.close()
+            worker.stdin = None
+            deadline = time.monotonic()+10
+            # Follow the precise worker by application_name; unrelated stack
+            # background locks cannot satisfy the contention observation.
+            lock_sql = (
+                "SELECT CASE WHEN EXISTS(SELECT 1 FROM pg_catalog.pg_locks l "
+                "JOIN pg_catalog.pg_stat_activity a ON a.pid=l.pid "
+                "WHERE a.application_name='d1-relationship-end-first' "
+                "AND l.granted AND l.locktype='advisory' AND l.classid=71001) "
+                "THEN 1 ELSE 0 END;"
+                if hold else
+                "SELECT CASE WHEN EXISTS(SELECT 1 FROM pg_catalog.pg_locks l "
+                "JOIN pg_catalog.pg_stat_activity a ON a.pid=l.pid "
+                "WHERE a.application_name='d1-relationship-end-second' "
+                "AND NOT l.granted AND l.locktype IN "
+                "('advisory','transactionid','tuple')) THEN 1 ELSE 0 END;"
+            )
+            while time.monotonic() < deadline:
+                if worker.poll() is not None:
+                    raise RuntimeError("D1_RELATIONSHIP_END_RACE_WORKER_EXITED_EARLY")
+                if execute_sql(container,lock_sql,"D1_RELATIONSHIP_END_RACE_LOCK",
+                               tuples=True,timeout=10).strip()=="1":
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError("D1_RELATIONSHIP_END_RACE_LOCK_NOT_OBSERVED")
+        for worker in workers:
+            output, stderr = worker.communicate(timeout=30)
+            if worker.returncode:
+                raise RuntimeError("D1_RELATIONSHIP_END_RACE_APPLY_FAILED "
+                    + re.sub(r"[^A-Za-z0-9_ .:-]","",stderr[-400:]))
+            rows = re.findall(
+                r"(?m)^([0-9a-f-]{36})\t(EXECUTED|INVALIDATED)\t([0-9]+)$",
+                output,
+            )
+            if len(rows) != 1:
+                raise RuntimeError("D1_RELATIONSHIP_END_RACE_RESULT_SHAPE")
+            outcomes.append(rows[0])
+        if outcomes[0] != (_REL_END_SOURCE, "EXECUTED", "5"):
+            raise RuntimeError("D1_RELATIONSHIP_END_RACE_WINNER_INVALID")
+        if outcomes[1] != (_REL_END_MISSING, "INVALIDATED", "5"):
+            raise RuntimeError("D1_RELATIONSHIP_END_RACE_LOSER_NOT_INVALIDATED")
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.kill()
+                worker.communicate(timeout=10)
+    # The winner alone changes the original source. No new relationship or
+    # child-access grant may appear, and only one approved request can APPLY.
+    counts = execute_sql(container, """
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='64000000-0000-4000-8000-000000000004'
+ AND student_id='64000000-0000-4000-8000-000000000002'
+ AND family_id='64000000-0000-4000-8000-000000000001'
+ AND effective_from=CURRENT_DATE-20 AND effective_until=CURRENT_DATE-3
+ AND supersedes_id IS NULL AND ended_at IS NOT NULL AND ended_by IS NOT NULL;
+SELECT count(*) FROM app_private.family_relationships
+ WHERE student_id='64000000-0000-4000-8000-000000000002';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='64000000-0000-4000-8000-000000000002';
+SELECT count(*) FROM app_private.family_student_access
+ WHERE student_id='64000000-0000-4000-8000-000000000002';
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='EXECUTED' AND operation_id=(SELECT id
+ FROM app_private.operation_contracts WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='INVALIDATED' AND operation_id=(SELECT id
+ FROM app_private.operation_contracts WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_applications
+ WHERE operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.command_receipts
+ WHERE operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.outbox_events
+ WHERE event_type='family.relationship_changed';
+SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+""", "D1_RELATIONSHIP_END_RACE_EVIDENCE", tuples=True).split()
+    if counts != ["1","1","0","0","1","1","1","6","1","2"]:
+        raise RuntimeError("D1_RELATIONSHIP_END_RACE_EVIDENCE_MISMATCH "
+                           + ",".join(counts))
+    print("D1_FAMILY_RELATIONSHIP_END_RACE_PASS 1 two-session Effect30 P1 "
+          "competing END race; lock_wait_observed=true; one EXECUTED, "
+          "one INVALIDATED; one retained closed source/application/event")
