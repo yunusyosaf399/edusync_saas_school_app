@@ -5,6 +5,8 @@
 -- This is a fresh transaction after the prior END race committed. Rebuild
 -- the verified Foundation staff JWT before synthetic schema-owner writes;
 -- transaction-local claims from the preceding race cannot carry across.
+SELECT set_config('schoolos_test.second_reviewer_subject',
+ (SELECT id::text FROM auth.users WHERE email='foundation-own-001@example.invalid'),true);
 SELECT set_config('request.jwt.claim.sub',
  (SELECT id::text FROM auth.users WHERE email='foundation-rbac-001@example.invalid'),true);
 SELECT set_config('request.jwt.claims',jsonb_build_object(
@@ -53,7 +55,7 @@ INSERT INTO app_private.principal_auth_bindings(
  id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
 VALUES ('81000000-0000-4000-8000-000000000013',
  '81000000-0000-4000-8000-000000000012','INDIVIDUAL',
- (SELECT id FROM auth.users WHERE email='foundation-own-001@example.invalid'),
+ current_setting('schoolos_test.second_reviewer_subject')::uuid,
  clock_timestamp(),to_timestamp(floor(extract(epoch FROM clock_timestamp()))),
  '11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.principal_role_assignments(
