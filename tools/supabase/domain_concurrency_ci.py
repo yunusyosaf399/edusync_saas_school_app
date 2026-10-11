@@ -1131,3 +1131,245 @@ SELECT count(*) FROM app_private.student_primary_family_contexts
               +first+" wins over "+second+"; two-session observed lock wait; "
               "one EXECUTED and one INVALIDATED, retained exact primary lineage")
     print("D1_FAMILY_RELATIONSHIP_CROSS_ACTION_RACES_PASS 2 END/CORRECT cross-action races")
+    run_family_primary_replacement_race(container, execute_sql)
+
+
+# Effect30 P1: ending Student B's SELECTED primary guardian when another
+# ACTIVE Family has a valid selectable relationship REQUIRES the source
+# request's explicit replacement UUID. A separately approved CORRECT on the
+# same source must be invalidated when the END commits. Reuse real requester,
+# reviewer roles and actors from the ten already accepted race cases.
+_PRIMARY_RACE_STUDENT = "64000000-0000-4000-8000-000000000003"
+_PRIMARY_RACE_SOURCE_FAMILY = _REL_END_FAMILY
+_PRIMARY_RACE_SOURCE = "82000000-0000-4000-8000-000000000001"
+_PRIMARY_RACE_REPLACEMENT = "82000000-0000-4000-8000-000000000002"
+_PRIMARY_RACE_ALT_FAMILY = "82000000-0000-4000-8000-000000000003"
+_PRIMARY_RACE_CONTEXT = "82000000-0000-4000-8000-000000000004"
+
+
+def family_primary_replacement_apply_sql(position: str, hold: bool = False) -> str:
+    if position not in ("first", "second") or type(hold) is not bool:
+        raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_INTENT_INVALID")
+    action = "END" if position == "first" else "CORRECT"
+    reason = "D1 primary replacement race " + action + " " + position
+    key = "family-primary-replacement-" + action.lower() + "-apply"
+    return (
+        "BEGIN;\n"
+        "SET LOCAL application_name='d1-primary-repl-" + position + "';\n"
+        "SELECT id::text AS request_id FROM app_private.approval_requests "
+        "WHERE reason='" + reason + "' \\gset\n"
+        + settings_sql()
+        + "SELECT COALESCE(relationship_id::text,'" + _REL_END_MISSING + "')"
+        "||E'\\t'||request_state||E'\\t'||request_version::text "
+        "FROM app.d1_apply_family_relationship_change("
+        ":'request_id'::uuid,4,'" + key + "');\n"
+        + ("SELECT pg_sleep(3);\n" if hold else "")
+        + "COMMIT;\n"
+    )
+
+
+def run_family_primary_replacement_race(container: str, execute_sql) -> None:
+    args = worker_args(container)
+    setup = (
+        ROOT / "supabase/tests/domain/fixtures/family_primary_replacement_race_setup.sql"
+    ).read_text(encoding="utf-8")
+    if ("D1 primary replacement race END first" not in setup
+        or setup.count("app.d1_submit_family_relationship_change(") != 2
+        or setup.count("app.d1_review_family_relationship_change(") != 2
+        or setup.count("'" + _PRIMARY_RACE_REPLACEMENT + "'") < 2):
+        raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_FIXTURE_INVALID")
+    before = execute_sql(container, f"""
+SELECT count(*) FROM app_private.students
+ WHERE id='{_PRIMARY_RACE_STUDENT}' AND current_status='ACTIVE';
+SELECT count(*) FROM app_private.families
+ WHERE id='{_PRIMARY_RACE_SOURCE_FAMILY}' AND state='ACTIVE';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE student_id='{_PRIMARY_RACE_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_PRIMARY_RACE_STUDENT}';
+SELECT count(*) FROM app_private.family_student_access
+ WHERE student_id='{_PRIMARY_RACE_STUDENT}';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='EXECUTED' AND operation_id=(SELECT id FROM
+ app_private.operation_contracts WHERE code='family.relationship.change');
+""","D1_PRIMARY_REPLACEMENT_RACE_PRECONDITION",tuples=True).split()
+    if before!=["1","1","0","0","0","4","3","4"]:
+        raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_SOURCE_DRIFT "
+                           + ",".join(before))
+    execute_sql(container,"BEGIN;\n"+setup+"\nCOMMIT;",
+                "D1_PRIMARY_REPLACEMENT_RACE_SETUP")
+    approved = execute_sql(container,f"""
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='APPROVED' AND reason IN
+ ('D1 primary replacement race END first',
+  'D1 primary replacement race CORRECT second')
+ AND operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.reason IN ('D1 primary replacement race END first',
+                    'D1 primary replacement race CORRECT second');
+SELECT count(DISTINCT v.reviewer_id)
+ FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.reason IN ('D1 primary replacement race END first',
+                    'D1 primary replacement race CORRECT second');
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{_PRIMARY_RACE_SOURCE}'
+ AND student_id='{_PRIMARY_RACE_STUDENT}'
+ AND family_id='{_PRIMARY_RACE_SOURCE_FAMILY}'
+ AND adult_person_id='{_CROSS_PERSON}'
+ AND effective_from=CURRENT_DATE-19 AND effective_until IS NULL;
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{_PRIMARY_RACE_REPLACEMENT}'
+ AND student_id='{_PRIMARY_RACE_STUDENT}'
+ AND family_id='{_PRIMARY_RACE_ALT_FAMILY}'
+ AND effective_from=CURRENT_DATE-18 AND effective_until IS NULL;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE id='{_PRIMARY_RACE_CONTEXT}' AND student_id='{_PRIMARY_RACE_STUDENT}'
+ AND family_relationship_id='{_PRIMARY_RACE_SOURCE}'
+ AND effective_from=CURRENT_DATE-16 AND effective_until IS NULL;
+SELECT count(*) FROM app_private.family_student_access
+ WHERE student_id='{_PRIMARY_RACE_STUDENT}';
+SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id IN (SELECT id FROM app_private.approval_requests
+ WHERE reason IN ('D1 primary replacement race END first',
+                  'D1 primary replacement race CORRECT second'));
+""","D1_PRIMARY_REPLACEMENT_RACE_APPROVED",tuples=True).split()
+    if approved!=["2","2","2","1","1","1","0","0"]:
+        raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_PREAPPROVAL_INVALID "
+                           + ",".join(approved))
+    workers=[]
+    outcomes=[]
+    try:
+        for position,hold in (("first",True),("second",False)):
+            worker=subprocess.Popen(
+                args,cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,text=True,
+            )
+            workers.append(worker)
+            worker.stdin.write(family_primary_replacement_apply_sql(position,hold))
+            worker.stdin.close()
+            worker.stdin=None
+            deadline=time.monotonic()+10
+            lock_sql=(
+                "SELECT CASE WHEN EXISTS(SELECT 1 FROM pg_catalog.pg_locks l "
+                "JOIN pg_catalog.pg_stat_activity a ON a.pid=l.pid "
+                "WHERE a.application_name='d1-primary-repl-first' "
+                "AND l.granted AND l.locktype='advisory' AND l.classid=71001) "
+                "THEN 1 ELSE 0 END;"
+                if hold else
+                "SELECT CASE WHEN EXISTS(SELECT 1 FROM pg_catalog.pg_locks l "
+                "JOIN pg_catalog.pg_stat_activity a ON a.pid=l.pid "
+                "WHERE a.application_name='d1-primary-repl-second' "
+                "AND NOT l.granted AND l.locktype IN "
+                "('advisory','transactionid','tuple')) THEN 1 ELSE 0 END;"
+            )
+            while time.monotonic()<deadline:
+                if worker.poll() is not None:
+                    raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_WORKER_EXITED_EARLY")
+                if execute_sql(container,lock_sql,
+                               "D1_PRIMARY_REPLACEMENT_RACE_LOCK",
+                               tuples=True,timeout=10).strip()=="1":
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_LOCK_NOT_OBSERVED")
+        for worker in workers:
+            output,stderr=worker.communicate(timeout=30)
+            if worker.returncode:
+                raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_APPLY_FAILED "
+                    + re.sub(r"[^A-Za-z0-9_ .:-]","",stderr[-400:]))
+            rows=re.findall(
+                r"(?m)^([0-9a-f-]{36})\t(EXECUTED|INVALIDATED)\t([0-9]+)$",
+                output,
+            )
+            if len(rows)!=1:
+                raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_RESULT_SHAPE")
+            outcomes.append(rows[0])
+        if outcomes[0]!=(_PRIMARY_RACE_SOURCE,"EXECUTED","5"):
+            raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_END_NOT_EXECUTED")
+        if outcomes[1]!=(_REL_END_MISSING,"INVALIDATED","5"):
+            raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_CORRECT_NOT_INVALIDATED")
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.kill()
+                worker.communicate(timeout=10)
+    evidence=execute_sql(container,f"""
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{_PRIMARY_RACE_SOURCE}'
+ AND student_id='{_PRIMARY_RACE_STUDENT}'
+ AND family_id='{_PRIMARY_RACE_SOURCE_FAMILY}'
+ AND effective_from=CURRENT_DATE-19 AND effective_until=CURRENT_DATE-6
+ AND ended_at IS NOT NULL AND ended_by IS NOT NULL
+ AND supersedes_id IS NULL;
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{_PRIMARY_RACE_REPLACEMENT}'
+ AND student_id='{_PRIMARY_RACE_STUDENT}'
+ AND family_id='{_PRIMARY_RACE_ALT_FAMILY}'
+ AND effective_from=CURRENT_DATE-18 AND effective_until IS NULL
+ AND supersedes_id IS NULL;
+SELECT count(*) FROM app_private.family_relationships
+ WHERE student_id='{_PRIMARY_RACE_STUDENT}';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE supersedes_id='{_PRIMARY_RACE_SOURCE}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE id='{_PRIMARY_RACE_CONTEXT}'
+ AND student_id='{_PRIMARY_RACE_STUDENT}'
+ AND family_relationship_id='{_PRIMARY_RACE_SOURCE}'
+ AND effective_from=CURRENT_DATE-16 AND effective_until=CURRENT_DATE-6
+ AND ended_at IS NOT NULL AND ended_by IS NOT NULL;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_PRIMARY_RACE_STUDENT}'
+ AND supersedes_id='{_PRIMARY_RACE_CONTEXT}'
+ AND family_relationship_id='{_PRIMARY_RACE_REPLACEMENT}'
+ AND effective_from=CURRENT_DATE-6 AND effective_until IS NULL;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_PRIMARY_RACE_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_PRIMARY_RACE_STUDENT}' AND effective_until IS NULL;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_PRIMARY_RACE_STUDENT}' AND effective_until IS NULL
+ AND family_relationship_id='{_PRIMARY_RACE_REPLACEMENT}';
+SELECT count(*) FROM app_private.family_student_access
+ WHERE student_id='{_PRIMARY_RACE_STUDENT}';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='EXECUTED' AND operation_id=(SELECT id
+ FROM app_private.operation_contracts WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='INVALIDATED' AND operation_id=(SELECT id
+ FROM app_private.operation_contracts WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_applications
+ WHERE operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.command_receipts
+ WHERE operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.outbox_events
+ WHERE event_type='family.relationship_changed';
+SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+""","D1_PRIMARY_REPLACEMENT_RACE_EVIDENCE",tuples=True).split()
+    expected=["1","1","2","0","1","1","2","1","1","0","4","3",
+              "5","5","5","30","5","10"]
+    if evidence!=expected:
+        raise RuntimeError("D1_PRIMARY_REPLACEMENT_RACE_EVIDENCE_MISMATCH "
+                           + ",".join(evidence))
+    print("D1_FAMILY_PRIMARY_REPLACEMENT_RACE_PASS "
+          "Effect30 P1 END explicit other-Family selected-primary replacement "
+          "wins over independently approved CORRECT; observed_lock_wait=true; "
+          "one EXECUTED/one INVALIDATED; exact retained replacement lineage")
