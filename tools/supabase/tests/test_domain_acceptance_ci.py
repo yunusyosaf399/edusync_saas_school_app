@@ -284,5 +284,21 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("pg_sleep(3)",candidate)
         self.assertNotEqual(primary,candidate)
 
+
+    def test_family_reviewer_scope_stale_suite_is_registered(self):
+        filename="21_family_relationship_p1_reviewer_scope_stale_apply.sql"
+        self.assertIn((filename,36),[(name,total) for name,total in business.DOMAIN_TESTS])
+        path=business.ROOT/"supabase/tests/domain"/filename
+        sql=path.read_text(encoding="utf-8")
+        self.assertIn("SELECT plan(36);",sql)
+        self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
+        self.assertTrue(sql.lstrip().startswith("--"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertIn("D1_FAMILY_RELATIONSHIP_REVIEW_AUTHORITY_STALE",sql)
+        self.assertIn("UPDATE app_private.assignment_permission_scopes",sql)
+        self.assertIn("effect30-revoked-reviewer-scope-apply",sql)
+        self.assertNotIn("UPDATE app_private.approval_requests SET state='APPROVED'",sql)
+
+
 if __name__ == "__main__":
     unittest.main()
