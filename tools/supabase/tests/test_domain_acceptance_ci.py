@@ -207,5 +207,31 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                     phase,actions[0],"first","true")
 
 
+    def test_family_primary_replacement_workers_require_exact_test_positions(self):
+        for position in ("first","second"):
+            sql=races.family_primary_replacement_apply_sql(position,True)
+            self.assertTrue(sql.startswith("BEGIN;"))
+            self.assertTrue(sql.rstrip().endswith("COMMIT;"))
+            self.assertIn("SET ROLE authenticated;",sql)
+            self.assertIn("pg_sleep(3)",sql)
+            self.assertIn("d1-primary-repl-"+position,sql)
+            self.assertIn("app.d1_apply_family_relationship_change(",sql)
+        for position,hold in (("third",False),("first';--",False),
+                              ("first","true")):
+            with self.subTest(position=position,hold=hold):
+                with self.assertRaisesRegex(
+                    RuntimeError,"D1_PRIMARY_REPLACEMENT_RACE_INTENT_INVALID"):
+                    races.family_primary_replacement_apply_sql(position,hold)
+
+    def test_family_primary_replacement_workers_have_distinct_typed_keys(self):
+        first=races.family_primary_replacement_apply_sql("first")
+        second=races.family_primary_replacement_apply_sql("second")
+        self.assertIn("D1 primary replacement race END first",first)
+        self.assertIn("D1 primary replacement race CORRECT second",second)
+        self.assertIn("family-primary-replacement-end-apply",first)
+        self.assertIn("family-primary-replacement-correct-apply",second)
+        self.assertNotEqual(first,second)
+
+
 if __name__ == "__main__":
     unittest.main()
