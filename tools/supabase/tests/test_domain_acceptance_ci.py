@@ -332,10 +332,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_family_policy_replacement_stale_apply_suite_is_registered(self):
         filename="23_family_relationship_p1_policy_replacement_stale_apply.sql"
-        self.assertIn((filename,65),[(name,total) for name,total in business.DOMAIN_TESTS])
+        self.assertIn((filename,69),[(name,total) for name,total in business.DOMAIN_TESTS])
         path=business.ROOT/"supabase/tests/domain"/filename
         sql=path.read_text(encoding="utf-8")
-        self.assertIn("SELECT plan(65);",sql)
+        self.assertIn("SELECT plan(69);",sql)
         self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
         self.assertTrue(sql.startswith("--"))
         self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
@@ -444,6 +444,8 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                     "d1_read_student_restricted_identity"):
             self.assertIn("app."+rpc,sql)
         self.assertIn("effect-family-portal-read-revoke",sql)
+        self.assertIn("jsonb_object_keys(to_jsonb(summary))",sql)
+        self.assertIn("jsonb_object_keys(to_jsonb(rel))",sql)
         self.assertIn("SAVEPOINT ended_family_membership_read;",sql)
         self.assertIn("ROLLBACK TO SAVEPOINT ended_family_membership_read;",sql)
         self.assertIn("UPDATE app_private.role_permission_grants SET revoked_at",sql)
