@@ -233,5 +233,30 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotEqual(first,second)
 
 
+    def test_family_replacement_stale_workers_require_known_positions(self):
+        for pos in ("first","second"):
+            sql=races.family_replacement_stale_apply_sql(pos,True)
+            self.assertTrue(sql.startswith("BEGIN;"))
+            self.assertTrue(sql.rstrip().endswith("COMMIT;"))
+            self.assertIn("SET ROLE authenticated;",sql)
+            self.assertIn("pg_sleep(3)",sql)
+            self.assertIn("d1-repl-stale-"+pos,sql)
+            self.assertIn("app.d1_apply_family_relationship_change(",sql)
+        for pos,hold in (("third",False),("first';--",False),("first","true")):
+            with self.subTest(pos=pos,hold=hold):
+                with self.assertRaisesRegex(
+                    RuntimeError,"D1_REPLACEMENT_STALE_INTENT_INVALID"):
+                    races.family_replacement_stale_apply_sql(pos,hold)
+
+    def test_family_replacement_stale_distinct_approved_actions(self):
+        first=races.family_replacement_stale_apply_sql("first")
+        second=races.family_replacement_stale_apply_sql("second")
+        self.assertIn("D1 replacement stale race candidate END first",first)
+        self.assertIn("D1 replacement stale race primary END second",second)
+        self.assertIn("family-stale-replacement-candidate-end-apply",first)
+        self.assertIn("family-stale-replacement-primary-end-apply",second)
+        self.assertNotEqual(first,second)
+
+
 if __name__ == "__main__":
     unittest.main()
