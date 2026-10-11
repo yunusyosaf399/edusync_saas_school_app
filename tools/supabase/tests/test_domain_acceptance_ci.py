@@ -355,11 +355,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_family_p1_approved_policy_ambiguity_suite(self):
         filename="24_family_relationship_p1_approved_policy_ambiguity.sql"
-        self.assertIn((filename,73),[(name,total) for name,total in business.DOMAIN_TESTS])
+        self.assertIn((filename,77),[(name,total) for name,total in business.DOMAIN_TESTS])
         sql=(business.ROOT/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
         self.assertTrue(sql.startswith("--"))
         self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
-        self.assertIn("SELECT plan(73);",sql)
+        self.assertIn("SELECT plan(77);",sql)
         self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
         self.assertIn("D1_FAMILY_RELATIONSHIP_POLICY_STALE",sql)
         self.assertIn("effect30-policy-ambiguous-denied-submit",sql)
