@@ -1783,6 +1783,12 @@ SELECT count(*) FROM app_private.family_relationships
  WHERE supersedes_id='{_REVERSE_REPL_PRIMARY}';
 SELECT count(*) FROM app_private.family_relationships
  WHERE student_id='{_REVERSE_REPL_STUDENT}';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='84000000-0000-4000-8000-000000000002'
+ AND family_id='{_PRIMARY_RACE_SOURCE_FAMILY}'
+ AND student_id='{_REVERSE_REPL_STUDENT}'
+ AND relationship_kind='MOTHER' AND effective_from=CURRENT_DATE-1
+ AND effective_until IS NULL;
 SELECT count(*) FROM app_private.student_primary_family_contexts
  WHERE id='{current_primary_context}' AND student_id='{_REVERSE_REPL_STUDENT}'
  AND family_relationship_id='{_REVERSE_REPL_PRIMARY}'
@@ -1823,7 +1829,7 @@ SELECT count(*) FROM app_private.approval_reviews v
  WHERE r.operation_id=(SELECT id FROM app_private.operation_contracts
  WHERE code='family.relationship.change');
 ""","D1_REPLACEMENT_REVERSE_EVIDENCE",tuples=True).split()
-    expected=["1","1","0","4","1","1","1","3","1","0","4","3",
+    expected=["1","1","0","5","1","1","1","1","3","1","0","4","3",
               "7","7","7","42","7","14"]
     if evidence!=expected:
         raise RuntimeError("D1_REPLACEMENT_REVERSE_EVIDENCE_MISMATCH "
