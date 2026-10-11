@@ -401,5 +401,33 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
 
 
+
+    def test_family_p1_direct_to_approval_route_requires_new_review(self):
+        filename="26_family_relationship_p1_direct_to_approval_route.sql"
+        self.assertIn((filename,80),[(name,total) for name,total in business.DOMAIN_TESTS])
+        sql=(business.ROOT/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
+        self.assertTrue(sql.startswith("--"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertIn("SELECT plan(80);",sql)
+        self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
+        self.assertIn("'d1-family-relationship-p1-approval',1,id,'DIRECT'",sql)
+        self.assertIn("'d1-family-relationship-p1-approval',2,id,'APPROVAL'",sql)
+        self.assertIn("effect30-direct-to-p1-original-direct",sql)
+        self.assertIn("effect30-direct-to-p1-new-submit",sql)
+        self.assertIn("effect30-direct-to-p1-new-review",sql)
+        self.assertIn("effect30-direct-to-p1-new-apply",sql)
+        self.assertIn("D1 Family relationship requires approval request",sql)
+        self.assertIn("D1 Family relationship policy selects direct command",sql)
+        self.assertIn("same-key DIRECT replay works while policy still selects DIRECT",sql)
+        self.assertIn("old successful DIRECT same-key API replay is denied under current P1 route",sql)
+        self.assertNotIn("UPDATE app_private.role_permission_grants SET revoked_at",sql)
+        self.assertNotIn("UPDATE app_private.assignment_permission_scopes SET revoked_at",sql)
+        self.assertNotIn("UPDATE app_private.approval_requests SET state='APPROVED'",sql)
+        for block in sql.split("SET ROLE authenticated;")[1:]:
+            client=block.split("RESET ROLE;",1)[0]
+            for table in ("approval_requests","approval_reviews","approval_applications"):
+                self.assertNotIn("FROM app_private."+table,client)
+
+
 if __name__ == "__main__":
     unittest.main()
