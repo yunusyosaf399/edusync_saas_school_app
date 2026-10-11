@@ -307,5 +307,27 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertNotIn("FROM app_private.approval_applications",authenticated_segment)
 
 
+
+    def test_family_retired_policy_stale_apply_suite_is_registered(self):
+        filename="22_family_relationship_p1_retired_policy_stale_apply.sql"
+        self.assertIn((filename,43),[(name,total) for name,total in business.DOMAIN_TESTS])
+        path=business.ROOT/"supabase/tests/domain"/filename
+        sql=path.read_text(encoding="utf-8")
+        self.assertIn("SELECT plan(43);",sql)
+        self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
+        self.assertTrue(sql.startswith("--"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertIn("UPDATE app_private.approval_policy_versions SET state='RETIRED'",sql)
+        self.assertIn("D1_FAMILY_RELATIONSHIP_POLICY_STALE",sql)
+        self.assertIn("effect30-policy-retired-apply",sql)
+        self.assertNotIn("UPDATE app_private.role_permission_grants SET revoked_at",sql)
+        self.assertNotIn("UPDATE app_private.assignment_permission_scopes SET revoked_at",sql)
+        self.assertNotIn("UPDATE app_private.approval_requests SET state='APPROVED'",sql)
+        for block in sql.split("SET ROLE authenticated;")[1:]:
+            authenticated_segment=block.split("RESET ROLE;",1)[0]
+            for table in ("approval_requests","approval_reviews","approval_applications"):
+                self.assertNotIn("FROM app_private."+table,authenticated_segment)
+
+
 if __name__ == "__main__":
     unittest.main()
