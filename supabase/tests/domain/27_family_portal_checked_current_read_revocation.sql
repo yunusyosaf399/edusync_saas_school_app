@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(65);
+SELECT plan(69);
 \ir fixtures/command_actor.sql
 
 SET ROLE schoolos_schema_owner;
@@ -210,6 +210,15 @@ SELECT is((SELECT family_label FROM app.d1_read_family_summary_for_student(
  '64000000-0000-4000-8000-000000000002')),
  'Family A'::text,'Family summary exposes reviewed Family display label');
 SELECT is((SELECT count(*) FROM app.d1_read_family_summary_for_student(
+ '64000000-0000-4000-8000-000000000002') summary
+ CROSS JOIN LATERAL jsonb_object_keys(to_jsonb(summary)) exposed(field)),4::bigint,
+ 'Family summary exposes exactly four typed fields, not the entire Student row');
+SELECT is((SELECT count(*) FROM app.d1_read_family_summary_for_student(
+ '64000000-0000-4000-8000-000000000002') summary
+ WHERE to_jsonb(summary) ?| ARRAY['national_id','date_of_birth','family_version',
+ 'guardian_contact','private_address','disability_indicator','admission_number']),0::bigint,
+ 'Family summary has no restricted identity, special, contact or internal values');
+SELECT is((SELECT count(*) FROM app.d1_read_family_summary_for_student(
  '64000000-0000-4000-8000-000000000003')),0::bigint,
  'knowing Student B UUID cannot expose unrelated child Family summary');
 SELECT is((SELECT count(*) FROM app.d1_read_family_summary_for_student(
@@ -291,6 +300,15 @@ SELECT is((SELECT relationship_kind FROM app.d1_read_family_relationships_for_st
 SELECT is((SELECT adult_display_name FROM app.d1_read_family_relationships_for_student(
  '64000000-0000-4000-8000-000000000002')),
  'Synthetic guardian A'::text,'current relationship allows reviewed adult display');
+SELECT is((SELECT count(*) FROM app.d1_read_family_relationships_for_student(
+ '64000000-0000-4000-8000-000000000002') rel
+ CROSS JOIN LATERAL jsonb_object_keys(to_jsonb(rel)) exposed(field)),3::bigint,
+ 'Family relationship exposes exactly three permitted current display fields');
+SELECT is((SELECT count(*) FROM app.d1_read_family_relationships_for_student(
+ '64000000-0000-4000-8000-000000000002') rel
+ WHERE to_jsonb(rel) ?| ARRAY['adult_person_id','guardian_contact','relationship_id',
+ 'reason','created_by','national_id']),0::bigint,
+ 'current Family relationship read has no Person ID, contacts or history evidence');
 SELECT is((SELECT count(*) FROM app.d1_read_family_relationships_for_student(
  '64000000-0000-4000-8000-000000000003')),0::bigint,
  'separate relationship permission cannot view unrelated Student B');
