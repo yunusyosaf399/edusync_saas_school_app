@@ -154,5 +154,58 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotEqual(first, second)
 
 
+    def test_family_relationship_cross_action_strict_action_pair(self):
+        valid_source = "81000000-0000-4000-8000-000000000010"
+        for phase, actions in (("a", ("CORRECT","END")), ("b", ("END","CORRECT"))):
+            setup = races.family_relationship_cross_action_setup_sql(phase,valid_source)
+            self.assertTrue(setup.startswith("BEGIN;"))
+            self.assertTrue(setup.rstrip().endswith("COMMIT;"))
+            self.assertEqual(setup.count("app.d1_submit_family_relationship_change("),2)
+            self.assertEqual(setup.count("app.d1_review_family_relationship_change("),2)
+            self.assertIn("SET ROLE authenticated;",setup)
+            for position, action in (("first",actions[0]),("second",actions[1])):
+                sql = races.family_relationship_cross_action_submit_sql(
+                    phase,action,position,valid_source)
+                self.assertIn("'" + action + "','" + valid_source + "'",sql)
+                self.assertIn("D1 crossaction " + phase + " " + action,sql)
+        for phase,action,position,source in (
+            ("z","CORRECT","first",valid_source),
+            ("a","END","first",valid_source),
+            ("b","CORRECT","first",valid_source),
+            ("a","CORRECT","third",valid_source),
+            ("a","CORRECT","first","x';DROP TABLE app_private.families;--"),
+        ):
+            with self.subTest(phase=phase,action=action,position=position):
+                with self.assertRaisesRegex(
+                    RuntimeError,"D1_RELATIONSHIP_CROSS_ACTION_INTENT_INVALID"
+                ):
+                    races.family_relationship_cross_action_submit_sql(
+                        phase,action,position,source)
+
+    def test_family_relationship_cross_action_workers_are_independent(self):
+        for phase, actions in (("a",("CORRECT","END")),("b",("END","CORRECT"))):
+            first=races.family_relationship_cross_action_apply_sql(
+                phase,actions[0],"first",True)
+            second=races.family_relationship_cross_action_apply_sql(
+                phase,actions[1],"second",False)
+            self.assertIn("pg_sleep(3)",first)
+            self.assertNotIn("pg_sleep(3)",second)
+            self.assertIn("SET ROLE authenticated;",first)
+            self.assertIn("SET ROLE authenticated;",second)
+            self.assertNotEqual(first,second)
+            self.assertIn("d1-rel-xa-"+phase+"-first",first)
+            self.assertIn("d1-rel-xa-"+phase+"-second",second)
+            with self.assertRaisesRegex(
+                RuntimeError,"D1_RELATIONSHIP_CROSS_ACTION_INTENT_INVALID"
+            ):
+                races.family_relationship_cross_action_apply_sql(
+                    phase,actions[1],"first")
+            with self.assertRaisesRegex(
+                RuntimeError,"D1_RELATIONSHIP_CROSS_ACTION_INTENT_INVALID"
+            ):
+                races.family_relationship_cross_action_apply_sql(
+                    phase,actions[0],"first","true")
+
+
 if __name__ == "__main__":
     unittest.main()

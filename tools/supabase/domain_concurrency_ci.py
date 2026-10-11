@@ -796,3 +796,338 @@ SELECT count(*) FROM app_private.approval_reviews v
           "1 two-session Effect30 P1 competing CORRECT race; "
           "lock_wait_observed=true; one EXECUTED, one INVALIDATED; "
           "one retained relationship successor and primary-context successor")
+    run_family_relationship_cross_action_races(container, execute_sql)
+
+
+# Effect30 P1 cross-action: an approved CORRECT races an approved END on one
+# selected-primary source, then a later approved END races a CORRECT of the
+# surviving successor. No new synthetic source is needed after suite CORRECT:
+# its retained open winner and primary context become this race's first input.
+_CROSS_ACTIONS = {"a": ("CORRECT", "END"), "b": ("END", "CORRECT")}
+_CROSS_PERSON = "10000000-0000-4000-8000-000000000003"
+
+
+def family_relationship_cross_action_submit_sql(
+    phase: str, action: str, position: str, source_id: str
+) -> str:
+    if (phase not in _CROSS_ACTIONS or position not in ("first", "second")
+        or action != _CROSS_ACTIONS[phase][0 if position == "first" else 1]
+        or _FAMILY_RACE_UUID.fullmatch(source_id) is None):
+        raise RuntimeError("D1_RELATIONSHIP_CROSS_ACTION_INTENT_INVALID")
+    when = "CURRENT_DATE" if phase == "a" else "CURRENT_DATE+1"
+    facts = (
+        "NULL,NULL,NULL,NULL" if action == "END"
+        else f"'{_CROSS_PERSON}','GUARDIAN','Guardian crossaction {phase} corrected',NULL"
+    )
+    return (
+        "SELECT * FROM app.d1_submit_family_relationship_change(\n"
+        f" '{_REL_END_STUDENT}',:'student_student_v'::bigint,\n"
+        f" '{_REL_END_FAMILY}',:'family_family_v'::bigint,\n"
+        f" '{action}','{source_id}',{facts},\n"
+        f" {when},'D1 crossaction {phase} {action} {position}',NULL,\n"
+        f" 'rel-cross-{phase}-{action.lower()}-{position}-submit') \\gset {position}_\n"
+    )
+
+
+def family_relationship_cross_action_setup_sql(phase: str, source_id: str) -> str:
+    if phase not in _CROSS_ACTIONS or _FAMILY_RACE_UUID.fullmatch(source_id) is None:
+        raise RuntimeError("D1_RELATIONSHIP_CROSS_ACTION_INTENT_INVALID")
+    first, second = _CROSS_ACTIONS[phase]
+    return (
+        "BEGIN;\n"
+        "SELECT row_version AS student_v FROM app_private.students "
+        f"WHERE id='{_REL_END_STUDENT}' \\gset student_\n"
+        "SELECT row_version AS family_v FROM app_private.families "
+        f"WHERE id='{_REL_END_FAMILY}' \\gset family_\n"
+        + settings_sql()
+        + family_relationship_cross_action_submit_sql(phase,first,"first",source_id)
+        + family_relationship_cross_action_submit_sql(phase,second,"second",source_id)
+        + "RESET ROLE;\n"
+        "SELECT set_config('request.jwt.claim.sub',"
+        " (SELECT id::text FROM auth.users "
+        "WHERE email='foundation-test-001@example.invalid'),true);\n"
+        "SELECT set_config('request.jwt.claims',jsonb_build_object("
+        " 'sub',current_setting('request.jwt.claim.sub'),'role','authenticated',"
+        " 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint "
+        "FROM app_private.principal_auth_bindings "
+        "WHERE id='76000000-0000-4000-8000-000000000005'),"
+        " 'is_anonymous',false)::text,true);\n"
+        "SET ROLE authenticated;\n"
+        "SELECT * FROM app.d1_review_family_relationship_change("
+        " :'first_request_id','APPROVE',3,"
+        f" 'Independent crossaction {phase} {first} review',"
+        f" 'rel-cross-{phase}-{first.lower()}-first-review') \\gset first_review_\n"
+        "RESET ROLE;\n"
+        "SELECT set_config('request.jwt.claim.sub',"
+        " (SELECT id::text FROM auth.users "
+        "WHERE email='foundation-own-001@example.invalid'),true);\n"
+        "SELECT set_config('request.jwt.claims',jsonb_build_object("
+        " 'sub',current_setting('request.jwt.claim.sub'),'role','authenticated',"
+        " 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint "
+        "FROM app_private.principal_auth_bindings "
+        "WHERE id='81000000-0000-4000-8000-000000000013'),"
+        " 'is_anonymous',false)::text,true);\n"
+        "SET ROLE authenticated;\n"
+        "SELECT * FROM app.d1_review_family_relationship_change("
+        " :'second_request_id','APPROVE',3,"
+        f" 'Independent crossaction {phase} {second} review',"
+        f" 'rel-cross-{phase}-{second.lower()}-second-review') \\gset second_review_\n"
+        "RESET ROLE;\n"
+        "COMMIT;\n"
+    )
+
+
+def family_relationship_cross_action_apply_sql(
+    phase: str, action: str, position: str, hold: bool = False
+) -> str:
+    if (phase not in _CROSS_ACTIONS or position not in ("first","second")
+        or action != _CROSS_ACTIONS[phase][0 if position == "first" else 1]
+        or type(hold) is not bool):
+        raise RuntimeError("D1_RELATIONSHIP_CROSS_ACTION_INTENT_INVALID")
+    return (
+        "BEGIN;\n"
+        f"SET LOCAL application_name='d1-rel-xa-{phase}-{position}';\n"
+        "SELECT id::text AS request_id FROM app_private.approval_requests "
+        f"WHERE reason='D1 crossaction {phase} {action} {position}' \\gset\n"
+        + settings_sql()
+        + "SELECT COALESCE(relationship_id::text,'" + _REL_END_MISSING + "')"
+        "||E'\\t'||request_state||E'\\t'||request_version::text "
+        "FROM app.d1_apply_family_relationship_change("
+        f":'request_id'::uuid,4,'rel-cross-{phase}-{action.lower()}-{position}-apply');\n"
+        + ("SELECT pg_sleep(3);\n" if hold else "")
+        + "COMMIT;\n"
+    )
+
+
+def run_family_relationship_cross_action_races(container: str, execute_sql) -> None:
+    args = worker_args(container)
+    original_source = execute_sql(container, f"""
+SELECT id::text FROM app_private.family_relationships
+ WHERE supersedes_id='{_REL_CORRECT_SOURCE}' AND effective_until IS NULL;
+""", "D1_REL_XA_INITIAL_SOURCE", tuples=True).strip()
+    if _FAMILY_RACE_UUID.fullmatch(original_source) is None:
+        raise RuntimeError("D1_REL_XA_INITIAL_SOURCE_INVALID")
+    source_id = original_source
+    for phase, actions in _CROSS_ACTIONS.items():
+        first, second = actions
+        before_count = 3 if phase == "a" else 4
+        before_contexts = 2 if phase == "a" else 3
+        prior_exec = 2 if phase == "a" else 3
+        expected_start = "CURRENT_DATE-1" if phase == "a" else "CURRENT_DATE"
+        precondition = execute_sql(container, f"""
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{source_id}' AND student_id='{_REL_END_STUDENT}'
+ AND family_id='{_REL_END_FAMILY}' AND adult_person_id='{_CROSS_PERSON}'
+ AND relationship_kind='GUARDIAN' AND effective_from={expected_start}
+ AND effective_until IS NULL;
+SELECT count(*) FROM app_private.family_relationships
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REL_END_STUDENT}'
+ AND family_relationship_id='{source_id}' AND effective_until IS NULL;
+SELECT count(*) FROM app_private.family_student_access
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='EXECUTED' AND operation_id=(SELECT id
+ FROM app_private.operation_contracts WHERE code='family.relationship.change');
+""", "D1_REL_XA_"+phase+"_PRECONDITION", tuples=True).split()
+        if precondition != ["1",str(before_count),str(before_contexts),"1","0",
+                            str(prior_exec)]:
+            raise RuntimeError("D1_REL_XA_"+phase+"_SOURCE_INVALID "
+                               + ",".join(precondition))
+        old_context_id = execute_sql(container,f"""
+SELECT id::text FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REL_END_STUDENT}'
+ AND family_relationship_id='{source_id}' AND effective_until IS NULL;
+""","D1_REL_XA_"+phase+"_SOURCE_CONTEXT",tuples=True).strip()
+        if _FAMILY_RACE_UUID.fullmatch(old_context_id) is None:
+            raise RuntimeError("D1_REL_XA_"+phase+"_CONTEXT_INVALID")
+        execute_sql(container,
+            family_relationship_cross_action_setup_sql(phase,source_id),
+            "D1_REL_XA_"+phase+"_SETUP")
+        approved = execute_sql(container, f"""
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='APPROVED'
+ AND reason IN ('D1 crossaction {phase} {first} first',
+                'D1 crossaction {phase} {second} second')
+ AND operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.reason IN ('D1 crossaction {phase} {first} first',
+                    'D1 crossaction {phase} {second} second');
+SELECT count(DISTINCT v.reviewer_id)
+ FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.reason IN ('D1 crossaction {phase} {first} first',
+                    'D1 crossaction {phase} {second} second');
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{source_id}' AND effective_until IS NULL;
+""", "D1_REL_XA_"+phase+"_APPROVED", tuples=True).split()
+        if approved != ["2","2","2","1"]:
+            raise RuntimeError("D1_REL_XA_"+phase+"_APPROVALS_INVALID "
+                               + ",".join(approved))
+        workers = []
+        outcomes = []
+        try:
+            for position, action, hold in (("first",first,True),
+                                           ("second",second,False)):
+                worker = subprocess.Popen(
+                    args,cwd=ROOT,stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+                )
+                workers.append(worker)
+                worker.stdin.write(
+                    family_relationship_cross_action_apply_sql(
+                        phase,action,position,hold))
+                worker.stdin.close()
+                worker.stdin = None
+                deadline = time.monotonic()+10
+                app_name = f"d1-rel-xa-{phase}-{position}"
+                lock_sql = (
+                    "SELECT CASE WHEN EXISTS(SELECT 1 "
+                    "FROM pg_catalog.pg_locks l "
+                    "JOIN pg_catalog.pg_stat_activity a ON a.pid=l.pid "
+                    f"WHERE a.application_name='{app_name}' "
+                    "AND l.granted AND l.locktype='advisory' "
+                    "AND l.classid=71001) THEN 1 ELSE 0 END;"
+                    if hold else
+                    "SELECT CASE WHEN EXISTS(SELECT 1 "
+                    "FROM pg_catalog.pg_locks l "
+                    "JOIN pg_catalog.pg_stat_activity a ON a.pid=l.pid "
+                    f"WHERE a.application_name='{app_name}' "
+                    "AND NOT l.granted AND l.locktype IN "
+                    "('advisory','transactionid','tuple')) THEN 1 ELSE 0 END;"
+                )
+                while time.monotonic()<deadline:
+                    if worker.poll() is not None:
+                        raise RuntimeError("D1_REL_XA_"+phase+"_WORKER_EXITED_EARLY")
+                    if execute_sql(
+                        container,lock_sql,"D1_REL_XA_"+phase+"_LOCK",
+                        tuples=True,timeout=10,
+                    ).strip()=="1":
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise RuntimeError("D1_REL_XA_"+phase+"_LOCK_NOT_OBSERVED")
+            for worker in workers:
+                output,stderr=worker.communicate(timeout=30)
+                if worker.returncode:
+                    raise RuntimeError("D1_REL_XA_"+phase+"_APPLY_FAILED "
+                        +re.sub(r"[^A-Za-z0-9_ .:-]","",stderr[-400:]))
+                matches=re.findall(
+                    r"(?m)^([0-9a-f-]{36})\t(EXECUTED|INVALIDATED)\t([0-9]+)$",
+                    output,
+                )
+                if len(matches)!=1:
+                    raise RuntimeError("D1_REL_XA_"+phase+"_RESULT_SHAPE")
+                outcomes.append(matches[0])
+            winning_id,winning_state,winning_ver=outcomes[0]
+            if (winning_state,winning_ver)!=("EXECUTED","5"):
+                raise RuntimeError("D1_REL_XA_"+phase+"_WINNER_NOT_EXECUTED")
+            if first=="CORRECT" and (winning_id in (source_id,_REL_END_MISSING)
+                                      or _FAMILY_RACE_UUID.fullmatch(winning_id) is None):
+                raise RuntimeError("D1_REL_XA_"+phase+"_CORRECT_WINNER_INVALID")
+            if first=="END" and winning_id!=source_id:
+                raise RuntimeError("D1_REL_XA_"+phase+"_END_WINNER_INVALID")
+            if outcomes[1]!=(_REL_END_MISSING,"INVALIDATED","5"):
+                raise RuntimeError("D1_REL_XA_"+phase+"_LOSER_NOT_INVALIDATED")
+        finally:
+            for worker in workers:
+                if worker.poll() is None:
+                    worker.kill()
+                    worker.communicate(timeout=10)
+        when = "CURRENT_DATE" if phase=="a" else "CURRENT_DATE+1"
+        successor_count = 1 if phase=="a" else 0
+        new_context_count = 1 if phase=="a" else 0
+        open_context_count = 1 if phase=="a" else 0
+        total_rows = 4
+        total_contexts = 3
+        exec_total = 3 if phase=="a" else 4
+        application_count = exec_total
+        counts = execute_sql(container,f"""
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{source_id}' AND student_id='{_REL_END_STUDENT}'
+ AND family_id='{_REL_END_FAMILY}' AND effective_from={expected_start}
+ AND effective_until={when} AND ended_at IS NOT NULL AND ended_by IS NOT NULL;
+SELECT count(*) FROM app_private.family_relationships
+ WHERE supersedes_id='{source_id}';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE id='{old_context_id}' AND family_relationship_id='{source_id}'
+ AND effective_until={when} AND ended_at IS NOT NULL AND ended_by IS NOT NULL;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE supersedes_id='{old_context_id}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REL_END_STUDENT}' AND effective_until IS NULL;
+SELECT count(*) FROM app_private.family_student_access
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='EXECUTED' AND operation_id=(SELECT id
+ FROM app_private.operation_contracts WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='INVALIDATED' AND operation_id=(SELECT id
+ FROM app_private.operation_contracts WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_applications
+ WHERE operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.command_receipts
+ WHERE operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.outbox_events
+ WHERE event_type='family.relationship_changed';
+SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+""","D1_REL_XA_"+phase+"_EVIDENCE",tuples=True).split()
+        expected = [
+            "1",str(successor_count),str(total_rows),"1",str(new_context_count),
+            str(total_contexts),str(open_context_count),"0",
+            str(exec_total),str(exec_total),str(application_count),
+            str(6*exec_total),str(exec_total),str(2*exec_total),
+        ]
+        if counts!=expected:
+            raise RuntimeError("D1_REL_XA_"+phase+"_EVIDENCE_MISMATCH "
+                               + ",".join(counts))
+        if first=="CORRECT":
+            lineage = execute_sql(container,f"""
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{winning_id}' AND supersedes_id='{source_id}'
+ AND student_id='{_REL_END_STUDENT}' AND family_id='{_REL_END_FAMILY}'
+ AND adult_person_id='{_CROSS_PERSON}' AND relationship_kind='GUARDIAN'
+ AND display_name='Guardian crossaction {phase} corrected'
+ AND effective_from={when} AND effective_until IS NULL;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE supersedes_id='{old_context_id}'
+ AND family_relationship_id='{winning_id}'
+ AND student_id='{_REL_END_STUDENT}'
+ AND effective_from={when} AND effective_until IS NULL;
+""","D1_REL_XA_"+phase+"_WINNER_LINEAGE",tuples=True).split()
+            if lineage!=["1","1"]:
+                raise RuntimeError("D1_REL_XA_"+phase+"_CORRECT_LINEAGE_INVALID")
+            source_id=winning_id
+        else:
+            # END leaves the now-closed selected context as immutable
+            # effective history; tomorrow's boundary has no open successor.
+            no_loser = execute_sql(container,f"""
+SELECT count(*) FROM app_private.family_relationships
+ WHERE supersedes_id='{source_id}'
+ AND display_name='Guardian crossaction {phase} corrected';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE supersedes_id='{old_context_id}';
+""","D1_REL_XA_"+phase+"_LOSER_EFFECT",tuples=True).split()
+            if no_loser!=["0","0"]:
+                raise RuntimeError("D1_REL_XA_"+phase+"_LOSER_EFFECT_PRESENT")
+        print("D1_FAMILY_RELATIONSHIP_CROSS_ACTION_"+phase.upper()+"_RACE_PASS "
+              +first+" wins over "+second+"; two-session observed lock wait; "
+              "one EXECUTED and one INVALIDATED, retained exact primary lineage")
+    print("D1_FAMILY_RELATIONSHIP_CROSS_ACTION_RACES_PASS 2 END/CORRECT cross-action races")
