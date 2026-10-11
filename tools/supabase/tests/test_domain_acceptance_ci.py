@@ -258,5 +258,31 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotEqual(first,second)
 
 
+    def test_family_replacement_reverse_worker_positions_are_bounded(self):
+        for pos in ("primary","candidate"):
+            sql=races.family_replacement_reverse_apply_sql(pos,True)
+            self.assertTrue(sql.startswith("BEGIN;"))
+            self.assertTrue(sql.rstrip().endswith("COMMIT;"))
+            self.assertIn("SET ROLE authenticated;",sql)
+            self.assertIn("pg_sleep(3)",sql)
+            self.assertIn("d1-repl-reverse-"+pos,sql)
+            self.assertIn("app.d1_apply_family_relationship_change(",sql)
+        for pos,hold in (("first",False),("primary';--",False),("primary","yes")):
+            with self.subTest(pos=pos,hold=hold):
+                with self.assertRaisesRegex(RuntimeError,
+                    "D1_REPLACEMENT_REVERSE_INTENT_INVALID"):
+                    races.family_replacement_reverse_apply_sql(pos,hold)
+
+    def test_family_replacement_reverse_starts_with_primary_winner(self):
+        primary=races.family_replacement_reverse_apply_sql("primary",True)
+        candidate=races.family_replacement_reverse_apply_sql("candidate",False)
+        self.assertIn("D1 reverse replacement primary END first",primary)
+        self.assertIn("D1 reverse replacement candidate END second",candidate)
+        self.assertIn("family-reverse-replacement-primary-end-apply",primary)
+        self.assertIn("family-reverse-replacement-candidate-end-apply",candidate)
+        self.assertIn("pg_sleep(3)",primary)
+        self.assertNotIn("pg_sleep(3)",candidate)
+        self.assertNotEqual(primary,candidate)
+
 if __name__ == "__main__":
     unittest.main()
