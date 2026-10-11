@@ -376,5 +376,30 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
 
 
+    def test_family_p1_approval_to_direct_route_stale_suite(self):
+        filename="25_family_relationship_p1_approval_to_direct_route_stale_apply.sql"
+        self.assertIn((filename,84),[(name,total) for name,total in business.DOMAIN_TESTS])
+        sql=(business.ROOT/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
+        self.assertTrue(sql.startswith("--"))
+        self.assertIn("SELECT plan(84);",sql)
+        self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertIn("'d1-family-relationship-p1-approval',2,id,'DIRECT'",sql)
+        self.assertIn("D1_FAMILY_RELATIONSHIP_POLICY_STALE",sql)
+        self.assertIn("D1 Family relationship policy selects direct command",sql)
+        self.assertIn("D1 Family relationship requires approval request",sql)
+        self.assertIn("effect30-route-direct-new-command",sql)
+        self.assertIn("effect30-route-direct-apply",sql)
+        self.assertIn("UPDATE app_private.approval_policy_versions SET state='RETIRED'",sql)
+        self.assertNotIn("UPDATE app_private.role_permission_grants SET revoked_at",sql)
+        self.assertNotIn("UPDATE app_private.assignment_permission_scopes SET revoked_at",sql)
+        self.assertNotIn("UPDATE app_private.approval_requests SET state='APPROVED'",sql)
+        for block in sql.split("SET ROLE authenticated;")[1:]:
+            client=block.split("RESET ROLE;",1)[0]
+            for table in ("approval_requests","approval_reviews","approval_applications"):
+                self.assertNotIn("FROM app_private."+table,client)
+
+
+
 if __name__ == "__main__":
     unittest.main()
