@@ -115,12 +115,12 @@ SELECT * FROM app.d1_submit_family_relationship_change(
  'GUARDIAN','Scope revocation proposal',NULL,CURRENT_DATE-18,
  'Approved before independent reviewer loses assignment scope',NULL,
  'effect30-revoked-reviewer-scope-submit') \gset scope_
+RESET ROLE;
 SELECT is((SELECT state FROM app_private.approval_requests
  WHERE id=:'scope_request_id'),'PENDING'::text,
  'authenticated authorized requester creates a PENDING P1 request');
 SELECT is(:'scope_request_version'::bigint,3::bigint,
  'P1 request enters version three before independent review');
-RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.approval_step_reviewers r
  JOIN app_private.approval_request_steps s ON s.id=r.step_id
  WHERE s.request_id=:'scope_request_id'
