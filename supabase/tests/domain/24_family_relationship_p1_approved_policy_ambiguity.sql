@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(73);
+SELECT plan(77);
 \ir fixtures/command_actor.sql
 -- Retain Auth fixture ID before schema owner role switch, as with prior D1 P1 tests.
 SELECT set_config('schoolos_test.reviewer_subject',
@@ -161,9 +161,9 @@ SELECT is((SELECT count(*) FROM app_private.approval_applications
 SELECT is((SELECT count(*) FROM app_private.family_relationships),0::bigint,
  'APPROVE does not create a Family relationship');
 
--- Immutable policy_key/version identifies a second real policy revision.
--- Build complete v2 while DRAFT, then retire v1 and activate v2. Never
--- mutate frozen policy v1 fields, approved request evidence or RBAC grants.
+-- Immutable policy_key/version identifies a distinct second revision.
+-- Configure full v2 under DRAFT while keeping v1 ACTIVE. We later activate
+-- v2 without retiring v1, intentionally creating overlapping current policy.
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.approval_policy_versions(
  id,policy_key,version,operation_id,d1_route_mode,created_by)
@@ -378,6 +378,33 @@ SELECT is((SELECT count(*) FROM app_private.approval_transitions
  AND from_state='APPROVED' AND to_state='INVALIDATED'),1::bigint,
  'policy recovery creates no duplicate terminal transition');
 
+-- The old terminal result also remains stable under authenticated replay
+-- after ambiguity disappears; no fresh idempotency key can reopen the old
+-- APPROVED request even when the selected v1 policy again becomes current.
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.auth_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.auth_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings
+ WHERE id='66666666-6666-4666-8666-666666666666'),
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT request_id,request_version,request_state,relationship_id IS NULL AS no_relationship
+ FROM app.d1_apply_family_relationship_change(
+ :'policy_request_id',4,'effect30-policy-ambiguous-apply') \gset recovered_replay_
+SELECT is(:'recovered_replay_request_state','INVALIDATED'::text,
+ 'terminal same-key APPLY remains INVALIDATED after restoring sole policy');
+SELECT is(:'recovered_replay_request_version'::bigint,5::bigint,
+ 'terminal same-key APPLY remains at version five after resolving ambiguity');
+SELECT is(:'recovered_replay_no_relationship'::boolean,true,
+ 'post-recovery same-key replay cannot create a Family relationship');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_apply_family_relationship_change(
+ %L,5,'effect30-policy-ambiguous-new-apply-after-recovery')$sql$,
+ :'policy_request_id'),
+ 'P0001'::char(5),'D1 Family relationship approved request changed'::text,
+ 'distinct-key APPLY cannot revive terminal v1 request after policy recovery');
+RESET ROLE;
+
 -- A new authenticated Student B submission and independent reviewer APPROVE
 -- proves routing recovers under original v1; the fresh request is not APPLIED.
 SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.auth_subject'),true);
@@ -393,7 +420,7 @@ SELECT * FROM app.d1_submit_family_relationship_change(
  '64000000-0000-4000-8000-000000000001',1,
  'ADD',NULL,'10000000-0000-4000-8000-000000000003',
  'GUARDIAN','New active policy request',NULL,CURRENT_DATE-18,
- 'Legitimate request now follows activated policy revision two',NULL,
+ 'New Student B request follows restored sole active v1 policy',NULL,
  'effect30-policy-ambiguous-fresh-submit') \gset fresh_
 RESET ROLE;
 SELECT is(:'fresh_request_version'::bigint,3::bigint,
@@ -421,7 +448,7 @@ SELECT set_config('request.jwt.claims',jsonb_build_object(
 SET ROLE authenticated;
 SELECT * FROM app.d1_review_family_relationship_change(
  :'fresh_request_id','APPROVE',3,
- 'Fresh request reviewed under current replacement P1 policy',
+ 'Fresh request reviewed under restored original P1 policy',
  'effect30-policy-ambiguous-fresh-review') \gset fresh_review_
 SELECT is(:'fresh_review_request_state','APPROVED'::text,
  'different authorized reviewer can APPROVE the new-policy request');
