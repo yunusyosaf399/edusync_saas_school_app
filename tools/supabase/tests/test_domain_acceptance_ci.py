@@ -298,6 +298,13 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertIn("UPDATE app_private.assignment_permission_scopes",sql)
         self.assertIn("effect30-revoked-reviewer-scope-apply",sql)
         self.assertNotIn("UPDATE app_private.approval_requests SET state='APPROVED'",sql)
+        # Private retained request state is asserted only after RESET ROLE;
+        # authenticated users must never receive approval_requests table SELECT.
+        for block in sql.split("SET ROLE authenticated;")[1:]:
+            authenticated_segment=block.split("RESET ROLE;",1)[0]
+            self.assertNotIn("FROM app_private.approval_requests",authenticated_segment)
+            self.assertNotIn("FROM app_private.approval_reviews",authenticated_segment)
+            self.assertNotIn("FROM app_private.approval_applications",authenticated_segment)
 
 
 if __name__ == "__main__":
