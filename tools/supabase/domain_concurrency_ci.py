@@ -1603,3 +1603,232 @@ SELECT count(*) FROM app_private.approval_reviews v
           "Effect30 P1 prior approved alternative ends before proposed "
           "primary-switch date; observed_lock_wait=true; candidate END EXECUTED "
           "and primary-switch END INVALIDATED; no primary context mutation")
+    run_family_replacement_reverse_race(container, execute_sql)
+
+
+# Effect30 reverse-winner test: primary-switch APPLY succeeds first and now
+# selects a previously unselected relationship. Independently approved candidate
+# END loses eligibility when it becomes the selected primary, and INVALIDATES.
+_REVERSE_REPL_CANDIDATE = "84000000-0000-4000-8000-000000000001"
+_REVERSE_REPL_PRIMARY = _PRIMARY_RACE_REPLACEMENT
+_REVERSE_REPL_PRIMARY_FAMILY = _PRIMARY_RACE_ALT_FAMILY
+_REVERSE_REPL_STUDENT = _PRIMARY_RACE_STUDENT
+
+
+def family_replacement_reverse_apply_sql(position: str, hold: bool=False) -> str:
+    if position not in ("primary","candidate") or type(hold) is not bool:
+        raise RuntimeError("D1_REPLACEMENT_REVERSE_INTENT_INVALID")
+    label=position
+    order="first" if position=="primary" else "second"
+    return (
+        "BEGIN;\n"
+        f"SET LOCAL application_name='d1-repl-reverse-{position}';\n"
+        "SELECT id::text AS request_id FROM app_private.approval_requests "
+        f"WHERE reason='D1 reverse replacement {label} END {order}' \\gset\n"
+        +settings_sql()
+        +"SELECT COALESCE(relationship_id::text,'"+_REL_END_MISSING+"')"
+        "||E'\\t'||request_state||E'\\t'||request_version::text "
+        "FROM app.d1_apply_family_relationship_change("
+        f":'request_id'::uuid,4,'family-reverse-replacement-{label}-end-apply');\n"
+        +("SELECT pg_sleep(3);\n" if hold else "")
+        +"COMMIT;\n"
+    )
+
+
+def run_family_replacement_reverse_race(container: str, execute_sql) -> None:
+    args=worker_args(container)
+    fixture=(ROOT/"supabase/tests/domain/fixtures/family_replacement_reverse_race_setup.sql").read_text(
+        encoding="utf-8"
+    )
+    if (fixture.count("app.d1_submit_family_relationship_change(")!=2
+        or fixture.count("app.d1_review_family_relationship_change(")!=2
+        or fixture.count("'"+_REVERSE_REPL_CANDIDATE+"'")<3):
+        raise RuntimeError("D1_REPLACEMENT_REVERSE_FIXTURE_INVALID")
+    before=execute_sql(container,f"""
+SELECT count(*) FROM app_private.students
+ WHERE id='{_REVERSE_REPL_STUDENT}' AND current_status='ACTIVE';
+SELECT count(*) FROM app_private.families
+ WHERE id='{_PRIMARY_RACE_SOURCE_FAMILY}' AND state='ACTIVE';
+SELECT count(*) FROM app_private.families
+ WHERE id='{_REVERSE_REPL_PRIMARY_FAMILY}' AND state='ACTIVE';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{_REVERSE_REPL_PRIMARY}'
+ AND student_id='{_REVERSE_REPL_STUDENT}'
+ AND family_id='{_REVERSE_REPL_PRIMARY_FAMILY}'
+ AND effective_from=CURRENT_DATE-18 AND effective_until IS NULL;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REVERSE_REPL_STUDENT}' AND effective_until IS NULL
+ AND family_relationship_id='{_REVERSE_REPL_PRIMARY}';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE student_id='{_REVERSE_REPL_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REVERSE_REPL_STUDENT}';
+SELECT count(*) FROM app_private.family_student_access
+ WHERE student_id='{_REVERSE_REPL_STUDENT}';
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='EXECUTED' AND operation_id=(SELECT id
+ FROM app_private.operation_contracts WHERE code='family.relationship.change');
+""","D1_REPLACEMENT_REVERSE_PRECONDITION",tuples=True).split()
+    if before!=["1","1","1","1","1","3","2","0","6"]:
+        raise RuntimeError("D1_REPLACEMENT_REVERSE_PRECONDITION_MISMATCH "+",".join(before))
+    current_primary_context=execute_sql(container,f"""
+SELECT id::text FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REVERSE_REPL_STUDENT}'
+ AND family_relationship_id='{_REVERSE_REPL_PRIMARY}' AND effective_until IS NULL;
+""","D1_REPLACEMENT_REVERSE_CONTEXT_ID",tuples=True).strip()
+    if _FAMILY_RACE_UUID.fullmatch(current_primary_context) is None:
+        raise RuntimeError("D1_REPLACEMENT_REVERSE_CONTEXT_ID_INVALID")
+    execute_sql(container,"BEGIN;\n"+fixture+"\nCOMMIT;",
+                "D1_REPLACEMENT_REVERSE_SETUP")
+    approval=execute_sql(container,f"""
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='APPROVED' AND reason IN
+ ('D1 reverse replacement candidate END second',
+  'D1 reverse replacement primary END first')
+ AND operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.reason IN ('D1 reverse replacement candidate END second',
+                    'D1 reverse replacement primary END first');
+SELECT count(DISTINCT v.reviewer_id)
+ FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.reason IN ('D1 reverse replacement candidate END second',
+                    'D1 reverse replacement primary END first');
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{_REVERSE_REPL_CANDIDATE}' AND family_id='{_PRIMARY_RACE_SOURCE_FAMILY}'
+ AND student_id='{_REVERSE_REPL_STUDENT}'
+ AND effective_from=CURRENT_DATE-1 AND effective_until IS NULL;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE id='{current_primary_context}'
+ AND family_relationship_id='{_REVERSE_REPL_PRIMARY}' AND effective_until IS NULL;
+SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id IN (SELECT id FROM app_private.approval_requests
+ WHERE reason IN ('D1 reverse replacement candidate END second',
+                  'D1 reverse replacement primary END first'));
+""","D1_REPLACEMENT_REVERSE_APPROVED",tuples=True).split()
+    if approval!=["2","2","2","1","1","0"]:
+        raise RuntimeError("D1_REPLACEMENT_REVERSE_PREAPPROVAL_INVALID "+",".join(approval))
+    workers=[]
+    outcomes=[]
+    try:
+        for position,hold in (("primary",True),("candidate",False)):
+            worker=subprocess.Popen(args,cwd=ROOT,stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                                    text=True)
+            workers.append(worker)
+            worker.stdin.write(family_replacement_reverse_apply_sql(position,hold))
+            worker.stdin.close()
+            worker.stdin=None
+            deadline=time.monotonic()+10
+            app=f"d1-repl-reverse-{position}"
+            lock_sql=(
+                "SELECT CASE WHEN EXISTS(SELECT 1 FROM pg_catalog.pg_locks l "
+                "JOIN pg_catalog.pg_stat_activity a ON a.pid=l.pid "
+                f"WHERE a.application_name='{app}' AND l.granted "
+                "AND l.locktype='advisory' AND l.classid=71001) "
+                "THEN 1 ELSE 0 END;"
+                if hold else
+                "SELECT CASE WHEN EXISTS(SELECT 1 FROM pg_catalog.pg_locks l "
+                "JOIN pg_catalog.pg_stat_activity a ON a.pid=l.pid "
+                f"WHERE a.application_name='{app}' AND NOT l.granted "
+                "AND l.locktype IN ('advisory','transactionid','tuple')) "
+                "THEN 1 ELSE 0 END;"
+            )
+            while time.monotonic()<deadline:
+                if worker.poll() is not None:
+                    raise RuntimeError("D1_REPLACEMENT_REVERSE_WORKER_EXITED_EARLY")
+                if execute_sql(container,lock_sql,"D1_REPLACEMENT_REVERSE_LOCK",
+                               tuples=True,timeout=10).strip()=="1":
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError("D1_REPLACEMENT_REVERSE_LOCK_NOT_OBSERVED")
+        for worker in workers:
+            output,stderr=worker.communicate(timeout=30)
+            if worker.returncode:
+                raise RuntimeError("D1_REPLACEMENT_REVERSE_APPLY_FAILED "
+                    +re.sub(r"[^A-Za-z0-9_ .:-]","",stderr[-400:]))
+            rows=re.findall(
+                r"(?m)^([0-9a-f-]{36})\t(EXECUTED|INVALIDATED)\t([0-9]+)$",
+                output
+            )
+            if len(rows)!=1:
+                raise RuntimeError("D1_REPLACEMENT_REVERSE_RESULT_SHAPE")
+            outcomes.append(rows[0])
+        if outcomes[0]!=(_REVERSE_REPL_PRIMARY,"EXECUTED","5"):
+            raise RuntimeError("D1_REPLACEMENT_REVERSE_CANDIDATE_END_INVALID")
+        if outcomes[1]!=(_REL_END_MISSING,"INVALIDATED","5"):
+            raise RuntimeError("D1_REPLACEMENT_REVERSE_PRIMARY_NOT_INVALIDATED")
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.kill()
+                worker.communicate(timeout=10)
+    evidence=execute_sql(container,f"""
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{_REVERSE_REPL_CANDIDATE}' AND family_id='{_PRIMARY_RACE_SOURCE_FAMILY}'
+ AND student_id='{_REVERSE_REPL_STUDENT}' AND relationship_kind='GUARDIAN'
+ AND effective_from=CURRENT_DATE-1 AND effective_until IS NULL
+ AND ended_at IS NULL AND ended_by IS NULL;
+SELECT count(*) FROM app_private.family_relationships
+ WHERE id='{_REVERSE_REPL_PRIMARY}' AND family_id='{_REVERSE_REPL_PRIMARY_FAMILY}'
+ AND student_id='{_REVERSE_REPL_STUDENT}'
+ AND effective_from=CURRENT_DATE-18 AND effective_until=CURRENT_DATE+1
+ AND ended_at IS NOT NULL AND ended_by IS NOT NULL;
+SELECT count(*) FROM app_private.family_relationships
+ WHERE supersedes_id='{_REVERSE_REPL_PRIMARY}';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE student_id='{_REVERSE_REPL_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE id='{current_primary_context}' AND student_id='{_REVERSE_REPL_STUDENT}'
+ AND family_relationship_id='{_REVERSE_REPL_PRIMARY}'
+ AND effective_from=CURRENT_DATE-6 AND effective_until=CURRENT_DATE+1;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REVERSE_REPL_STUDENT}' AND effective_until IS NULL;
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REVERSE_REPL_STUDENT}' AND effective_until IS NULL
+ AND family_relationship_id='{_REVERSE_REPL_CANDIDATE}'
+ AND effective_from=CURRENT_DATE+1 AND supersedes_id='{current_primary_context}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REVERSE_REPL_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE supersedes_id='{current_primary_context}';
+SELECT count(*) FROM app_private.family_student_access
+ WHERE student_id='{_REVERSE_REPL_STUDENT}';
+SELECT count(*) FROM app_private.family_relationships
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.student_primary_family_contexts
+ WHERE student_id='{_REL_END_STUDENT}';
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='EXECUTED' AND operation_id=(SELECT id
+ FROM app_private.operation_contracts WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_requests
+ WHERE state='INVALIDATED' AND operation_id=(SELECT id
+ FROM app_private.operation_contracts WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.approval_applications
+ WHERE operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.command_receipts
+ WHERE operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+SELECT count(*) FROM app_private.outbox_events
+ WHERE event_type='family.relationship_changed';
+SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ JOIN app_private.approval_requests r ON r.id=s.request_id
+ WHERE r.operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='family.relationship.change');
+""","D1_REPLACEMENT_REVERSE_EVIDENCE",tuples=True).split()
+    expected=["1","1","0","4","1","1","1","3","1","0","4","3",
+              "7","7","7","42","7","14"]
+    if evidence!=expected:
+        raise RuntimeError("D1_REPLACEMENT_REVERSE_EVIDENCE_MISMATCH "
+                           +",".join(evidence))
+    print("D1_FAMILY_REPLACEMENT_REVERSE_RACE_PASS "
+          "Effect30 P1 approved primary END selects initially eligible candidate "
+          "under true contention; candidate END becomes invalidated after "
+          "selection; exact retained replacement context and zero child access")
