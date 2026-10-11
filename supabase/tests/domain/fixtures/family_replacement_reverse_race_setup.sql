@@ -25,6 +25,18 @@ VALUES (
  NULL,'GUARDIAN','Eligible candidate Family A guardian',
  CURRENT_DATE-1,'Pre-existing selectable replacement candidate for Student B',
  '11111111-1111-4111-8111-111111111111');
+-- Distinct still-eligible relationship basis guarantees that ending the newly
+-- selected primary requires an explicit replacement, not silent clearing.
+INSERT INTO app_private.family_relationships(
+ id,family_id,student_id,adult_person_id,relationship_kind,display_name,
+ effective_from,reason,created_by)
+VALUES (
+ '84000000-0000-4000-8000-000000000002',
+ '64000000-0000-4000-8000-000000000001',
+ '64000000-0000-4000-8000-000000000003',
+ NULL,'MOTHER','Independent eligible Family A mother',
+ CURRENT_DATE-1,'Alternative still eligible after candidate becomes primary',
+ '11111111-1111-4111-8111-111111111111');
 RESET ROLE;
 SELECT row_version AS student_v FROM app_private.students
  WHERE id='64000000-0000-4000-8000-000000000003' \gset student_
