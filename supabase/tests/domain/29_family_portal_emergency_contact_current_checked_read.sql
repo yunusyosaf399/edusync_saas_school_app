@@ -476,9 +476,9 @@ SELECT * FROM app.d1_change_family_child_access(
  'REVOKE',:'first_access_id',CURRENT_DATE,NULL,
  'Close Family emergency contact read entitlement',
  'effect-family-portal-emergency-contacts-revoke') \gset closed_
-SELECT is((SELECT :'closed_action'),'REVOKE'::text,
+SELECT is((SELECT :'closed_action'::text),'REVOKE'::text,
  'authorized staff uses real child entitlement REVOKE command');
-SELECT is((SELECT :'closed_access_id'), :'first_access_id' ::uuid,
+SELECT is((SELECT :'closed_access_id'::uuid), :'first_access_id'::uuid,
  'staff REVOKE retains exact original child entitlement source');
 RESET ROLE;
 SELECT is((SELECT effective_until FROM app_private.family_student_access WHERE id=:'first_access_id'),CURRENT_DATE::date,
