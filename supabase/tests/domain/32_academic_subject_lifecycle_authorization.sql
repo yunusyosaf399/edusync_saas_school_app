@@ -321,7 +321,7 @@ SELECT throws_ok(
  $sql$SELECT * FROM app.d1_change_academic_subject(
  'CREATE',NULL,'22222222-2222-4222-8222-222222222222',
  'MATH','Mathematics',1,NULL,'subject-create')$sql$,
- 'P0001'::char(5),'D1 operation disabled'::text,
+ 'P0001'::char(5),'D1 operation is not enabled'::text,
  'disabling operation prevents even an earlier successful-key replay');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT subject_operation_disabled;
