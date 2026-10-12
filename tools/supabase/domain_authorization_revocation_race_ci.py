@@ -98,7 +98,8 @@ SELECT CASE WHEN EXISTS (
  SELECT 1 FROM pg_catalog.pg_stat_activity a
  JOIN pg_catalog.pg_locks l ON l.pid=a.pid
  WHERE a.application_name='{application}' AND a.wait_event='PgSleep'
-   AND l.locktype='advisory' AND l.granted AND l.mode='{mode}'
+   AND l.locktype='advisory' AND l.classid=71001 AND l.objid=1
+   AND l.granted AND l.mode='{mode}'
 ) THEN 1 ELSE 0 END;
 """
     else:
@@ -108,14 +109,16 @@ SELECT CASE WHEN EXISTS (
  JOIN pg_catalog.pg_locks pending ON pending.pid=waiting.pid
  WHERE waiting.application_name='{application}'
    AND waiting.wait_event_type='Lock'
-   AND pending.locktype='advisory' AND NOT pending.granted
+   AND pending.locktype='advisory' AND pending.classid=71001
+   AND pending.objid=1 AND NOT pending.granted
    AND pending.mode='{mode}'
    AND EXISTS (
      SELECT 1 FROM pg_catalog.unnest(pg_catalog.pg_blocking_pids(waiting.pid)) AS b(pid)
      JOIN pg_catalog.pg_stat_activity holder ON holder.pid=b.pid
      JOIN pg_catalog.pg_locks granted ON granted.pid=holder.pid
      WHERE holder.application_name='{blocker}'
-       AND granted.locktype='advisory' AND granted.granted
+       AND granted.locktype='advisory' AND granted.classid=71001
+       AND granted.objid=1 AND granted.granted
        AND granted.mode=CASE WHEN pending.mode='ShareLock'
                              THEN 'ExclusiveLock' ELSE 'ShareLock' END
    )
