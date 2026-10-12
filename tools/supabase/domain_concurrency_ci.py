@@ -6,6 +6,7 @@ import time
 from domain_cross_family_race_ci import run_cross_family_race
 from domain_cross_family_reverse_race_ci import run_cross_family_reverse_race
 from domain_authorization_revocation_race_ci import run_family_authority_revocation_races
+from domain_assignment_scope_revocation_race_ci import run_family_assignment_scope_races
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1850,3 +1851,7 @@ SELECT count(*) FROM app_private.approval_reviews v
     # Foundation T04 (71001,1) serializes grant revocation versus a protected
     # Family command in both EXCLUSIVE-first and SHARED-first orderings.
     run_family_authority_revocation_races(container, execute_sql)
+    # Separate Foundation T04 assignment_permission_scopes revocation:
+    # two independent additional genuine observed-lock races, retaining
+    # unrevoked role grants and staff role assignments.
+    run_family_assignment_scope_races(container, execute_sql)
