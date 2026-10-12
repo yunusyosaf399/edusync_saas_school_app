@@ -3,7 +3,7 @@
 -- Family-specific membership, safe read roles, scoped grants and DIRECT policies.
 -- Transactional test-only fixture committed only in disposable local PostgreSQL.
 -- The PR38 setup authenticated staff JWT was transaction-local and did not
--- survive COMMIT; restore real current staff identity before owner fixture DML.
+-- survive its prior transaction; restore verified staff before owner DML.
 SELECT set_config('request.jwt.claim.sub',
  (SELECT id::text FROM auth.users
   WHERE email='foundation-rbac-001@example.invalid'),true);
