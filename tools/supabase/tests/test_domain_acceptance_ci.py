@@ -528,6 +528,8 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                          "Other Family confidential Guardian",
                          "INSERT INTO app_private.enrollments("):
             self.assertIn(fragment,sql)
+        self.assertIn("false,p.id,p.family_safe",sql)
+        self.assertIn("both independent ended Family A relationship rows are retained",sql)
         self.assertNotIn("GRANT SELECT ON app_private",sql)
         for block in sql.split("SET ROLE authenticated;")[1:]:
             client=block.split("RESET ROLE;",1)[0]
