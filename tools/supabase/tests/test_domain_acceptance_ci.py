@@ -458,5 +458,26 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                 self.assertNotIn("FROM app_private."+table+" WHERE",client)
 
 
+    def test_family_student_roster_profile_permission_and_disclosure(self):
+        filename="28_family_portal_student_roster_profile_disclosure.sql"
+        self.assertIn((filename,67),[(name,total) for name,total in business.DOMAIN_TESTS])
+        sql=(business.ROOT/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
+        self.assertIn("SELECT plan(67);",sql)
+        self.assertIn("INSERT INTO app_private.enrollments(",sql)
+        self.assertIn("INSERT INTO app_private.roll_allocations(",sql)
+        for key in ("student.roster.view","student.profile.view","D1_FAMILY_CHILD",
+                    "profile_grant_revoked","roster_grant_revoked",
+                    "effect-family-portal-student-profile-revoke"):
+            self.assertIn(key,sql)
+        self.assertNotIn("GRANT SELECT ON app_private",sql)
+        for block in sql.split("SET ROLE authenticated;")[1:]:
+            client=block.split("RESET ROLE;",1)[0]
+            for table in ("students","family_student_access","family_relationships",
+                          "approval_requests","approval_reviews","approval_applications"):
+                self.assertNotIn("FROM app_private."+table+" WHERE",client)
+
+
 if __name__ == "__main__":
     unittest.main()
