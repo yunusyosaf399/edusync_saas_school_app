@@ -1,3 +1,4 @@
+import re
 import sys
 import unittest
 from tempfile import TemporaryDirectory
@@ -784,10 +785,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1648)
         self.assertIn("SELECT plan(54);",source)
         self.assertEqual(
-            len(re.findall(r"SELECT (?:is|ok|throws_ok)\\(",source)),54)
+            len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),54)
         self.assertTrue(source.startswith("--"))
         self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
-        self.assertEqual(source.count(r"\\ir fixtures/command_actor.sql"),1)
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
         for marker in ("app.d1_change_academic_subject",
                        "academic.subject.change","academic.subject.manage",
                        "CREATE","UPDATE","ARCHIVE",
