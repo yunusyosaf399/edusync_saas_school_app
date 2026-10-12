@@ -559,8 +559,9 @@ SELECT is((SELECT count(*) FROM app_private.outbox_events
  WHERE event_type='family.child_access_changed'),1::bigint,
  'implicit dependent closure emits no duplicate child-access command event');
 SELECT is((SELECT count(*) FROM app_private.family_relationships
- WHERE student_id='64000000-0000-4000-8000-000000000002'),2::bigint,
- 'both independent ended relationship rows are retained');
+ WHERE student_id='64000000-0000-4000-8000-000000000002'
+ AND family_id='64000000-0000-4000-8000-000000000001'),2::bigint,
+ 'both independent ended Family A relationship rows are retained');
 
 SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.auth_subject'),true);
 SELECT set_config('request.jwt.claims',jsonb_build_object(
@@ -605,7 +606,7 @@ UPDATE app_private.permission_scope_contracts SET enabled=true
  AND permission_id=(SELECT id FROM app_private.permissions WHERE code='family.relationship_history.view');
 INSERT INTO app_private.role_permission_grants(
  id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
-SELECT '93000000-0000-4000-8000-000000000007','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,p.id,false,
+SELECT '93000000-0000-4000-8000-000000000007','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,p.id,p.family_safe,
  statement_timestamp()-interval '1 hour','11111111-1111-4111-8111-111111111111'
  FROM app_private.permissions p WHERE p.code='family.relationship_history.view';
 INSERT INTO app_private.assignment_permission_scopes(
