@@ -5,6 +5,7 @@ import subprocess
 import time
 from domain_cross_family_race_ci import run_cross_family_race
 from domain_cross_family_reverse_race_ci import run_cross_family_reverse_race
+from domain_authorization_revocation_race_ci import run_family_authority_revocation_races
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1846,3 +1847,6 @@ SELECT count(*) FROM app_private.approval_reviews v
     # Reverse 15th lock-observed race: B final relationship END wins
     # against A entitlement REVOKE, then A reloads aggregate versions.
     run_cross_family_reverse_race(container, execute_sql)
+    # Foundation T04 (71001,1) serializes grant revocation versus a protected
+    # Family command in both EXCLUSIVE-first and SHARED-first orderings.
+    run_family_authority_revocation_races(container, execute_sql)
