@@ -538,5 +538,36 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                 self.assertNotIn("FROM app_private."+table+" WHERE",client)
 
 
+
+    def test_two_distinct_family_principals_read_and_revoke_isolation(self):
+        filename="31_family_portal_two_family_child_access_isolation.sql"
+        self.assertIn((filename,81),[(name,total) for name,total in business.DOMAIN_TESTS])
+        sql=(business.ROOT/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
+        self.assertTrue(sql.startswith("--"))
+        self.assertIn("SELECT plan(81);",sql)
+        self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        for fragment in ("foundation-own-002@example.invalid",
+                         "second_family_subject",
+                         "effect30-two-family-b-relationship-add",
+                         "effect32-two-family-b-child-add",
+                         "effect32-two-family-a-revoke",
+                         "effect30-two-family-b-final-end",
+                         "revoke_family_b_relationship_view",
+                         "family.summary.view","family.relationship.view",
+                         "family.relationship_history.view",
+                         "D1_FAMILY_CHILD",
+                         "app.d1_read_family_summary_for_student",
+                         "app.d1_read_family_relationship_history"):
+            self.assertIn(fragment,sql)
+        self.assertIn("permission_family_safe,valid_from",sql)
+        self.assertNotIn("GRANT SELECT ON app_private",sql)
+        for block in sql.split("SET ROLE authenticated;")[1:]:
+            client=block.split("RESET ROLE;",1)[0]
+            for table in ("students","family_relationships","family_student_access",
+                          "approval_requests","approval_reviews","approval_applications"):
+                self.assertNotIn("FROM app_private."+table+" WHERE",client)
+
+
 if __name__ == "__main__":
     unittest.main()
