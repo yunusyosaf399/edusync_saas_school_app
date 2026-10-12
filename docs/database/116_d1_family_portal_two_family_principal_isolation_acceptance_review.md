@@ -1,0 +1,43 @@
+# D1 Family portal — two independently authenticated Family principals for one Student
+
+Date: 2026-10-12
+Verdict: **PASS — exact-source disposable-local PostgreSQL business acceptance. Full Domain Package D1 remains OPEN.**
+
+## Exact accepted source and workflow evidence
+
+- Previously accepted and documented `main`: `677179c4808667ede7c72718fb9f120839f25a7c`.
+- [PR #37](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/37) **MERGED** at `a1e4ef3c788b16549c1bcf191c7bcd3c60ae323b` from exact accepted head `b22e90b0887a82a0e28cdfe59fb0c33cc15b1378`.
+- Both successful workflows checked out the exact same PR test-merge ref `510d2becce5b32d9e800674ef814a508fd40452d`, merging this head into the prior frozen base.
+- [D1 Migration 10 disposable-local runtime #289](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/38227054919) **PASS**: `D1C2A_PASS`, **1,594/1,594** business pgTAP assertions over **31** suites; new `31_family_portal_two_family_child_access_isolation.sql` **81/81**; **220/220** post-D1 Foundation SQL regressions; **44/44** D1 Python tooling tests; unchanged **13/13** real two-session, observed-lock races (3 Employee creation, 3 Family Principal Membership, 7 Family Relationship); both SQL lint levels PASS.
+- [Foundation database local stack #460](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/38227055132) **PASS**: frozen nine migrations and nine SQL suites, **200/200** Python tooling tests, **220/220** Foundation pgTAP SQL assertions, clean local reset and both lint levels PASS.
+- Runtime assembled/applied **202 inactive Migration 10 `.sql.draft` fragments in disposable local PostgreSQL only**, verified **34/34** forced-RLS domain tables, **540** D1 functions (**522** SECURITY DEFINER), and no authenticated, anonymous or service-role access to private domain helpers. No hosted Supabase deployment, production SQL activation or live school data change occurred.
+
+## Accepted two-Family/one-Student authorization behavior
+
+The authorization subject is the *actual verified authenticated Principal*, not a Student ID supplied by a caller or an old relationship row. Two distinct current FAMILY Principals can independently be members of two distinct Families, each linked to the same Student. Each Family requires its own effective Family-to-Student entitlement, at least one currently valid same-Family relationship basis, its own active Family membership and its own complete family-only/family-safe `OWN/D1_FAMILY_CHILD` permission chains. The fixed checked functions `app.d1_read_family_summary_for_student(uuid)`, `app.d1_read_family_relationships_for_student(uuid)` and `app.d1_read_family_relationship_history(uuid)` remain separate summary/current/history disclosures; protected calls may not enumerate another Family's rows simply because the Student is shared.
+
+New SQL suite #31 contains **81 rollback-only pgTAP assertions**:
+1. Use the original real Foundation FAMILY Auth user for Family A; bind a *different, already provisioned synthetic local Auth user* `foundation-own-002@example.invalid` to a new independent FAMILY Principal B, role, assignment, Family B grouping and current Family membership within the test transaction. Check that the two verified Auth UUIDs differ and each has a distinct current membership. Do not create more Auth accounts, use owner role as the portal caller, or modify the five-user Auth fixture script.
+2. Retain real accepted Student A/B current PRIMARY enrollment, Section/Class/Year/capacity and roll evidence. Independently grant `family.summary.view`, `family.relationship.view` and `family.relationship_history.view` with live family-safe role grants and matching `OWN/D1_FAMILY_CHILD` scopes on each authenticated FAMILY identity. The staff command actor uses the actual separately enabled Effect30 DIRECT relationship API and Effect32 child-entitlement API. Family A has two valid relationship bases, Guardian and Mother, plus its own genuinely accepted child-access ADD.
+3. Family A initially sees one Family A summary, two current Family A relationship displays and two own historical records; unrelated Student B is denied. Family B initially sees **no** Student A summary, current relationship or history despite independent Family-only roles, membership and read grants—neither a known Student ID nor a group membership confers a Family B child link.
+4. The authorized staff actor performs a real Family B `app.d1_change_family_relationship(...,'ADD',...)` command. This independently establishes Family B's Guardian basis but **does not** silently grant portal access. A separate actual authenticated `app.d1_change_family_child_access(...,'ADD',...)` creates B's own Student A child entitlement. Exactly two independent current (Family, Student) entitlements now coexist.
+5. Once both Families are authorized, Family A can see **only Family A** summary ID plus its two Guardian/Mother current and historical rows. Family B independently sees **only Family B** summary ID plus its single Guardian current and historical row. Both resolve the *same Student A*, but neither reveals the other's same-Student relationship/current/history records, and the five-field Family B history projection remains typed and restricted. Unrelated Student B remains denied.
+6. A rollback-bound revocation of Family B's current relationship-view role grant suppresses **only B's current view** while B summary and history continue; A's current view remains unchanged. Savepoint rollback restores the baseline.
+7. A genuine separately authorized staff `family.child_access.change` **REVOKE for Family A only** closes A's own current entitlement at `CURRENT_DATE`. Although A's Guardian/Mother history and both Family shared memberships remain, Family A summary/current/history become inaccessible immediately. **Family B retains its independent summary/current/history reads**, proving that A revocation does not suppress B or cross-contaminate either Principal's permission chain.
+8. A genuine protected Effect30 **END** of Family B's final Guardian basis closes its own dependent B child entitlement. B summary/current/history now deny while A's earlier revocation does not revert. Original three relationship records and two historical child entitlement intervals are retained, both Family memberships remain, and no false new access entitlement is inferred from retained history.
+9. Exactly **four real successful relationship command receipts** remain (A two ADD, B ADD and END), **three real child-access success receipts/events** (A and B ADD, A REVOKE); B's automatic final-basis closure creates no counterfeit explicit child-access REVOKE event. Direct authenticated FAMILY SELECT of private relationship and entitlement tables is denied; anonymous execution of the protected history RPC is denied. All command effects and schema-owner test fixtures are discarded by `BEGIN/ROLLBACK`.
+
+This tests *two independently authenticated* FAMILY Principals rather than an owner-only synthetic second Family relation. No principal was treated as a generic all-Family read identity; grants are scoped per current actor and per Student/Family relationship. Independent school data and roles remain separated throughout.
+
+## Exact source boundary and remaining gates
+
+Exactly **three acceptance-only** files changed:
+- `supabase/tests/domain/31_family_portal_two_family_child_access_isolation.sql` — new **81/81** rollback-only assertions;
+- `tools/supabase/domain_business_ci.py` — register 31st suite and its 81-assertion plan;
+- `tools/supabase/tests/test_domain_acceptance_ci.py` — static guard for distinct actual Auth subjects, real A/B ADD/REVOKE/END operations, family-safe OWN scope, no authenticated private DML/read, and rollback.
+
+**No executable production migration, Migration 10 draft, frozen Foundation source, deployed RLS/grants, Flutter UI, API, Auth fixture program or hosted Supabase resource changed.**
+
+**The 31-suite, 1,594-assertion disposable-local D1C2A business checkpoint is accepted and frozen**, with prior **13/13** actual lock-observed two-session races unchanged. Full D1 remains **OPEN** for additional multi-Family concurrency, P1 reviewer/assignment and staff-history security permutations, other D1 business operations, populated schema upgrade/reconciliation, Admissions/Finance, and hosted Migration 10 activation. All **202** Migration 10 fragments remain non-executable `.sql.draft`.
+
+**Marker:** `D1_TWO_AUTH_FAMILIES_SAME_STUDENT_ISOLATION_PASS — 1594/1594 BUSINESS — 220/220 FOUNDATION — 44/44 D1 UNIT — 13/13 OBSERVED-LOCK RACES — 202 DRAFT FRAGMENTS — FULL D1 OPEN`.
