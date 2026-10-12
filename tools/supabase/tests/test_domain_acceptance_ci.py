@@ -1,3 +1,4 @@
+import re
 import sys
 import unittest
 from tempfile import TemporaryDirectory
@@ -770,6 +771,57 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             concurrency.index("run_family_assignment_scope_races(container, execute_sql)"))
         self.assertNotIn("supabase db push",runner)
         self.assertNotIn("service_role",runner)
+
+
+
+    def test_academic_subject_school_catalog_p0_business_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+                "32_academic_subject_lifecycle_authorization.sql").read_text(
+                    encoding="utf-8")
+        self.assertEqual(DOMAIN_TESTS[-1],
+                         ["32_academic_subject_lifecycle_authorization.sql",54])
+        self.assertEqual(len(DOMAIN_TESTS),32)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1648)
+        self.assertIn("SELECT plan(54);",source)
+        self.assertEqual(
+            len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),54)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in ("app.d1_change_academic_subject",
+                       "academic.subject.change","academic.subject.manage",
+                       "CREATE","UPDATE","ARCHIVE",
+                       "subject_create_subject_id",
+                       "subject_updated_subject_id",
+                       "subject_archived_subject_id",
+                       "D1 Academic Subject stale version/state",
+                       "D1 Academic Subject target/ancestry changed",
+                       "D1 Academic Subject authority denied",
+                       "D1 operation is not enabled",
+                       "D1 idempotency key conflicts with prior intent",
+                       "SAVEPOINT subject_scope_revocation",
+                       "SAVEPOINT subject_grant_revocation",
+                       "SAVEPOINT subject_permission_disabled",
+                       "SAVEPOINT subject_operation_disabled",
+                       "schoolos_schema_owner",
+                       "SET ROLE authenticated;",
+                       "role_permission_grants",
+                       "assignment_permission_scopes",
+                       "permission_scope_contracts",
+                       "subject-before-grant",
+                       "subject-create",
+                       "subject-update",
+                       "subject-archive",
+                       "academic.subject_changed",
+                       "aggregate_kind='SUBJECT'",
+                       "SELECT * FROM app_private.subjects",
+                       "DELETE FROM app_private.subjects",
+                       "SET CONSTRAINTS ALL IMMEDIATE",
+                       "SELECT * FROM finish();"):
+            self.assertIn(marker,source)
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
 
 
 if __name__ == "__main__":
