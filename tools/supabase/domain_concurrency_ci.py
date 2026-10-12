@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 import time
+from domain_cross_family_race_ci import run_cross_family_race
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1838,3 +1839,6 @@ SELECT count(*) FROM app_private.approval_reviews v
           "Effect30 P1 approved primary END selects initially eligible candidate "
           "under true contention; candidate END becomes invalidated after "
           "selection; exact retained replacement context and zero child access")
+    # Independent Family A entitlement REVOKE versus Family B relationship
+    # END, with two real staff actors and an observed Student lock wait.
+    run_cross_family_race(container, execute_sql)
