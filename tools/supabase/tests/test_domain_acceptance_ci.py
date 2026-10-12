@@ -569,5 +569,41 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                 self.assertNotIn("FROM app_private."+table+" WHERE",client)
 
 
+
+    def test_two_family_cross_operation_lock_race_is_true_concurrent_runtime(self):
+        fixture=(business.ROOT/"supabase/tests/domain/fixtures/"
+                 "family_cross_operation_race_setup.sql").read_text(encoding="utf-8")
+        runner=(business.ROOT/"tools/supabase/domain_cross_family_race_ci.py").read_text(
+            encoding="utf-8")
+        concurrency=(business.ROOT/"tools/supabase/domain_concurrency_ci.py").read_text(
+            encoding="utf-8")
+        for fragment in ("foundation-family-001@example.invalid",
+                         "foundation-own-002@example.invalid",
+                         "family.summary.view","family.relationship.view",
+                         "family.relationship_history.view","D1_FAMILY_CHILD",
+                         "family.child_access.change","family.relationship.change",
+                         "d1-cross-family-race-direct-child",
+                         "d1-cross-family-race-direct-relationship",
+                         "SET ROLE schoolos_schema_owner"):
+            self.assertIn(fragment,fixture)
+        self.assertNotIn("GRANT SELECT ON app_private",fixture)
+        for fragment in ("pg_blocking_pids","transactionid","tuple",
+                         "wait_event_type='Lock'","_probe_worker",
+                         "subprocess.Popen","foundation-rbac-001@example.invalid",
+                         "foundation-test-001@example.invalid",
+                         "D1 Family relationship target version changed",
+                         "d1-cross-family-a-revoke",
+                         "d1-cross-family-b-end-stale",
+                         "d1-cross-family-b-end-refreshed",
+                         "D1_CROSS_FAMILY_OPERATION_RACE_PASS"):
+            self.assertIn(fragment,runner)
+        self.assertIn("from domain_cross_family_race_ci import run_cross_family_race",concurrency)
+        self.assertIn("run_cross_family_race(container, execute_sql)",concurrency)
+        self.assertLess(concurrency.index("D1_FAMILY_REPLACEMENT_REVERSE_RACE_PASS"),
+                        concurrency.index("run_cross_family_race(container, execute_sql)"))
+        self.assertNotIn("supabase db push",runner)
+        self.assertNotIn("service_role",runner)
+
+
 if __name__ == "__main__":
     unittest.main()
