@@ -479,5 +479,35 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                 self.assertNotIn("FROM app_private."+table+" WHERE",client)
 
 
+
+    def test_family_emergency_contact_current_checked_read_disclosure_and_revoke(self):
+        filename="29_family_portal_emergency_contact_current_checked_read.sql"
+        self.assertIn((filename,77),[(name,total) for name,total in business.DOMAIN_TESTS])
+        sql=(business.ROOT/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
+        self.assertTrue(sql.startswith("--"))
+        self.assertIn("SELECT plan(77);",sql)
+        self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        for fragment in ("app.d1_read_student_emergency_contacts",
+                         "app.d1_read_student_emergency_contact_history",
+                         "student.emergency_contact.view",
+                         "D1_FAMILY_CHILD",
+                         "INSERT INTO app_private.student_emergency_contacts(",
+                         "end_one_current_contact",
+                         "emergency_view_grant_revoked",
+                         "emergency_view_scope_revoked",
+                         "current_family_membership_ended",
+                         "effect-family-portal-emergency-contacts-revoke",
+                         "jsonb_object_keys(to_jsonb(c))"):
+            self.assertIn(fragment,sql)
+        self.assertNotIn("GRANT SELECT ON app_private",sql)
+        for block in sql.split("SET ROLE authenticated;")[1:]:
+            client=block.split("RESET ROLE;",1)[0]
+            for table in ("students","student_emergency_contacts","student_identity_details",
+                          "family_student_access","family_relationships",
+                          "approval_requests","approval_reviews","approval_applications"):
+                self.assertNotIn("FROM app_private."+table+" WHERE",client)
+
+
 if __name__ == "__main__":
     unittest.main()
