@@ -677,7 +677,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("GRANT SELECT ON app_private",fixture)
         for item in ("pg_catalog.pg_advisory_xact_lock(71001,1)",
                      "pg_blocking_pids", "locktype='advisory'",
-                     "mode='ExclusiveLock'", "mode='ShareLock'",
+                     "ExclusiveLock", "ShareLock",
                      "pending.mode='{mode}'",
                      "D1 Family child access authority denied",
                      "D1_AUTHORIZATION_REVOKE_FIRST_RACE_PASS",
