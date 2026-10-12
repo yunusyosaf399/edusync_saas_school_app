@@ -624,6 +624,12 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertIn(item,fixture)
         self.assertNotIn("GRANT SELECT ON app_private",fixture)
         self.assertNotIn("COMMIT;",fixture)
+        self.assertIn("foundation-rbac-001@example.invalid",fixture)
+        self.assertIn("request.jwt.claim.sub",fixture)
+        self.assertIn("request.jwt.claims",fixture)
+        self.assertIn("66666666-6666-4666-8666-666666666666",fixture)
+        self.assertLess(fixture.index("request.jwt.claims"),
+                        fixture.index("SET ROLE schoolos_schema_owner;"))
         for item in ("pg_blocking_pids", "wait_event_type='Lock'",
                      "transactionid","tuple","subprocess.Popen",
                      "foundation-test-001@example.invalid",
