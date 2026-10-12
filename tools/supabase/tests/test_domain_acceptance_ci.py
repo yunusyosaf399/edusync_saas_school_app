@@ -654,5 +654,57 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("service_role",runner)
 
 
+
+    def test_authority_revocation_serializes_family_commands_both_orders(self):
+        fixture=(business.ROOT/"supabase/tests/domain/fixtures/"
+                 "family_authority_revoke_race_setup.sql").read_text(
+                     encoding="utf-8")
+        runner=(business.ROOT/"tools/supabase/"
+                "domain_authorization_revocation_race_ci.py").read_text(
+                     encoding="utf-8")
+        concurrency=(business.ROOT/"tools/supabase/"
+                     "domain_concurrency_ci.py").read_text(encoding="utf-8")
+        for item in ("97000000-0000-4000-8000-000000000002",
+                     "98000000-0000-4000-8000-000000000002",
+                     "family_relationships","family_student_access",
+                     "request.jwt.claims",
+                     "foundation-rbac-001@example.invalid",
+                     "SET ROLE schoolos_schema_owner;"):
+            self.assertIn(item,fixture)
+        self.assertLess(fixture.index("request.jwt.claims"),
+                        fixture.index("SET ROLE schoolos_schema_owner;"))
+        self.assertNotIn("COMMIT;",fixture)
+        self.assertNotIn("GRANT SELECT ON app_private",fixture)
+        for item in ("pg_catalog.pg_advisory_xact_lock(71001,1)",
+                     "pg_blocking_pids", "locktype='advisory'",
+                     "classid=71001", "objid=1",
+                     "ExclusiveLock", "ShareLock",
+                     "pending.mode='{mode}'",
+                     "D1 Family child access authority denied",
+                     "D1_AUTHORIZATION_REVOKE_FIRST_RACE_PASS",
+                     "D1_AUTHORIZATION_COMMAND_FIRST_RACE_PASS",
+                     "d1-authority-revoke-first-a-denied",
+                     "d1-authority-command-first-b-end",
+                     "family.child_access_changed",
+                     "family.relationship_changed",
+                     "foundation-test-001@example.invalid",
+                     "foundation-rbac-001@example.invalid",
+                     "foundation-family-001@example.invalid",
+                     "foundation-own-002@example.invalid",
+                     "d1_read_family_summary_for_student",
+                     "d1_read_family_relationship_history",
+                     "subprocess.Popen"):
+            self.assertIn(item,runner)
+        self.assertIn(
+            "from domain_authorization_revocation_race_ci import run_family_authority_revocation_races",
+            concurrency)
+        self.assertIn("run_family_authority_revocation_races(container, execute_sql)",
+                      concurrency)
+        self.assertLess(concurrency.index("run_cross_family_reverse_race(container, execute_sql)"),
+                        concurrency.index("run_family_authority_revocation_races(container, execute_sql)"))
+        self.assertNotIn("supabase db push",runner)
+        self.assertNotIn("service_role",runner)
+
+
 if __name__ == "__main__":
     unittest.main()
