@@ -110,6 +110,9 @@ SELECT CASE WHEN EXISTS (
  SELECT 1 FROM pg_catalog.pg_stat_activity waiting
  WHERE waiting.application_name='{app}'
    AND waiting.wait_event_type='Lock'
+   AND EXISTS (SELECT 1 FROM pg_catalog.pg_locks requested
+               WHERE requested.pid=waiting.pid AND NOT requested.granted
+                 AND requested.locktype IN ('transactionid','tuple'))
    AND EXISTS (
       SELECT 1 FROM pg_catalog.unnest(pg_catalog.pg_blocking_pids(waiting.pid)) AS p(pid)
       JOIN pg_catalog.pg_stat_activity holding ON holding.pid=p.pid
