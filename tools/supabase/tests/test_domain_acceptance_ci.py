@@ -429,5 +429,34 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                 self.assertNotIn("FROM app_private."+table,client)
 
 
+
+    def test_family_portal_current_checked_read_and_revocation_suite(self):
+        filename="27_family_portal_checked_current_read_revocation.sql"
+        self.assertIn((filename,69),[(name,total) for name,total in business.DOMAIN_TESTS])
+        sql=(business.ROOT/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
+        self.assertTrue(sql.startswith("--"))
+        self.assertIn("SELECT plan(69);",sql)
+        self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        for rpc in ("d1_read_family_summary_for_student",
+                    "d1_read_family_relationships_for_student",
+                    "d1_read_family_relationship_history",
+                    "d1_read_student_restricted_identity"):
+            self.assertIn("app."+rpc,sql)
+        self.assertIn("effect-family-portal-read-revoke",sql)
+        self.assertIn("jsonb_object_keys(to_jsonb(summary))",sql)
+        self.assertIn("jsonb_object_keys(to_jsonb(rel))",sql)
+        self.assertIn("SAVEPOINT ended_family_membership_read;",sql)
+        self.assertIn("ROLLBACK TO SAVEPOINT ended_family_membership_read;",sql)
+        self.assertIn("UPDATE app_private.role_permission_grants SET revoked_at",sql)
+        self.assertIn("D1_FAMILY_CHILD",sql)
+        self.assertNotIn("GRANT SELECT ON app_private",sql)
+        for block in sql.split("SET ROLE authenticated;")[1:]:
+            client=block.split("RESET ROLE;",1)[0]
+            for table in ("students","family_student_access","family_relationships",
+                          "approval_requests","approval_reviews","approval_applications"):
+                self.assertNotIn("FROM app_private."+table+" WHERE",client)
+
+
 if __name__ == "__main__":
     unittest.main()
