@@ -4,6 +4,7 @@ import re
 import subprocess
 import time
 from domain_cross_family_race_ci import run_cross_family_race
+from domain_cross_family_reverse_race_ci import run_cross_family_reverse_race
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1842,3 +1843,6 @@ SELECT count(*) FROM app_private.approval_reviews v
     # Independent Family A entitlement REVOKE versus Family B relationship
     # END, with two real staff actors and an observed Student lock wait.
     run_cross_family_race(container, execute_sql)
+    # Reverse 15th lock-observed race: B final relationship END wins
+    # against A entitlement REVOKE, then A reloads aggregate versions.
+    run_cross_family_reverse_race(container, execute_sql)
