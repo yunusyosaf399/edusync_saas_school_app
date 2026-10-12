@@ -712,8 +712,8 @@ SELECT is((SELECT count(*) FROM app.d1_read_family_summary_for_student('64000000
 SELECT is((SELECT count(*) FROM app.d1_read_family_relationship_history('64000000-0000-4000-8000-000000000002')),0::bigint,
  'Family A retains no historical access after both independent links end');
 RESET ROLE;
-SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE operation_id=(SELECT id FROM app_private.operation_contracts WHERE code='family.relationship.change') AND state='SUCCEEDED'),3::bigint,
- 'two Family A relationship ADD and one Family B ADD plus END commands accepted once');
+SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE operation_id=(SELECT id FROM app_private.operation_contracts WHERE code='family.relationship.change') AND state='SUCCEEDED'),4::bigint,
+ 'two Family A relationship ADD plus Family B ADD and END accepted exactly once');
 SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE operation_id=(SELECT id FROM app_private.operation_contracts WHERE code='family.child_access.change') AND state='SUCCEEDED'),3::bigint,
  'A and B child ADD plus A-only REVOKE each retain success receipts');
 SELECT is((SELECT count(*) FROM app_private.outbox_events WHERE event_type='family.child_access_changed'),3::bigint,
