@@ -509,5 +509,32 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                 self.assertNotIn("FROM app_private."+table+" WHERE",client)
 
 
+
+    def test_family_history_alternative_basis_requires_current_child_scope(self):
+        filename="30_family_portal_historical_relationship_alternate_basis.sql"
+        self.assertIn((filename,78),[(name,total) for name,total in business.DOMAIN_TESTS])
+        sql=(business.ROOT/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
+        self.assertTrue(sql.startswith("--"))
+        self.assertIn("SELECT plan(78);",sql)
+        self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        for fragment in ("app.d1_read_family_relationship_history",
+                         "app.d1_read_family_relationships_for_student",
+                         "app.d1_read_family_admin_relationship_history",
+                         "family.relationship_history.view","family.relationship.view",
+                         "D1_FAMILY_CHILD","effect30-bases-first-end",
+                         "effect30-bases-final-end","end_family_membership_history",
+                         "revoke_history_permission_only","revoke_current_permission_only",
+                         "Other Family confidential Guardian",
+                         "INSERT INTO app_private.enrollments("):
+            self.assertIn(fragment,sql)
+        self.assertNotIn("GRANT SELECT ON app_private",sql)
+        for block in sql.split("SET ROLE authenticated;")[1:]:
+            client=block.split("RESET ROLE;",1)[0]
+            for table in ("students","family_relationships","family_student_access",
+                          "approval_requests","approval_reviews","approval_applications"):
+                self.assertNotIn("FROM app_private."+table+" WHERE",client)
+
+
 if __name__ == "__main__":
     unittest.main()
