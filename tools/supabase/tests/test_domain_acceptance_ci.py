@@ -706,5 +706,71 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("service_role",runner)
 
 
+
+    def test_assignment_scope_revocation_serializes_family_command_both_orders(self):
+        fixture=(business.ROOT/"supabase/tests/domain/fixtures/"
+                 "family_assignment_scope_revoke_race_setup.sql").read_text(
+                    encoding="utf-8")
+        runner=(business.ROOT/"tools/supabase/"
+                "domain_assignment_scope_revocation_race_ci.py").read_text(
+                    encoding="utf-8")
+        accepted=(business.ROOT/"tools/supabase/"
+                  "domain_authorization_revocation_race_ci.py").read_text(
+                    encoding="utf-8")
+        concurrency=(business.ROOT/"tools/supabase/domain_concurrency_ci.py"
+                     ).read_text(encoding="utf-8")
+        for item in ("99000000-0000-4000-8000-000000000002",
+                     "9a000000-0000-4000-8000-000000000002",
+                     "99000000-0000-4000-8000-000000000005",
+                     "9a000000-0000-4000-8000-000000000005",
+                     "99000000-0000-4000-8000-000000000006",
+                     "9a000000-0000-4000-8000-000000000006",
+                     "role_permission_grants",
+                     "assignment_permission_scopes",
+                     "permission_family_safe",
+                     "ALL","DIRECT",
+                     "foundation-rbac-001@example.invalid",
+                     "request.jwt.claims","SET ROLE schoolos_schema_owner;"):
+            self.assertIn(item,fixture)
+        self.assertLess(fixture.index("request.jwt.claims"),
+                        fixture.index("SET ROLE schoolos_schema_owner;"))
+        self.assertNotIn("COMMIT;",fixture)
+        self.assertNotIn("GRANT SELECT ON app_private",fixture)
+        for item in ("_observe(", "_process(",
+                     "pg_catalog.pg_advisory_xact_lock(71001,1)",
+                     "UPDATE app_private.assignment_permission_scopes",
+                     "revoked_at=pg_catalog.clock_timestamp()",
+                     "D1 Family child access authority denied",
+                     "D1_ASSIGNMENT_SCOPE_REVOKE_FIRST_RACE_PASS",
+                     "D1_ASSIGNMENT_SCOPE_COMMAND_FIRST_RACE_PASS",
+                     "d1-scope-a-command-denied",
+                     "d1-scope-b-command-succeeded",
+                     "family.child_access_changed",
+                     "family.relationship_changed",
+                     "foundation-rbac-001@example.invalid",
+                     "foundation-test-001@example.invalid",
+                     "foundation-family-001@example.invalid",
+                     "foundation-own-002@example.invalid",
+                     "app.d1_read_family_summary_for_student",
+                     "app.d1_read_family_relationship_history",
+                     "role_permission_grants",
+                     "principal_role_assignments"):
+            self.assertIn(item,runner)
+        for item in ("pg_blocking_pids", "locktype='advisory'",
+                     "classid=71001", "objid=1",
+                     "ShareLock", "ExclusiveLock"):
+            self.assertIn(item,accepted)
+        self.assertIn(
+            "from domain_assignment_scope_revocation_race_ci import run_family_assignment_scope_races",
+            concurrency)
+        self.assertIn("run_family_assignment_scope_races(container, execute_sql)",
+                      concurrency)
+        self.assertLess(
+            concurrency.index("run_family_authority_revocation_races(container, execute_sql)"),
+            concurrency.index("run_family_assignment_scope_races(container, execute_sql)"))
+        self.assertNotIn("supabase db push",runner)
+        self.assertNotIn("service_role",runner)
+
+
 if __name__ == "__main__":
     unittest.main()
