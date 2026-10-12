@@ -130,10 +130,10 @@ UPDATE app_private.permission_scope_contracts SET enabled=true
 
 INSERT INTO app_private.role_permission_grants(
  id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
-SELECT gen_random_uuid(),role.id,true,p.id,p.family_safe,
+SELECT gen_random_uuid(),r.id,true,p.id,p.family_safe,
  statement_timestamp()-interval '1 hour','11111111-1111-4111-8111-111111111111'
-FROM app_private.roles role CROSS JOIN app_private.permissions p
-WHERE role.id IN ('95000000-0000-4000-8000-000000000017',
+FROM app_private.roles r CROSS JOIN app_private.permissions p
+WHERE r.id IN ('95000000-0000-4000-8000-000000000017',
                   '95000000-0000-4000-8000-000000000018')
  AND p.code IN ('family.summary.view','family.relationship.view',
                 'family.relationship_history.view');
