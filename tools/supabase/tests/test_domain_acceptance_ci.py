@@ -332,10 +332,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_family_policy_replacement_stale_apply_suite_is_registered(self):
         filename="23_family_relationship_p1_policy_replacement_stale_apply.sql"
-        self.assertIn((filename,69),[(name,total) for name,total in business.DOMAIN_TESTS])
+        self.assertIn((filename,65),[(name,total) for name,total in business.DOMAIN_TESTS])
         path=business.ROOT/"supabase/tests/domain"/filename
         sql=path.read_text(encoding="utf-8")
-        self.assertIn("SELECT plan(69);",sql)
+        self.assertIn("SELECT plan(65);",sql)
         self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
         self.assertTrue(sql.startswith("--"))
         self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
@@ -432,10 +432,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_family_portal_current_checked_read_and_revocation_suite(self):
         filename="27_family_portal_checked_current_read_revocation.sql"
-        self.assertIn((filename,65),[(name,total) for name,total in business.DOMAIN_TESTS])
+        self.assertIn((filename,69),[(name,total) for name,total in business.DOMAIN_TESTS])
         sql=(business.ROOT/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
         self.assertTrue(sql.startswith("--"))
-        self.assertIn("SELECT plan(65);",sql)
+        self.assertIn("SELECT plan(69);",sql)
         self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
         self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
         for rpc in ("d1_read_family_summary_for_student",
