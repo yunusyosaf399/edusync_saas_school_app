@@ -30,10 +30,10 @@ JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
 WHERE g.id='64000000-0000-4000-8000-000000000012' AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
 
 INSERT INTO app_private.students(
- id,person_id,school_student_id,admission_number,admission_serial,admitted_on,current_status,created_by)
+ id,person_id,school_student_id,admission_number,admission_serial,admitted_on,current_status,date_of_birth,general_contact,previous_school,created_by)
 VALUES
- ('64000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000001','FAMILY-A','FAM-0001',1,CURRENT_DATE-20,'ACTIVE','11111111-1111-4111-8111-111111111111'),
- ('64000000-0000-4000-8000-000000000003','10000000-0000-4000-8000-000000000002','FAMILY-B','FAM-0002',2,CURRENT_DATE-20,'ACTIVE','11111111-1111-4111-8111-111111111111');
+ ('64000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000001','FAMILY-A','FAM-0001',1,CURRENT_DATE-20,'ACTIVE',CURRENT_DATE-3650,'student-a@example.invalid','Synthetic prior school','11111111-1111-4111-8111-111111111111'),
+ ('64000000-0000-4000-8000-000000000003','10000000-0000-4000-8000-000000000002','FAMILY-B','FAM-0002',2,CURRENT_DATE-20,'ACTIVE',NULL,NULL,NULL,'11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.student_status_transitions(
  student_id,previous_status,new_status,effective_on,sequence_number,reason,created_by)
 VALUES
@@ -273,11 +273,6 @@ INSERT INTO app_private.roll_allocations(
   '11111111-1111-4111-8111-111111111111');
 
 RESET ROLE;
-SET ROLE schoolos_schema_owner;
-UPDATE app_private.students SET date_of_birth=CURRENT_DATE-3650,
- general_contact='student-a@example.invalid',previous_school='Synthetic prior school'
- WHERE id='64000000-0000-4000-8000-000000000002';
-RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.enrollments WHERE placement_state='ACTIVE' AND placement_kind='PRIMARY' AND student_id IN ('64000000-0000-4000-8000-000000000002','64000000-0000-4000-8000-000000000003')),2::bigint,
  'both Students genuinely have current ACTIVE PRIMARY placements');
 SELECT is((SELECT count(*) FROM app_private.roll_allocations WHERE student_id IN ('64000000-0000-4000-8000-000000000002','64000000-0000-4000-8000-000000000003')),2::bigint,
@@ -380,7 +375,7 @@ SELECT is((SELECT count(*) FROM app.d1_read_student_profile('64000000-0000-4000-
  'separate family-safe PROFILE permission enables Student A only');
 SELECT is((SELECT count(*) FROM app.d1_read_student_profile('64000000-0000-4000-8000-000000000003')),0::bigint,
  'PROFILE permission cannot read unrelated enrolled Student B');
-SELECT is((SELECT date_of_birth FROM app.d1_read_student_profile('64000000-0000-4000-8000-000000000002')),CURRENT_DATE-3650::date,
+SELECT is((SELECT date_of_birth FROM app.d1_read_student_profile('64000000-0000-4000-8000-000000000002')),(CURRENT_DATE-3650)::date,
  'PROFILE reveals approved birth date when separately granted');
 SELECT is((SELECT general_contact FROM app.d1_read_student_profile('64000000-0000-4000-8000-000000000002')),'student-a@example.invalid'::text,
  'PROFILE reveals general non-guardian contact only after PROFILE grant');
