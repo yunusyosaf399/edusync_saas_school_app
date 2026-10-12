@@ -605,5 +605,48 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("service_role",runner)
 
 
+
+    def test_cross_family_reverse_end_wins_actual_lock_race_and_read_isolation(self):
+        fixture=(business.ROOT/"supabase/tests/domain/fixtures/"
+                 "family_cross_operation_reverse_race_setup.sql").read_text(
+                    encoding="utf-8")
+        runner=(business.ROOT/"tools/supabase/domain_cross_family_reverse_race_ci.py"
+                ).read_text(encoding="utf-8")
+        concurrency=(business.ROOT/"tools/supabase/domain_concurrency_ci.py"
+                     ).read_text(encoding="utf-8")
+        for item in ("96000000-0000-4000-8000-000000000002",
+                     "96000000-0000-4000-8000-000000000003",
+                     "96000000-0000-4000-8000-000000000004",
+                     "96000000-0000-4000-8000-000000000005",
+                     "96000000-0000-4000-8000-000000000006",
+                     "family_relationships","family_student_access",
+                     "schoolos_schema_owner"):
+            self.assertIn(item,fixture)
+        self.assertNotIn("GRANT SELECT ON app_private",fixture)
+        self.assertNotIn("COMMIT;",fixture)
+        for item in ("pg_blocking_pids", "wait_event_type='Lock'",
+                     "transactionid","tuple","subprocess.Popen",
+                     "foundation-test-001@example.invalid",
+                     "foundation-rbac-001@example.invalid",
+                     "foundation-family-001@example.invalid",
+                     "foundation-own-002@example.invalid",
+                     "D1 Family child access target version changed",
+                     "d1-cross-reverse-b-end-winner",
+                     "d1-cross-reverse-a-revoke-stale",
+                     "d1-cross-reverse-a-revoke-refreshed",
+                     "D1_CROSS_FAMILY_REVERSE_RACE_PASS",
+                     "d1_read_family_summary_for_student",
+                     "d1_read_family_relationship_history",
+                     "D1_CROSS_REVERSE_EVENT_OR_RECEIPT_MISMATCH"):
+            self.assertIn(item,runner)
+        self.assertIn("from domain_cross_family_reverse_race_ci import run_cross_family_reverse_race",
+                      concurrency)
+        self.assertIn("run_cross_family_reverse_race(container, execute_sql)",concurrency)
+        self.assertLess(concurrency.index("run_cross_family_race(container, execute_sql)"),
+                        concurrency.index("run_cross_family_reverse_race(container, execute_sql)"))
+        self.assertNotIn("supabase db push",runner)
+        self.assertNotIn("service_role",runner)
+
+
 if __name__ == "__main__":
     unittest.main()
