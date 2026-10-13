@@ -1529,7 +1529,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(source.count(r"\gset photo_set_"),1)
         self.assertEqual(source.count(r"\gset cleared_"),1)
         self.assertNotIn("INSERT INTO app_private.employees",source)
-        self.assertNotIn("UPDATE app_private.employees SET profile_photo_file_id=",source)
+        self.assertIn("SELECT throws_ok($sql$UPDATE app_private.employees SET profile_photo_file_id=NULL$sql$",source)
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
         # pgtap assertions execute under test runner or authenticated, never owner.
