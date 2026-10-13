@@ -887,10 +887,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(DOMAIN_TESTS[32],
                          ["33_academic_class_offering_lifecycle_authorization.sql",52])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:33]),1700)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        # Preserve the accepted 34-suite/1,756 assertion manifest as prefix.
+        self.assertEqual(DOMAIN_TESTS[33],
                          ["34_academic_section_offering_lifecycle_authorization.sql",56])
-        self.assertEqual(len(DOMAIN_TESTS),34)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1756)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),34)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:34]),1756)
         self.assertIn("SELECT plan(56);",source)
         self.assertEqual(
             len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),56)
@@ -930,6 +931,83 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             source.index("SAVEPOINT section_room_blocks_archive"),
             source.index("section-closed"))
         self.assertIn("SET ROLE authenticated;",source)
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
+
+
+    def test_academic_section_room_add_end_correct_history_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+                "35_academic_section_room_assignment_history_authorization.sql").read_text(
+                    encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),35)
+        self.assertEqual(DOMAIN_TESTS[33],
+                         ["34_academic_section_offering_lifecycle_authorization.sql",56])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:34]),1756)
+        self.assertEqual(DOMAIN_TESTS[-1],
+                         ["35_academic_section_room_assignment_history_authorization.sql",77])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1833)
+        self.assertIn("SELECT plan(77);",source)
+        self.assertEqual(
+            len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),77)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_change_academic_section_room",
+            "academic.section_room.change",
+            "ADD",
+            "END",
+            "CORRECT",
+            "app_private.section_room_assignments",
+    "app_private.capacity_revisions",
+    "INITIAL_CONFIGURATION",
+            "app_private.section_offerings",
+            "app.rooms",
+            "app_private.assignment_permission_scopes",
+            "app_private.role_permission_grants",
+            "D1 Section Room target missing",
+            "D1 Section Room Room missing",
+            "D1 Section Room destination Room unusable",
+            "D1 Section Room target is archived",
+            "D1 Section Room retained target changed",
+            "D1 Section Room correction predecessor invalid",
+            "D1 overlapping effective history: section_room_assignments",
+            "D1 Academic Section Room authority denied",
+            "D1 Academic Section Room intent invalid",
+            "D1 Section Room assignment already ended",
+            "D1 idempotency key conflicts with prior intent",
+            "D1 operation is not enabled",
+            "SAVEPOINT room_archived_section",
+            "SAVEPOINT room_other_section",
+            "SAVEPOINT room_scope_revoked",
+            "SAVEPOINT room_grant_revoked",
+            "SAVEPOINT room_permission_disabled",
+            "SAVEPOINT room_operation_disabled",
+            "supersedes_id",
+            "effective_from",
+            "effective_until",
+            "ended_by",
+            "D1_SECTION_ROOM_ASSIGNMENT",
+            "academic.section_room_changed",
+            "aggregate_kind='SECTION_ROOM_ASSIGNMENT'",
+            "SELECT * FROM app_private.section_room_assignments",
+            "DELETE FROM app_private.section_room_assignments",
+            "SET CONSTRAINTS ALL IMMEDIATE",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(marker,source)
+        self.assertLess(
+            source.index("SAVEPOINT room_archived_section"),
+            source.index("room-bounded-add"))
+        self.assertEqual(source.count("INSERT INTO app_private.capacity_revisions"),2)
+        for projection in (
+            "'95000000-0000-4000-8000-000000000004',NULL,35",
+            "'95000000-0000-4000-8000-000000000005',NULL,20",
+            "'95000000-0000-4000-8000-000000000011',NULL,15"):
+            self.assertIn(projection,source)
+        self.assertIn("SET ROLE authenticated;",source)
+        self.assertIn("SET ROLE anon;",source)
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
 
