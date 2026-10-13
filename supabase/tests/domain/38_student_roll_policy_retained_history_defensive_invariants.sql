@@ -14,6 +14,7 @@ INSERT INTO app_private.roll_policy_revisions (
 VALUES ('98000000-0000-4000-8000-000000000001','22222222-2222-4222-8222-222222222222',1,'PERSISTENT_STUDENT',10000,CURRENT_DATE-40,CURRENT_DATE-10,
  statement_timestamp(),'11111111-1111-4111-8111-111111111111','Historical synthetic policy revision','11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.roll_policy_revisions(id,school_id,revision,mode,start_value,effective_from,reason,supersedes_id,created_by) VALUES ('98000000-0000-4000-8000-000000000002','22222222-2222-4222-8222-222222222222',2,'ACADEMIC_CONTEXT',20000,CURRENT_DATE-10,'Synthetic frozen roll policy physical-contract probe','98000000-0000-4000-8000-000000000001','11111111-1111-4111-8111-111111111111');
+RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions WHERE school_id='22222222-2222-4222-8222-222222222222'),2::bigint,'two initial synthetic policy revisions seeded');
 SELECT is((SELECT revision FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000001'),1,'first policy revision starts at one');
 SELECT is((SELECT effective_until FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000001'),CURRENT_DATE-10,'predecessor interval ends exactly at successor start');
@@ -22,7 +23,9 @@ SELECT is((SELECT mode FROM app_private.roll_policy_revisions WHERE id='98000000
 SELECT ok((SELECT effective_until IS NULL FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000002'),'unended current policy remains open');
 -- The historical table can be closed only once. This owner-only test closure
 -- proves defensive D1 integrity; it is not a protected business command.
+SET ROLE schoolos_schema_owner;
 UPDATE app_private.roll_policy_revisions SET effective_until=CURRENT_DATE+5 WHERE id='98000000-0000-4000-8000-000000000002';
+RESET ROLE;
 SELECT is((SELECT effective_until FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000002'),CURRENT_DATE+5,'current policy closed at explicit exclusive future boundary');
 SELECT ok((SELECT ended_at IS NOT NULL AND ended_by='11111111-1111-4111-8111-111111111111' FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000002'),'server-controlled end actor/time stamped on first closure');
 SELECT throws_ok($sql$UPDATE app_private.roll_policy_revisions SET effective_until=CURRENT_DATE+7 WHERE id='98000000-0000-4000-8000-000000000002'$sql$,'P0001'::char(5),NULL::text,'policy history cannot be closed twice');
@@ -34,7 +37,9 @@ SELECT throws_ok($sql$INSERT INTO app_private.roll_policy_revisions(id,school_id
 SELECT throws_ok($sql$INSERT INTO app_private.roll_policy_revisions(id,school_id,revision,mode,start_value,effective_from,reason,supersedes_id,created_by) VALUES ('98000000-0000-4000-8000-000000000033','22222222-2222-4222-8222-222222222222',8,'PERSISTENT_STUDENT',30000,CURRENT_DATE+5,'Synthetic frozen roll policy physical-contract probe','98000000-0000-4000-8000-000000000002','11111111-1111-4111-8111-111111111111')$sql$,'P0001'::char(5),NULL::text,'school-wide revision cannot skip locked sequence');
 SELECT throws_ok($sql$INSERT INTO app_private.roll_policy_revisions(id,school_id,revision,mode,start_value,effective_from,reason,supersedes_id,created_by) VALUES ('98000000-0000-4000-8000-000000000034','22222222-2222-4222-8222-222222222222',3,'PERSISTENT_STUDENT',30000,CURRENT_DATE+5,'Synthetic frozen roll policy physical-contract probe','98000000-0000-4000-8000-000000000001','11111111-1111-4111-8111-111111111111')$sql$,'P0001'::char(5),NULL::text,'supersession cannot reuse a predecessor with an existing successor');
 SELECT throws_ok($sql$INSERT INTO app_private.roll_policy_revisions(id,school_id,revision,mode,start_value,effective_from,reason,supersedes_id,created_by) VALUES ('98000000-0000-4000-8000-000000000035','22222222-2222-4222-8222-222222222222',3,'PERSISTENT_STUDENT',30000,CURRENT_DATE+5,'Synthetic frozen roll policy physical-contract probe','98000000-0000-4000-8000-000000000099','11111111-1111-4111-8111-111111111111')$sql$,'P0001'::char(5),NULL::text,'supersession must point to an existing retained policy');
+SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.roll_policy_revisions(id,school_id,revision,mode,start_value,effective_from,reason,supersedes_id,created_by) VALUES ('98000000-0000-4000-8000-000000000003','22222222-2222-4222-8222-222222222222',3,'PERSISTENT_STUDENT',30000,CURRENT_DATE+5,'Synthetic frozen roll policy physical-contract probe','98000000-0000-4000-8000-000000000002','11111111-1111-4111-8111-111111111111');
+RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions WHERE school_id='22222222-2222-4222-8222-222222222222'),3::bigint,'valid adjacent third revision retained');
 SELECT is((SELECT supersedes_id FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000003'),'98000000-0000-4000-8000-000000000002'::uuid,'third revision links exact completed predecessor');
 SELECT is((SELECT effective_from FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000003'),CURRENT_DATE+5,'third policy starts precisely when second ends');
@@ -42,12 +47,16 @@ SELECT is((SELECT mode FROM app_private.roll_policy_revisions WHERE id='98000000
 SELECT is((SELECT start_value FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000003'),30000::bigint,'third policy retains new start value without rewriting old');
 SELECT throws_ok($sql$UPDATE app_private.roll_policy_revisions SET mode='ACADEMIC_CONTEXT',effective_until=CURRENT_DATE+12 WHERE id='98000000-0000-4000-8000-000000000003'$sql$,'P0001'::char(5),NULL::text,'policy mode cannot mutate during the one allowed end operation');
 SELECT throws_ok($sql$UPDATE app_private.roll_policy_revisions SET reason='Changed',effective_until=CURRENT_DATE+12 WHERE id='98000000-0000-4000-8000-000000000003'$sql$,'P0001'::char(5),NULL::text,'policy reason cannot mutate during the one allowed end operation');
+SET ROLE schoolos_schema_owner;
 UPDATE app_private.roll_policy_revisions SET effective_until=CURRENT_DATE+10 WHERE id='98000000-0000-4000-8000-000000000003';
+RESET ROLE;
 SELECT is((SELECT effective_until FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000003'),CURRENT_DATE+10,'third policy closes once at exact next start');
 SELECT ok((SELECT ended_at IS NOT NULL AND ended_by='11111111-1111-4111-8111-111111111111' FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000003'),'third policy one-way close retains provenance');
 SELECT throws_ok($sql$INSERT INTO app_private.roll_policy_revisions(id,school_id,revision,mode,start_value,effective_from,reason,supersedes_id,created_by) VALUES ('98000000-0000-4000-8000-000000000036','22222222-2222-4222-8222-222222222222',4,'ACADEMIC_CONTEXT',40000,CURRENT_DATE+8,'Synthetic frozen roll policy physical-contract probe','98000000-0000-4000-8000-000000000003','11111111-1111-4111-8111-111111111111')$sql$,'P0001'::char(5),NULL::text,'new policy overlapping prior interval denied');
 SELECT throws_ok($sql$INSERT INTO app_private.roll_policy_revisions(id,school_id,revision,mode,start_value,effective_from,reason,supersedes_id,created_by) VALUES ('98000000-0000-4000-8000-000000000037','22222222-2222-4222-8222-222222222222',7,'ACADEMIC_CONTEXT',40000,CURRENT_DATE+10,'Synthetic frozen roll policy physical-contract probe','98000000-0000-4000-8000-000000000003','11111111-1111-4111-8111-111111111111')$sql$,'P0001'::char(5),NULL::text,'fourth policy cannot skip revision sequence');
+SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.roll_policy_revisions(id,school_id,revision,mode,start_value,effective_from,reason,supersedes_id,created_by) VALUES ('98000000-0000-4000-8000-000000000004','22222222-2222-4222-8222-222222222222',4,'ACADEMIC_CONTEXT',40000,CURRENT_DATE+10,'Synthetic frozen roll policy physical-contract probe','98000000-0000-4000-8000-000000000003','11111111-1111-4111-8111-111111111111');
+RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions WHERE school_id='22222222-2222-4222-8222-222222222222'),4::bigint,'four contiguous synthetic history revisions retained');
 SELECT is((SELECT supersedes_id FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000004'),'98000000-0000-4000-8000-000000000003'::uuid,'new head must supersede most recent same-school policy');
 SELECT ok((SELECT effective_until IS NULL FROM app_private.roll_policy_revisions WHERE id='98000000-0000-4000-8000-000000000004'),'last synthetic policy may remain open-ended');
