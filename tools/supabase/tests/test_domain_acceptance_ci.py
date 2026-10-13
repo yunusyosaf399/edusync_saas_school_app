@@ -1018,13 +1018,14 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         source=(domain_root/"supabase/tests/domain/"
                 "36_academic_capacity_change_revision_authorization.sql").read_text(
                     encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),36)
+        # Preserve the previously frozen 36-suite/1,918-assertion prefix.
+        self.assertGreaterEqual(len(DOMAIN_TESTS),36)
         self.assertEqual(DOMAIN_TESTS[34],
                          ["35_academic_section_room_assignment_history_authorization.sql",77])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:35]),1833)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[35],
                          ["36_academic_capacity_change_revision_authorization.sql",85])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1918)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:36]),1918)
         self.assertIn("SELECT plan(85);",source)
         self.assertEqual(
             len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),85)
@@ -1081,6 +1082,47 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertLess(
             source.index("SET CONSTRAINTS ALL DEFERRED"),
             source.index("capacity_a_revision_id"))
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
+
+
+    def test_student_roll_policy_current_checked_read_and_disabled_change_gate(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        path=domain_root/"supabase/tests/domain/37_student_roll_policy_current_checked_read_authorization.sql"
+        source=path.read_text(encoding="utf-8")
+        draft=(domain_root/"supabase/migrations/20260928000000_domain_package_01.sql.draft").read_text(encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),37)
+        self.assertEqual(DOMAIN_TESTS[35],
+                         ["36_academic_capacity_change_revision_authorization.sql",85])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:36]),1918)
+        self.assertEqual(DOMAIN_TESTS[-1],
+                         ["37_student_roll_policy_current_checked_read_authorization.sql",35])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1953)
+        self.assertIn("SELECT plan(35);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),35)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_read_roll_policy", "student.roll_policy.view",
+            "student.roll_policy.change", "app_private.roll_policy_revisions",
+            "PERSISTENT_STUDENT", "ACADEMIC_CONTEXT",
+            "SAVEPOINT roll_policy_scope_revoked",
+            "SAVEPOINT roll_policy_grant_revoked",
+            "SAVEPOINT roll_policy_permission_disabled",
+            "SAVEPOINT roll_policy_scope_contract_disabled",
+            "SET CONSTRAINTS ALL IMMEDIATE",
+            "SELECT * FROM app_private.roll_policy_revisions",
+            "DELETE FROM app_private.roll_policy_revisions",
+            "SET ROLE authenticated;", "SET ROLE anon;",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(marker,source)
+        self.assertEqual(source.count("INSERT INTO app_private.roll_policy_revisions"),3)
+        self.assertIn("GRANT EXECUTE ON FUNCTION app.d1_read_roll_policy(uuid) TO authenticated;",draft)
+        self.assertNotIn("CREATE FUNCTION app.d1_change_roll_policy(",draft)
+        self.assertNotIn("CREATE FUNCTION app.d1_change_student_roll_policy(",draft)
+        self.assertIn("'student.roll_policy.change', 'student.roll_policy.change', 'student.roll_policy.approve', false",draft)
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
 
