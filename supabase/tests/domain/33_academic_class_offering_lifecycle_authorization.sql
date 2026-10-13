@@ -266,16 +266,6 @@ SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_offering(
 RESET ROLE;
 ROLLBACK TO SAVEPOINT offering_grant_revoked;
 
-SET ROLE authenticated;
-SELECT * FROM app.d1_change_academic_offering(
- 'UPDATE',:'offer_created_offering_id','22222222-2222-4222-8222-222222222222',
- '93000000-0000-4000-8000-000000000003',
- '93000000-0000-4000-8000-000000000001',
- '93000000-0000-4000-8000-000000000002',
- NULL,'CLOSED',2,'offering-closed') \gset offer_closed_
-SELECT is(:'offer_closed_row_version'::bigint,3::bigint,
- 'valid CLOSED transition advances to version three');
-
 -- A currently effective Section must block archiving its Class Offering.
 RESET ROLE;
 SAVEPOINT offering_blocking_section;
@@ -299,12 +289,22 @@ SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_offering(
  '93000000-0000-4000-8000-000000000003',
  '93000000-0000-4000-8000-000000000001',
  '93000000-0000-4000-8000-000000000002',
- NULL,NULL,3,'offering-blocked-archive')$sql$,
+ NULL,NULL,2,'offering-blocked-archive')$sql$,
  :'offer_created_offering_id'),
  'P0001'::char(5),'D1 Academic Offering has nonarchived Sections'::text,
  'ARCHIVE cannot strand a nonarchived Section');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT offering_blocking_section;
+
+SET ROLE authenticated;
+SELECT * FROM app.d1_change_academic_offering(
+ 'UPDATE',:'offer_created_offering_id','22222222-2222-4222-8222-222222222222',
+ '93000000-0000-4000-8000-000000000003',
+ '93000000-0000-4000-8000-000000000001',
+ '93000000-0000-4000-8000-000000000002',
+ NULL,'CLOSED',2,'offering-closed') \gset offer_closed_
+SELECT is(:'offer_closed_row_version'::bigint,3::bigint,
+ 'valid CLOSED transition advances to version three');
 
 SET ROLE authenticated;
 SELECT * FROM app.d1_change_academic_offering(
