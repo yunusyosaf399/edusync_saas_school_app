@@ -1164,6 +1164,12 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertIn(marker,source)
         self.assertEqual(
             source.count("INSERT INTO app_private.roll_policy_revisions"),12)
+        # A fixture owner cannot resolve unqualified pgTAP functions.
+        # Restore the harness role before executing the first assertion.
+        self.assertIn("RESET ROLE;\\nSELECT is(",source)
+        self.assertLess(
+            source.index("RESET ROLE;\\nSELECT is("),
+            source.index("SELECT is("))
         self.assertIn("CREATE FUNCTION app_private.d1_guard_record()",draft)
         self.assertIn("CREATE FUNCTION app_private.d1_guard_effective_history()",draft)
         self.assertIn(
