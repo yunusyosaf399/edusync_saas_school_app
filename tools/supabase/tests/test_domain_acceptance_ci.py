@@ -940,13 +940,14 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         source=(domain_root/"supabase/tests/domain/"
                 "35_academic_section_room_assignment_history_authorization.sql").read_text(
                     encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),35)
+        # Preserve the frozen 35-suite/1,833-assertion immutable prefix.
+        self.assertGreaterEqual(len(DOMAIN_TESTS),35)
         self.assertEqual(DOMAIN_TESTS[33],
                          ["34_academic_section_offering_lifecycle_authorization.sql",56])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:34]),1756)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[34],
                          ["35_academic_section_room_assignment_history_authorization.sql",77])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1833)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:35]),1833)
         self.assertIn("SELECT plan(77);",source)
         self.assertEqual(
             len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),77)
@@ -1008,6 +1009,78 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertIn(projection,source)
         self.assertIn("SET ROLE authenticated;",source)
         self.assertIn("SET ROLE anon;",source)
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
+
+
+    def test_academic_capacity_class_offering_section_projection_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+                "36_academic_capacity_change_revision_authorization.sql").read_text(
+                    encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),36)
+        self.assertEqual(DOMAIN_TESTS[34],
+                         ["35_academic_section_room_assignment_history_authorization.sql",77])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:35]),1833)
+        self.assertEqual(DOMAIN_TESTS[-1],
+                         ["36_academic_capacity_change_revision_authorization.sql",85])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1918)
+        self.assertIn("SELECT plan(85);",source)
+        self.assertEqual(
+            len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),85)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_change_academic_capacity",
+            "academic.capacity.change",
+            "CLASS_OFFERING",
+            "SECTION",
+            "app_private.class_offerings",
+            "app_private.section_offerings",
+            "app_private.capacity_revisions",
+            "INITIAL_CONFIGURATION",
+            "SET CONSTRAINTS ALL DEFERRED",
+            "SET CONSTRAINTS ALL IMMEDIATE",
+            "D1 Academic Capacity intent invalid",
+            "D1 Academic Capacity authority denied",
+            "D1 Academic Capacity stale version/state",
+            "D1 Academic Capacity effective date must be current",
+            "D1 Capacity value unchanged",
+            "D1 Capacity Section missing",
+            "D1 Capacity Offering missing",
+            "D1 idempotency key conflicts with prior intent",
+            "D1 operation is not enabled",
+            "supersedes_id",
+            "command_receipt_id",
+            "D1_CAPACITY_REVISION",
+            "academic.capacity_changed",
+            "aggregate_kind='ACADEMIC_CAPACITY'",
+            "SAVEPOINT capacity_archived_section",
+            "SAVEPOINT capacity_scope_revoked",
+            "SAVEPOINT capacity_grant_revoked",
+            "SAVEPOINT capacity_permission_disabled",
+            "SAVEPOINT capacity_operation_disabled",
+            "SELECT * FROM app_private.capacity_revisions",
+            "DELETE FROM app_private.capacity_revisions",
+            "SET ROLE authenticated;",
+            "SET ROLE anon;",
+            "SELECT * FROM finish();",
+            "ROLLBACK;",
+        ):
+            self.assertIn(marker,source)
+        self.assertEqual(source.count("INSERT INTO app_private.capacity_revisions"),2)
+        for projection in (
+            "'96000000-0000-4000-8000-000000000004',NULL,35",
+            "'96000000-0000-4000-8000-000000000005',NULL,20",
+            "'96000000-0000-4000-8000-000000000006',NULL,15"):
+            self.assertIn(projection,source)
+        self.assertLess(
+            source.index("SET CONSTRAINTS ALL IMMEDIATE"),
+            source.index("SET CONSTRAINTS ALL DEFERRED"))
+        self.assertLess(
+            source.index("SET CONSTRAINTS ALL DEFERRED"),
+            source.index("capacity_a_revision_id"))
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
 
