@@ -37,6 +37,6 @@ No Foundation SQL, D1 Migration 10 draft SQL, application source, Supabase confi
 
 **Not accepted:** exhaustive RLS/scope/approval/read permutations or all domain operations; populated-database upgrades/reconciliation; hosted Migration 10 activation; Admissions and Finance integration; production readiness. Full D1 remains **OPEN** and Migration 10 execution remains unauthorized.
 
-**Next breadth target:** `academic.section_offering.change` — Section Offering lifecycle/ancestry/capacity and scope-aware protected commands; first verify the exact registered code/signature before constructing an acceptance-only suite.
+**Next breadth target:** `academic.section.change` — Section Offering lifecycle/ancestry/capacity and scope-aware protected commands; first verify the exact registered code/signature before constructing an acceptance-only suite.
 
 **Checkpoint:** `D1_ACADEMIC_CLASS_OFFERING_P0_LIFECYCLE_ACCEPTANCE_PASS — 1700/1700 BUSINESS — 33 SUITES — 19/19 OBSERVED-LOCK RACES — 220/220 FOUNDATION — 50/50 D1 UNIT — 202 INACTIVE DRAFT FRAGMENTS — FULL D1 OPEN`.
