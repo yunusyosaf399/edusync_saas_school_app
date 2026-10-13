@@ -71,11 +71,17 @@ ROLLBACK TO SAVEPOINT room_archived_section;
 SET ROLE authenticated;
 SELECT * FROM app.d1_change_academic_section_room('ADD',NULL,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000006',CURRENT_DATE-10,NULL,'Initial Room 101',NULL,'room-add-first') \gset room_initial_
 SELECT ok(:'room_initial_assignment_id'::uuid IS NOT NULL,'ADD returns new Section Room history UUID');
+RESET ROLE;
 SELECT is((SELECT room_id FROM app_private.section_room_assignments WHERE id=:'room_initial_assignment_id'),'95000000-0000-4000-8000-000000000006'::uuid,'ADD saves Room 101');
+SET ROLE authenticated;
+RESET ROLE;
 SELECT is((SELECT effective_from FROM app_private.section_room_assignments WHERE id=:'room_initial_assignment_id'),CURRENT_DATE-10,'ADD retains effective start');
+SET ROLE authenticated;
 SELECT * FROM app.d1_change_academic_section_room('ADD',NULL,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000006',CURRENT_DATE-10,NULL,'Initial Room 101',NULL,'room-add-first') \gset room_added_replay_
 SELECT is(:'room_added_replay_assignment_id'::uuid,:'room_initial_assignment_id'::uuid,'ADD replay preserves original UUID');
+RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE command_kind='academic.section_room.change'),1::bigint,'ADD replay does not add receipt');
+SET ROLE authenticated;
 SELECT throws_ok($sql$SELECT * FROM app.d1_change_academic_section_room('ADD',NULL,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000006',CURRENT_DATE-9,NULL,'Initial Room 101',NULL,'room-add-first')$sql$,'P0001'::char(5),'D1 idempotency key conflicts with prior intent'::text,'same ADD key with changed interval rejected');
 SELECT throws_ok($sql$SELECT * FROM app.d1_change_academic_section_room('ADD',NULL,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE-9,NULL,'Conflicting Room',NULL,'room-overlap')$sql$,'P0001'::char(5),'D1 overlapping effective history: section_room_assignments'::text,'same Section cannot have overlapping Rooms');
 SELECT throws_ok($sql$SELECT * FROM app.d1_change_academic_section_room('END',NULL,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000006',CURRENT_DATE-10,CURRENT_DATE+3,'Close first',NULL,'room-end-no-id')$sql$,'P0001'::char(5),'D1 Academic Section Room intent invalid'::text,'END requires assignment ID');
@@ -89,11 +95,21 @@ SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_section_room('
 SELECT throws_ok($sql$SELECT * FROM app.d1_change_academic_section_room('CORRECT','95000000-0000-4000-8000-000000000096','95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE+3,NULL,'Move into Room 102','95000000-0000-4000-8000-000000000096','room-no-old')$sql$,'P0001'::char(5),'D1 Section Room retained target changed'::text,'CORRECT cannot supersede unknown assignment');
 SELECT * FROM app.d1_change_academic_section_room('CORRECT',:'room_initial_assignment_id','95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE+3,NULL,'Move into Room 102',:'room_initial_assignment_id','room-correct-first') \gset room_corrected_
 SELECT ok(:'room_corrected_assignment_id'::uuid <> :'room_initial_assignment_id'::uuid,'CORRECT appends new retained successor');
+RESET ROLE;
 SELECT is((SELECT effective_until FROM app_private.section_room_assignments WHERE id=:'room_initial_assignment_id'),CURRENT_DATE+3,'CORRECT closes predecessor exactly at switch date');
+SET ROLE authenticated;
+RESET ROLE;
 SELECT is((SELECT room_id FROM app_private.section_room_assignments WHERE id=:'room_initial_assignment_id'),'95000000-0000-4000-8000-000000000006'::uuid,'CORRECT preserves original Room 101');
+SET ROLE authenticated;
+RESET ROLE;
 SELECT is((SELECT supersedes_id FROM app_private.section_room_assignments WHERE id=:'room_corrected_assignment_id'),:'room_initial_assignment_id'::uuid,'CORRECT retains predecessor supersession ID');
+SET ROLE authenticated;
+RESET ROLE;
 SELECT is((SELECT effective_from FROM app_private.section_room_assignments WHERE id=:'room_corrected_assignment_id'),CURRENT_DATE+3,'CORRECT successor starts at closed boundary');
+SET ROLE authenticated;
+RESET ROLE;
 SELECT is((SELECT room_id FROM app_private.section_room_assignments WHERE id=:'room_corrected_assignment_id'),'95000000-0000-4000-8000-000000000007'::uuid,'CORRECT successor assigns Room 102');
+SET ROLE authenticated;
 SELECT * FROM app.d1_change_academic_section_room('CORRECT',:'room_initial_assignment_id','95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE+3,NULL,'Move into Room 102',:'room_initial_assignment_id','room-correct-first') \gset room_correct_replay_
 SELECT is(:'room_correct_replay_assignment_id'::uuid,:'room_corrected_assignment_id'::uuid,'CORRECT replay retains same successor');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_section_room('CORRECT',%1$L,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE+5,NULL,'Move again',%1$L,'room-correct-ended')$sql$,:'room_initial_assignment_id'),'P0001'::char(5),'D1 Section Room correction predecessor invalid'::text,'second CORRECT on ended predecessor denied');
@@ -101,8 +117,12 @@ SELECT throws_ok($sql$SELECT * FROM app.d1_change_academic_section_room('ADD',NU
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_section_room('END',%L,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE+3,CURRENT_DATE+3,'End zero',NULL,'room-end-equal')$sql$,:'room_corrected_assignment_id'),'P0001'::char(5),'D1 Academic Section Room intent invalid'::text,'END must be strictly after original start');
 SELECT * FROM app.d1_change_academic_section_room('END',:'room_corrected_assignment_id','95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE+3,CURRENT_DATE+12,'Close Room 102',NULL,'room-end-second') \gset room_ended_
 SELECT is(:'room_ended_assignment_id'::uuid,:'room_corrected_assignment_id'::uuid,'END returns immutable Room assignment identity');
+RESET ROLE;
 SELECT is((SELECT effective_until FROM app_private.section_room_assignments WHERE id=:'room_corrected_assignment_id'),CURRENT_DATE+12,'END closes interval at explicit date');
+SET ROLE authenticated;
+RESET ROLE;
 SELECT is((SELECT ended_by FROM app_private.section_room_assignments WHERE id=:'room_corrected_assignment_id'),'55555555-5555-4555-8555-555555555555'::uuid,'END records verified staff actor');
+SET ROLE authenticated;
 SELECT * FROM app.d1_change_academic_section_room('END',:'room_corrected_assignment_id','95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE+3,CURRENT_DATE+12,'Close Room 102',NULL,'room-end-second') \gset room_end_replay_
 SELECT is(:'room_end_replay_assignment_id'::uuid,:'room_corrected_assignment_id'::uuid,'END replay returns original ended row');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_section_room('END',%L,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE+3,CURRENT_DATE+13,'Close Room 102',NULL,'room-end-second')$sql$,:'room_corrected_assignment_id'),'P0001'::char(5),'D1 idempotency key conflicts with prior intent'::text,'END same key with changed date denied');
@@ -110,13 +130,21 @@ SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_section_room('
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_academic_section_room('CORRECT',%1$L,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000006',CURRENT_DATE+14,NULL,'Second correction',%1$L,'room-successor-ended')$sql$,:'room_corrected_assignment_id'),'P0001'::char(5),'D1 Section Room correction predecessor invalid'::text,'CORRECT cannot change ended successor');
 SELECT * FROM app.d1_change_academic_section_room('ADD',NULL,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000006',CURRENT_DATE+12,CURRENT_DATE+18,'Return Room 101',NULL,'room-bounded-add') \gset room_bounded_
 SELECT ok(:'room_bounded_assignment_id'::uuid IS NOT NULL,'ADD after END permits new half-open interval');
+RESET ROLE;
 SELECT is((SELECT effective_from FROM app_private.section_room_assignments WHERE id=:'room_bounded_assignment_id'),CURRENT_DATE+12,'new ADD starts at predecessor end');
+SET ROLE authenticated;
+RESET ROLE;
 SELECT is((SELECT effective_until FROM app_private.section_room_assignments WHERE id=:'room_bounded_assignment_id'),CURRENT_DATE+18,'bounded ADD retains exclusive upper bound');
+SET ROLE authenticated;
+RESET ROLE;
 SELECT ok((SELECT ended_at IS NOT NULL AND ended_by='55555555-5555-4555-8555-555555555555'::uuid FROM app_private.section_room_assignments WHERE id=:'room_bounded_assignment_id'),'initial bounded ADD records one-way closing evidence');
+SET ROLE authenticated;
 SELECT throws_ok($sql$SELECT * FROM app.d1_change_academic_section_room('ADD',NULL,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE+17,CURRENT_DATE+20,'Conflicting bounded Room',NULL,'room-bounded-overlap')$sql$,'P0001'::char(5),'D1 overlapping effective history: section_room_assignments'::text,'bounded overlap across Room IDs denied');
 SELECT * FROM app.d1_change_academic_section_room('ADD',NULL,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000007',CURRENT_DATE+18,CURRENT_DATE+22,'Adjacent Room 102',NULL,'room-adjacent-add') \gset room_adjacent_
 SELECT ok(:'room_adjacent_assignment_id'::uuid IS NOT NULL,'half-open adjacent ADD allowed at exclusive boundary');
+RESET ROLE;
 SELECT is((SELECT effective_from FROM app_private.section_room_assignments WHERE id=:'room_adjacent_assignment_id'),CURRENT_DATE+18,'adjacent ADD begins exactly at prior end');
+SET ROLE authenticated;
 SELECT throws_ok($sql$SELECT * FROM app.d1_change_academic_section_room('ADD',NULL,'95000000-0000-4000-8000-000000000005','95000000-0000-4000-8000-000000000006',CURRENT_DATE+21,CURRENT_DATE+23,'Overlapping last Room',NULL,'room-last-overlap')$sql$,'P0001'::char(5),'D1 overlapping effective history: section_room_assignments'::text,'final retained interval still prevents overlap');
 -- Second Section may use the same Room: the model has no timetable-seat exclusivity.
 SAVEPOINT room_other_section;
