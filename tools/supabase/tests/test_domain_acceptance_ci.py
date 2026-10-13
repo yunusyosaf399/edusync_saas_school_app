@@ -878,6 +878,61 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
 
+    def test_academic_section_offering_p0_lifecycle_and_room_archive_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+                "34_academic_section_offering_lifecycle_authorization.sql").read_text(
+                    encoding="utf-8")
+        self.assertEqual(DOMAIN_TESTS[32],
+                         ["33_academic_class_offering_lifecycle_authorization.sql",52])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:33]),1700)
+        self.assertEqual(DOMAIN_TESTS[-1],
+                         ["34_academic_section_offering_lifecycle_authorization.sql",56])
+        self.assertEqual(len(DOMAIN_TESTS),34)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1756)
+        self.assertIn("SELECT plan(56);",source)
+        self.assertEqual(
+            len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),56)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_change_academic_section",
+            "academic.section.change","academic.section.manage",
+            "CREATE","UPDATE","ARCHIVE",
+            "app.campuses","app.academic_years",
+            "app_private.class_offerings","app_private.section_offerings",
+            "app_private.capacity_revisions",
+            "app_private.section_room_assignments","app.rooms",
+            "D1 Section parent ancestry missing",
+            "D1 Academic Section target/ancestry changed",
+            "D1 Academic Section stale version/state",
+            "D1 Academic Section authority denied",
+            "D1 Academic Section has current/future Room assignment",
+            "D1 Academic Section intent invalid",
+            "D1 idempotency key conflicts with prior intent",
+            "D1 operation is not enabled",
+            "SAVEPOINT section_scope_revoked",
+            "SAVEPOINT section_grant_revoked",
+            "SAVEPOINT section_room_blocks_archive",
+            "SAVEPOINT section_operation_disabled",
+            "INITIAL_CONFIGURATION",
+            "command_receipt_id IS NOT NULL",
+            "academic.section_changed",
+            "aggregate_kind='SECTION'",
+            "SELECT * FROM app_private.section_offerings",
+            "DELETE FROM app_private.section_offerings",
+            "SET CONSTRAINTS ALL IMMEDIATE",
+            "SELECT * FROM finish();"):
+            self.assertIn(marker,source)
+        self.assertLess(
+            source.index("SAVEPOINT section_room_blocks_archive"),
+            source.index("section-closed"))
+        self.assertIn("SET ROLE authenticated;",source)
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
+
+
 
 if __name__ == "__main__":
     unittest.main()
