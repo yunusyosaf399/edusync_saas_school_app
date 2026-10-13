@@ -960,6 +960,8 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "END",
             "CORRECT",
             "app_private.section_room_assignments",
+    "app_private.capacity_revisions",
+    "INITIAL_CONFIGURATION",
             "app_private.section_offerings",
             "app.rooms",
             "app_private.assignment_permission_scopes",
@@ -998,6 +1000,12 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertLess(
             source.index("SAVEPOINT room_archived_section"),
             source.index("room-bounded-add"))
+        self.assertEqual(source.count("INSERT INTO app_private.capacity_revisions"),2)
+        for projection in (
+            "'95000000-0000-4000-8000-000000000004',NULL,35",
+            "'95000000-0000-4000-8000-000000000005',NULL,20",
+            "'95000000-0000-4000-8000-000000000011',NULL,15"):
+            self.assertIn(projection,source)
         self.assertIn("SET ROLE authenticated;",source)
         self.assertIn("SET ROLE anon;",source)
         self.assertNotIn("GRANT SELECT ON app_private",source)
