@@ -30,7 +30,7 @@ SELECT * FROM app.d1_create_employee('10000000-0000-4000-8000-000000000001',
 
 SELECT ok(:'employee_employee_id'::uuid IS NOT NULL,'Employee prerequisite created by the protected employee.create command');
 SELECT is(:'employee_row_version'::bigint,1::bigint,'new Employee begins at version one');
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-before-grant')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'unrelated employee.create and class permissions cannot grant Employee job assignment');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-before-grant')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'unrelated employee.create and class permissions cannot grant Employee job assignment');
 RESET ROLE;
 -- Only a same-chain permission grant and matching ALL/DIRECT assignment scope authorize job changes.
 SET ROLE schoolos_schema_owner;
@@ -52,7 +52,7 @@ RESET ROLE;
 
 -- Direct commands are forbidden until exactly one active DIRECT approval policy exists.
 SET ROLE authenticated;
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-no-policy')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'absence of active route policy blocks even otherwise authorized direct ADD');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-no-policy')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'absence of active route policy blocks even otherwise authorized direct ADD');
 RESET ROLE;
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.approval_policy_versions(
@@ -74,18 +74,21 @@ SELECT is(:'added_action'::text,'ADD'::text,'ADD action in typed receipt');
 SELECT is(:'added_department_id'::uuid,'9b000000-0000-4000-8000-000000000001'::uuid,'ADD uses active Department prerequisite');
 SELECT is(:'added_designation_id'::uuid,'9b000000-0000-4000-8000-000000000002'::uuid,'ADD uses Teacher designation');
 SELECT is(:'added_effective_from'::date,CURRENT_DATE-5,'ADD retains exact effective start date');
-SELECT ok(:'added_effective_until' = '','ADD returns open-ended interval');
+RESET ROLE;
+SELECT ok((SELECT effective_until IS NULL FROM app_private.employee_job_assignments
+ WHERE id=:'added_assignment_id'::uuid),'ADD stores an open-ended effective interval');
+SET ROLE authenticated;
 SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add') \gset add_replay_
 SELECT is(:'add_replay_assignment_id'::uuid,:'added_assignment_id'::uuid,'ADD idempotency replay preserves original identity');
 SELECT is(:'add_replay_employee_version'::bigint,1::bigint,'ADD replay preserves original version');
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000003',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'same ADD key with changed designation rejected');
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-4,NULL,'Duplicate active assignment','job-overlap')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'overlapping identical job interval denied');
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000090','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-4,NULL,'Missing Department','job-invalid-department')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'missing Department denies job ADD');
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000091',CURRENT_DATE-4,NULL,'Missing Designation','job-invalid-designation')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'missing Designation denies job ADD');
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',2,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-1,NULL,'Wrong Employee version','job-stale-version')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'stale Employee version denied before write');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000003',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'same ADD key with changed designation rejected');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-4,NULL,'Duplicate active assignment','job-overlap')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'overlapping identical job interval denied');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000090','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-4,NULL,'Missing Department','job-invalid-department')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'missing Department denies job ADD');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000091',CURRENT_DATE-4,NULL,'Missing Designation','job-invalid-designation')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'missing Designation denies job ADD');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,2,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-1,NULL,'Wrong Employee version','job-stale-version')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'stale Employee version denied before write');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-4,CURRENT_DATE-5,'Reverse dates','job-reversed')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'ADD with reversed interval bounds denied');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'PURGE',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-4,NULL,'Purge not supported','job-purge')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'unknown PURGE action denied');
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000003',CURRENT_DATE-4,NULL,'   ','job-empty-reason')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'blank job-change reason denied');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000003',CURRENT_DATE-4,NULL,'   ','job-empty-reason')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'blank job-change reason denied');
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.employee_job_assignments),1::bigint,'denied ADD attempts and replay do not add assignment rows');
 SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE command_kind='employee.job_assignment.change'),1::bigint,'one protected job receipt after one accepted ADD');
@@ -95,7 +98,7 @@ SET ROLE schoolos_schema_owner;
 UPDATE app_private.assignment_permission_scopes SET revoked_at=clock_timestamp()
  WHERE id='9b000000-0000-4000-8000-000000000012';
 SET ROLE authenticated;
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'revoked exact ALL/DIRECT assignment scope blocks ADD replay');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'revoked exact ALL/DIRECT assignment scope blocks ADD replay');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT job_scope_revoked;
 SAVEPOINT job_grant_revoked;
@@ -103,7 +106,7 @@ SET ROLE schoolos_schema_owner;
 UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp()
  WHERE id='9b000000-0000-4000-8000-000000000011';
 SET ROLE authenticated;
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'revoked Employee job permission grant blocks receipt replay');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'revoked Employee job permission grant blocks receipt replay');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT job_grant_revoked;
 SAVEPOINT job_permission_disabled;
@@ -111,7 +114,7 @@ SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='DISABLED'
  WHERE code='employee.job_assignment.change';
 SET ROLE authenticated;
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'disabled installed Employee job permission denies replay');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'disabled installed Employee job permission denies replay');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT job_permission_disabled;
 SAVEPOINT job_scope_contract_disabled;
@@ -121,7 +124,7 @@ UPDATE app_private.permission_scope_contracts SET enabled=false
   WHERE code='employee.job_assignment.change')
  AND scope_kind='ALL' AND resolver_key='DIRECT';
 SET ROLE authenticated;
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'disabled Employee job scope contract denies replay');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'disabled Employee job scope contract denies replay');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT job_scope_contract_disabled;
 SET ROLE authenticated;
@@ -181,7 +184,7 @@ SET ROLE schoolos_schema_owner;
 UPDATE app_private.operation_contracts SET enabled=false
  WHERE code='employee.job_assignment.change';
 SET ROLE authenticated;
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(:'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'disabled job operation blocks successful receipt replay');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_job_assignment(%L,1,'ADD',NULL,NULL,NULL,NULL,NULL,'9b000000-0000-4000-8000-000000000001','9b000000-0000-4000-8000-000000000002',CURRENT_DATE-5,NULL,'Assign school administrator','job-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'disabled job operation blocks successful receipt replay');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT job_operation_disabled;
 SET CONSTRAINTS ALL IMMEDIATE;
