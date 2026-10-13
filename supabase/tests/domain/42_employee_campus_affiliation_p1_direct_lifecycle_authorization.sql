@@ -4,7 +4,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(72);
+SELECT plan(74);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 INSERT INTO app.campuses(id,school_id,code,name,state,created_by) VALUES
@@ -97,7 +97,18 @@ INSERT INTO app_private.assignment_permission_scopes(
  JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
  WHERE g.id='9c000000-0000-4000-8000-000000000011' AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT';
 RESET ROLE;
+SELECT is((SELECT count(*) FROM app_private.assignment_permission_scopes
+ WHERE id='9c000000-0000-4000-8000-000000000014'
+ AND scope_kind='CAMPUS' AND campus_id='9c000000-0000-4000-8000-000000000001'
+ AND revoked_at IS NULL),1::bigint,
+ 'genuine active Campus A-only assignment scope was installed');
 SET ROLE authenticated;
+SELECT * FROM app.d1_change_employee_campus_affiliation(
+ :'employee_employee_id',1,'ADD',NULL,NULL,NULL,NULL,
+ '9c000000-0000-4000-8000-000000000001',CURRENT_DATE-5,NULL,
+ 'Join Campus A','aff-add') \gset scoped_replay_
+SELECT is(:'scoped_replay_affiliation_id'::uuid,:'added_affiliation_id'::uuid,
+ 'Campus A-only scope permits original A ADD receipt replay, but not B access');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_campus_affiliation(%L,1,'CORRECT',%L,'9c000000-0000-4000-8000-000000000001',CURRENT_DATE-5,NULL,'9c000000-0000-4000-8000-000000000002',CURRENT_DATE-2,NULL,'Correct to Campus B','aff-scope-denied')$sql$,:'employee_employee_id',:'added_affiliation_id'), 'P0001'::char(5),NULL::text,'Campus A-only scope cannot CORRECT affiliation to Campus B');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_campus_affiliation(%L,1,'ADD',NULL,NULL,NULL,NULL,'9c000000-0000-4000-8000-000000000002',CURRENT_DATE-1,NULL,'Join Campus A','aff-scope-add-b')$sql$,:'employee_employee_id'), 'P0001'::char(5),NULL::text,'Campus A-only scope cannot add destination Campus B');
 RESET ROLE;
