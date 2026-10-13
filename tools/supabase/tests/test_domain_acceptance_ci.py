@@ -1197,13 +1197,14 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         draft=(domain_root/"supabase/migrations/"
             "20260928000000_domain_package_01.sql.draft").read_text(
                 encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),39)
+        # Immutable suite 39 / 2,050 business-assertion prefix.
+        self.assertGreaterEqual(len(DOMAIN_TESTS),39)
         self.assertEqual(DOMAIN_TESTS[37],
             ["38_student_roll_policy_retained_history_defensive_invariants.sql",40])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:38]),1993)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[38],
             ["39_employee_department_catalog_lifecycle_authorization.sql",57])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2050)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:39]),2050)
         self.assertIn("SELECT plan(57);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),57)
         self.assertTrue(source.startswith("--"))
@@ -1242,6 +1243,68 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(source.count(r"\gset created_"),1)
         self.assertEqual(source.count(r"\gset updated_"),1)
         self.assertEqual(source.count(r"\gset archived_"),1)
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
+
+
+    def test_employee_designation_catalog_lifecycle_authorization_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+            "40_employee_designation_catalog_lifecycle_authorization.sql").read_text(
+                encoding="utf-8")
+        draft=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01.sql.draft").read_text(
+                encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),40)
+        self.assertEqual(DOMAIN_TESTS[38],
+            ["39_employee_department_catalog_lifecycle_authorization.sql",57])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:39]),2050)
+        self.assertEqual(DOMAIN_TESTS[-1],
+            ["40_employee_designation_catalog_lifecycle_authorization.sql",59])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2109)
+        self.assertIn("SELECT plan(59);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),59)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_change_employee_designation",
+            "employee.designation.change",
+            "employee.designation.manage",
+            "employee.department.manage",
+            "CREATE", "UPDATE", "ARCHIVE",
+            "desig-create", "desig-update", "desig-archive",
+            "app_private.designations",
+            "app_private.command_receipts",
+            "app_private.audit_events",
+            "D1_DESIGNATION",
+            "SAVEPOINT designation_scope_revoked",
+            "SAVEPOINT designation_grant_revoked",
+            "SAVEPOINT designation_permission_disabled",
+            "SAVEPOINT designation_scope_contract_disabled",
+            "SAVEPOINT designation_operation_disabled",
+            "SET ROLE authenticated;",
+            "SET ROLE schoolos_schema_owner;",
+            "SET CONSTRAINTS ALL IMMEDIATE;",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(marker,source)
+        self.assertIn(
+            "CREATE FUNCTION app.d1_change_employee_designation(",draft)
+        self.assertIn(
+            "'employee.designation.change', 'employee.designation.manage', NULL, false",
+            draft)
+        self.assertIn(
+            "CREATE FUNCTION app_private.d1_employee_catalog_receipt(",draft)
+        self.assertIn(
+            "CREATE FUNCTION app_private.d1_employee_catalog_audit(",draft)
+        self.assertEqual(source.count(r"\gset created_"),1)
+        self.assertEqual(source.count(r"\gset updated_"),1)
+        self.assertEqual(source.count(r"\gset archived_"),1)
+        self.assertEqual(source.count(
+            "permission_id=(SELECT id FROM app_private.permissions\n"
+            "    WHERE code='employee.department.manage')"),3)
+        self.assertNotIn("app.d1_change_employee_department(",source)
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
 
