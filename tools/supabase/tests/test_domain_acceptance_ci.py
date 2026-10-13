@@ -1318,13 +1318,15 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         draft=(domain_root/"supabase/migrations/"
             "20260928000000_domain_package_01.sql.draft").read_text(
                 encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),41)
+        # The prior independently frozen 41-suite/2,176-assertion prefix
+        # remains immutable when new operation suites are appended.
+        self.assertGreaterEqual(len(DOMAIN_TESTS),41)
         self.assertEqual(DOMAIN_TESTS[39],
             ["40_employee_designation_catalog_lifecycle_authorization.sql",59])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:40]),2109)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[40],
             ["41_employee_job_assignment_p1_direct_lifecycle_authorization.sql",67])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2176)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:41]),2176)
         self.assertIn("SELECT plan(67);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),67)
         self.assertTrue(source.startswith("--"))
@@ -1382,6 +1384,85 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
                 self.assertNotEqual(role,"owner")
         self.assertNotIn("INSERT INTO app_private.employee_job_assignments",source)
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
+
+
+    def test_employee_campus_affiliation_p1_direct_lifecycle_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+            "42_employee_campus_affiliation_p1_direct_lifecycle_authorization.sql").read_text(
+                encoding="utf-8")
+        draft=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01.sql.draft").read_text(
+                encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),42)
+        self.assertEqual(DOMAIN_TESTS[40],
+            ["41_employee_job_assignment_p1_direct_lifecycle_authorization.sql",67])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:41]),2176)
+        self.assertEqual(DOMAIN_TESTS[-1],
+            ["42_employee_campus_affiliation_p1_direct_lifecycle_authorization.sql",74])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2250)
+        self.assertIn("SELECT plan(74);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),74)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for name in (
+            "app.d1_create_employee",
+            "app.d1_change_employee_campus_affiliation",
+            "employee.campus_affiliation.change",
+            "app_private.employee_campus_affiliations",
+            "app.campuses",
+            "app_private.approval_policy_versions",
+            "'DIRECT'",
+            "'ALL','DIRECT'",
+            "'CAMPUS','DIRECT'",
+            "ADD", "CORRECT", "END",
+            "D1_EMPLOYEE_CAMPUS_AFFILIATION",
+            "employee.campus_affiliation_changed",
+            "app_private.command_receipts",
+            "app_private.audit_events",
+            "app_private.outbox_events",
+            "SAVEPOINT affiliation_destination_scope_limited",
+            "SAVEPOINT affiliation_scope_revoked",
+            "SAVEPOINT affiliation_grant_revoked",
+            "SAVEPOINT affiliation_permission_disabled",
+            "SAVEPOINT affiliation_scope_contract_disabled",
+            "SAVEPOINT affiliation_operation_disabled",
+            "SET ROLE authenticated;",
+            "SET ROLE schoolos_schema_owner;",
+            "SET CONSTRAINTS ALL IMMEDIATE;",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(name,source)
+        for contract in (
+            "CREATE FUNCTION app.d1_change_employee_campus_affiliation(",
+            "CREATE FUNCTION app_private.d1_employee_campus_affiliation_policy()",
+            "CREATE FUNCTION app_private.d1_employee_campus_affiliation_authorized(",
+            "CREATE FUNCTION app_private.d1_employee_campus_affiliation_receipt(",
+            "CREATE FUNCTION app_private.d1_employee_campus_affiliation_audit(",
+            "CREATE FUNCTION app_private.d1_employee_campus_affiliation_event(",
+            "'employee.campus_affiliation.change', 'employee.campus_affiliation.change', 'employee.campus_affiliation.approve', false",
+        ):
+            self.assertIn(contract,draft)
+        self.assertEqual(source.count(r"\gset added_"),1)
+        self.assertEqual(source.count(r"\gset corrected_"),1)
+        self.assertEqual(source.count(r"\gset ended_"),1)
+        self.assertEqual(source.count(r"\gset scoped_replay_"),1)
+        self.assertIn("Campus A-only scope permits original A ADD receipt replay",source)
+        self.assertIn("Campus A-only scope cannot CORRECT affiliation to Campus B",source)
+        role="runner"
+        for line in source.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;":
+                role="owner"
+            elif line=="SET ROLE authenticated;":
+                role="authenticated"
+            elif line=="RESET ROLE;":
+                role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
+        self.assertNotIn("INSERT INTO app_private.employee_campus_affiliations",source)
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
 
