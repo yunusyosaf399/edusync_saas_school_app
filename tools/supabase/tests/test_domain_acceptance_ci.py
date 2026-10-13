@@ -1163,7 +1163,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         ):
             self.assertIn(marker,source)
         self.assertEqual(
-            source.count("INSERT INTO app_private.roll_policy_revisions"),1)
+            source.count("INSERT INTO app_private.roll_policy_revisions"),12)
         self.assertIn("CREATE FUNCTION app_private.d1_guard_record()",draft)
         self.assertIn("CREATE FUNCTION app_private.d1_guard_effective_history()",draft)
         self.assertIn(
