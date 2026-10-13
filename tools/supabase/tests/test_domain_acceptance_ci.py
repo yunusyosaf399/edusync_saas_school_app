@@ -824,5 +824,59 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("supabase db push",source)
 
 
+
+    def test_academic_class_offering_p0_lifecycle_and_capacity_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+                "33_academic_class_offering_lifecycle_authorization.sql").read_text(
+                    encoding="utf-8")
+        self.assertEqual(DOMAIN_TESTS[-1],
+                         ["33_academic_class_offering_lifecycle_authorization.sql",52])
+        self.assertEqual(len(DOMAIN_TESTS),33)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1700)
+        self.assertIn("SELECT plan(52);",source)
+        self.assertEqual(
+            len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),52)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_change_academic_offering",
+            "academic.offering.change","academic.offering.manage",
+            "CREATE","UPDATE","ARCHIVE",
+            "app.campuses","app.academic_years",
+            "app_private.academic_classes","app_private.class_offerings",
+            "app_private.capacity_revisions",
+            "app_private.section_offerings",
+            "D1 Offering Class ancestry missing",
+            "D1 Offering Campus ancestry missing",
+            "D1 Offering Academic Year ancestry missing",
+            "D1 Academic Offering stale version/state",
+            "D1 Academic Offering authority denied",
+            "D1 Academic Offering has nonarchived Sections",
+            "D1 Academic Offering intent invalid",
+            "D1 operation is not enabled",
+            "D1 idempotency key conflicts with prior intent",
+            "SAVEPOINT offering_scope_revoked",
+            "SAVEPOINT offering_grant_revoked",
+            "SAVEPOINT offering_blocking_section",
+            "SAVEPOINT offering_operation_disabled",
+            "INITIAL_CONFIGURATION",
+            "command_receipt_id IS NOT NULL",
+            "academic.offering_changed",
+            "aggregate_kind='CLASS_OFFERING'",
+            "SELECT * FROM app_private.class_offerings",
+            "DELETE FROM app_private.class_offerings",
+            "SET CONSTRAINTS ALL IMMEDIATE",
+            "SELECT * FROM finish();"):
+            self.assertIn(marker,source)
+        self.assertLess(
+            source.index("SAVEPOINT offering_blocking_section"),
+            source.index("NULL,'CLOSED',2,'offering-closed')"))
+        self.assertIn("SET ROLE authenticated;",source)
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
+
+
 if __name__ == "__main__":
     unittest.main()
