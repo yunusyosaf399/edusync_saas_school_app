@@ -1,0 +1,45 @@
+# D1 Academic Capacity change P0 Class Offering/Section revisions — independent business acceptance review
+
+Date: 2026-10-13
+Result: **ACCEPTED — independent incremental disposable-local PostgreSQL business acceptance. Full D1 remains OPEN.**
+
+## Exact frozen baseline, candidate and CI evidence
+
+- Previously frozen `main`: `3214010dc0449610595ed3659f8536b37212210f` (**35 business suites; 1,833/1,833 business assertions; 19/19 genuine observed-lock concurrency races**).
+- [PR #46](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/46): **CLOSED / MERGED**. Final exact CI-tested source SHA `e622ab4ae6fb7430fc46d42f42f1a4070fc9de18`; merge SHA `e1c9e4251b6f94afdc9b101dadc791f2efc88a2a`. The merge has exactly two parents: previously frozen `main` `3214010dc0449610595ed3659f8536b37212210f` and tested head `e622ab4ae6fb7430fc46d42f42f1a4070fc9de18`. A candidate-to-base diff review confirmed **exactly three acceptance-only paths**.
+- [D1 Migration 10 pull-request runtime #38362923465](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/38362923465): **PASS** on the exact tested head. `36_academic_capacity_change_revision_authorization.sql` **85/85**; **36 suites / 1,918/1,918 business assertions**; **53/53 D1 Python tooling**; **19/19 existing real, two-session observed-lock races**, including family relationship/membership/replacement, cross-family and grant/scope revocation first/command first; **220/220 Foundation SQL regression assertions**; required synthetic auth fixtures; both lint severities; `D1C2A_PASS`.
+- [Foundation database pull-request run #38362923575](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/38362923575): **PASS** on the exact tested head. **209/209 Foundation Python tooling**, nine frozen migrations and nine SQL test files **220/220**, local auth fixtures and both lint severities. Exact candidate push [D1 #38362780675](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/38362780675) and [Foundation #38362780660](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/38362780660) also **PASS**.
+- D1 source/catalog diagnostics: `D1C2A_SOURCE_PASS 202 fragments; 34 relations; final_functions=540`; `D1C2A_APPLY_PASS 202 draft fragments parsed/applied locally`; `D1C2A_CATALOG_PASS tables=34 rls=34/34 functions=540 definers=522 app=157 private=383 auth_private=0 anon=0 service_role=0`. The **202 non-executable draft SQL fragments were assembled/applied only in disposable-local PostgreSQL**, never deployed to hosted Supabase. Migration 10 remains inactive `.sql.draft`.
+
+## Frozen operation and protected contract
+
+This acceptance adds dedicated operation suite coverage for `academic.capacity.change` (the **twelfth distinct D1 operation**), via the exact public protected RPC `app.d1_change_academic_capacity(text,uuid,integer,date,text,bigint,text)`. It accepts `CLASS_OFFERING` or `SECTION`, returns `revision_id` and `row_version`, and checks the distinct `academic.capacity.change` permission at exact Class/Section ancestry. The authority is not inherited merely from Class or Section management.
+
+Only `CURRENT_DATE` changes are allowed on a supported, existing, nonarchived target, with a nonnegative changed capacity, substantive reason and current expected row_version. An accepted command updates the projection and **appends** an immutable `app_private.capacity_revisions` history row, with the previous and new values, effective date, same-target `supersedes_id` and linked typed `D1_CAPACITY_REVISION` successful receipt. Failed or duplicate commands must not append history, audit or outbox events. Current permission/operation checks still precede successful receipt replay. Important: the frozen command's reduction rule can allow a reduction **below existing valid placement commitments**; such occupied/override combinations are **not tested by this suite**.
+
+## New 85/85 SQL assertion evidence
+
+The entirely synthetic fixture creates an eligible School/Campus/Academic Year/Academic Class/Class Offering and two Sections, and seeds exactly three matching initial `INITIAL_CONFIGURATION` capacity revision facts (**35**, **20**, **15**). It explicitly forces and validates their deferred constraints with `SET CONSTRAINTS ALL IMMEDIATE`, then allows normal command-level paired projection/revision checks to defer until the final `SET CONSTRAINTS ALL IMMEDIATE`, `finish()` and top-level **ROLLBACK**. The local synthetic test context has no hosted or permanent data effects.
+
+1. **Class Offering change:** from **35→40**, with row version **1→2**. Checks returned revision identity/version, retained old/new values, exact Offering target, null Section target, same-target initial `supersedes_id`, two retained revision facts, exact-key replay with no duplicate effects, conflicting idempotency and stale/unchanged intent denial.
+2. **Section A change:** from **20→25**, with row version **1→2**. Checks returned revision identity/version, target projection, old/new capacity fact, correct same-target initial supersession, current date and command receipt, no Class target, exact-key replay with stable ID/version, stale/unchanged/conflicting intent rejection.
+3. **Empty Section B reduction:** from **15→0**, with row version **1→2**. Proves nonnegative zero capacity is supported for an unoccupied Section, with correct history and supersession; Section A remains at 25 and its parent Class Offering remains at 40. Replays remain idempotent; conflicting reuse is rejected.
+4. **Invalid intent/state:** unsupported target_kind; null, missing and negative values; empty reason; missing, zero or stale row versions; missing Offering/Section; backdated and future effective dates; unchanged capacity; archived Section; idempotency conflicts. Rejections do not mutate unrelated projections or add successful receipts.
+5. **Authorization:** an unrelated management grant does not authorize capacity changes. An active, linked non-FAMILY role-permission grant with matching `ALL/DIRECT` assignment permission scope permits the three public RPC changes under authenticated actor. Independent role-grant or scope revocation, disabled permission and disabled operation deny even accepted exact-key replay. Anonymous RPC invocation and authenticated raw private `app_private.capacity_revisions` SELECT/DELETE are denied. Test owner inspects private rows only outside authenticated RPC context.
+6. **Immutable evidence:** exactly **six capacity facts** remain inside the accepted test transaction (three initial plus three retained changes), three correct same-target supersession links and three linked command receipts. There are exactly **three accepted command receipts**, **three audit entries** (one Class Offering, two Section), and **three** minimized `academic.capacity_changed` outbox events with `ACADEMIC_CAPACITY` aggregate kind and postchange version **2**, never exposing old/new capacity values or reason in the event payload.
+
+## Scope, checkpoint and outstanding work
+
+Exactly these **three acceptance-only code paths** changed, with no frozen schema or client/app changes:
+
+1. New `supabase/tests/domain/36_academic_capacity_change_revision_authorization.sql`: 85 rollback-only pgTAP assertions.
+2. `tools/supabase/domain_business_ci.py`: append 36th suite and expected count **85**, preserving prior 35-suite manifest.
+3. `tools/supabase/tests/test_domain_acceptance_ci.py`: append static guard ensuring the new suite, initial fact constraints and 1,918 assertion total; change the historical #35 guard to preserve the immutable **35-suite / 1,833 assertion prefix** rather than requiring #35 to always be the last suite.
+
+**Frozen incremental checkpoint:** **36 suites / 1,918/1,918 business assertions; 19/19 real observed-lock two-session races; 53/53 D1 Python tooling; 209/209 Foundation Python tooling; 220/220 Foundation SQL; 34/34 forced-RLS D1 relations.** The twelfth distinct D1 operation now has dedicated business acceptance; **23 of 35 drafted operations** still lack dedicated operation-level acceptance suites. `student.create` remains disabled awaiting Admissions.
+
+**Not accepted:** current enrollment commitments exceeding reduced capacity, placement overrides, historically populated upgrades, exhaustive CAMPUS/CLASS/SECTION grant matrix, any new capacity-specific two-session race, Admissions/Finance or full D1/hosted Migration 10 activation. **Full D1 remains OPEN**; no hosted Supabase project was changed.
+
+Suggested next breadth candidate: `student.roll_policy.change` (review its frozen scope and immutable version/effective-date contract before choosing tests; no contract is presumed accepted by this review). For example, replacing the roll-number allocation rule for a new school year should record a revision instead of silently rewriting the previously applied policy.
+
+**Checkpoint identifier:** `D1_ACADEMIC_CAPACITY_P0_REVISION_BUSINESS_ACCEPTANCE_PASS — 1918/1918 BUSINESS — 36 SUITES — 19/19 OBSERVED-LOCK RACES — 220/220 FOUNDATION SQL — 53/53 D1 PYTHON — 209/209 FOUNDATION PYTHON — FULL D1 OPEN`.
