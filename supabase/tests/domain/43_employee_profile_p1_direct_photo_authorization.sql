@@ -80,7 +80,7 @@ SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_profile(%L,NUL
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_profile(%L,NULL,'9d000000-0000-4000-8000-000000000098',1,'profile-missing-file')$sql$,:'profile_employee_id'), 'P0001'::char(5),NULL::text,'unknown profile photo file ID rejected');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_profile(%L,NULL,'9d000000-0000-4000-8000-000000000001',0,'profile-version-zero')$sql$,:'profile_employee_id'), 'P0001'::char(5),NULL::text,'profile change requires positive expected version');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_profile(%L,NULL,'9d000000-0000-4000-8000-000000000001',2,'profile-stale-version')$sql$,:'profile_employee_id'), 'P0001'::char(5),NULL::text,'stale expected Employee version rejected');
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_profile(%L,NULL,'9d000000-0000-4000-8000-000000000001',1,'profile-unknown-target')$sql$,'9d000000-0000-4000-8000-000000000099'), 'P0001'::char(5),NULL::text,'unknown Employee cannot be changed');
+SELECT throws_ok($sql$SELECT * FROM app.d1_change_employee_profile('9d000000-0000-4000-8000-000000000099'::uuid,NULL,'9d000000-0000-4000-8000-000000000001',1,'profile-unknown-target')$sql$, 'P0001'::char(5),NULL::text,'unknown Employee cannot be changed');
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE command_kind='employee.profile.update'),0::bigint,'all rejected profile changes create no protected receipt');
 SELECT is((SELECT count(*) FROM app_private.audit_events WHERE event_type='employee.profile.update'),0::bigint,'rejected profile changes emit no audit');
@@ -93,7 +93,7 @@ SELECT is(:'photo_replay_employee_id'::uuid,:'profile_employee_id'::uuid,'idempo
 SELECT is(:'photo_replay_row_version'::bigint,2::bigint,'idempotent replay returns originally committed version 2');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_profile(%L,NULL,NULL,1,'profile-photo-set')$sql$,:'profile_employee_id'), 'P0001'::char(5),NULL::text,'same idempotency key with altered photo conflicts');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_profile(%L,NULL,'9d000000-0000-4000-8000-000000000003',1,'profile-old-version')$sql$,:'profile_employee_id'), 'P0001'::char(5),NULL::text,'old optimistic version rejected');
-SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_profile(%L,%L,'9d000000-0000-4000-8000-000000000001',2,'profile-no-affiliation')$sql$,:'profile_employee_id','9d000000-0000-4000-8000-000000000099'), 'P0001'::char(5),NULL::text,'nonexistent campus context cannot substitute for actual Employee affiliation');
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_profile(%L,'9d000000-0000-4000-8000-000000000099'::uuid,'9d000000-0000-4000-8000-000000000001',2,'profile-no-affiliation')$sql$,:'profile_employee_id'), 'P0001'::char(5),NULL::text,'nonexistent campus context cannot substitute for actual Employee affiliation');
 RESET ROLE;
 SELECT is((SELECT profile_photo_file_id FROM app_private.employees WHERE id=:'profile_employee_id'::uuid),'9d000000-0000-4000-8000-000000000001'::uuid,'Employee stores validated and correctly purposed photo ID');
 SELECT is((SELECT row_version FROM app_private.employees WHERE id=:'profile_employee_id'::uuid),2::bigint,'replay and rejection do not advance version');
