@@ -831,10 +831,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         source=(domain_root/"supabase/tests/domain/"
                 "33_academic_class_offering_lifecycle_authorization.sql").read_text(
                     encoding="utf-8")
-        self.assertEqual(DOMAIN_TESTS[-1],
+        # Preserve accepted 33-suite checkpoint as an append-only prefix.
+        self.assertEqual(DOMAIN_TESTS[32],
                          ["33_academic_class_offering_lifecycle_authorization.sql",52])
-        self.assertEqual(len(DOMAIN_TESTS),33)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1700)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),33)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:33]),1700)
         self.assertIn("SELECT plan(52);",source)
         self.assertEqual(
             len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),52)
