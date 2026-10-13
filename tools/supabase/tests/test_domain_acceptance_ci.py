@@ -1091,13 +1091,14 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         path=domain_root/"supabase/tests/domain/37_student_roll_policy_current_checked_read_authorization.sql"
         source=path.read_text(encoding="utf-8")
         draft=(domain_root/"supabase/migrations/20260928000000_domain_package_01.sql.draft").read_text(encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),37)
+        # Immutable historical 37-suite, 1,953-assertion checkpoint.
+        self.assertGreaterEqual(len(DOMAIN_TESTS),37)
         self.assertEqual(DOMAIN_TESTS[35],
                          ["36_academic_capacity_change_revision_authorization.sql",85])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:36]),1918)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[36],
                          ["37_student_roll_policy_current_checked_read_authorization.sql",35])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1953)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:37]),1953)
         self.assertIn("SELECT plan(35);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),35)
         self.assertTrue(source.startswith("--"))
@@ -1123,6 +1124,66 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("CREATE FUNCTION app.d1_change_roll_policy(",draft)
         self.assertNotIn("CREATE FUNCTION app.d1_change_student_roll_policy(",draft)
         self.assertIn("'student.roll_policy.change', 'student.roll_policy.change', 'student.roll_policy.approve', false",draft)
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
+
+
+    def test_student_roll_policy_retained_history_p1_readiness_integrity(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+            "38_student_roll_policy_retained_history_defensive_invariants.sql").read_text(
+                encoding="utf-8")
+        draft=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01.sql.draft").read_text(encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),38)
+        self.assertEqual(DOMAIN_TESTS[36],
+            ["37_student_roll_policy_current_checked_read_authorization.sql",35])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:37]),1953)
+        self.assertEqual(DOMAIN_TESTS[-1],
+            ["38_student_roll_policy_retained_history_defensive_invariants.sql",40])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1993)
+        self.assertIn("SELECT plan(40);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),40)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app_private.roll_policy_revisions",
+            "PERSISTENT_STUDENT",
+            "ACADEMIC_CONTEXT",
+            "SELECT throws_ok(",
+            "SET CONSTRAINTS ALL IMMEDIATE;",
+            "student.roll_policy.change",
+            "app_private.command_receipts",
+            "app_private.approval_requests",
+            "app_private.roll_allocations",
+            "SET ROLE schoolos_schema_owner;",
+            "SET ROLE authenticated;",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(marker,source)
+        self.assertEqual(
+            source.count("INSERT INTO app_private.roll_policy_revisions"),12)
+        # A fixture owner cannot resolve unqualified pgTAP functions.
+        # Restore the harness role before executing the first assertion.
+        self.assertIn("RESET ROLE;\nSELECT is(",source)
+        self.assertLess(
+            source.index("RESET ROLE;\nSELECT is("),
+            source.index("SELECT is("))
+        # Closure provenance is server-owned: the current verified
+        # INDIVIDUAL actor (not the fixture's SYSTEM reconciliation actor).
+        self.assertEqual(
+            source.count("ended_by='55555555-5555-4555-8555-555555555555'"),2)
+        self.assertNotIn(
+            "ended_by='11111111-1111-4111-8111-111111111111'",source)
+        self.assertIn("CREATE FUNCTION app_private.d1_guard_record()",draft)
+        self.assertIn("CREATE FUNCTION app_private.d1_guard_effective_history()",draft)
+        self.assertIn(
+            "D1 roll policy revision must follow locked school sequence",draft)
+        self.assertIn(
+            "'student.roll_policy.change', 'student.roll_policy.change', 'student.roll_policy.approve', false",draft)
+        self.assertNotIn("CREATE FUNCTION app.d1_change_roll_policy(",draft)
+        self.assertNotIn("CREATE FUNCTION app.d1_change_student_roll_policy(",draft)
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
 
