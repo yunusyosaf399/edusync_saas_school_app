@@ -1255,13 +1255,14 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         draft=(domain_root/"supabase/migrations/"
             "20260928000000_domain_package_01.sql.draft").read_text(
                 encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),40)
+        # Immutable accepted suite-40 / 2,109-assertion prefix.
+        self.assertGreaterEqual(len(DOMAIN_TESTS),40)
         self.assertEqual(DOMAIN_TESTS[38],
             ["39_employee_department_catalog_lifecycle_authorization.sql",57])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:39]),2050)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[39],
             ["40_employee_designation_catalog_lifecycle_authorization.sql",59])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2109)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:40]),2109)
         self.assertIn("SELECT plan(59);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),59)
         self.assertTrue(source.startswith("--"))
@@ -1305,6 +1306,82 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "permission_id=(SELECT id FROM app_private.permissions\n"
             "    WHERE code='employee.department.manage')"),3)
         self.assertNotIn("app.d1_change_employee_department(",source)
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
+
+
+    def test_employee_job_assignment_direct_lifecycle_business_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+            "41_employee_job_assignment_p1_direct_lifecycle_authorization.sql").read_text(
+                encoding="utf-8")
+        draft=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01.sql.draft").read_text(
+                encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),41)
+        self.assertEqual(DOMAIN_TESTS[39],
+            ["40_employee_designation_catalog_lifecycle_authorization.sql",59])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:40]),2109)
+        self.assertEqual(DOMAIN_TESTS[-1],
+            ["41_employee_job_assignment_p1_direct_lifecycle_authorization.sql",67])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2176)
+        self.assertIn("SELECT plan(67);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),67)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_create_employee",
+            "app.d1_change_employee_job_assignment",
+            "employee.job_assignment.change",
+            "app_private.employee_job_assignments",
+            "app_private.approval_policy_versions",
+            "'DIRECT'",
+            "ADD", "CORRECT", "END",
+            "D1_EMPLOYEE_JOB",
+            "employee.job_changed",
+            "app_private.command_receipts",
+            "app_private.audit_events",
+            "app_private.outbox_events",
+            "SAVEPOINT job_scope_revoked",
+            "SAVEPOINT job_grant_revoked",
+            "SAVEPOINT job_permission_disabled",
+            "SAVEPOINT job_scope_contract_disabled",
+            "SAVEPOINT job_operation_disabled",
+            "SET ROLE authenticated;",
+            "SET ROLE schoolos_schema_owner;",
+            "SET CONSTRAINTS ALL IMMEDIATE;",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(marker,source)
+        for code in (
+            "CREATE FUNCTION app.d1_change_employee_job_assignment(",
+            "CREATE FUNCTION app_private.d1_employee_job_assignment_policy()",
+            "CREATE FUNCTION app_private.d1_employee_job_assignment_authorized(",
+            "CREATE FUNCTION app_private.d1_employee_job_assignment_receipt(",
+            "CREATE FUNCTION app_private.d1_employee_job_assignment_audit(",
+            "CREATE FUNCTION app_private.d1_employee_job_assignment_event(",
+        ):
+            self.assertIn(code,draft)
+        self.assertIn(
+            "'employee.job_assignment.change', 'employee.job_assignment.change', 'employee.job_assignment.approve', false",
+            draft)
+        self.assertEqual(source.count(r"\gset added_"),1)
+        self.assertEqual(source.count(r"\gset corrected_"),1)
+        self.assertEqual(source.count(r"\gset ended_"),1)
+        # Any successful new change must be a protected authenticated call,
+        # never an owner fixture history insert. Assert TAP is not schema-owner.
+        role="runner"
+        for line in source.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;":
+                role="owner"
+            elif line=="SET ROLE authenticated;":
+                role="authenticated"
+            elif line=="RESET ROLE;":
+                role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
+        self.assertNotIn("INSERT INTO app_private.employee_job_assignments",source)
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
 
