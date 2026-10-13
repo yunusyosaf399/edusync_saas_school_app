@@ -1170,6 +1170,12 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertLess(
             source.index("RESET ROLE;\nSELECT is("),
             source.index("SELECT is("))
+        # Closure provenance is server-owned: the current verified
+        # INDIVIDUAL actor (not the fixture's SYSTEM reconciliation actor).
+        self.assertEqual(
+            source.count("ended_by='55555555-5555-4555-8555-555555555555'"),2)
+        self.assertNotIn(
+            "ended_by='11111111-1111-4111-8111-111111111111'",source)
         self.assertIn("CREATE FUNCTION app_private.d1_guard_record()",draft)
         self.assertIn("CREATE FUNCTION app_private.d1_guard_effective_history()",draft)
         self.assertIn(
