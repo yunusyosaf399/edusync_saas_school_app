@@ -779,10 +779,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         source=(domain_root/"supabase/tests/domain/"
                 "32_academic_subject_lifecycle_authorization.sql").read_text(
                     encoding="utf-8")
-        self.assertEqual(DOMAIN_TESTS[-1],
+        # Preserve the accepted 32-suite snapshot as an append-only prefix.
+        self.assertEqual(DOMAIN_TESTS[31],
                          ["32_academic_subject_lifecycle_authorization.sql",54])
-        self.assertEqual(len(DOMAIN_TESTS),32)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),1648)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),32)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:32]),1648)
         self.assertIn("SELECT plan(54);",source)
         self.assertEqual(
             len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),54)
