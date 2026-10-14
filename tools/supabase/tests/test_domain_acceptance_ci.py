@@ -1872,6 +1872,36 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "CREATE FUNCTION app_private.d1_employee_identity_authorized(",
         ):
             self.assertIn(contract,fragments)
+        # Receipt hardening: this P2 operation is intentionally NOT in the
+        # shared generic allowlist. The operation-specific context preserves
+        # exact canonicalization, advisory locking, verified actors and P2
+        # phase shape without widening any other command's dispatch surface.
+        p2_context=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect18_12_employee_identity_p2_receipt_context.sql.draft"
+        ).read_text(encoding="utf-8")
+        for token in (
+            "CREATE FUNCTION app_private.d1_employee_identity_command_context(",
+            "p_command_kind NOT IN ('request.submit','request.review','request.apply')",
+            "p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=4",
+            "p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4",
+            "p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2",
+            "pg_catalog.pg_advisory_xact_lock_shared(71001,1)",
+            "pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer)",
+            "app_private.d1_jcs_typed(",
+            "TO schoolos_workflow_executor;",
+            "SET ROLE schoolos_evidence_writer;",
+            "SET ROLE schoolos_workflow_executor;",
+            "CREATE OR REPLACE FUNCTION app.d1_submit_employee_identity_correction(",
+            "CREATE OR REPLACE FUNCTION app.d1_review_employee_identity_request(",
+            "CREATE OR REPLACE FUNCTION app.d1_apply_employee_identity_request(",
+        ):
+            self.assertIn(token,p2_context)
+        self.assertEqual(p2_context.count(
+            "app_private.d1_employee_identity_command_context(\n    "),3)
+        self.assertNotIn("CREATE OR REPLACE FUNCTION app_private.d1_command_receipt_lookup(",p2_context)
+        self.assertNotIn("TO authenticated",p2_context)
+        self.assertNotIn("TO service_role",p2_context)
+        self.assertNotIn("GRANT SELECT ON app_private",p2_context)
         for forbidden in (
             "INSERT INTO app_private.employee_identity_details",
             "UPDATE app_private.employee_identity_details",
