@@ -2147,7 +2147,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(scope.count("NULL::uuid AS campus_id"),5)
         self.assertEqual(scope.count("NULL::uuid AS section_id INTO"),5)
         self.assertIn("SET ROLE schoolos_authz_reader;",scope)
-        self.assertTrue(scope.rstrip().endswith("RESET ROLE;"))
+        self.assertTrue(scope.rstrip().endswith("REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;"))
         # Existing private receipt dispatcher had no Student Identity/Special
         # P2 entry. Exact per-operation/phase arg counts must remain bound.
         dispatch=(root/"supabase/migrations/"
@@ -2166,6 +2166,18 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
           "app_private.d1_jcs_typed(",
         ):
             self.assertIn(token,dispatch)
+        self.assertTrue(dispatch.rstrip().endswith(
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;"))
+        for marker in (
+            "GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;",
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;",
+        ):
+            self.assertIn(marker,scope)
+        for marker in (
+            "GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;",
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;",
+        ):
+            self.assertIn(marker,dispatch)
         for text in (scope,dispatch):
             for forbidden in ("GRANT SELECT ON app_private",
                               "TO authenticated;", "TO anon;",
