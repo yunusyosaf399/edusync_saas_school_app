@@ -2435,6 +2435,32 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                 for line in blood.splitlines() if not line.lstrip().startswith("--")
             ))
 
+        # Status P2 preflight never requests FOR UPDATE on immutable
+        # status-history rows: it already locks the Student aggregate.
+        status_preflight=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_11_student_status_correct_preflight_immutable_read.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(status_preflight.count(
+            "CREATE OR REPLACE FUNCTION app_private.d1_student_status_correct_preflight("),1)
+        self.assertIn("SET ROLE schoolos_student_executor;",status_preflight)
+        self.assertIn("GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;",status_preflight)
+        self.assertTrue(status_preflight.rstrip().endswith(
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;"))
+        self.assertIn("FROM app_private.students WHERE id=p_student FOR UPDATE;",status_preflight)
+        self.assertIn("PERFORM 1 FROM app_private.student_status_transitions t",status_preflight)
+        self.assertNotIn("ORDER BY t.sequence_number FOR UPDATE",status_preflight)
+        self.assertIn("D1_STUDENT_STATUS_CORRECT_SOURCE_SUPERSEDED",status_preflight)
+        self.assertIn("D1_STUDENT_STATUS_CORRECT_NOOP",status_preflight)
+        self.assertIn("D1_STUDENT_STATUS_CORRECT_CHAIN_INVALID",status_preflight)
+        self.assertIn("D1_STUDENT_STATUS_CORRECT_ENROLLMENT_CONFLICT",status_preflight)
+        self.assertIn("SECURITY DEFINER",status_preflight)
+        for forbidden in (
+            "GRANT UPDATE", "GRANT SELECT", "TO authenticated;",
+            "TO anon;", "TO service_role;", "TO PUBLIC;",
+            "ALTER TABLE", "DISABLE TRIGGER",
+        ):
+            self.assertNotIn(forbidden,status_preflight)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
