@@ -1780,6 +1780,24 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "CREATE FUNCTION app_private.d1_teaching_capability_effect(",
         ):
             self.assertIn(contract,base)
+        # The non-login authorization resolver needs Foundation Academic Year
+        # id/end-date read, while the Teaching executor needs only end date.
+        acl=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect30_35_teacher_capability_year_acl.sql.draft"
+        ).read_text(encoding="utf-8")
+        for fragment in (
+            "CREATE POLICY d1_teaching_capability_year_authz_reader",
+            "ON app.academic_years FOR SELECT TO schoolos_authz_reader",
+            "GRANT SELECT (id,ends_on) ON app.academic_years TO schoolos_authz_reader;",
+            "GRANT SELECT (ends_on) ON app.academic_years TO schoolos_teaching_executor;",
+            "RESET ROLE;",
+        ):
+            self.assertIn(fragment,acl)
+        for forbidden_acl in (
+            "TO authenticated", "TO anon", "TO service_role", "DISABLE ROW LEVEL SECURITY",
+            "BYPASSRLS", "GRANT UPDATE", "GRANT DELETE",
+        ):
+            self.assertNotIn(forbidden_acl,acl)
         for forbidden in (
             "INSERT INTO app_private.teacher_capabilities",
             "UPDATE app_private.teacher_capabilities",
