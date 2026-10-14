@@ -73,8 +73,8 @@ SELECT * FROM app.d1_create_employee('10000000-0000-4000-8000-000000000001',
  'TEACHING-CAP-P1-ACCEPT',CURRENT_DATE-10,'cap-p1-employee-create') \gset emp_
 SELECT ok(:'emp_employee_id'::uuid IS NOT NULL,'real protected Employee target exists');
 SELECT is(:'emp_row_version'::bigint,1::bigint,'Employee version initially one');
-SELECT throws_ok(format($q$SELECT * FROM app.d1_submit_employee_identity_correction(%L,'NATIONAL_ID','SYNTH-001','Original document','identity-policy-missing')$q$,:'emp_employee_id'),
- 'P0001'::char(5),NULL::text,'grant cannot bypass missing P2 policy');
+SELECT throws_ok(format($q$SELECT * FROM app.d1_submit_teacher_capability_change(%L,1,'ADD',NULL,NULL,NULL,CURRENT_DATE-5,NULL,'No policy yet','cap-policy-missing')$q$,:'emp_employee_id'),
+ 'P0001'::char(5),NULL::text,'change and reviewer grants cannot bypass missing P1 policy');
 RESET ROLE;
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.approval_policy_versions(
