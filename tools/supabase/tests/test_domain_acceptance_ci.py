@@ -2461,6 +2461,35 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden,status_preflight)
 
+        # Status P2 submit must never receive broad history SELECT just
+        # to prepare the exact old snapshot. A private Student-owned helper
+        # returns only five required facts for one (Student, transition).
+        status_source=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_12_student_status_correct_source_read_boundary.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("CREATE FUNCTION app_private.d1_student_status_correct_source(",status_source)
+        self.assertIn("RETURNS TABLE(",status_source)
+        for field in ("previous_status text","new_status text",
+                      "effective_on date","sequence_number bigint","supersedes_id uuid"):
+            self.assertIn(field,status_source)
+        self.assertIn("t.student_id=p_student AND t.id=p_source_transition",status_source)
+        self.assertIn("SET ROLE schoolos_student_executor;",status_source)
+        self.assertIn("TO schoolos_workflow_executor;",status_source)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;",status_source)
+        self.assertIn("CREATE OR REPLACE FUNCTION app.d1_submit_student_status_correction(",status_source)
+        self.assertIn(
+            "app_private.d1_student_status_correct_source(p_student_id,p_source_transition_id)",
+            status_source)
+        self.assertNotIn("FROM app_private.student_status_transitions t WHERE t.id=p_source_transition_id",status_source)
+        self.assertIn("app_private.d1_student_status_correct_authorized_pair(",status_source)
+        self.assertIn("app_private.d1_student_status_correct_preflight(",status_source)
+        self.assertIn("SET ROLE schoolos_workflow_executor;",status_source)
+        self.assertIn("REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;",status_source)
+        for forbidden in ("GRANT SELECT", "GRANT UPDATE",
+                          "TO authenticated;", "TO anon;", "TO service_role;",
+                          "DROP POLICY", "DISABLE TRIGGER"):
+            self.assertNotIn(forbidden,status_source)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
