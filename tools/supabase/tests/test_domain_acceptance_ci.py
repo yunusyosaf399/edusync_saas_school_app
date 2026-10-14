@@ -2051,6 +2051,25 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(DOMAIN_TESTS[50:],
             [[name,count] for name,count,_ in additions])
         self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2696)
+        # True P2 APPLY exercises the existing schema-owner-owned receipt guard.
+        # Its nested SECURITY INVOKER validators need narrowly owned EXECUTE.
+        private_acl=(root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect35_02_class_teacher_p2_application_guard_acl.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+            "SET ROLE schoolos_teaching_executor;",
+            "app_private.d1_teaching_class_assignment_request_payload_valid(jsonb,jsonb)",
+            "app_private.d1_teaching_class_assignment_payload_valid(jsonb)",
+            "TO schoolos_schema_owner;",
+            "RESET ROLE;",
+        ):
+            self.assertIn(marker,private_acl)
+        self.assertEqual(private_acl.count("GRANT EXECUTE ON FUNCTION"),2)
+        for forbidden in ("GRANT SELECT", "GRANT INSERT", "GRANT UPDATE",
+                          "TO authenticated;", "TO anon;", "TO service_role;",
+                          "TO PUBLIC;", "supabase db push"):
+            self.assertNotIn(forbidden,private_acl)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
