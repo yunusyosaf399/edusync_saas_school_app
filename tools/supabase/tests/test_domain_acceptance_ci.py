@@ -2313,7 +2313,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertEqual(p2.count(fixture_lookup),1)
             self.assertIn("FROM auth.users WHERE email='foundation-test-001@example.invalid'",p2)
             self.assertLess(p2.index(fixture_lookup),p2.index("SET ROLE schoolos_schema_owner;"))
-            self.assertGreater(p2.index(fixture_lookup),p2.index(r"\\ir fixtures/command_actor.sql"))
+            self.assertGreater(p2.index(fixture_lookup),p2.index(r"\ir fixtures/command_actor.sql"))
 
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
