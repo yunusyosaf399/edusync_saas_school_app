@@ -4,6 +4,8 @@ CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
 SELECT plan(11);
 \ir fixtures/command_actor.sql
+SELECT set_config('schoolos_test.reviewer_subject',
+ (SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),true);
 
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -32,8 +34,6 @@ INSERT INTO app_private.student_status_transitions(
 VALUES ('b1000000-0000-4000-8000-000000000002','b1000000-0000-4000-8000-000000000001',
  NULL,'ACTIVE',CURRENT_DATE-20,1,'Synthetic initial admitted ACTIVE status','11111111-1111-4111-8111-111111111111');
 
-SELECT set_config('schoolos_test.reviewer_subject',
- (SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),true);
 INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by)
 VALUES ('b1000000-0000-4000-8000-000000000021','INDIVIDUAL',
  '10000000-0000-4000-8000-000000000004','Independent student reviewer','ACTIVE',
