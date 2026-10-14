@@ -1,0 +1,16 @@
+-- D1 Teacher Capability real-runtime corrective continuation.
+-- The existing SECURITY DEFINER campus resolver is owned by NOLOGIN
+-- schoolos_authz_reader and references Foundation academic_years.id/ends_on.
+-- Grant only its required column access and its dedicated SELECT RLS policy.
+-- The existing teaching executor already has id and a SELECT/UPDATE policy
+-- for academic_years, but END lock/preflight also needs ends_on read.
+-- No anon/authenticated/service_role grant, no RLS bypass, no writes broadened.
+-- Append-only inactive Migration 10 draft. Prior frozen base remains unchanged.
+
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_teaching_capability_year_authz_reader
+  ON app.academic_years FOR SELECT TO schoolos_authz_reader
+  USING (true);
+GRANT SELECT (id,ends_on) ON app.academic_years TO schoolos_authz_reader;
+GRANT SELECT (ends_on) ON app.academic_years TO schoolos_teaching_executor;
+RESET ROLE;
