@@ -2300,6 +2300,21 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden,replay_scope)
 
+        # P2 suites must resolve Auth fixture subjects as the test runner,
+        # before SET ROLE schoolos_schema_owner; the NOLOGIN schema owner
+        # correctly lacks USAGE on auth. Never grant auth access for tests.
+        for p2_name in (
+          "58_student_identity_p2_approval_history.sql",
+          "59_student_special_p2_approval_history.sql",
+          "60_student_status_correct_p2_approval_history.sql",
+        ):
+            p2=(root/"supabase/tests/domain"/p2_name).read_text(encoding="utf-8")
+            fixture_lookup="SELECT set_config('schoolos_test.reviewer_subject',"
+            self.assertEqual(p2.count(fixture_lookup),1)
+            self.assertIn("FROM auth.users WHERE email='foundation-test-001@example.invalid'",p2)
+            self.assertLess(p2.index(fixture_lookup),p2.index("SET ROLE schoolos_schema_owner;"))
+            self.assertGreater(p2.index(fixture_lookup),p2.index(r"\\ir fixtures/command_actor.sql"))
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
