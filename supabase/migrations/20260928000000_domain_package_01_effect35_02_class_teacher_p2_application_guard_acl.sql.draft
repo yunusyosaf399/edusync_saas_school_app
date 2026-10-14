@@ -1,0 +1,19 @@
+-- D1 Class Teacher retroactive P2 APPLY application-guard private validation ACL.
+-- First genuine P2 APPLY from suite 51 reached the existing
+-- SECURITY DEFINER app_private.d1_teaching_class_assignment_application_receipt_guard()
+-- owned by NOLOGIN schoolos_schema_owner. That guard invokes a strictly
+-- private SECURITY INVOKER request-payload validator, which recursively
+-- invokes a strictly private SECURITY INVOKER payload validator. Neither
+-- previously allowed the trigger owner EXECUTE.
+-- Keep both validators private and retain the existing receipt/lineage checks.
+-- The internal, NOLOGIN trigger owner is the ONLY new EXECUTE grantee.
+-- Never grant EXECUTE or SELECT to anon, authenticated, service_role or PUBLIC.
+-- Append-only non-executable .sql.draft; no hosted Supabase migration.
+SET ROLE schoolos_teaching_executor;
+GRANT EXECUTE ON FUNCTION
+  app_private.d1_teaching_class_assignment_request_payload_valid(jsonb,jsonb)
+  TO schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION
+  app_private.d1_teaching_class_assignment_payload_valid(jsonb)
+  TO schoolos_schema_owner;
+RESET ROLE;

@@ -1946,10 +1946,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
               "'REJECT'", "'APPROVED'", "'INVALIDATED'", "'EXECUTED'",
               "teaching_p1_revoked_reviewer")),
         )
-        self.assertEqual(len(DOMAIN_TESTS),50)
-        self.assertEqual(DOMAIN_TESTS[47:],
+        self.assertGreaterEqual(len(DOMAIN_TESTS),50)
+        self.assertEqual(DOMAIN_TESTS[47:50],
             [[name, count] for name,count,_ in additions])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2581)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:50]),2581)
         for name,count,markers in additions:
             sql=(domain_root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
@@ -2014,6 +2014,99 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("TO authenticated",replay)
         self.assertNotIn("TO anon",replay)
         self.assertNotIn("TO service_role",replay)
+
+
+    def test_batch_51_55_five_workflow_acceptance_suites(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        self.assertEqual(len(DOMAIN_TESTS),55)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:50]),2581)
+        additions=(
+            ("51_class_teacher_p2_retroactive_correct_approval.sql",23,
+              ("app.d1_submit_class_teacher_assignment_correction",
+               "app.d1_review_class_teacher_assignment_request",
+               "app.d1_apply_class_teacher_assignment_request",
+               "'CORRECT'","'APPROVED'","'INVALIDATED'","'EXECUTED'",
+               "class_p2_revoked")),
+            ("52_class_teacher_p2_reject_replay.sql",20,
+              ("app.d1_submit_class_teacher_assignment_correction",
+               "app.d1_review_class_teacher_assignment_request",
+               "app.d1_apply_class_teacher_assignment_request",
+               "'REJECT'","'REJECTED'","class-p2-reject")),
+            ("53_employee_identity_p2_retired_policy_invalidation.sql",29,
+              ("app.d1_submit_employee_identity_correction",
+               "app.d1_review_employee_identity_request",
+               "app.d1_apply_employee_identity_request",
+               "'RETIRED'","'INVALIDATED'","employee.identity_corrected")),
+            ("54_teacher_capability_p1_retired_policy_invalidation.sql",28,
+              ("app.d1_submit_teacher_capability_change",
+               "app.d1_review_teacher_capability_request",
+               "app.d1_apply_teacher_capability_request",
+               "'RETIRED'","'INVALIDATED'","teaching.capability_changed")),
+            ("55_class_teacher_p0_capability_employment_gate.sql",15,
+              ("app.d1_change_class_teacher_assignment",
+               "app_private.teacher_capabilities",
+               "class-ineligible-second","class-ineligible-correct",
+               "teaching.class_assignment_changed")),
+        )
+        self.assertEqual(DOMAIN_TESTS[50:],
+            [[name,count] for name,count,_ in additions])
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2696)
+        # True P2 APPLY exercises the existing schema-owner-owned receipt guard.
+        # Its nested SECURITY INVOKER validators need narrowly owned EXECUTE.
+        private_acl=(root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect35_02_class_teacher_p2_application_guard_acl.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+            "SET ROLE schoolos_teaching_executor;",
+            "app_private.d1_teaching_class_assignment_request_payload_valid(jsonb,jsonb)",
+            "app_private.d1_teaching_class_assignment_payload_valid(jsonb)",
+            "TO schoolos_schema_owner;",
+            "RESET ROLE;",
+        ):
+            self.assertIn(marker,private_acl)
+        self.assertEqual(private_acl.count("GRANT EXECUTE ON FUNCTION"),2)
+        for forbidden in ("GRANT SELECT", "GRANT INSERT", "GRANT UPDATE",
+                          "TO authenticated;", "TO anon;", "TO service_role;",
+                          "TO PUBLIC;", "supabase db push"):
+            self.assertNotIn(forbidden,private_acl)
+
+        for name,count,markers in additions:
+            sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
+            self.assertTrue(sql.startswith("--"))
+            self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+            self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+            self.assertIn("SELECT plan("+str(count)+");",sql)
+            self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),count)
+            self.assertIn("SET CONSTRAINTS ALL IMMEDIATE;",sql)
+            self.assertIn("SELECT * FROM finish();",sql)
+            for marker in markers:
+                self.assertIn(marker,sql)
+            for forbidden in ("GRANT SELECT ON app_private",
+                              "supabase db push",
+                              "INSERT INTO app_private.approval_reviews",
+                              "UPDATE app_private.class_teacher_assignments"):
+                self.assertNotIn(forbidden,sql)
+            role="runner"
+            for line in sql.splitlines():
+                if line=="SET ROLE schoolos_schema_owner;":
+                    role="owner"
+                elif line=="SET ROLE authenticated;":
+                    role="authenticated"
+                elif line=="RESET ROLE;":
+                    role="runner"
+                if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                    self.assertNotEqual(role,"owner")
+        source=(root/"supabase/migrations/20260928000000_domain_package_01.sql.draft").read_text(
+            encoding="utf-8")
+        for function in (
+            "app.d1_submit_class_teacher_assignment_correction",
+            "app.d1_review_class_teacher_assignment_request",
+            "app.d1_apply_class_teacher_assignment_request",
+            "app.d1_submit_teacher_capability_change",
+            "app.d1_review_teacher_capability_request",
+            "app.d1_apply_teacher_capability_request",
+        ):
+            self.assertIn("CREATE FUNCTION "+function+"(",source)
 
 
 if __name__ == "__main__":
