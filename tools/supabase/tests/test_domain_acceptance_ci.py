@@ -1947,7 +1947,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
               "teaching_p1_revoked_reviewer")),
         )
         self.assertGreaterEqual(len(DOMAIN_TESTS),50)
-        self.assertEqual(DOMAIN_TESTS[47:],
+        self.assertEqual(DOMAIN_TESTS[47:50],
             [[name, count] for name,count,_ in additions])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:50]),2581)
         for name,count,markers in additions:
