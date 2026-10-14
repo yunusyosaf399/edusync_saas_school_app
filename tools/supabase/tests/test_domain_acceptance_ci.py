@@ -2341,6 +2341,40 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertLess(p2.index("INSERT INTO app_private.enrollments("),
                             p2.index("SET ROLE authenticated;"))
 
+        # Exact P2 application trigger -> immutable payload validator owner edge.
+        # Runtime #537 proves schoolos_schema_owner is NOT automatically
+        # allowed to execute the internal authz-reader-owned validator.
+        p2_acl=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_09_student_p2_application_validator_acl.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SET ROLE schoolos_authz_reader;",p2_acl)
+        self.assertEqual(p2_acl.count("GRANT EXECUTE ON FUNCTION"),2)
+        for f in (
+            "d1_student_identity_request_payload_valid(jsonb,jsonb)",
+            "d1_student_special_request_payload_valid(jsonb,jsonb)",
+        ):
+            self.assertIn("app_private."+f,p2_acl)
+        self.assertEqual(p2_acl.count("TO schoolos_schema_owner;"),2)
+        self.assertTrue(p2_acl.rstrip().endswith("RESET ROLE;"))
+        for forbidden in (
+            "GRANT SELECT", "GRANT UPDATE", "GRANT INSERT",
+            "TO authenticated;", "TO anon;", "TO PUBLIC;",
+            "TO service_role;", "GRANT CREATE", "supabase db push",
+        ):
+            self.assertNotIn(forbidden,p2_acl)
+        # Preserve verified roles on both sides of the grant dependency.
+        for f,trigger in (
+            ("21_01_student_identity_core","21_04_student_identity_application_guard"),
+            ("22_01_student_special_core","22_04_student_special_guard"),
+        ):
+            base=(root/"supabase/migrations"/
+                  ("20260928000000_domain_package_01_effect"+f+".sql.draft")).read_text(encoding="utf-8")
+            guard=(root/"supabase/migrations"/
+                   ("20260928000000_domain_package_01_effect"+trigger+".sql.draft")).read_text(encoding="utf-8")
+            self.assertIn("SET ROLE schoolos_authz_reader;",base)
+            self.assertIn("SET ROLE schoolos_schema_owner;",guard)
+            self.assertIn("SECURITY DEFINER",guard)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
