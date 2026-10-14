@@ -1,0 +1,78 @@
+-- D1C2A #56 real-runtime correction, append-only inactive SQL continuation.
+-- Parent Student FOR UPDATE provides the established aggregate serialization.
+-- Student status transitions are immutable history: do not row-lock these
+-- snapshots (PostgreSQL FOR SHARE requires UPDATE privilege even on a read).
+-- Project only already-allowlisted columns; do not SELECT t.* or expand ACL.
+-- Preserve effective-date and enrollment/roll locking from effect23_09.
+-- No client-role grants; migration 10 remains unapplied.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_lock_context(
+  p_student uuid,p_expected_version bigint DEFAULT NULL
+)
+RETURNS TABLE(student_version bigint,current_status text,last_transition_id uuid,last_effective_on date,last_sequence bigint,
+  enrollment_id uuid,enrollment_from date,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  v_student_version bigint;
+  v_current_status text;
+  v_transition_id uuid;
+  v_transition_status text;
+  v_effective_on date;
+  v_sequence bigint;
+  v_enrollment_id uuid;
+  v_enrollment_from date;
+  v_count bigint;
+BEGIN
+  -- Lock the mutable aggregate parent before observing its immutable children.
+  SELECT s.row_version,s.current_status INTO v_student_version,v_current_status
+    FROM app_private.students s WHERE s.id=p_student FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT NULL::bigint,NULL::text,NULL::uuid,NULL::date,NULL::bigint,NULL::uuid,NULL::date,
+      'D1_STUDENT_STATUS_STUDENT_MISSING';
+    RETURN;
+  END IF;
+  IF p_expected_version IS NOT NULL AND v_student_version IS DISTINCT FROM p_expected_version THEN
+    RETURN QUERY SELECT v_student_version,v_current_status,NULL::uuid,NULL::date,NULL::bigint,NULL::uuid,NULL::date,
+      'D1_STUDENT_STATUS_VERSION_STALE';
+    RETURN;
+  END IF;
+  SELECT t.id,t.new_status,t.effective_on,t.sequence_number
+    INTO v_transition_id,v_transition_status,v_effective_on,v_sequence
+    FROM app_private.student_status_transitions t
+   WHERE t.student_id=p_student
+     AND NOT EXISTS (
+       SELECT 1 FROM app_private.student_status_transitions x
+        WHERE x.student_id=p_student AND x.supersedes_id=t.id
+     )
+   ORDER BY t.effective_on DESC,t.sequence_number DESC LIMIT 1;
+  IF NOT FOUND OR v_transition_status IS DISTINCT FROM v_current_status THEN
+    RETURN QUERY SELECT v_student_version,v_current_status,NULL::uuid,NULL::date,NULL::bigint,NULL::uuid,NULL::date,
+      'D1_STUDENT_STATUS_PROJECTION_DIVERGED';
+    RETURN;
+  END IF;
+  SELECT count(*) INTO v_count FROM app_private.enrollments x
+   WHERE x.student_id=p_student AND x.placement_kind='PRIMARY'
+     AND x.placement_state='ACTIVE' AND x.effective_from<=CURRENT_DATE
+     AND x.effective_until IS NULL;
+  IF v_count>1 THEN
+    RETURN QUERY SELECT v_student_version,v_current_status,v_transition_id,v_effective_on,v_sequence,
+      NULL::uuid,NULL::date,'D1_STUDENT_STATUS_ACTIVE_PLACEMENT_AMBIGUOUS';
+    RETURN;
+  END IF;
+  IF v_count=1 THEN
+    SELECT x.id,x.effective_from INTO v_enrollment_id,v_enrollment_from
+      FROM app_private.enrollments x
+     WHERE x.student_id=p_student AND x.placement_kind='PRIMARY'
+       AND x.placement_state='ACTIVE' AND x.effective_from<=CURRENT_DATE
+       AND x.effective_until IS NULL FOR UPDATE;
+    PERFORM r.id FROM app_private.roll_allocations r
+     WHERE r.student_id=p_student AND r.enrollment_id=v_enrollment_id
+       AND r.effective_from<=CURRENT_DATE AND r.effective_until IS NULL
+     ORDER BY r.id FOR UPDATE;
+  END IF;
+  RETURN QUERY SELECT v_student_version,v_current_status,v_transition_id,v_effective_on,v_sequence,
+    v_enrollment_id,v_enrollment_from,NULL::text;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
