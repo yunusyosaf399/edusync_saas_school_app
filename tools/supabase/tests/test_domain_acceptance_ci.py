@@ -2109,5 +2109,52 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertIn("CREATE FUNCTION "+function+"(",source)
 
 
+    def test_batch_56_60_student_protected_operations(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        self.assertEqual(len(DOMAIN_TESTS),60)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:55]),2696)
+        additions=(
+          ("56_student_status_p1_direct_lifecycle.sql",11,
+           ("app.d1_change_student_status","student.status.change","'SUSPENDED'")),
+          ("57_student_emergency_contact_p1_direct_history.sql",12,
+           ("app.d1_change_student_emergency_contact","student.emergency_contact.change","'CORRECT'")),
+          ("58_student_identity_p2_approval_history.sql",11,
+           ("app.d1_submit_student_identity_correction","app.d1_review_student_identity_request",
+            "app.d1_apply_student_identity_request","student.identity.approve")),
+          ("59_student_special_p2_approval_history.sql",11,
+           ("app.d1_submit_student_special_correction","app.d1_review_student_special_request",
+            "app.d1_apply_student_special_request","student.special.approve")),
+          ("60_student_status_correct_p2_approval_history.sql",10,
+           ("app.d1_submit_student_status_correction","app.d1_review_student_status_correction",
+            "app.d1_apply_student_status_correction","student.status.approve")),
+        )
+        self.assertEqual(DOMAIN_TESTS[55:],[[n,c] for n,c,_ in additions])
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2751)
+        for name,count,markers in additions:
+            sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
+            self.assertTrue(sql.startswith("--"))
+            self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+            self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+            self.assertIn("SELECT plan("+str(count)+");",sql)
+            self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),count)
+            self.assertIn("SET CONSTRAINTS ALL IMMEDIATE;",sql)
+            self.assertIn("SELECT * FROM finish();",sql)
+            for marker in markers:
+                self.assertIn(marker,sql)
+            for forbidden in ("GRANT SELECT ON app_private","supabase db push",
+                              "INSERT INTO app_private.approval_reviews"):
+                self.assertNotIn(forbidden,sql)
+            role="runner"
+            for line in sql.splitlines():
+                if line=="SET ROLE schoolos_schema_owner;":
+                    role="owner"
+                elif line=="SET ROLE authenticated;":
+                    role="authenticated"
+                elif line=="RESET ROLE;":
+                    role="runner"
+                if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                    self.assertNotEqual(role,"owner")
+
+
 if __name__ == "__main__":
     unittest.main()
