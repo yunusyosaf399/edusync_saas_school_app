@@ -466,3 +466,14 @@ BEGIN
 END $body$;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+
+-- The Employee identity application receipt guard is SECURITY DEFINER owned
+-- by schoolos_schema_owner (Effect18_04). Its binding invariant invokes the
+-- SECURITY DEFINER request-payload validator owned by schoolos_authz_reader
+-- (Effect18_07); unlike the workflow executor, schema_owner lacked EXECUTE.
+-- Grant only this private call to the exact NOLOGIN trigger owner. Never grant
+-- to authenticated, anon, service_role or PUBLIC.
+SET ROLE schoolos_authz_reader;
+GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_request_payload_valid(jsonb,jsonb)
+  TO schoolos_schema_owner;
+RESET ROLE;
