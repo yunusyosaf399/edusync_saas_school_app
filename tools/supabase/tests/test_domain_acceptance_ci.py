@@ -1991,6 +1991,29 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("CREATE OR REPLACE FUNCTION app.d1_review_employee_identity_request(",p2)
         self.assertIn("CREATE OR REPLACE FUNCTION app.d1_apply_employee_identity_request(",p2)
+        # The first suite-49 real REJECT replay revealed a forbidden direct
+        # workflow-executor read of private command receipts. The new ordered,
+        # append-only continuation moves exactly that typed receipt-kind and
+        # request binding into its existing evidence-writer-owned context.
+        replay=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect18_13_employee_identity_review_replay_kind.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+            "CREATE OR REPLACE FUNCTION app_private.d1_employee_identity_command_context(",
+            "CREATE OR REPLACE FUNCTION app.d1_review_employee_identity_request(",
+            "v_receipt.result_kind IS DISTINCT FROM 'D1_EMPLOYEE_IDENTITY_REVIEW'",
+            "v_receipt.request_id IS DISTINCT FROM NULLIF(p_intent->>0,'')::uuid",
+            "v_receipt.result_ref IS DISTINCT FROM NULLIF(p_intent->>0,'')::uuid",
+            "SET ROLE schoolos_evidence_writer;",
+            "SET ROLE schoolos_workflow_executor;",
+            "REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;",
+        ):
+            self.assertIn(marker,replay)
+        self.assertNotIn("NOT EXISTS (SELECT 1 FROM app_private.command_receipts cr",replay)
+        self.assertNotIn("GRANT SELECT ON app_private",replay)
+        self.assertNotIn("TO authenticated",replay)
+        self.assertNotIn("TO anon",replay)
+        self.assertNotIn("TO service_role",replay)
 
 
 if __name__ == "__main__":
