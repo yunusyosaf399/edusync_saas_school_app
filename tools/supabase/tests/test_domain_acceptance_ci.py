@@ -2130,6 +2130,49 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         )
         self.assertEqual(DOMAIN_TESTS[55:],[[n,c] for n,c,_ in additions])
         self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2751)
+
+        # Real Student no-placement Status acceptance exposed a PL/pgSQL
+        # uninitialized record exception before ALL scope was evaluated.
+        scope=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_03_student_unplaced_authorization.sql.draft"
+        ).read_text(encoding="utf-8")
+        for function in (
+          "d1_student_status_authorized",
+          "d1_student_emergency_contact_authorized",
+          "d1_student_identity_authorized",
+          "d1_student_special_authorized",
+          "d1_student_status_correct_authorized",
+        ):
+            self.assertIn("CREATE OR REPLACE FUNCTION app_private."+function+"(",scope)
+        self.assertEqual(scope.count("NULL::uuid AS campus_id"),5)
+        self.assertEqual(scope.count("NULL::uuid AS section_id INTO"),5)
+        self.assertIn("SET ROLE schoolos_authz_reader;",scope)
+        self.assertTrue(scope.rstrip().endswith("RESET ROLE;"))
+        # Existing private receipt dispatcher had no Student Identity/Special
+        # P2 entry. Exact per-operation/phase arg counts must remain bound.
+        dispatch=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_04_student_p2_receipt_phase_allowlist.sql.draft"
+        ).read_text(encoding="utf-8")
+        for token in (
+          "SET ROLE schoolos_evidence_writer;",
+          "CREATE OR REPLACE FUNCTION app_private.d1_command_receipt_lookup(",
+          "p_operation_code='student.identity.correct'",
+          "p_operation_code='student.special.correct'",
+          "p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9",
+          "p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=5",
+          "p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4",
+          "p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2",
+          "pg_catalog.pg_advisory_xact_lock_shared(71001,1)",
+          "app_private.d1_jcs_typed(",
+        ):
+            self.assertIn(token,dispatch)
+        for text in (scope,dispatch):
+            for forbidden in ("GRANT SELECT ON app_private",
+                              "TO authenticated;", "TO anon;",
+                              "TO service_role;", "TO PUBLIC;",
+                              "supabase db push"):
+                self.assertNotIn(forbidden,text)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
