@@ -2315,6 +2315,32 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertLess(p2.index(fixture_lookup),p2.index("SET ROLE schoolos_schema_owner;"))
             self.assertGreater(p2.index(fixture_lookup),p2.index(r"\ir fixtures/command_actor.sql"))
 
+        # Identity/Special private corrections intentionally require a live
+        # PRIMARY enrollment. Never bypass that check simply because ALL
+        # permission is present: build the same valid academic path and
+        # current class/section capacity facts used in established tests.
+        for p2_name in (
+          "58_student_identity_p2_approval_history.sql",
+          "59_student_special_p2_approval_history.sql",
+        ):
+            p2=(root/"supabase/tests/domain"/p2_name).read_text(encoding="utf-8")
+            for exact in (
+              "INSERT INTO app.campuses(",
+              "INSERT INTO app.academic_years(",
+              "INSERT INTO app_private.academic_classes(",
+              "INSERT INTO app_private.class_offerings(",
+              "INSERT INTO app_private.section_offerings(",
+              "INSERT INTO app_private.enrollments(",
+              "INSERT INTO app_private.capacity_revisions(",
+              "'PRIMARY','INITIAL','ACTIVE'",
+              "Current Student P2 authorized placement",
+              "P2 class initial capacity",
+              "P2 section initial capacity",
+            ):
+                self.assertIn(exact,p2)
+            self.assertLess(p2.index("INSERT INTO app_private.enrollments("),
+                            p2.index("SET ROLE authenticated;"))
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
