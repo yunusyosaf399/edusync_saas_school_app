@@ -1551,9 +1551,13 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         source=(domain_root/"supabase/tests/domain/"
             "44_employee_qualification_p1_direct_history_authorization.sql").read_text(
                 encoding="utf-8")
-        draft=(domain_root/"supabase/migrations/"
-            "20260928000000_domain_package_01.sql.draft").read_text(
-                encoding="utf-8")
+        # Effect 19 functions are in ordered continuation fragments, not the base structural draft.
+        draft="\n".join(
+            (domain_root/"supabase/migrations"/
+             ("20260928000000_domain_package_01_effect19_"+suffix+".sql.draft")
+            ).read_text(encoding="utf-8")
+            for suffix in ("01_qualification_auth","02_qualification_effect","04_qualification_direct")
+        )
         self.assertEqual(len(DOMAIN_TESTS),44)
         self.assertEqual(DOMAIN_TESTS[42],
             ["43_employee_profile_p1_direct_photo_authorization.sql",49])
