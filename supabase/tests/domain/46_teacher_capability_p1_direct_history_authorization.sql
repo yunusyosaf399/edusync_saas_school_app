@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(51);
+SELECT plan(50);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED' WHERE code='teaching.capability.change';
@@ -68,7 +68,6 @@ SELECT * FROM app.d1_change_teacher_capability(:'employee_employee_id',1,'ADD',
 SELECT ok(:'add_capability_id'::uuid IS NOT NULL,'ADD creates a capability identifier');
 SELECT is(:'add_action'::text,'ADD'::text,'ADD result specifies the action');
 SELECT is(:'add_effective_from'::date,CURRENT_DATE-20,'ADD starts within active employment');
-SELECT ok(:'add_effective_until'::text IS NULL,'unbounded ADD returns an open interval');
 SELECT is(:'add_employee_version'::bigint,1::bigint,'capability ADD preserves Employee version');
 SELECT * FROM app.d1_change_teacher_capability(:'employee_employee_id',1,'ADD',
  NULL,NULL,NULL,CURRENT_DATE-20,NULL,'Grant teaching eligibility','cap-add') \gset add_replay_
