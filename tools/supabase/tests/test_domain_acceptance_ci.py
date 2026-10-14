@@ -1558,13 +1558,13 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
             for suffix in ("01_qualification_auth","02_qualification_effect","04_qualification_direct")
         )
-        self.assertEqual(len(DOMAIN_TESTS),44)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),44)
         self.assertEqual(DOMAIN_TESTS[42],
             ["43_employee_profile_p1_direct_photo_authorization.sql",49])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:43]),2299)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[43],
             ["44_employee_qualification_p1_direct_history_authorization.sql",46])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2345)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:44]),2345)
         self.assertIn("SELECT plan(46);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),46)
         self.assertTrue(source.startswith("--"))
@@ -1638,6 +1638,99 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
                 self.assertNotEqual(role,"owner")
 
+
+
+    def test_employee_experience_p1_direct_history_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        sql=(domain_root/"supabase/tests/domain/"
+            "45_employee_experience_p1_direct_history_authorization.sql").read_text(encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),45)
+        self.assertEqual(DOMAIN_TESTS[43],
+            ["44_employee_qualification_p1_direct_history_authorization.sql",46])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:44]),2345)
+        self.assertEqual(DOMAIN_TESTS[44],
+            ["45_employee_experience_p1_direct_history_authorization.sql",51])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2396)
+        self.assertIn("SELECT plan(51);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),51)
+        self.assertTrue(sql.startswith("--"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_create_employee",
+            "app.d1_change_employee_experience",
+            "employee.experience.change",
+            "employee.experience_changed",
+            "app_private.employee_experience_entries",
+            "D1_EMPLOYEE_EXPERIENCE_CHANGE",
+            "SAVEPOINT exp_scope_revoked",
+            "SAVEPOINT exp_grant_revoked",
+            "SAVEPOINT exp_permission_disabled",
+            "SAVEPOINT exp_scope_contract_disabled",
+            "SAVEPOINT exp_operation_disabled",
+            "SAVEPOINT exp_policy_retired",
+            "overlap_one_experience_record_id",
+            "overlap_two_experience_record_id",
+            "experience_record_id",
+            "supersedes_id",
+            "'ADD'", "'CORRECT'", "'ARCHIVE'",
+            "SET CONSTRAINTS ALL IMMEDIATE;",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(marker,sql)
+        draft="\n".join(
+            (domain_root/"supabase/migrations"/
+             ("20260928000000_domain_package_01_effect20_"+suffix+".sql.draft")
+            ).read_text(encoding="utf-8")
+            for suffix in ("01_experience_auth","02_experience_effect_evidence",
+                           "02a_experience_intent_shape","03_experience_direct_submit")
+        )
+        for contract in (
+            "CREATE FUNCTION app.d1_change_employee_experience(",
+            "CREATE FUNCTION app_private.d1_employee_experience_policy(",
+            "CREATE FUNCTION app_private.d1_employee_experience_authorized(",
+            "CREATE FUNCTION app_private.d1_employee_experience_effect(",
+            "CREATE OR REPLACE FUNCTION app_private.d1_employee_experience_command_context(",
+        ):
+            self.assertIn(contract,draft)
+        corrected_guard=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect30_33_qualification_experience_lineage_guard.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "ELSIF TG_TABLE_NAME='employee_experience_entries' THEN",corrected_guard)
+        self.assertIn(
+            "x.experience_record_id=(pg_catalog.to_jsonb(NEW)->>'experience_record_id')::uuid",
+            corrected_guard)
+        # The receipt validator already requires the complete 11-value intent.
+        # Keep the input reason bound to both DIRECT and SUBMIT replay digests.
+        intent_repair=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect20_06_experience_reason_intent_binding.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(intent_repair.count(
+            "p_expected_experience_record_id,p_organization_name,p_role_title,p_starts_on,p_ends_on,p_summary,p_reason));"),2)
+        self.assertIn("CREATE OR REPLACE FUNCTION app.d1_change_employee_experience(",intent_repair)
+        self.assertIn("CREATE OR REPLACE FUNCTION app.d1_submit_employee_experience_change(",intent_repair)
+        self.assertIn("SET ROLE schoolos_employee_executor;",intent_repair)
+        self.assertIn("SET ROLE schoolos_workflow_executor;",intent_repair)
+        self.assertIn("Different reason",sql)
+        for forbidden in (
+            "INSERT INTO app_private.employee_experience_entries",
+            "UPDATE app_private.employee_experience_entries",
+            "DELETE FROM app_private.employee_experience_entries WHERE",
+            "GRANT SELECT ON app_private",
+            "supabase db push",
+        ):
+            self.assertNotIn(forbidden,sql)
+        role="runner"
+        for line in sql.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;":
+                role="owner"
+            elif line=="SET ROLE authenticated;":
+                role="authenticated"
+            elif line=="RESET ROLE;":
+                role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
 
 
 if __name__ == "__main__":
