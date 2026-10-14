@@ -1476,13 +1476,13 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         draft=(domain_root/"supabase/migrations/"
             "20260928000000_domain_package_01.sql.draft").read_text(
                 encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),43)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),43)
         self.assertEqual(DOMAIN_TESTS[41],
             ["42_employee_campus_affiliation_p1_direct_lifecycle_authorization.sql",74])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:42]),2250)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[42],
             ["43_employee_profile_p1_direct_photo_authorization.sql",49])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2299)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:43]),2299)
         self.assertIn("SELECT plan(49);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),49)
         self.assertTrue(source.startswith("--"))
@@ -1533,6 +1533,100 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
         # pgtap assertions execute under test runner or authenticated, never owner.
+        role="runner"
+        for line in source.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;":
+                role="owner"
+            elif line=="SET ROLE authenticated;":
+                role="authenticated"
+            elif line=="RESET ROLE;":
+                role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
+
+
+
+    def test_employee_qualification_p1_direct_history_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+            "44_employee_qualification_p1_direct_history_authorization.sql").read_text(
+                encoding="utf-8")
+        # Effect 19 functions are in ordered continuation fragments, not the base structural draft.
+        draft="\n".join(
+            (domain_root/"supabase/migrations"/
+             ("20260928000000_domain_package_01_effect19_"+suffix+".sql.draft")
+            ).read_text(encoding="utf-8")
+            for suffix in ("01_qualification_auth","02_qualification_effect","04_qualification_direct")
+        )
+        self.assertEqual(len(DOMAIN_TESTS),44)
+        self.assertEqual(DOMAIN_TESTS[42],
+            ["43_employee_profile_p1_direct_photo_authorization.sql",49])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:43]),2299)
+        self.assertEqual(DOMAIN_TESTS[-1],
+            ["44_employee_qualification_p1_direct_history_authorization.sql",46])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2345)
+        self.assertIn("SELECT plan(46);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),46)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_create_employee",
+            "app.d1_change_employee_qualification",
+            "employee.qualification.change",
+            "employee.qualification_changed",
+            "app_private.employee_qualifications",
+            "app_private.approval_policy_versions",
+            "D1_EMPLOYEE_QUALIFICATION_CHANGE",
+            "SAVEPOINT qual_scope_revoked",
+            "SAVEPOINT qual_grant_revoked",
+            "SAVEPOINT qual_permission_disabled",
+            "SAVEPOINT qual_scope_contract_disabled",
+            "SAVEPOINT qual_operation_disabled",
+            "SAVEPOINT qual_policy_retired",
+            "'ADD'", "'CORRECT'", "'ARCHIVE'",
+            "supersedes_id", "qualification_record_id",
+            "SET CONSTRAINTS ALL IMMEDIATE;",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(marker,source)
+        for contract in (
+            "CREATE FUNCTION app.d1_change_employee_qualification(",
+            "CREATE FUNCTION app_private.d1_employee_qualification_policy(",
+            "CREATE FUNCTION app_private.d1_employee_qualification_authorized(",
+            "CREATE FUNCTION app_private.d1_employee_qualification_effect(",
+        ):
+            self.assertIn(contract,draft)
+        # The older shared trigger accidentally dereferenced the experience
+        # lineage field on qualification rows. Require its append-only
+        # post-effect30 repair, while leaving frozen earlier SQL untouched.
+        corrected_guard=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect30_33_qualification_experience_lineage_guard.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE OR REPLACE FUNCTION app_private.d1_guard_effective_history()",
+            corrected_guard)
+        self.assertIn(
+            "IF TG_TABLE_NAME='employee_qualifications' THEN",
+            corrected_guard)
+        self.assertIn(
+            "ELSIF TG_TABLE_NAME='employee_experience_entries' THEN",
+            corrected_guard)
+        self.assertIn(
+            "x.qualification_record_id=(pg_catalog.to_jsonb(NEW)->>'qualification_record_id')::uuid",
+            corrected_guard)
+        self.assertIn(
+            "x.experience_record_id=(pg_catalog.to_jsonb(NEW)->>'experience_record_id')::uuid",
+            corrected_guard)
+        self.assertIn("D1 overlapping effective history",corrected_guard)
+        self.assertIn("D1 supersession head already consumed",corrected_guard)
+        for forbidden in (
+            "INSERT INTO app_private.employee_qualifications",
+            "UPDATE app_private.employee_qualifications",
+            "GRANT SELECT ON app_private",
+            "supabase db push",
+        ):
+            self.assertNotIn(forbidden,source)
         role="runner"
         for line in source.splitlines():
             if line=="SET ROLE schoolos_schema_owner;":
