@@ -2018,7 +2018,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_batch_51_55_five_workflow_acceptance_suites(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
-        self.assertEqual(len(DOMAIN_TESTS),55)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),55)
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:50]),2581)
         additions=(
             ("51_class_teacher_p2_retroactive_correct_approval.sql",23,
@@ -2048,9 +2048,9 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                "class-ineligible-second","class-ineligible-correct",
                "teaching.class_assignment_changed")),
         )
-        self.assertEqual(DOMAIN_TESTS[50:],
+        self.assertEqual(DOMAIN_TESTS[50:55],
             [[name,count] for name,count,_ in additions])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2696)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:55]),2696)
         # True P2 APPLY exercises the existing schema-owner-owned receipt guard.
         # Its nested SECURITY INVOKER validators need narrowly owned EXECUTE.
         private_acl=(root/"supabase/migrations/"
