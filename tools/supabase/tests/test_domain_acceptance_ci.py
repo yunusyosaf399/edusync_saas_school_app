@@ -2375,6 +2375,28 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertIn("SET ROLE schoolos_schema_owner;",guard)
             self.assertIn("SECURITY DEFINER",guard)
 
+        # The deferred Enrollment integrity guard also needs complete,
+        # exact pointwise roll coverage for the PRIMARY placement interval.
+        # Do not disable or bypass the Enrollment commit guard.
+        for p2_name in (
+          "58_student_identity_p2_approval_history.sql",
+          "59_student_special_p2_approval_history.sql",
+        ):
+            p2=(root/"supabase/tests/domain"/p2_name).read_text(encoding="utf-8")
+            for marker in (
+              "INSERT INTO app_private.roll_policy_revisions(",
+              "INSERT INTO app_private.roll_allocator_states(",
+              "INSERT INTO app_private.roll_allocations(",
+              "'PERSISTENT_STUDENT',12000",
+              "'b1000000-0000-4000-8000-000000000049',12000,CURRENT_DATE-20",
+              "P2 synthetic Student persistent roll policy",
+            ):
+                self.assertIn(marker,p2)
+            self.assertLess(p2.index("INSERT INTO app_private.enrollments("),
+                            p2.index("INSERT INTO app_private.roll_allocations("))
+            self.assertLess(p2.index("INSERT INTO app_private.roll_allocations("),
+                            p2.index("SET ROLE authenticated;"))
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
