@@ -1,0 +1,277 @@
+-- D1 Student-domain acceptance: absent current placement must never throw
+-- SQLSTATE 55000 from an unassigned PL/pgSQL record. ALL/DIRECT applies
+-- without an Enrollment; scoped CAMPUS/CLASS/SECTION require actual matching
+-- placement and must not be granted through an absent record.
+-- Preserve the original checked principal, roles/grants and time windows.
+-- Only redefine five existing NOLOGIN authz-reader-owned private helpers.
+-- No client-role function/table privilege changes; inactive append-only draft.
+SET ROLE schoolos_authz_reader;
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_authorized(
+  p_principal uuid,p_permission text,p_student uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date:=at_time::date; placement record; n bigint;
+BEGIN
+  -- A Student may have no current PRIMARY placement. Initialize all fields
+  -- so ALL/DIRECT remains checkable and absent campus/class/section cannot match.
+  SELECT NULL::uuid AS campus_id,NULL::uuid AS class_id,
+         NULL::uuid AS section_id INTO placement;
+  IF p_principal IS NULL OR p_student IS NULL OR p_permission NOT IN ('student.status.change','student.status.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a JOIN app_private.roles r ON r.id=a.role_id
+     WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role AND a.principal_kind='INDIVIDUAL'
+       AND a.context_kind='INDIVIDUAL' AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  SELECT count(*) INTO n FROM app_private.enrollments e
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+     AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  IF n>1 THEN RETURN false; END IF;
+  IF n=1 THEN
+    SELECT so.id AS section_id,co.id AS class_id,co.campus_id INTO placement
+      FROM app_private.enrollments e JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+       AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id JOIN app_private.roles r ON r.id=sc.role_id
+     WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+       AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key AND c.enabled
+       AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+       AND (p_reviewer_role IS NULL OR sc.role_id=p_reviewer_role)
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+       AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+       AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until) AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+       AND sc.resolver_key='DIRECT'
+       AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+         OR (n=1 AND sc.scope_kind='CAMPUS' AND sc.campus_id=placement.campus_id)
+         OR (n=1 AND sc.scope_kind='CLASS' AND sc.class_offering_id=placement.class_id)
+         OR (n=1 AND sc.scope_kind='SECTION' AND sc.section_offering_id=placement.section_id))
+  );
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.d1_student_emergency_contact_authorized(
+  p_principal uuid,p_permission text,p_student uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); on_date date:=at_time::date; placement record; n bigint;
+BEGIN
+  -- A Student may have no current PRIMARY placement. Initialize all fields
+  -- so ALL/DIRECT remains checkable and absent campus/class/section cannot match.
+  SELECT NULL::uuid AS campus_id,NULL::uuid AS class_id,
+         NULL::uuid AS section_id INTO placement;
+  IF p_principal IS NULL OR p_student IS NULL
+     OR p_permission NOT IN ('student.emergency_contact.change','student.emergency_contact.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a JOIN app_private.roles r ON r.id=a.role_id
+     WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role AND a.principal_kind='INDIVIDUAL'
+       AND a.context_kind='INDIVIDUAL' AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  SELECT count(*) INTO n FROM app_private.enrollments e
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+     AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  IF n>1 THEN RETURN false; END IF;
+  IF n=1 THEN
+    SELECT so.id section_id,co.id class_id,co.campus_id INTO placement
+      FROM app_private.enrollments e JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state IN ('ACTIVE','COMPLETED','ENDED')
+       AND e.effective_from<=on_date AND (e.effective_until IS NULL OR on_date<e.effective_until);
+  END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id JOIN app_private.roles r ON r.id=sc.role_id
+     WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+       AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key AND c.enabled
+       AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+       AND (p_reviewer_role IS NULL OR sc.role_id=p_reviewer_role)
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+       AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+       AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until) AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+       AND sc.resolver_key='DIRECT'
+       AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+         OR (n=1 AND sc.scope_kind='CAMPUS' AND sc.campus_id=placement.campus_id)
+         OR (n=1 AND sc.scope_kind='CLASS' AND sc.class_offering_id=placement.class_id)
+         OR (n=1 AND sc.scope_kind='SECTION' AND sc.section_offering_id=placement.section_id)));
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.d1_student_identity_authorized(
+  p_principal uuid,p_permission text,p_student uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); placement record; n bigint;
+BEGIN
+  -- A Student may have no current PRIMARY placement. Initialize all fields
+  -- so ALL/DIRECT remains checkable and absent campus/class/section cannot match.
+  SELECT NULL::uuid AS campus_id,NULL::uuid AS class_id,
+         NULL::uuid AS section_id INTO placement;
+  IF p_principal IS NULL OR p_student IS NULL
+     OR p_permission NOT IN ('student.identity.correct','student.identity.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+        WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+          AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+  SELECT count(*) INTO n FROM app_private.enrollments e
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+     AND e.effective_from<=at_time::date AND (e.effective_until IS NULL OR at_time::date<e.effective_until);
+  IF n<>1 THEN RETURN false; END IF;
+  SELECT so.id AS section_id,co.id AS class_id,co.campus_id INTO placement
+    FROM app_private.enrollments e JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+     AND e.effective_from<=at_time::date AND (e.effective_until IS NULL OR at_time::date<e.effective_until);
+  IF placement.section_id IS NULL OR placement.class_id IS NULL OR placement.campus_id IS NULL THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a JOIN app_private.roles r ON r.id=a.role_id
+     WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+       AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id JOIN app_private.roles r ON r.id=sc.role_id
+     WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+       AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key AND c.enabled
+       AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+       AND (p_reviewer_role IS NULL OR sc.role_id=p_reviewer_role)
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+       AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+       AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until) AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+       AND sc.resolver_key='DIRECT'
+       AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+         OR (sc.scope_kind='CAMPUS' AND sc.campus_id=placement.campus_id)
+         OR (sc.scope_kind='CLASS' AND sc.class_offering_id=placement.class_id)
+         OR (sc.scope_kind='SECTION' AND sc.section_offering_id=placement.section_id))
+  );
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.d1_student_special_authorized(
+  p_principal uuid,p_permission text,p_student uuid,p_reviewer_role uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); placement record; n bigint;
+BEGIN
+  -- A Student may have no current PRIMARY placement. Initialize all fields
+  -- so ALL/DIRECT remains checkable and absent campus/class/section cannot match.
+  SELECT NULL::uuid AS campus_id,NULL::uuid AS class_id,
+         NULL::uuid AS section_id INTO placement;
+  IF p_principal IS NULL OR p_student IS NULL
+     OR p_permission NOT IN ('student.special.correct','student.special.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (
+       SELECT 1 FROM app_private.principals p
+       JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+        WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+          AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+  SELECT count(*) INTO n FROM app_private.enrollments e
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+     AND e.effective_from<=at_time::date
+     AND (e.effective_until IS NULL OR at_time::date<e.effective_until);
+  IF n<>1 THEN RETURN false; END IF;
+  SELECT so.id AS section_id,co.id AS class_id,co.campus_id INTO placement
+    FROM app_private.enrollments e
+    JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+   WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+     AND e.effective_from<=at_time::date
+     AND (e.effective_until IS NULL OR at_time::date<e.effective_until);
+  IF placement.section_id IS NULL OR placement.class_id IS NULL OR placement.campus_id IS NULL THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a JOIN app_private.roles r ON r.id=a.role_id
+     WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role
+       AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND r.state='ACTIVE' AND NOT r.family_only
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id JOIN app_private.roles r ON r.id=sc.role_id
+     WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+       AND a.role_id=sc.role_id AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+       AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key AND c.enabled
+       AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+       AND (p_reviewer_role IS NULL OR sc.role_id=p_reviewer_role)
+       AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+       AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+       AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+       AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+       AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until)
+       AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+       AND sc.resolver_key='DIRECT'
+       AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+         OR (sc.scope_kind='CAMPUS' AND sc.campus_id=placement.campus_id)
+         OR (sc.scope_kind='CLASS' AND sc.class_offering_id=placement.class_id)
+         OR (sc.scope_kind='SECTION' AND sc.section_offering_id=placement.section_id))
+  );
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_correct_authorized(p_principal uuid,p_permission text,p_student uuid,p_at date,p_reviewer_role uuid DEFAULT NULL)
+RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp(); e record; n bigint;
+BEGIN
+  -- A Student may have no current PRIMARY placement. Initialize all fields
+  -- so ALL/DIRECT remains checkable and absent campus/class/section cannot match.
+  SELECT NULL::uuid AS campus_id,NULL::uuid AS class_id,
+         NULL::uuid AS section_id INTO e;
+  IF p_principal IS NULL OR p_student IS NULL OR p_at IS NULL OR p_permission NOT IN ('student.status.correct','student.status.approve')
+     OR NOT EXISTS (SELECT 1 FROM app_private.students s WHERE s.id=p_student)
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+       WHERE p.id=p_principal AND p.kind='INDIVIDUAL' AND p.state='ACTIVE' AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL)
+  THEN RETURN false; END IF;
+  IF p_reviewer_role IS NOT NULL AND NOT EXISTS (SELECT 1 FROM app_private.principal_role_assignments a JOIN app_private.roles r ON r.id=a.role_id
+      WHERE a.principal_id=p_principal AND a.role_id=p_reviewer_role AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+        AND r.state='ACTIVE' AND NOT r.family_only AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+        AND (a.revoked_at IS NULL OR at_time<a.revoked_at)) THEN RETURN false; END IF;
+  SELECT count(*) INTO n FROM app_private.enrollments x WHERE x.student_id=p_student AND x.placement_kind='PRIMARY'
+    AND x.effective_from<=p_at AND (x.effective_until IS NULL OR p_at<x.effective_until);
+  IF n>1 THEN RETURN false; END IF;
+  IF n=1 THEN SELECT x.id,so.id section_id,co.id class_id,co.campus_id INTO e FROM app_private.enrollments x
+    JOIN app_private.section_offerings so ON so.id=x.section_offering_id JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    WHERE x.student_id=p_student AND x.placement_kind='PRIMARY' AND x.effective_from<=p_at AND (x.effective_until IS NULL OR p_at<x.effective_until); END IF;
+  RETURN EXISTS (SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id JOIN app_private.permissions p ON p.id=sc.permission_id JOIN app_private.roles r ON r.id=sc.role_id
+    WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL' AND a.role_id=sc.role_id
+      AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind
+      AND c.resolver_key=sc.resolver_key AND c.enabled AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+      AND (p_reviewer_role IS NULL OR sc.role_id=p_reviewer_role)
+      AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until) AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+      AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until) AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+      AND sc.valid_from<=at_time AND (sc.valid_until IS NULL OR at_time<sc.valid_until) AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+      AND sc.resolver_key='DIRECT' AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+        OR (n=1 AND sc.scope_kind='CAMPUS' AND sc.campus_id=e.campus_id)
+        OR (n=1 AND sc.scope_kind='CLASS' AND sc.class_offering_id=e.class_id)
+        OR (n=1 AND sc.scope_kind='SECTION' AND sc.section_offering_id=e.section_id)));
+END $body$;
+RESET ROLE;
