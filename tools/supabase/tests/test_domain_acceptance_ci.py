@@ -2273,6 +2273,33 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden,versions)
 
+        # D1 exact-head runtime #519: replay of a valid Student Status change
+        # without PRIMARY enrollment must check current ALL authority, not
+        # dereference the still-unassigned scope_row record.
+        replay_scope=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_08_student_status_replay_unplaced_scope.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+          "SET ROLE schoolos_authz_reader;",
+          "CREATE OR REPLACE FUNCTION app_private.d1_student_status_authorized_enrollment(",
+          "SELECT NULL::uuid AS section_id,NULL::uuid AS class_id,NULL::uuid AS campus_id INTO scope_row;",
+          "p_enrollment IS NULL AND sc.scope_kind='ALL' AND sc.campus_id IS NULL",
+          "p_enrollment IS NOT NULL AND sc.scope_kind='CAMPUS'",
+          "p_enrollment IS NOT NULL AND sc.scope_kind='CLASS'",
+          "p_enrollment IS NOT NULL AND sc.scope_kind='SECTION'",
+          "p.code=p_permission AND p.state='ENABLED'",
+          "sc.resolver_key='DIRECT'",
+          "REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;",
+        ):
+            self.assertIn(marker,replay_scope)
+        self.assertEqual(replay_scope.count("CREATE OR REPLACE FUNCTION app_private."),1)
+        for forbidden in (
+          "GRANT SELECT ON app_private", "GRANT UPDATE ON app_private",
+          "TO authenticated;", "TO anon;", "TO service_role;", "TO PUBLIC;",
+          "supabase db push",
+        ):
+            self.assertNotIn(forbidden,replay_scope)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
