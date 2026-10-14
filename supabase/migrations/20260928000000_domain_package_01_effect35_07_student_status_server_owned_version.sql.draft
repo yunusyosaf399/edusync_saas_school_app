@@ -1,0 +1,67 @@
+-- D1C2A Student status and factual status-correction server-owned version fix.
+-- Exact-head suite #56 runtime proved the existing status effect tried to
+-- set both row_version and updated_at directly, contradicting the M-row
+-- d1_guard_record / zz_d1_version trigger contract. Keep that guard intact.
+-- Student Status Correct also used this prohibited write in its P2 effect.
+-- Only current_status changes; the installed server trigger atomically
+-- increments row_version and assigns updated_at. The existing conditional
+-- WHERE and RETURNING preserve optimistic concurrency and result binding.
+-- These are exact same-owner private helpers; no new client EXECUTE, base-table
+-- grants, or mutation of frozen fragments. Migration 10 remains inactive.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_effect(
+  p_actor uuid,p_student uuid,p_expected_version bigint,p_expected_status text,p_expected_transition uuid,
+  p_new_status text,p_effective_on date,p_reason text
+) RETURNS TABLE(transition_id uuid,sequence_number bigint,student_version bigint,ended_enrollment_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; c record; new_id uuid:=pg_catalog.gen_random_uuid(); next_seq bigint; new_version bigint;
+  close_enrollment boolean; v_end_reason text;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+  THEN RAISE EXCEPTION 'D1 Student status effect intent invalid'; END IF;
+  SELECT * INTO pre FROM app_private.d1_student_status_preflight(p_student,p_expected_version,p_expected_status,p_expected_transition,p_new_status,p_effective_on);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Student status effect denied: %',pre.error_code; END IF;
+  SELECT * INTO c FROM app_private.d1_student_status_lock_context(p_student,p_expected_version);
+  IF c.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Student status source changed: %',c.error_code; END IF;
+  close_enrollment:=p_new_status IN ('WITHDRAWN','TRANSFERRED','GRADUATED','EXPELLED','DECEASED') AND c.enrollment_id IS NOT NULL;
+  SELECT COALESCE(max(t.sequence_number),0)+1 INTO next_seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
+  IF close_enrollment THEN
+    v_end_reason:='STATUS_'||p_new_status;
+    UPDATE app_private.roll_allocations r SET effective_until=p_effective_on,ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+      WHERE r.student_id=p_student AND r.enrollment_id=c.enrollment_id AND r.effective_until IS NULL;
+    UPDATE app_private.enrollments e SET placement_state='ENDED',effective_until=p_effective_on,end_reason=v_end_reason,
+      ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+      WHERE e.id=c.enrollment_id AND e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE' AND e.effective_until IS NULL;
+    IF NOT FOUND THEN RAISE EXCEPTION 'D1 Student status placement changed'; END IF;
+  END IF;
+  INSERT INTO app_private.student_status_transitions
+    (id,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id)
+  VALUES (new_id,p_actor,p_student,p_expected_status,p_new_status,p_effective_on,next_seq,pg_catalog.btrim(p_reason),NULL,NULL);
+  UPDATE app_private.students SET current_status=p_new_status
+    WHERE students.id=p_student AND students.row_version=p_expected_version AND students.current_status=p_expected_status RETURNING students.row_version INTO new_version;
+  IF new_version IS NULL THEN RAISE EXCEPTION 'D1 Student status projection changed'; END IF;
+  RETURN QUERY SELECT new_id,next_seq,new_version,CASE WHEN close_enrollment THEN c.enrollment_id ELSE NULL::uuid END;
+END $body$;
+
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_correct_effect(
+  p_actor uuid,p_student uuid,p_expected_version bigint,p_source uuid,p_expected_source_status text,p_expected_source_effective_on date,
+  p_new_status text,p_new_effective_on date,p_reason text,p_command_receipt uuid DEFAULT NULL
+) RETURNS TABLE(transition_id uuid,sequence_number bigint,student_version bigint,previous_status text,resulting_status text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pre record; tid uuid:=pg_catalog.gen_random_uuid(); new_version bigint;
+BEGIN
+  SELECT * INTO pre FROM app_private.d1_student_status_correct_preflight(p_student,p_expected_version,p_source,p_expected_source_status,
+    p_expected_source_effective_on,p_new_status,p_new_effective_on,p_reason);
+  IF pre.eligible IS DISTINCT FROM true THEN RAISE EXCEPTION 'D1 Student status correction effect denied: %',pre.error_code; END IF;
+  INSERT INTO app_private.student_status_transitions
+    (id,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id)
+  VALUES (tid,p_actor,p_student,pre.derived_previous_status,p_new_status,p_new_effective_on,pre.next_sequence,pg_catalog.btrim(p_reason),p_source,p_command_receipt);
+  UPDATE app_private.students SET current_status=pre.resulting_current_status
+    WHERE id=p_student AND row_version=p_expected_version RETURNING row_version INTO new_version;
+  IF new_version IS NULL THEN RAISE EXCEPTION 'D1 Student status correction Student changed'; END IF;
+  RETURN QUERY SELECT tid,pre.next_sequence,new_version,pre.derived_previous_status,pre.resulting_current_status;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
