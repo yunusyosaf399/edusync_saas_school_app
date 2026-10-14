@@ -1894,6 +1894,8 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "CREATE OR REPLACE FUNCTION app.d1_submit_employee_identity_correction(",
             "CREATE OR REPLACE FUNCTION app.d1_review_employee_identity_request(",
             "CREATE OR REPLACE FUNCTION app.d1_apply_employee_identity_request(",
+            "GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_request_payload_valid(jsonb,jsonb)",
+            "  TO schoolos_schema_owner;",
         ):
             self.assertIn(token,p2_context)
         self.assertEqual(p2_context.count(
