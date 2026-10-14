@@ -2243,6 +2243,36 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden,narrow)
 
+        # Runtime #515: d1_guard_record rejects direct updates to server-owned
+        # row_version/updated_at; zz_d1_version alone owns both fields.
+        # Status P1 and factual Status Correction P2 must respect that guard.
+        versions=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_07_student_status_server_owned_version.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+          "CREATE OR REPLACE FUNCTION app_private.d1_student_status_effect(",
+          "CREATE OR REPLACE FUNCTION app_private.d1_student_status_correct_effect(",
+          "UPDATE app_private.students SET current_status=p_new_status",
+          "UPDATE app_private.students SET current_status=pre.resulting_current_status",
+          "students.row_version=p_expected_version",
+          "row_version=p_expected_version",
+          "RETURNING students.row_version INTO new_version;",
+          "RETURNING row_version INTO new_version;",
+          "SET ROLE schoolos_student_executor;",
+          "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",
+        ):
+            self.assertIn(marker,versions)
+        self.assertEqual(versions.count("CREATE OR REPLACE FUNCTION app_private.d1_student_status"),2)
+        for forbidden in (
+          "SET current_status=p_new_status,row_version",
+          "SET current_status=pre.resulting_current_status,row_version",
+          "GRANT UPDATE ON app_private.students",
+          "GRANT SELECT ON app_private.students",
+          "TO authenticated;", "TO anon;", "TO service_role;", "TO PUBLIC;",
+          "supabase db push",
+        ):
+            self.assertNotIn(forbidden,versions)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
