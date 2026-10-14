@@ -1742,7 +1742,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(DOMAIN_TESTS[44],
             ["45_employee_experience_p1_direct_history_authorization.sql",51])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:45]),2396)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[45],
             ["46_teacher_capability_p1_direct_history_authorization.sql",50])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:46]),2446)
         self.assertIn("SELECT plan(50);",source)
@@ -1845,7 +1845,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "app_private.employee_identity_details",
             "SAVEPOINT identity_reviewer_revoked",
             "'APPROVAL'",
-            "'PENDING'", "'APPROVED'", "'EXECUTED'",
+            "pending version 3", "'APPROVED'", "'EXECUTED'",
             "'INVALIDATED'",
             "identity-clear-submit", "identity-clear-review", "identity-clear-apply",
             "identity-apply-1", "identity-submit-1",
