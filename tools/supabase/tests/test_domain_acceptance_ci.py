@@ -1649,10 +1649,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             ["44_employee_qualification_p1_direct_history_authorization.sql",46])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:44]),2345)
         self.assertEqual(DOMAIN_TESTS[44],
-            ["45_employee_experience_p1_direct_history_authorization.sql",50])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2395)
-        self.assertIn("SELECT plan(50);",sql)
-        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),50)
+            ["45_employee_experience_p1_direct_history_authorization.sql",51])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2396)
+        self.assertIn("SELECT plan(51);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),51)
         self.assertTrue(sql.startswith("--"))
         self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
         self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
@@ -1701,6 +1701,18 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertIn(
             "x.experience_record_id=(pg_catalog.to_jsonb(NEW)->>'experience_record_id')::uuid",
             corrected_guard)
+        # The receipt validator already requires the complete 11-value intent.
+        # Keep the input reason bound to both DIRECT and SUBMIT replay digests.
+        intent_repair=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect20_06_experience_reason_intent_binding.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(intent_repair.count(
+            "p_expected_experience_record_id,p_organization_name,p_role_title,p_starts_on,p_ends_on,p_summary,p_reason));"),2)
+        self.assertIn("CREATE OR REPLACE FUNCTION app.d1_change_employee_experience(",intent_repair)
+        self.assertIn("CREATE OR REPLACE FUNCTION app.d1_submit_employee_experience_change(",intent_repair)
+        self.assertIn("SET ROLE schoolos_employee_executor;",intent_repair)
+        self.assertIn("SET ROLE schoolos_workflow_executor;",intent_repair)
+        self.assertIn("Different reason",sql)
         for forbidden in (
             "INSERT INTO app_private.employee_experience_entries",
             "UPDATE app_private.employee_experience_entries",
