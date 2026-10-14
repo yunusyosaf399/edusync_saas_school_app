@@ -5,6 +5,7 @@
 -- Preserve the original checked principal, roles/grants and time windows.
 -- Only redefine five existing NOLOGIN authz-reader-owned private helpers.
 -- No client-role function/table privilege changes; inactive append-only draft.
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
 SET ROLE schoolos_authz_reader;
 CREATE OR REPLACE FUNCTION app_private.d1_student_status_authorized(
   p_principal uuid,p_permission text,p_student uuid,p_reviewer_role uuid DEFAULT NULL
@@ -275,3 +276,4 @@ BEGIN
         OR (n=1 AND sc.scope_kind='SECTION' AND sc.section_offering_id=e.section_id)));
 END $body$;
 RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
