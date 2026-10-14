@@ -51,10 +51,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 540,
-    "security_definers": 522,
+    "functions": 541,
+    "security_definers": 523,
     "app_functions": 157,
-    "private_functions": 383,
+    "private_functions": 384,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
@@ -385,8 +385,8 @@ def _main() -> int:
         observed = parse_runtime_probe(run_psql(container, runtime_probe_sql(), "D1C2A_PROBE", tuples=True, timeout=180))
         validate_runtime_probe(observed)
         print(
-            "D1C2A_CATALOG_PASS tables=34 rls=34/34 functions=540 definers=522 "
-            "app=157 private=383 auth_private=0 anon=0 service_role=0"
+            "D1C2A_CATALOG_PASS tables=34 rls=34/34 functions=541 definers=523 "
+            "app=157 private=384 auth_private=0 anon=0 service_role=0"
         )
 
         url, key = local_status()
