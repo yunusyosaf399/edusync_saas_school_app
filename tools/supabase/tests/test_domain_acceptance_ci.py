@@ -2397,6 +2397,44 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertLess(p2.index("INSERT INTO app_private.roll_allocations("),
                             p2.index("SET ROLE authenticated;"))
 
+        # Final Student Special D1_13 CHECK must enforce the canonical
+        # eight full blood codes from the newer frozen Effect22 contract,
+        # not the older short-code physical matrix. This is a replacement,
+        # NOT an expansion of the allowed enumeration. Retain end markers.
+        blood=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_10_student_special_frozen_blood_code_check.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SET ROLE schoolos_schema_owner;",blood)
+        self.assertIn("ALTER TABLE app_private.student_special_details",blood)
+        self.assertIn("DROP CONSTRAINT d1_13_ck;",blood)
+        self.assertIn("ADD CONSTRAINT d1_13_ck CHECK",blood)
+        for code in (
+            "A_POSITIVE","A_NEGATIVE","B_POSITIVE","B_NEGATIVE",
+            "AB_POSITIVE","AB_NEGATIVE","O_POSITIVE","O_NEGATIVE",
+        ):
+            self.assertIn("'"+code+"'",blood)
+        for short in (
+            "A_POS","A_NEG","B_POS","B_NEG","AB_POS","AB_NEG","O_POS","O_NEG",
+        ):
+            self.assertNotIn("'"+short+"'",blood)
+        for marker in (
+            "blood_group_code IS NULL",
+            "pg_catalog.btrim(reason)",
+            "effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL",
+            "effective_until > effective_from",
+            "RESET ROLE;",
+        ):
+            self.assertIn(marker,blood)
+        for forbidden in (
+            "GRANT ", "REVOKE ", "DISABLE TRIGGER", "DROP POLICY",
+            "TO authenticated;", "TO service_role;", "supabase db push",
+        ):
+            # Comments can mention grants; reject executable statements only.
+            self.assertFalse(any(
+                line.lstrip().startswith(forbidden)
+                for line in blood.splitlines() if not line.lstrip().startswith("--")
+            ))
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
