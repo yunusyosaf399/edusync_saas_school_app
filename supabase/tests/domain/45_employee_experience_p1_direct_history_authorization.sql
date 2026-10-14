@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(50);
+SELECT plan(51);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED' WHERE code='employee.experience.change';
@@ -61,6 +61,7 @@ SELECT * FROM app.d1_change_employee_experience(:'employee_employee_id',1,'ADD',
 SELECT is(:'add_replay_snapshot_id'::uuid,:'add_snapshot_id'::uuid,'ADD replay retains original snapshot ID');
 SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_experience(%L,1,'ADD',NULL,NULL,'North School','Head Teacher',CURRENT_DATE-360,CURRENT_DATE-90,'Mathematics classes','Record prior employment','exp-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'changed title cannot reuse ADD idempotency key');
 RESET ROLE;
+SELECT throws_ok(format($sql$SELECT * FROM app.d1_change_employee_experience(%L,1,'ADD',NULL,NULL,'North School','Teacher',CURRENT_DATE-360,CURRENT_DATE-90,'Mathematics classes','Different reason','exp-add')$sql$,:'employee_employee_id'),'P0001'::char(5),NULL::text,'same successful idempotency key cannot change reason');
 SELECT is((SELECT count(*) FROM app_private.employee_experience_entries),1::bigint,'ADD replay has no duplicate history row');
 SELECT ok((SELECT role_title='Teacher' AND effective_until IS NULL AND supersedes_id IS NULL
  FROM app_private.employee_experience_entries WHERE id=:'add_snapshot_id'::uuid),'original experience facts retained as open lineage head');
