@@ -1644,13 +1644,13 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
         sql=(domain_root/"supabase/tests/domain/"
             "45_employee_experience_p1_direct_history_authorization.sql").read_text(encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),45)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),45)
         self.assertEqual(DOMAIN_TESTS[43],
             ["44_employee_qualification_p1_direct_history_authorization.sql",46])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:44]),2345)
         self.assertEqual(DOMAIN_TESTS[44],
             ["45_employee_experience_p1_direct_history_authorization.sql",51])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2396)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:45]),2396)
         self.assertIn("SELECT plan(51);",sql)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),51)
         self.assertTrue(sql.startswith("--"))
@@ -1723,6 +1723,90 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertNotIn(forbidden,sql)
         role="runner"
         for line in sql.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;":
+                role="owner"
+            elif line=="SET ROLE authenticated;":
+                role="authenticated"
+            elif line=="RESET ROLE;":
+                role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
+
+
+    def test_teacher_capability_p1_direct_history_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+            "46_teacher_capability_p1_direct_history_authorization.sql"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),46)
+        self.assertEqual(DOMAIN_TESTS[44],
+            ["45_employee_experience_p1_direct_history_authorization.sql",51])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:45]),2396)
+        self.assertEqual(DOMAIN_TESTS[-1],
+            ["46_teacher_capability_p1_direct_history_authorization.sql",50])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2446)
+        self.assertIn("SELECT plan(50);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),50)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_create_employee",
+            "app.d1_change_teacher_capability",
+            "teaching.capability.change",
+            "teaching.capability_changed",
+            "app_private.teacher_capabilities",
+            "D1_TEACHING_CAPABILITY",
+            "SAVEPOINT cap_scope_revoked",
+            "SAVEPOINT cap_grant_revoked",
+            "SAVEPOINT cap_permission_disabled",
+            "SAVEPOINT cap_scope_contract_disabled",
+            "SAVEPOINT cap_operation_disabled",
+            "SAVEPOINT cap_policy_retired",
+            "supersedes_id",
+            "dependency_closure",
+            "'ADD'", "'CORRECT'", "'END'",
+            "SET CONSTRAINTS ALL IMMEDIATE;",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(marker,source)
+        base=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01.sql.draft").read_text(encoding="utf-8")
+        for contract in (
+            "CREATE FUNCTION app.d1_change_teacher_capability(",
+            "CREATE FUNCTION app_private.d1_teaching_capability_policy(",
+            "CREATE FUNCTION app_private.d1_teaching_capability_authorized(",
+            "CREATE FUNCTION app_private.d1_teaching_capability_preflight(",
+            "CREATE FUNCTION app_private.d1_teaching_capability_effect(",
+        ):
+            self.assertIn(contract,base)
+        # The non-login authorization resolver needs Foundation Academic Year
+        # id/end-date read, while the Teaching executor needs only end date.
+        acl=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect30_35_teacher_capability_year_acl.sql.draft"
+        ).read_text(encoding="utf-8")
+        for fragment in (
+            "CREATE POLICY d1_teaching_capability_year_authz_reader",
+            "ON app.academic_years FOR SELECT TO schoolos_authz_reader",
+            "GRANT SELECT (id,ends_on) ON app.academic_years TO schoolos_authz_reader;",
+            "GRANT SELECT (ends_on) ON app.academic_years TO schoolos_teaching_executor;",
+            "RESET ROLE;",
+        ):
+            self.assertIn(fragment,acl)
+        for forbidden_acl in (
+            "TO authenticated", "TO anon", "TO service_role", "DISABLE ROW LEVEL SECURITY",
+            "BYPASSRLS", "GRANT UPDATE", "GRANT DELETE",
+        ):
+            self.assertNotIn(forbidden_acl,acl)
+        for forbidden in (
+            "INSERT INTO app_private.teacher_capabilities",
+            "UPDATE app_private.teacher_capabilities",
+            "GRANT SELECT ON app_private",
+            "supabase db push",
+        ):
+            self.assertNotIn(forbidden,source)
+        role="runner"
+        for line in source.splitlines():
             if line=="SET ROLE schoolos_schema_owner;":
                 role="owner"
             elif line=="SET ROLE authenticated;":
