@@ -1822,13 +1822,13 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         sql=(domain_root/"supabase/tests/domain/"
              "47_employee_identity_p2_approval_history_authorization.sql").read_text(
              encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),47)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),47)
         self.assertEqual(DOMAIN_TESTS[45],
             ["46_teacher_capability_p1_direct_history_authorization.sql",50])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:46]),2446)
         self.assertEqual(DOMAIN_TESTS[46],
             ["47_employee_identity_p2_approval_history_authorization.sql",40])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2486)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:47]),2486)
         self.assertIn("SELECT plan(40);",sql)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),40)
         self.assertTrue(sql.startswith("--"))
@@ -1921,6 +1921,76 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                 role="runner"
             if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
                 self.assertNotEqual(role,"owner")
+
+
+    def test_batch_48_50_class_teacher_identity_reject_capability_approval(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        approved_prefix = [entry for entry in DOMAIN_TESTS[:47]]
+        self.assertEqual(len(approved_prefix),47)
+        self.assertEqual(sum(count for _,count in approved_prefix),2486)
+        additions=(
+            ("48_class_teacher_p0_direct_history_authorization.sql",32,
+             ("app.d1_change_class_teacher_assignment",
+              "app_private.class_teacher_assignments",
+              "'ADD'", "'CORRECT'", "'END'",
+              "class_scope_revoked", "teaching.class_assignment_changed")),
+            ("49_employee_identity_p2_reject_requester_stale.sql",32,
+             ("app.d1_submit_employee_identity_correction",
+              "app.d1_review_employee_identity_request",
+              "app.d1_apply_employee_identity_request",
+              "'REJECT'", "'INVALIDATED'", "identity_stale_requester")),
+            ("50_teacher_capability_p1_approval_reject.sql",31,
+             ("app.d1_submit_teacher_capability_change",
+              "app.d1_review_teacher_capability_request",
+              "app.d1_apply_teacher_capability_request",
+              "'REJECT'", "'APPROVED'", "'INVALIDATED'", "'EXECUTED'",
+              "teaching_p1_revoked_reviewer")),
+        )
+        self.assertEqual(len(DOMAIN_TESTS),50)
+        self.assertEqual(DOMAIN_TESTS[47:],
+            [[name, count] for name,count,_ in additions])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2581)
+        for name,count,markers in additions:
+            sql=(domain_root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
+            self.assertTrue(sql.startswith("--"))
+            self.assertIn("SELECT plan("+str(count)+");",sql)
+            self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),count)
+            self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+            self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+            self.assertIn("SET CONSTRAINTS ALL IMMEDIATE;",sql)
+            self.assertIn("SELECT * FROM finish();",sql)
+            for marker in markers:
+                self.assertIn(marker,sql)
+            for forbidden in (
+                "DELETE FROM app_private.class_teacher_assignments WHERE",
+                "INSERT INTO app_private.approval_reviews",
+                "GRANT SELECT ON app_private", "supabase db push",
+            ):
+                self.assertNotIn(forbidden,sql)
+            role="runner"
+            for line in sql.splitlines():
+                if line=="SET ROLE schoolos_schema_owner;":
+                    role="owner"
+                elif line=="SET ROLE authenticated;":
+                    role="authenticated"
+                elif line=="RESET ROLE;":
+                    role="runner"
+                if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                    self.assertNotEqual(role,"owner")
+        base=(domain_root/"supabase/migrations/"
+              "20260928000000_domain_package_01.sql.draft").read_text(encoding="utf-8")
+        for name in (
+            "app.d1_change_class_teacher_assignment",
+            "app.d1_submit_teacher_capability_change",
+            "app.d1_review_teacher_capability_request",
+            "app.d1_apply_teacher_capability_request",
+        ):
+            self.assertIn("CREATE FUNCTION "+name+"(",base)
+        p2=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect18_12_employee_identity_p2_receipt_context.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("CREATE OR REPLACE FUNCTION app.d1_review_employee_identity_request(",p2)
+        self.assertIn("CREATE OR REPLACE FUNCTION app.d1_apply_employee_identity_request(",p2)
 
 
 if __name__ == "__main__":
