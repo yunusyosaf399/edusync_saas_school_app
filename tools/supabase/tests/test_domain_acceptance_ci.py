@@ -1396,13 +1396,14 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         draft=(domain_root/"supabase/migrations/"
             "20260928000000_domain_package_01.sql.draft").read_text(
                 encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),42)
+        # Immutable previously accepted suite-42 / 2,250 business prefix.
+        self.assertGreaterEqual(len(DOMAIN_TESTS),42)
         self.assertEqual(DOMAIN_TESTS[40],
             ["41_employee_job_assignment_p1_direct_lifecycle_authorization.sql",67])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:41]),2176)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[41],
             ["42_employee_campus_affiliation_p1_direct_lifecycle_authorization.sql",74])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2250)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:42]),2250)
         self.assertIn("SELECT plan(74);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),74)
         self.assertTrue(source.startswith("--"))
@@ -1465,6 +1466,83 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("INSERT INTO app_private.employee_campus_affiliations",source)
         self.assertNotIn("GRANT SELECT ON app_private",source)
         self.assertNotIn("supabase db push",source)
+
+
+    def test_employee_profile_direct_photo_business_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        source=(domain_root/"supabase/tests/domain/"
+            "43_employee_profile_p1_direct_photo_authorization.sql").read_text(
+                encoding="utf-8")
+        draft=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01.sql.draft").read_text(
+                encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),43)
+        self.assertEqual(DOMAIN_TESTS[41],
+            ["42_employee_campus_affiliation_p1_direct_lifecycle_authorization.sql",74])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:42]),2250)
+        self.assertEqual(DOMAIN_TESTS[-1],
+            ["43_employee_profile_p1_direct_photo_authorization.sql",49])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2299)
+        self.assertIn("SELECT plan(49);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),49)
+        self.assertTrue(source.startswith("--"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_create_employee",
+            "app.d1_change_employee_profile",
+            "employee.profile.update",
+            "EMPLOYEE_PROFILE_PHOTO",
+            "STUDENT_PROFILE_PHOTO",
+            "app_private.file_objects",
+            "PENDING", "VALIDATED", "AVAILABLE",
+            "app_private.approval_policy_versions",
+            "D1_EMPLOYEE_PROFILE",
+            "profile_photo_file_id",
+            "SAVEPOINT profile_scope_revoked",
+            "SAVEPOINT profile_grant_revoked",
+            "SAVEPOINT profile_permission_disabled",
+            "SAVEPOINT profile_scope_contract_disabled",
+            "SAVEPOINT profile_policy_retired",
+            "SAVEPOINT profile_operation_disabled",
+            "app_private.command_receipts",
+            "app_private.audit_events",
+            "SET ROLE schoolos_schema_owner;",
+            "SET ROLE authenticated;",
+            "SET CONSTRAINTS ALL IMMEDIATE;",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(marker,source)
+        for contract in (
+            "CREATE FUNCTION app.d1_change_employee_profile(",
+            "CREATE FUNCTION app_private.d1_profile_direct(",
+            "CREATE FUNCTION app_private.d1_profile_policy(",
+            "CREATE FUNCTION app_private.d1_profile_authorized(",
+            "CREATE FUNCTION app_private.d1_profile_effect(",
+            "CREATE FUNCTION app_private.d1_profile_receipt(",
+            "CREATE FUNCTION app_private.d1_profile_audit(",
+            "CREATE FUNCTION app_private.d1_guard_file_purpose()",
+            "'employee.profile.update', 'employee.profile.update', 'employee.profile.approve', false",
+        ):
+            self.assertIn(contract,draft)
+        self.assertEqual(source.count(r"\gset profile_"),1)
+        self.assertEqual(source.count(r"\gset photo_set_"),1)
+        self.assertEqual(source.count(r"\gset cleared_"),1)
+        self.assertNotIn("INSERT INTO app_private.employees",source)
+        self.assertIn("SELECT throws_ok($sql$UPDATE app_private.employees SET profile_photo_file_id=NULL$sql$",source)
+        self.assertNotIn("GRANT SELECT ON app_private",source)
+        self.assertNotIn("supabase db push",source)
+        # pgtap assertions execute under test runner or authenticated, never owner.
+        role="runner"
+        for line in source.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;":
+                role="owner"
+            elif line=="SET ROLE authenticated;":
+                role="authenticated"
+            elif line=="RESET ROLE;":
+                role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
 
 
 
