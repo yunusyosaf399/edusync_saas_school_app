@@ -8,7 +8,7 @@
 -- Append-only inactive Migration 10 draft; no hosted deployment.
 GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
 SET ROLE schoolos_student_executor;
-CREATE FUNCTION app_private.d1_student_status_correct_preflight(
+CREATE OR REPLACE FUNCTION app_private.d1_student_status_correct_preflight(
   p_student uuid,p_expected_version bigint,p_source uuid,p_expected_source_status text,p_expected_source_effective_on date,
   p_new_status text,p_new_effective_on date,p_reason text
 ) RETURNS TABLE(eligible boolean,error_code text,derived_previous_status text,next_sequence bigint,resulting_current_status text,scope_date date)
