@@ -1738,13 +1738,13 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         source=(domain_root/"supabase/tests/domain/"
             "46_teacher_capability_p1_direct_history_authorization.sql"
         ).read_text(encoding="utf-8")
-        self.assertEqual(len(DOMAIN_TESTS),46)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),46)
         self.assertEqual(DOMAIN_TESTS[44],
             ["45_employee_experience_p1_direct_history_authorization.sql",51])
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:45]),2396)
-        self.assertEqual(DOMAIN_TESTS[-1],
+        self.assertEqual(DOMAIN_TESTS[45],
             ["46_teacher_capability_p1_direct_history_authorization.sql",50])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2446)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:46]),2446)
         self.assertIn("SELECT plan(50);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),50)
         self.assertTrue(source.startswith("--"))
@@ -1807,6 +1807,112 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertNotIn(forbidden,source)
         role="runner"
         for line in source.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;":
+                role="owner"
+            elif line=="SET ROLE authenticated;":
+                role="authenticated"
+            elif line=="RESET ROLE;":
+                role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
+
+
+    def test_employee_identity_p2_approval_history_acceptance(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
+        sql=(domain_root/"supabase/tests/domain/"
+             "47_employee_identity_p2_approval_history_authorization.sql").read_text(
+             encoding="utf-8")
+        self.assertEqual(len(DOMAIN_TESTS),47)
+        self.assertEqual(DOMAIN_TESTS[45],
+            ["46_teacher_capability_p1_direct_history_authorization.sql",50])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:46]),2446)
+        self.assertEqual(DOMAIN_TESTS[46],
+            ["47_employee_identity_p2_approval_history_authorization.sql",40])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2486)
+        self.assertIn("SELECT plan(40);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),40)
+        self.assertTrue(sql.startswith("--"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        for marker in (
+            "app.d1_create_employee",
+            "app.d1_submit_employee_identity_correction",
+            "app.d1_review_employee_identity_request",
+            "app.d1_apply_employee_identity_request",
+            "employee.identity.correct",
+            "employee.identity.approve",
+            "employee.identity_corrected",
+            "app_private.employee_identity_details",
+            "SAVEPOINT identity_reviewer_revoked",
+            "'APPROVAL'",
+            "pending version 3", "'APPROVED'", "'EXECUTED'",
+            "'INVALIDATED'",
+            "identity-clear-submit", "identity-clear-review", "identity-clear-apply",
+            "identity-apply-1", "identity-submit-1",
+            "D1_REVIEWER_ROLE_SCOPE",
+            "SYNTH-001",
+            "SET CONSTRAINTS ALL IMMEDIATE;",
+            "SELECT * FROM finish();",
+        ):
+            self.assertIn(marker,sql)
+        fragments="\n".join(
+            (domain_root/"supabase/migrations"/
+             ("20260928000000_domain_package_01_effect18_"+suffix+".sql.draft")
+            ).read_text(encoding="utf-8")
+            for suffix in ("01_employee_identity","02_employee_identity",
+                           "03_employee_identity","07_employee_identity_payload_parse",
+                           "08_employee_identity_p2_contract")
+        )
+        for contract in (
+            "CREATE FUNCTION app.d1_submit_employee_identity_correction(",
+            "CREATE FUNCTION app.d1_review_employee_identity_request(",
+            "CREATE FUNCTION app.d1_apply_employee_identity_request(",
+            "CREATE OR REPLACE FUNCTION app_private.d1_employee_identity_p2_policy(",
+            "CREATE FUNCTION app_private.d1_employee_identity_effect(",
+            "CREATE FUNCTION app_private.d1_employee_identity_authorized(",
+        ):
+            self.assertIn(contract,fragments)
+        # Receipt hardening: this P2 operation is intentionally NOT in the
+        # shared generic allowlist. The operation-specific context preserves
+        # exact canonicalization, advisory locking, verified actors and P2
+        # phase shape without widening any other command's dispatch surface.
+        p2_context=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect18_12_employee_identity_p2_receipt_context.sql.draft"
+        ).read_text(encoding="utf-8")
+        for token in (
+            "CREATE FUNCTION app_private.d1_employee_identity_command_context(",
+            "p_command_kind NOT IN ('request.submit','request.review','request.apply')",
+            "p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=4",
+            "p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4",
+            "p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2",
+            "pg_catalog.pg_advisory_xact_lock_shared(71001,1)",
+            "pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer)",
+            "app_private.d1_jcs_typed(",
+            "TO schoolos_workflow_executor;",
+            "SET ROLE schoolos_evidence_writer;",
+            "SET ROLE schoolos_workflow_executor;",
+            "CREATE OR REPLACE FUNCTION app.d1_submit_employee_identity_correction(",
+            "CREATE OR REPLACE FUNCTION app.d1_review_employee_identity_request(",
+            "CREATE OR REPLACE FUNCTION app.d1_apply_employee_identity_request(",
+            "GRANT EXECUTE ON FUNCTION app_private.d1_employee_identity_request_payload_valid(jsonb,jsonb)",
+            "  TO schoolos_schema_owner;",
+        ):
+            self.assertIn(token,p2_context)
+        self.assertEqual(p2_context.count(
+            "app_private.d1_employee_identity_command_context(\n    "),3)
+        self.assertNotIn("CREATE OR REPLACE FUNCTION app_private.d1_command_receipt_lookup(",p2_context)
+        self.assertNotIn("TO authenticated",p2_context)
+        self.assertNotIn("TO service_role",p2_context)
+        self.assertNotIn("GRANT SELECT ON app_private",p2_context)
+        for forbidden in (
+            "INSERT INTO app_private.employee_identity_details",
+            "UPDATE app_private.employee_identity_details",
+            "GRANT SELECT ON app_private",
+            "supabase db push",
+        ):
+            self.assertNotIn(forbidden,sql)
+        role="runner"
+        for line in sql.splitlines():
             if line=="SET ROLE schoolos_schema_owner;":
                 role="owner"
             elif line=="SET ROLE authenticated;":
