@@ -1597,6 +1597,29 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "CREATE FUNCTION app_private.d1_employee_qualification_effect(",
         ):
             self.assertIn(contract,draft)
+        # The older shared trigger accidentally dereferenced the experience
+        # lineage field on qualification rows. Require its append-only
+        # post-effect30 repair, while leaving frozen earlier SQL untouched.
+        corrected_guard=(domain_root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect30_33_qualification_experience_lineage_guard.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE OR REPLACE FUNCTION app_private.d1_guard_effective_history()",
+            corrected_guard)
+        self.assertIn(
+            "IF TG_TABLE_NAME='employee_qualifications' THEN",
+            corrected_guard)
+        self.assertIn(
+            "ELSIF TG_TABLE_NAME='employee_experience_entries' THEN",
+            corrected_guard)
+        self.assertIn(
+            "x.qualification_record_id=(pg_catalog.to_jsonb(NEW)->>'qualification_record_id')::uuid",
+            corrected_guard)
+        self.assertIn(
+            "x.experience_record_id=(pg_catalog.to_jsonb(NEW)->>'experience_record_id')::uuid",
+            corrected_guard)
+        self.assertIn("D1 overlapping effective history",corrected_guard)
+        self.assertIn("D1 supersession head already consumed",corrected_guard)
         for forbidden in (
             "INSERT INTO app_private.employee_qualifications",
             "UPDATE app_private.employee_qualifications",
