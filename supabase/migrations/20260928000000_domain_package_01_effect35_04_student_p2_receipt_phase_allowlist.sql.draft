@@ -6,6 +6,7 @@
 -- 5/4/2; do not admit arbitrary codes, direct phases, or other lengths.
 -- Existing NOLOGIN evidence-writer owner only. Never expose private EXECUTE
 -- to authenticated, anon, service_role or PUBLIC. Append-only inactive draft.
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
 SET ROLE schoolos_evidence_writer;
 CREATE OR REPLACE FUNCTION app_private.d1_command_receipt_lookup(
   p_operation_code text, p_command_kind text,
@@ -166,3 +167,4 @@ BEGIN
   END IF;
 END $body$;
 RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
