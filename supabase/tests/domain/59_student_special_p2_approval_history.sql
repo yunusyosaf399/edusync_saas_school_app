@@ -72,6 +72,29 @@ INSERT INTO app_private.capacity_revisions(
   'b1000000-0000-4000-8000-000000000045',NULL,30,CURRENT_DATE-20,
   'P2 section initial capacity','11111111-1111-4111-8111-111111111111');
 
+
+-- The deferred Enrollment integrity guard also requires pointwise roll
+-- coverage for the entire accepted PRIMARY interval, not merely a section.
+-- Match the established retained-roll fixture (policy -> allocator -> allocation).
+INSERT INTO app_private.roll_policy_revisions(
+ id,school_id,revision,mode,start_value,effective_from,reason,created_by)
+VALUES ('b1000000-0000-4000-8000-000000000049',
+ '22222222-2222-4222-8222-222222222222',1,'PERSISTENT_STUDENT',12000,
+ CURRENT_DATE-30,'P2 synthetic Student persistent roll policy',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.roll_allocator_states(
+ id,policy_revision_id,class_offering_id,next_value,created_by)
+VALUES ('b1000000-0000-4000-8000-000000000050',
+ 'b1000000-0000-4000-8000-000000000049',NULL,12001,
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.roll_allocations(
+ id,enrollment_id,student_id,policy_revision_id,numeric_value,effective_from,created_by)
+VALUES ('b1000000-0000-4000-8000-000000000051',
+ 'b1000000-0000-4000-8000-000000000046',
+ 'b1000000-0000-4000-8000-000000000001',
+ 'b1000000-0000-4000-8000-000000000049',12000,CURRENT_DATE-20,
+ '11111111-1111-4111-8111-111111111111');
+
 INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by)
 VALUES ('b1000000-0000-4000-8000-000000000021','INDIVIDUAL',
  '10000000-0000-4000-8000-000000000004','Independent student reviewer','ACTIVE',
