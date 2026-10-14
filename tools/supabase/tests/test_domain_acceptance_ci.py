@@ -2213,6 +2213,36 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden,lockfix)
 
+        # Later exact-head runtime proved FOR SHARE also requires UPDATE
+        # privilege, which immutable status history must never receive.
+        # The last append-only definition uses parent-row FOR UPDATE and
+        # a narrow, unlocked read of the historical status transition.
+        narrow=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_06_student_status_narrow_history_read.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+          "SET ROLE schoolos_student_executor;",
+          "CREATE OR REPLACE FUNCTION app_private.d1_student_status_lock_context(",
+          "WHERE s.id=p_student FOR UPDATE;",
+          "SELECT t.id,t.new_status,t.effective_on,t.sequence_number",
+          "ORDER BY t.effective_on DESC,t.sequence_number DESC LIMIT 1;",
+          "x.effective_from<=CURRENT_DATE",
+          "ORDER BY r.id FOR UPDATE;",
+          "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",
+        ):
+            self.assertIn(marker,narrow)
+        for forbidden in (
+          "LIMIT 1 FOR SHARE;",
+          "LIMIT 1 FOR UPDATE;",
+          "SELECT t.* INTO",
+          "SELECT * INTO s FROM app_private.students",
+          "GRANT UPDATE",
+          "GRANT SELECT ON app_private",
+          "TO authenticated;", "TO anon;", "TO service_role;",
+          "TO PUBLIC;", "supabase db push",
+        ):
+            self.assertNotIn(forbidden,narrow)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
