@@ -2185,6 +2185,34 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                               "supabase db push"):
                 self.assertNotIn(forbidden,text)
 
+
+        # Real suite 56 next hit an immutable status-history SELECT/FOR UPDATE
+        # privilege mismatch: the student executor lacked only created_at
+        # column SELECT, and must never gain UPDATE on append-only transitions.
+        # Locking the parent Student FOR UPDATE serializes this aggregate;
+        # historical immutable snapshot uses a compatible FOR SHARE read.
+        lockfix=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_05_student_status_immutable_lock_acl.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+          "SET ROLE schoolos_schema_owner;",
+          "GRANT SELECT (created_at) ON app_private.student_status_transitions",
+          "TO schoolos_student_executor;",
+          "SET ROLE schoolos_student_executor;",
+          "CREATE OR REPLACE FUNCTION app_private.d1_student_status_lock_context(",
+          "WHERE id=p_student FOR UPDATE;",
+          "ORDER BY t.effective_on DESC,t.sequence_number DESC LIMIT 1 FOR SHARE;",
+          "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",
+        ):
+            self.assertIn(marker,lockfix)
+        for forbidden in (
+          "GRANT UPDATE ON app_private.student_status_transitions",
+          "GRANT SELECT ON app_private.student_status_transitions",
+          "TO authenticated;", "TO anon;", "TO service_role;", "TO PUBLIC;",
+          "supabase db push",
+        ):
+            self.assertNotIn(forbidden,lockfix)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
