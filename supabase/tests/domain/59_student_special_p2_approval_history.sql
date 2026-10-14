@@ -34,6 +34,44 @@ INSERT INTO app_private.student_status_transitions(
 VALUES ('b1000000-0000-4000-8000-000000000002','b1000000-0000-4000-8000-000000000001',
  NULL,'ACTIVE',CURRENT_DATE-20,1,'Synthetic initial admitted ACTIVE status','11111111-1111-4111-8111-111111111111');
 
+-- P2 Identity/Special require a real current PRIMARY placement.
+-- Synthetic, same-school Campus -> Academic Year -> Class -> Section context.
+INSERT INTO app.campuses(id,school_id,code,name,state,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000041','22222222-2222-4222-8222-222222222222',
+  'P2-STUDENT-CAMPUS','Student P2 acceptance campus','ACTIVE',
+  '11111111-1111-4111-8111-111111111111');
+INSERT INTO app.academic_years(id,school_id,code,label,starts_on,ends_on,state,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000042','22222222-2222-4222-8222-222222222222',
+  'P2-STUDENT-YEAR','Student P2 synthetic academic year',CURRENT_DATE-180,CURRENT_DATE+180,'ACTIVE',
+  '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.academic_classes(id,school_id,code,label,display_order,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000043','22222222-2222-4222-8222-222222222222',
+  'P2-STUDENT-CLASS','Student P2 synthetic grade',1,'11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.class_offerings(id,school_id,class_id,campus_id,academic_year_id,capacity,state,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000044','22222222-2222-4222-8222-222222222222',
+  'b1000000-0000-4000-8000-000000000043','b1000000-0000-4000-8000-000000000041',
+  'b1000000-0000-4000-8000-000000000042',30,'OPEN','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.section_offerings(
+ id,class_offering_id,campus_id,code,label,display_order,capacity,state,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000045',
+  'b1000000-0000-4000-8000-000000000044','b1000000-0000-4000-8000-000000000041',
+  'A','P2 student section',1,30,'OPEN','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.enrollments(
+ id,student_id,section_offering_id,placement_kind,entry_kind,placement_state,
+ effective_from,reason,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000046','b1000000-0000-4000-8000-000000000001',
+  'b1000000-0000-4000-8000-000000000045',
+  'PRIMARY','INITIAL','ACTIVE',CURRENT_DATE-20,'Current Student P2 authorized placement',
+  '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.capacity_revisions(
+ id,class_offering_id,section_offering_id,old_capacity,new_capacity,effective_on,reason,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000047',
+  'b1000000-0000-4000-8000-000000000044',NULL,NULL,30,CURRENT_DATE-20,
+  'P2 class initial capacity','11111111-1111-4111-8111-111111111111'),
+ ('b1000000-0000-4000-8000-000000000048',NULL,
+  'b1000000-0000-4000-8000-000000000045',NULL,30,CURRENT_DATE-20,
+  'P2 section initial capacity','11111111-1111-4111-8111-111111111111');
+
 INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by)
 VALUES ('b1000000-0000-4000-8000-000000000021','INDIVIDUAL',
  '10000000-0000-4000-8000-000000000004','Independent student reviewer','ACTIVE',
