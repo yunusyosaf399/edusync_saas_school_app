@@ -32,8 +32,8 @@ INSERT INTO app_private.student_status_transitions(
 VALUES ('b1000000-0000-4000-8000-000000000002','b1000000-0000-4000-8000-000000000001',
  NULL,'ACTIVE',CURRENT_DATE-20,1,'Synthetic initial admitted ACTIVE status','11111111-1111-4111-8111-111111111111');
 
--- P0 Identity/Special require a real current PRIMARY placement.
--- Synthetic, same-school Campus -> Academic Year -> Class -> Section context.
+-- INITIAL placement starts with no Enrollment: create the destination
+-- same-school Campus -> Academic Year -> Class -> Section ancestry only.
 INSERT INTO app.campuses(id,school_id,code,name,state,created_by) VALUES
  ('b1000000-0000-4000-8000-000000000041','22222222-2222-4222-8222-222222222222',
   'P0-STUDENT-CAMPUS','Student P0 acceptance campus','ACTIVE',
@@ -67,9 +67,9 @@ INSERT INTO app_private.capacity_revisions(
   'P0 section initial capacity','11111111-1111-4111-8111-111111111111');
 
 
--- The deferred Enrollment integrity guard also requires pointwise roll
--- coverage for the entire accepted PRIMARY interval, not merely a section.
--- Match the established retained-roll fixture (policy -> allocator -> allocation).
+-- The deferred Enrollment integrity guard requires pointwise roll coverage
+-- for the accepted PRIMARY interval. Supply the policy and allocator, but
+-- let the protected application produce the first actual roll allocation.
 INSERT INTO app_private.roll_policy_revisions(
  id,school_id,revision,mode,start_value,effective_from,reason,created_by)
 VALUES ('b1000000-0000-4000-8000-000000000049',
