@@ -1,0 +1,18 @@
+-- D1C2A #583 / suite #61: a legitimate P0 enrollment placement reached
+-- academic-executor-owned app_private.d1_enrollment_place_lock_destination.
+-- Its SECURITY DEFINER body calls the schema-owner lock helper
+-- app_private.d1_lock_academic_path(uuid,uuid,uuid); PostgreSQL denied EXECUTE.
+--
+-- Frozen Effect25_16 deliberately REVOKED the old direct Student-executor
+-- EXECUTE privilege and relocated academic locking to its fixed typed
+-- schoolos_academic_executor helper. It did not install the corresponding
+-- executor-to-executor edge. Restore ONLY the academic-executor -> schema
+-- owner path-lock function EXECUTE edge; keep Student executor, authenticated,
+-- anon and service_role denied. The trusted function still locks the ordered
+-- Academic Class -> Campus -> Academic Year -> Class Offering -> Section.
+-- No role inheritance, table privileges, RLS bypass or remote migration.
+-- Append-only inactive Migration 10 continuation.
+SET ROLE schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION app_private.d1_lock_academic_path(uuid,uuid,uuid)
+  TO schoolos_academic_executor;
+RESET ROLE;
