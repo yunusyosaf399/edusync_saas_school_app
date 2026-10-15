@@ -2745,11 +2745,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_batch_63_student_p1_direct_section_move_with_true_source(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
-        self.assertEqual(len(DOMAIN_TESTS),63)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),63)
         self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:62]),2797)
         self.assertEqual(DOMAIN_TESTS[62],[
             "63_student_enrollment_move_p1_direct_section_history.sql",34])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2831)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:63]),2831)
         sql=(root/"supabase/tests/domain/"
             "63_student_enrollment_move_p1_direct_section_history.sql").read_text(
                 encoding="utf-8")
@@ -2791,6 +2791,85 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             elif line=="RESET ROLE;": role="runner"
             if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
                 self.assertNotEqual(role,"owner")
+
+    def test_batch_64_family_primary_context_p0_retain_display_history(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        self.assertEqual(len(DOMAIN_TESTS),64)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:63]),2831)
+        self.assertEqual(DOMAIN_TESTS[63],[
+            "64_family_primary_context_p0_select_correct_end.sql",37])
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2868)
+        sql=(root/"supabase/tests/domain/"
+             "64_family_primary_context_p0_select_correct_end.sql").read_text(
+                encoding="utf-8")
+        self.assertTrue(sql.startswith("-- D1 suite #64:"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertIn("SELECT plan(37);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),37)
+        for item in (
+            "app.d1_change_family_primary_context(",
+            "family.primary_context.change",
+            "'SELECT'", "'END'", "'CORRECT'",
+            "SELECT * FROM finish();", "SET CONSTRAINTS ALL IMMEDIATE;",
+            "INSERT INTO app_private.family_relationships(",
+            "INSERT INTO app_private.families(",
+            "supersedes_id", "family.primary_context_changed",
+            "family_student_access", "primary-select-a", "primary-select-b",
+            "primary-correct", "primary-end", "SET ROLE authenticated;",
+        ):
+            self.assertIn(item,sql)
+        for forbidden in (
+            "INSERT INTO app_private.student_primary_family_contexts(",
+            "UPDATE app_private.student_primary_family_contexts",
+            "INSERT INTO app_private.family_student_access(",
+            "INSERT INTO app_private.approval_reviews(",
+            "GRANT SELECT ON app_private", "GRANT UPDATE ON app_private",
+            "GRANT EXECUTE", "supabase db push",
+        ):
+            self.assertNotIn(forbidden,sql)
+        # No assertions may be made under privileged fixture owner.
+        role="runner"
+        for line in sql.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;": role="owner"
+            elif line=="SET ROLE authenticated;": role="authenticated"
+            elif line=="RESET ROLE;": role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
+
+        # Runtime #618 exposed that the shared evidence-writer receipt lookup
+        # omitted the existing Effect33 direct operation. Compare the original
+        # fixed allowlist with the append-only replacement: only the new exact
+        # 8-element P0 DIRECT branch is allowed to differ, and no client grant.
+        original=(root/"supabase/migrations/"
+           "20260928000000_domain_package_01_effect35_04_student_p2_receipt_phase_allowlist.sql.draft"
+        ).read_text(encoding="utf-8")
+        correction=(root/"supabase/migrations/"
+           "20260928000000_domain_package_01_effect35_18_family_primary_context_receipt_intent_allowlist.sql.draft"
+        ).read_text(encoding="utf-8")
+        signature="CREATE OR REPLACE FUNCTION app_private.d1_command_receipt_lookup("
+        self.assertIn("SET ROLE schoolos_evidence_writer;",correction)
+        self.assertEqual(correction.count(signature),1)
+        self.assertIn("p_operation_code='family.primary_context.change'",correction)
+        self.assertIn("p_command_kind=p_operation_code",correction)
+        self.assertIn("pg_catalog.jsonb_array_length(p_intent)=8",correction)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTION",correction)
+        start="       -- Effect 33 P0 display selection is a single DIRECT command"
+        after="       -- Effect 32: the Family child-access public RPCs use the same fixed"
+        self.assertEqual(correction[correction.index(signature):correction.index(start)]
+                        +correction[correction.index(after):],
+                         original[original.index(signature):])
+        narrow=correction[correction.index(start):correction.index(after)]
+        self.assertIn("p_operation_code='family.primary_context.change'",narrow)
+        self.assertIn("AND p_command_kind=p_operation_code",narrow)
+        self.assertIn("AND pg_catalog.jsonb_array_length(p_intent)=8)",narrow)
+        for forbidden in (
+            "request.submit", "request.review", "request.apply",
+            "TO authenticated;", "TO anon;", "TO service_role;",
+            "GRANT SELECT", "GRANT UPDATE", "GRANT USAGE",
+            "DISABLE ROW LEVEL SECURITY", "ALTER TABLE",
+        ):
+            self.assertNotIn(forbidden,narrow)
 
 
 if __name__ == "__main__":
