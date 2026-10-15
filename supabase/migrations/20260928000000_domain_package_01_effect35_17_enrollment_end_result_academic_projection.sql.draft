@@ -1,0 +1,68 @@
+-- PR #62 D1 local runtime #596 failed at the first true P1 enrollment END.
+-- The Student-owned immutable-result verifier (Effect27_07) performed an
+-- unprivileged direct SELECT JOIN to app_private.class_offerings and
+-- app_private.section_offerings, contrary to frozen Academic ownership.
+-- Effect25_16 already provides precisely the required typed Section ancestry
+-- read as app_private.d1_enrollment_place_destination(uuid), owned by the
+-- Academic executor, EXECUTE granted to Student executor.
+-- Replace only the verifier's direct Academic table JOIN with that existing
+-- trusted projection; preserve its 8-key durable summary, source Enrollment,
+-- closed Roll, exact Student version, and failure-closed checks.
+-- No client/private or direct Academic table privilege widened; no global RLS
+-- change or new public RPC. Inactive .sql.draft, local runtime only.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_end_result_rows_match_exact(
+  p_student uuid,p_expected_student_version bigint,p_enrollment uuid,p_section uuid,
+  p_effective_from date,p_effective_until date,p_summary jsonb
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v_roll_id uuid; v_class_id uuid; v_campus_id uuid; v_year_id uuid; summary_version bigint; d record;
+BEGIN
+  IF p_student IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1
+     OR p_enrollment IS NULL OR p_section IS NULL OR p_effective_from IS NULL OR p_effective_until IS NULL
+     OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>8
+     OR NOT (p_summary ?& ARRAY['enrollment_id','roll_allocation_id','student_version','section_offering_id',
+       'class_offering_id','campus_id','academic_year_id','effective_until'])
+  THEN RETURN false; END IF;
+  BEGIN
+    v_roll_id:=NULLIF(p_summary->>'roll_allocation_id','')::uuid;
+    v_class_id:=NULLIF(p_summary->>'class_offering_id','')::uuid;
+    v_campus_id:=NULLIF(p_summary->>'campus_id','')::uuid;
+    v_year_id:=NULLIF(p_summary->>'academic_year_id','')::uuid;
+    summary_version:=NULLIF(p_summary->>'student_version','')::bigint;
+    IF NULLIF(p_summary->>'enrollment_id','')::uuid IS DISTINCT FROM p_enrollment
+       OR NULLIF(p_summary->>'section_offering_id','')::uuid IS DISTINCT FROM p_section
+       OR NULLIF(p_summary->>'effective_until','')::date IS DISTINCT FROM p_effective_until
+       OR summary_version IS DISTINCT FROM p_expected_student_version
+       OR v_roll_id IS NULL OR v_class_id IS NULL OR v_campus_id IS NULL OR v_year_id IS NULL
+    THEN RETURN false; END IF;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow OR numeric_value_out_of_range THEN
+    RETURN false;
+  END;
+  -- Frozen academic ownership boundary: verify ancestry through the fixed
+  -- academic-executor SECURITY DEFINER typed projection, not direct table SELECT.
+  SELECT * INTO d FROM app_private.d1_enrollment_place_destination(p_section);
+  IF NOT FOUND OR d.section_id IS DISTINCT FROM p_section
+     OR d.class_offering_id IS DISTINCT FROM v_class_id
+     OR d.campus_id IS DISTINCT FROM v_campus_id
+     OR d.academic_year_id IS DISTINCT FROM v_year_id THEN RETURN false; END IF;
+  IF NOT EXISTS (
+      SELECT 1
+        FROM app_private.enrollments e
+       WHERE e.id=p_enrollment AND e.student_id=p_student AND e.section_offering_id=p_section
+         AND e.placement_kind='PRIMARY' AND e.placement_state='ENDED'
+         AND e.effective_from=p_effective_from AND e.effective_until=p_effective_until
+         AND e.end_reason IS NOT NULL AND pg_catalog.length(pg_catalog.btrim(e.end_reason))>0
+         AND e.ended_at IS NOT NULL AND e.ended_by IS NOT NULL
+ )
+     OR NOT EXISTS (
+      SELECT 1 FROM app_private.roll_allocations r
+       WHERE r.id=v_roll_id AND r.enrollment_id=p_enrollment AND r.student_id=p_student
+         AND r.effective_until=p_effective_until AND r.ended_at IS NOT NULL AND r.ended_by IS NOT NULL)
+  THEN RETURN false; END IF;
+  RETURN true;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
