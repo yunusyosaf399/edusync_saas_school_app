@@ -2528,6 +2528,25 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden,reviewer)
 
+        # Status P2 application guard role must match the other
+        # schema-owner integrity guards rather than widening grants to
+        # the intentionally limited evidence writer (run #569).
+        application_owner=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_14_student_status_correct_application_guard_owner.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "ALTER FUNCTION app_private.d1_guard_student_status_correct_application()",
+            application_owner)
+        self.assertIn("OWNER TO schoolos_schema_owner;",application_owner)
+        self.assertEqual(application_owner.count("ALTER FUNCTION "),1)
+        for forbidden in (
+            "GRANT SELECT", "GRANT UPDATE", "GRANT EXECUTE",
+            "GRANT schoolos_schema_owner", "CREATE FUNCTION",
+            "CREATE OR REPLACE FUNCTION", "DISABLE ROW LEVEL SECURITY",
+            "DISABLE TRIGGER", "DROP TRIGGER", "DROP POLICY",
+        ):
+            self.assertNotIn(forbidden,application_owner)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
