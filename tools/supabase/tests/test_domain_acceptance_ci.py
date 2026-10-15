@@ -2794,11 +2794,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_batch_64_family_primary_context_p0_retain_display_history(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
-        self.assertEqual(len(DOMAIN_TESTS),64)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),64)
         self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:63]),2831)
         self.assertEqual(DOMAIN_TESTS[63],[
             "64_family_primary_context_p0_select_correct_end.sql",37])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2868)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:64]),2868)
         sql=(root/"supabase/tests/domain/"
              "64_family_primary_context_p0_select_correct_end.sql").read_text(
                 encoding="utf-8")
@@ -2870,6 +2870,64 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "DISABLE ROW LEVEL SECURITY", "ALTER TABLE",
         ):
             self.assertNotIn(forbidden,narrow)
+
+    def test_batch_65_remaining_four_student_operations_fail_closed(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        self.assertEqual(len(DOMAIN_TESTS),65)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:64]),2868)
+        self.assertEqual(DOMAIN_TESTS[64],[
+            "65_remaining_student_commands_fail_closed.sql",38])
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2906)
+        sql=(root/"supabase/tests/domain/"
+             "65_remaining_student_commands_fail_closed.sql").read_text(
+                 encoding="utf-8")
+        self.assertTrue(sql.startswith("-- D1 suite #65:"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertIn("SELECT plan(38);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),38)
+        self.assertEqual(sql.count("SET ROLE authenticated;"),1)
+        self.assertIn("SET CONSTRAINTS ALL IMMEDIATE;",sql)
+        self.assertIn("SELECT * FROM finish();",sql)
+        self.assertIn("This is a *blocking/readiness* security suite",sql)
+        blocked=[
+            "student.roll_policy.change", "student.roll.correct",
+            "student.create", "student.profile.update"
+        ]
+        for operation in blocked:
+            self.assertIn("code='"+operation+"'",sql)
+            self.assertIn("LIKE '%"+operation+"%'",sql)
+            self.assertIn(operation+" remains explicitly disabled at runtime",sql)
+        for table in (
+            "app_private.students",
+            "app_private.roll_allocations",
+            "app_private.roll_policy_revisions",
+        ):
+            for action in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                self.assertRegex(sql,r"\\$sql\\$"+action+r".*?"+table.replace(".",r"\\."))
+        self.assertIn("family_safe",sql)
+        self.assertIn("command_receipts",sql)
+        self.assertIn("approval_requests",sql)
+        self.assertIn("enabled),0::bigint",sql)
+        self.assertIn("state='ENABLED'),0::bigint",sql)
+        self.assertIn("SET ROLE authenticated;",sql)
+        self.assertNotIn("SET ROLE schoolos_schema_owner;",sql)
+        self.assertNotIn("GRANT EXECUTE",sql)
+        self.assertNotIn("UPDATE app_private.operation_contracts",sql)
+        self.assertNotIn("UPDATE app_private.permissions",sql)
+        self.assertNotIn("supabase db push",sql)
+        untrusted_dml=re.sub(r"\\$sql\\$.*?\\$sql\\$","",sql,flags=re.DOTALL)
+        for forbidden in (
+            "INSERT INTO app_private.students",
+            "INSERT INTO app_private.roll_allocations",
+            "INSERT INTO app_private.roll_policy_revisions",
+            "DELETE FROM app_private.students",
+            "UPDATE app_private.students",
+        ):
+            self.assertNotIn(forbidden,untrusted_dml)
+        # This suite must never be treated as four more accepted business
+        # operations: it only pins existing disabled catalog and access.
+        self.assertNotIn("protected operations accepted",sql)
 
 
 if __name__ == "__main__":
