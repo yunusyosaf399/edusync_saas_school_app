@@ -2709,6 +2709,40 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
                 self.assertNotEqual(role,"owner")
 
+        # Effect27 final replay verifier must not directly read Academic-owned
+        # Class/Section tables as the Student executor (D1 runtime #596).
+        # Existing trusted academic-executor typed ancestry is sufficient.
+        verifier=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_17_enrollment_end_result_academic_projection.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SET ROLE schoolos_student_executor;",verifier)
+        self.assertIn(
+            "CREATE OR REPLACE FUNCTION app_private.d1_enrollment_end_result_rows_match_exact(",
+            verifier)
+        self.assertIn(
+            "SELECT * INTO d FROM app_private.d1_enrollment_place_destination(p_section);",
+            verifier)
+        for item in (
+            "d.section_id IS DISTINCT FROM p_section",
+            "d.class_offering_id IS DISTINCT FROM v_class_id",
+            "d.campus_id IS DISTINCT FROM v_campus_id",
+            "d.academic_year_id IS DISTINCT FROM v_year_id",
+            "e.placement_state='ENDED'",
+            "r.effective_until=p_effective_until",
+            "summary_version IS DISTINCT FROM p_expected_student_version",
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",
+        ):
+            self.assertIn(item,verifier)
+        for forbidden in (
+            "JOIN app_private.class_offerings",
+            "JOIN app_private.section_offerings",
+            "GRANT SELECT", "GRANT UPDATE", "GRANT EXECUTE",
+            "TO authenticated;", "TO service_role;", "TO anon;", "TO PUBLIC;",
+            "DISABLE ROW LEVEL SECURITY", "DISABLE TRIGGER", "ALTER TABLE",
+            "DROP POLICY",
+        ):
+            self.assertNotIn(forbidden,verifier)
+
 
 if __name__ == "__main__":
     unittest.main()
