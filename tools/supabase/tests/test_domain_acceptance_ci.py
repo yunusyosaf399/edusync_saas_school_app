@@ -2904,7 +2904,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "app_private.roll_policy_revisions",
         ):
             for action in ("SELECT", "INSERT", "UPDATE", "DELETE"):
-                self.assertRegex(sql,r"\\$sql\\$"+action+r".*?"+table.replace(".",r"\\."))
+                self.assertRegex(sql,r"\$sql\$"+action+r".*?"+table.replace(".",r"\."))
         self.assertIn("family_safe",sql)
         self.assertIn("command_receipts",sql)
         self.assertIn("approval_requests",sql)
@@ -2916,7 +2916,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("UPDATE app_private.operation_contracts",sql)
         self.assertNotIn("UPDATE app_private.permissions",sql)
         self.assertNotIn("supabase db push",sql)
-        untrusted_dml=re.sub(r"\\$sql\\$.*?\\$sql\\$","",sql,flags=re.DOTALL)
+        untrusted_dml=re.sub(r"\$sql\$.*?\$sql\$","",sql,flags=re.DOTALL)
         for forbidden in (
             "INSERT INTO app_private.students",
             "INSERT INTO app_private.roll_allocations",
