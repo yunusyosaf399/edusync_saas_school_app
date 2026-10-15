@@ -1,0 +1,20 @@
+-- D1C2A runtime #569: exact Student Status P2 guard on
+-- approval_applications is SECURITY DEFINER but was created by the narrow
+-- schoolos_evidence_writer role. Its integrity checks must read Foundation
+-- approval_requests/operation_contracts/command_receipts and D1 immutable
+-- status history/student projection; evidence_writer intentionally lacks
+-- broad SELECT/RLS on these base tables. Granting it those privileges would
+-- break the evidence-writer separation.
+--
+-- The established Student Identity/Special and Status P1 application guards
+-- run as the table's schoolos_schema_owner with the exact existing row-level
+-- maintenance policies. Align this one application's INTERNAL trigger owner.
+-- Keep the original full guard body, query conditions, and same trigger link.
+-- No application/client/user role table or function grants, no disabled RLS,
+-- no new function, no changed object/column shape and no executable migration.
+--
+-- Migration 10 is an INACTIVE .sql.draft concatenation. The local harness
+-- executes SQL as postgres (the existing owner-role member), so the owner
+-- transfer is performed after a RESET ROLE, without granting role membership.
+ALTER FUNCTION app_private.d1_guard_student_status_correct_application()
+  OWNER TO schoolos_schema_owner;
