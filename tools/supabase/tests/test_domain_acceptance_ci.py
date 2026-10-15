@@ -2663,11 +2663,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_batch_62_student_enrollment_end_p1_real_source_history(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
-        self.assertEqual(len(DOMAIN_TESTS),62)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),62)
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:61]),2769)
         self.assertEqual(
             DOMAIN_TESTS[61],["62_student_enrollment_end_p1_direct_history.sql",28])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2797)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:62]),2797)
         path=root/"supabase/tests/domain/62_student_enrollment_end_p1_direct_history.sql"
         sql=path.read_text(encoding="utf-8")
         self.assertTrue(sql.startswith("-- D1 suite #62:"))
@@ -2742,6 +2742,55 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "DROP POLICY",
         ):
             self.assertNotIn(forbidden,verifier)
+
+    def test_batch_63_student_p1_direct_section_move_with_true_source(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        self.assertEqual(len(DOMAIN_TESTS),63)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:62]),2797)
+        self.assertEqual(DOMAIN_TESTS[62],[
+            "63_student_enrollment_move_p1_direct_section_history.sql",34])
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2831)
+        sql=(root/"supabase/tests/domain/"
+            "63_student_enrollment_move_p1_direct_section_history.sql").read_text(
+                encoding="utf-8")
+        self.assertTrue(sql.startswith("-- D1 suite #63:"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertIn("SELECT plan(34);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),34)
+        self.assertLess(sql.index("app.d1_place_student_enrollment("),
+                        sql.index("app.d1_move_student_enrollment("))
+        for marker in (
+            "SET CONSTRAINTS ALL IMMEDIATE;", "SELECT * FROM finish();",
+            "'student.enrollment.move'", "app.d1_move_student_enrollment(",
+            "app.d1_place_student_enrollment(", "'INITIAL'",
+            "'SECTION_CHANGE'", "'PROMOTION'", "'CAMPUS_TRANSFER'",
+            "INSERT INTO app_private.section_offerings(",
+            "INSERT INTO app_private.roll_policy_revisions(",
+            "INSERT INTO app_private.roll_allocator_states(",
+            "INSERT INTO app_private.capacity_revisions(",
+            "INSERT INTO app_private.approval_policy_versions(",
+            "d1-student-move-p1-direct-acceptance", "student-move-direct",
+            "PERSISTENT_STUDENT", "enrollment.moved",
+            "origin_allocation_id", "predecessor_id",
+            "placement_state", "enrollment_capacity_overrides",
+        ):
+            self.assertIn(marker,sql)
+        for forbidden in (
+            "INSERT INTO app_private.enrollments(",
+            "INSERT INTO app_private.roll_allocations(",
+            "INSERT INTO app_private.approval_reviews(",
+            "GRANT SELECT ON app_private", "GRANT UPDATE ON app_private",
+            "GRANT EXECUTE", "supabase db push",
+        ):
+            self.assertNotIn(forbidden,sql)
+        role="runner"
+        for line in sql.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;": role="owner"
+            elif line=="SET ROLE authenticated;": role="authenticated"
+            elif line=="RESET ROLE;": role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
 
 
 if __name__ == "__main__":

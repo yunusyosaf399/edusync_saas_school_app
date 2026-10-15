@@ -7,6 +7,10 @@ on:
       - '.github/workflows/domain-draft-static.yml'
       - '.gitattributes'
       - 'supabase/migrations/20260928000000_domain_package_01*.sql.draft'
+      # Business acceptance additions must have the same exact-head static audit.
+      - 'supabase/tests/domain/**'
+      - 'tools/supabase/domain_business_ci.py'
+      - 'tools/supabase/tests/test_domain_acceptance_ci.py'
       - 'supabase/config/**'
       - 'supabase/config.toml'
       - 'tools/supabase/domain_draft_guard.py'
@@ -21,6 +25,10 @@ on:
       - '.github/workflows/domain-draft-static.yml'
       - '.gitattributes'
       - 'supabase/migrations/20260928000000_domain_package_01*.sql.draft'
+      # Business acceptance additions must have the same exact-head static audit.
+      - 'supabase/tests/domain/**'
+      - 'tools/supabase/domain_business_ci.py'
+      - 'tools/supabase/tests/test_domain_acceptance_ci.py'
       - 'supabase/config/**'
       - 'supabase/config.toml'
       - 'tools/supabase/domain_draft_guard.py'
