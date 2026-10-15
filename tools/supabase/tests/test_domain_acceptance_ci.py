@@ -2574,11 +2574,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_batch_61_student_p0_initial_primary_placement(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
-        self.assertEqual(len(DOMAIN_TESTS),61)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),61)
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:60]),2751)
         self.assertEqual(DOMAIN_TESTS[60],[
             "61_student_enrollment_place_p0_initial_roll.sql",18])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2769)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:61]),2769)
         sql=(root/"supabase/tests/domain/61_student_enrollment_place_p0_initial_roll.sql").read_text(encoding="utf-8")
         self.assertTrue(sql.startswith("-- D1 suite #61:"))
         self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
@@ -2660,6 +2660,54 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                           "TO service_role;", "TO anon;", "DISABLE TRIGGER",
                           "ALTER TABLE", "DROP POLICY"):
             self.assertNotIn(forbidden,allocator)
+
+    def test_batch_62_student_enrollment_end_p1_real_source_history(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        self.assertEqual(len(DOMAIN_TESTS),62)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:61]),2769)
+        self.assertEqual(
+            DOMAIN_TESTS[61],["62_student_enrollment_end_p1_direct_history.sql",28])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2797)
+        path=root/"supabase/tests/domain/62_student_enrollment_end_p1_direct_history.sql"
+        sql=path.read_text(encoding="utf-8")
+        self.assertTrue(sql.startswith("-- D1 suite #62:"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertIn("SELECT plan(28);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),28)
+        for required in (
+            "SET CONSTRAINTS ALL IMMEDIATE;", "SELECT * FROM finish();",
+            "student.enrollment.end", "app.d1_place_student_enrollment(",
+            "app.d1_end_student_enrollment(", "'INITIAL'",
+            "INSERT INTO app_private.capacity_revisions(",
+            "INSERT INTO app_private.roll_policy_revisions(",
+            "INSERT INTO app_private.roll_allocator_states(",
+            "INSERT INTO app_private.approval_policy_versions(",
+            "d1-student-enrollment-end-direct-acceptance",
+            "student-end-direct", "enrollment.ended",
+            "end_reason", "ended_by", "ended_at",
+        ):
+            self.assertIn(required,sql)
+        # A protected, authenticated P0 command must generate the P1 source;
+        # no privileged fixture may fabricate its Enrollment or Roll row.
+        for forbidden in (
+            "INSERT INTO app_private.enrollments(",
+            "INSERT INTO app_private.roll_allocations(",
+            "INSERT INTO app_private.approval_reviews(",
+            "GRANT SELECT ON app_private",
+            "GRANT UPDATE ON app_private",
+            "supabase db push",
+        ):
+            self.assertNotIn(forbidden,sql)
+        self.assertLess(sql.index("app.d1_place_student_enrollment("),
+                        sql.index("app.d1_end_student_enrollment("))
+        role="runner"
+        for line in sql.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;": role="owner"
+            elif line=="SET ROLE authenticated;": role="authenticated"
+            elif line=="RESET ROLE;": role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
 
 
 if __name__ == "__main__":
