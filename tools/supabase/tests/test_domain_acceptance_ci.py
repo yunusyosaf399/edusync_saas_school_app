@@ -2745,11 +2745,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_batch_63_student_p1_direct_section_move_with_true_source(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
-        self.assertEqual(len(DOMAIN_TESTS),63)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),63)
         self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:62]),2797)
         self.assertEqual(DOMAIN_TESTS[62],[
             "63_student_enrollment_move_p1_direct_section_history.sql",34])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2831)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:63]),2831)
         sql=(root/"supabase/tests/domain/"
             "63_student_enrollment_move_p1_direct_section_history.sql").read_text(
                 encoding="utf-8")
@@ -2784,6 +2784,51 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "GRANT EXECUTE", "supabase db push",
         ):
             self.assertNotIn(forbidden,sql)
+        role="runner"
+        for line in sql.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;": role="owner"
+            elif line=="SET ROLE authenticated;": role="authenticated"
+            elif line=="RESET ROLE;": role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
+
+    def test_batch_64_family_primary_context_p0_retain_display_history(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        self.assertEqual(len(DOMAIN_TESTS),64)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:63]),2831)
+        self.assertEqual(DOMAIN_TESTS[63],[
+            "64_family_primary_context_p0_select_correct_end.sql",37])
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2868)
+        sql=(root/"supabase/tests/domain/"
+             "64_family_primary_context_p0_select_correct_end.sql").read_text(
+                encoding="utf-8")
+        self.assertTrue(sql.startswith("-- D1 suite #64:"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertIn("SELECT plan(37);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),37)
+        for item in (
+            "app.d1_change_family_primary_context(",
+            "family.primary_context.change",
+            "'SELECT'", "'END'", "'CORRECT'",
+            "SELECT * FROM finish();", "SET CONSTRAINTS ALL IMMEDIATE;",
+            "INSERT INTO app_private.family_relationships(",
+            "INSERT INTO app_private.families(",
+            "supersedes_id", "family.primary_context_changed",
+            "family_student_access", "primary-select-a", "primary-select-b",
+            "primary-correct", "primary-end", "SET ROLE authenticated;",
+        ):
+            self.assertIn(item,sql)
+        for forbidden in (
+            "INSERT INTO app_private.student_primary_family_contexts(",
+            "UPDATE app_private.student_primary_family_contexts",
+            "INSERT INTO app_private.family_student_access(",
+            "INSERT INTO app_private.approval_reviews(",
+            "GRANT SELECT ON app_private", "GRANT UPDATE ON app_private",
+            "GRANT EXECUTE", "supabase db push",
+        ):
+            self.assertNotIn(forbidden,sql)
+        # No assertions may be made under privileged fixture owner.
         role="runner"
         for line in sql.splitlines():
             if line=="SET ROLE schoolos_schema_owner;": role="owner"
