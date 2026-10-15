@@ -2490,6 +2490,44 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                           "DROP POLICY", "DISABLE TRIGGER"):
             self.assertNotIn(forbidden,status_source)
 
+        # Status P2 reviewer READ integration: all three authz-reader
+        # helpers must use explicit approval-request projections, and the
+        # only new RLS access is scoped to student.status.correct.
+        reviewer=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_13_student_status_correct_reviewer_authz_reads.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SET ROLE schoolos_schema_owner;",reviewer)
+        self.assertIn("SET ROLE schoolos_authz_reader;",reviewer)
+        for fn in (
+            "d1_student_status_correct_candidates",
+            "d1_student_status_correct_reviews_live",
+            "d1_student_status_correct_participant",
+        ):
+            self.assertEqual(reviewer.count(
+                "CREATE OR REPLACE FUNCTION app_private."+fn+"("),1)
+        self.assertEqual(reviewer.count(
+            "SELECT q.id,q.requester_id,q.target_ref,q.old_snapshot,q.requested_payload INTO req"),3)
+        self.assertNotIn("SELECT q.* INTO req",reviewer)
+        self.assertNotIn("SELECT t.* INTO templ",reviewer)
+        self.assertIn("t.id,t.selection_resolver_key,t.reviewer_role_id",reviewer)
+        self.assertIn("CREATE POLICY d1_effect35_status_correct_authz_requests",reviewer)
+        self.assertIn("CREATE POLICY d1_effect35_status_correct_authz_operation",reviewer)
+        self.assertIn("o.code='student.status.correct'",reviewer)
+        self.assertIn("USING (code='student.status.correct')",reviewer)
+        self.assertIn("TO schoolos_authz_reader;",reviewer)
+        self.assertIn("reviewer_assignment_id,decision",reviewer)
+        self.assertIn("step_number",reviewer)
+        self.assertIn("selection_resolver_key",reviewer)
+        self.assertIn("d1_student_status_correct_authorized_pair(",reviewer)
+        self.assertTrue(reviewer.rstrip().endswith(
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;"))
+        for forbidden in (
+            "GRANT SELECT ON app_private", "TO authenticated;",
+            "TO service_role;", "TO anon;", "TO PUBLIC;",
+            "GRANT UPDATE", "DISABLE TRIGGER", "DROP POLICY",
+        ):
+            self.assertNotIn(forbidden,reviewer)
+
         for name,count,markers in additions:
             sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
