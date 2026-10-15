@@ -2837,6 +2837,40 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
                 self.assertNotEqual(role,"owner")
 
+        # Runtime #618 exposed that the shared evidence-writer receipt lookup
+        # omitted the existing Effect33 direct operation. Compare the original
+        # fixed allowlist with the append-only replacement: only the new exact
+        # 8-element P0 DIRECT branch is allowed to differ, and no client grant.
+        original=(root/"supabase/migrations/"
+           "20260928000000_domain_package_01_effect35_04_student_p2_receipt_phase_allowlist.sql.draft"
+        ).read_text(encoding="utf-8")
+        correction=(root/"supabase/migrations/"
+           "20260928000000_domain_package_01_effect35_18_family_primary_context_receipt_intent_allowlist.sql.draft"
+        ).read_text(encoding="utf-8")
+        signature="CREATE OR REPLACE FUNCTION app_private.d1_command_receipt_lookup("
+        self.assertIn("SET ROLE schoolos_evidence_writer;",correction)
+        self.assertEqual(correction.count(signature),1)
+        self.assertIn("p_operation_code='family.primary_context.change'",correction)
+        self.assertIn("p_command_kind=p_operation_code",correction)
+        self.assertIn("pg_catalog.jsonb_array_length(p_intent)=8",correction)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTION",correction)
+        start="       -- Effect 33 P0 display selection is a single DIRECT command"
+        after="       -- Effect 32: the Family child-access public RPCs use the same fixed"
+        self.assertEqual(correction[correction.index(signature):correction.index(start)]
+                        +correction[correction.index(after):],
+                         original[original.index(signature):])
+        narrow=correction[correction.index(start):correction.index(after)]
+        self.assertIn("p_operation_code='family.primary_context.change'",narrow)
+        self.assertIn("AND p_command_kind=p_operation_code",narrow)
+        self.assertIn("AND pg_catalog.jsonb_array_length(p_intent)=8)",narrow)
+        for forbidden in (
+            "request.submit", "request.review", "request.apply",
+            "TO authenticated;", "TO anon;", "TO service_role;",
+            "GRANT SELECT", "GRANT UPDATE", "GRANT USAGE",
+            "DISABLE ROW LEVEL SECURITY", "ALTER TABLE",
+        ):
+            self.assertNotIn(forbidden,narrow)
+
 
 if __name__ == "__main__":
     unittest.main()
