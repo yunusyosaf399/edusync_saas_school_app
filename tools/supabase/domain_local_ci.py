@@ -387,9 +387,19 @@ def _main() -> int:
 
         observed = parse_runtime_probe(run_psql(container, runtime_probe_sql(), "D1C2A_PROBE", tuples=True, timeout=180))
         validate_runtime_probe(observed)
+        # Report the SAME observed catalog validated above. A stale literal
+        # previously printed 541/523/384 after the checked 542/524/385 passed.
         print(
-            "D1C2A_CATALOG_PASS tables=34 rls=34/34 functions=541 definers=523 "
-            "app=157 private=384 auth_private=0 anon=0 service_role=0"
+            "D1C2A_CATALOG_PASS"
+            + f" tables={observed['d1_tables']}"
+            + f" rls={observed['rls_enabled']}/{observed['rls_forced']}"
+            + f" functions={observed['functions']}"
+            + f" definers={observed['security_definers']}"
+            + f" app={observed['app_functions']}"
+            + f" private={observed['private_functions']}"
+            + f" auth_private={observed['authenticated_private_execute']}"
+            + f" anon={observed['anon_execute']}"
+            + f" service_role={observed['service_role_execute']}"
         )
 
         url, key = local_status()
