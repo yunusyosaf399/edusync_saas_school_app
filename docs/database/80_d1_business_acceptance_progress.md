@@ -633,3 +633,21 @@ On final candidate head `54e5e7fe3b159926ee010e7709b81e455546d20b`, independent 
 A new append-only inactive `effect35_18_family_primary_context_receipt_intent_allowlist.sql.draft` adds **only** the `family.primary_context.change` same-kind, exact 8-array-elements allowlist branch to that existing private SECURITY DEFINER evidence-writer function. Prior phase/shape entries and JCS actor/hash/receipt/lock mechanics are unchanged; existing Effect33 and 35_04 source unmodified, no client grants/RLS change/deployment. New Python guard checks the complete original function text is byte-for-byte preserved after removing only that one added allowlist clause. [Updated review #150](150_d1_family_primary_context_p0_acceptance_review.md).
 
 **Suite #64 remains unaccepted pending a fresh exact-head triple PASS** with 37/37 and all 64/2,868 assertions. The frozen `main` remains **63 suites / 2,831 assertions, 30/35 accepted operations** until green merge verification. D1 OPEN, Migration 10 inactive, no hosted Supabase deployment.
+
+
+## Remaining four disabled Student-operation gates — PR #65 (candidate)
+
+Frozen merged baseline after #64: `main` `59fc371724c4265c94348319ba1b44b36afa71ea`, **64/64 business suites, 2,868/2,868 pgTAP assertions, 31/35 distinct protected operations accepted**. This review audits the **four remaining unaccepted** protected Student operations, distinguishing non-executable registered names from legitimate runnable business effects. They are:
+
+| Operation | Readiness |
+|---|---|
+| `student.create` | **Disabled, Admissions final verified handoff absent**; Effect36 expressly defers activation |
+| `student.roll_policy.change` | **Disabled and unimplemented**, pending product-owner P1 replacement/scheduling/allocator/reviewer/evidence rules in [review #127](127_d1_roll_policy_p1_implementation_readiness_and_invariant_review.md) |
+| `student.roll.correct` | **Unimplemented / no accepted public mutator**, pending exact correction scope, allocator/roll lineage and P1 route/review/evidence contract |
+| `student.profile.update` | **Unimplemented / no accepted public mutator**; shared receipt intent vocabulary is not a complete allowlisted Student PROFILE operation or P1 route |
+
+New rollback-only `supabase/tests/domain/65_remaining_student_commands_fail_closed.sql` has **38 planned negative pgTAP assertions**. It verifies all four exact registered `operation_contracts` remain `enabled=false`, corresponding command permissions not ENABLED and non-family-safe; no matching public typed app function body declares these handlers; no operation receipts/approvals are generated; authenticated direct Student, roll allocation and roll-policy SELECT/INSERT/UPDATE/DELETE, and private receipt SELECT, all deny SQLSTATE 42501. No synthetic Student, roll, policy, approval or receipt is fabricated. `SET CONSTRAINTS ALL IMMEDIATE` and `ROLLBACK` close the transaction.
+
+The registry and regression guard pin the **unchanged first 64 suites / 2,868 assertions**, adding only #65 / 38 negative security checks. This proposes **65/65 suites, 2,906 assertions, still only 31/35 accepted protected change operations (four blocked)**. The negative suite cannot be used to claim positive acceptance of a missing business operation or to authorize deployment. Separate detailed [gap audit #151](151_d1_remaining_four_student_commands_blocked_readiness_review.md) lists future missing business decisions and security limitations.
+
+**Merge gate:** final exact-HEAD D1 runtime, Foundation and draft static all green, including 38/38 and 2,906/2,906 and prior concurrency regression. Until then the merged main checkpoint stays 64/2,868 and 31/35. **Full D1 OPEN, Migration 10 non-executable `.sql.draft`, no hosted database application.**
