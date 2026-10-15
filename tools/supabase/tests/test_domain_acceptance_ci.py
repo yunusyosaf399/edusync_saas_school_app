@@ -2628,6 +2628,34 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertIn("D1 Enrollment backdated persistent roll conflicts",allocator)
         self.assertIn("origin:=prior.id;",allocator)
         self.assertNotIn("SET next_value=candidate+1,row_version=",allocator)
+        # Academic-owned destination helper calls the schema-owner path
+        # lock. Effect25_16 removed direct Student access, so the owner-
+        # distinct dependency must explicitly execute as Academic executor.
+        path_lock=(root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect35_16_enrollment_place_academic_path_execution.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SET ROLE schoolos_schema_owner;",path_lock)
+        self.assertIn(
+            "GRANT EXECUTE ON FUNCTION app_private.d1_lock_academic_path(uuid,uuid,uuid)",
+            path_lock)
+        self.assertIn("TO schoolos_academic_executor;",path_lock)
+        self.assertIn("RESET ROLE;",path_lock)
+        for forbidden in (
+            "TO schoolos_student_executor", "TO authenticated", "TO anon",
+            "TO service_role", "TO PUBLIC", "GRANT SELECT", "GRANT UPDATE",
+            "GRANT schoolos", "DISABLE ROW LEVEL SECURITY",
+        ):
+            self.assertNotIn(forbidden,path_lock)
+        academic=(root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect25_16_enrollment_place_academic_boundary.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "REVOKE EXECUTE ON FUNCTION app_private.d1_lock_academic_path(uuid,uuid,uuid) FROM schoolos_student_executor;",
+            academic)
+        self.assertIn(
+            "CREATE FUNCTION app_private.d1_enrollment_place_lock_destination(p_section uuid)",
+            academic)
+
         for forbidden in ("GRANT UPDATE", "GRANT SELECT", "TO authenticated;",
                           "TO service_role;", "TO anon;", "DISABLE TRIGGER",
                           "ALTER TABLE", "DROP POLICY"):
