@@ -41,6 +41,9 @@ FINAL_FUNCTION_OWNERS = (
     "schoolos_teaching_executor",
     "schoolos_workflow_executor",
 )
+# Effect35_12 adds one narrowly scoped, Student-executor-owned private
+# SECURITY DEFINER helper for the Status P2 exact source transition lookup.
+# Keep the public RPC count, client grants and all RLS/table-DML metrics frozen.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
     "d1_tables": 34,
@@ -51,10 +54,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 541,
-    "security_definers": 523,
+    "functions": 542,
+    "security_definers": 524,
     "app_functions": 157,
-    "private_functions": 384,
+    "private_functions": 385,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
