@@ -2018,7 +2018,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_batch_51_55_five_workflow_acceptance_suites(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
-        self.assertEqual(len(DOMAIN_TESTS),55)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),55)
         self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:50]),2581)
         additions=(
             ("51_class_teacher_p2_retroactive_correct_approval.sql",23,
@@ -2048,9 +2048,9 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                "class-ineligible-second","class-ineligible-correct",
                "teaching.class_assignment_changed")),
         )
-        self.assertEqual(DOMAIN_TESTS[50:],
+        self.assertEqual(DOMAIN_TESTS[50:55],
             [[name,count] for name,count,_ in additions])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2696)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:55]),2696)
         # True P2 APPLY exercises the existing schema-owner-owned receipt guard.
         # Its nested SECURITY INVOKER validators need narrowly owned EXECUTE.
         private_acl=(root/"supabase/migrations/"
@@ -2107,6 +2107,470 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "app.d1_apply_teacher_capability_request",
         ):
             self.assertIn("CREATE FUNCTION "+function+"(",source)
+
+
+    def test_batch_56_60_student_protected_operations(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        self.assertEqual(len(DOMAIN_TESTS),60)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:55]),2696)
+        additions=(
+          ("56_student_status_p1_direct_lifecycle.sql",11,
+           ("app.d1_change_student_status","student.status.change","'SUSPENDED'")),
+          ("57_student_emergency_contact_p1_direct_history.sql",12,
+           ("app.d1_change_student_emergency_contact","student.emergency_contact.change","'CORRECT'")),
+          ("58_student_identity_p2_approval_history.sql",11,
+           ("app.d1_submit_student_identity_correction","app.d1_review_student_identity_request",
+            "app.d1_apply_student_identity_request","student.identity.approve")),
+          ("59_student_special_p2_approval_history.sql",11,
+           ("app.d1_submit_student_special_correction","app.d1_review_student_special_request",
+            "app.d1_apply_student_special_request","student.special.approve")),
+          ("60_student_status_correct_p2_approval_history.sql",10,
+           ("app.d1_submit_student_status_correction","app.d1_review_student_status_correction",
+            "app.d1_apply_student_status_correction","student.status.approve")),
+        )
+        self.assertEqual(DOMAIN_TESTS[55:],[[n,c] for n,c,_ in additions])
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2751)
+
+        # Real Student no-placement Status acceptance exposed a PL/pgSQL
+        # uninitialized record exception before ALL scope was evaluated.
+        scope=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_03_student_unplaced_authorization.sql.draft"
+        ).read_text(encoding="utf-8")
+        for function in (
+          "d1_student_status_authorized",
+          "d1_student_emergency_contact_authorized",
+          "d1_student_identity_authorized",
+          "d1_student_special_authorized",
+          "d1_student_status_correct_authorized",
+        ):
+            self.assertIn("CREATE OR REPLACE FUNCTION app_private."+function+"(",scope)
+        self.assertEqual(scope.count("NULL::uuid AS campus_id"),5)
+        self.assertEqual(scope.count("NULL::uuid AS section_id INTO"),5)
+        self.assertIn("SET ROLE schoolos_authz_reader;",scope)
+        self.assertTrue(scope.rstrip().endswith("REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;"))
+        # Existing private receipt dispatcher had no Student Identity/Special
+        # P2 entry. Exact per-operation/phase arg counts must remain bound.
+        dispatch=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_04_student_p2_receipt_phase_allowlist.sql.draft"
+        ).read_text(encoding="utf-8")
+        for token in (
+          "SET ROLE schoolos_evidence_writer;",
+          "CREATE OR REPLACE FUNCTION app_private.d1_command_receipt_lookup(",
+          "p_operation_code='student.identity.correct'",
+          "p_operation_code='student.special.correct'",
+          "p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9",
+          "p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=5",
+          "p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4",
+          "p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2",
+          "pg_catalog.pg_advisory_xact_lock_shared(71001,1)",
+          "app_private.d1_jcs_typed(",
+        ):
+            self.assertIn(token,dispatch)
+        self.assertTrue(dispatch.rstrip().endswith(
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;"))
+        for marker in (
+            "GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;",
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;",
+        ):
+            self.assertIn(marker,scope)
+        for marker in (
+            "GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;",
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;",
+        ):
+            self.assertIn(marker,dispatch)
+        for text in (scope,dispatch):
+            for forbidden in ("GRANT SELECT ON app_private",
+                              "TO authenticated;", "TO anon;",
+                              "TO service_role;", "TO PUBLIC;",
+                              "supabase db push"):
+                self.assertNotIn(forbidden,text)
+
+
+        # Real suite 56 next hit an immutable status-history SELECT/FOR UPDATE
+        # privilege mismatch: the student executor lacked only created_at
+        # column SELECT, and must never gain UPDATE on append-only transitions.
+        # Locking the parent Student FOR UPDATE serializes this aggregate;
+        # historical immutable snapshot uses a compatible FOR SHARE read.
+        lockfix=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_05_student_status_immutable_lock_acl.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+          "SET ROLE schoolos_schema_owner;",
+          "GRANT SELECT (created_at) ON app_private.student_status_transitions",
+          "TO schoolos_student_executor;",
+          "SET ROLE schoolos_student_executor;",
+          "CREATE OR REPLACE FUNCTION app_private.d1_student_status_lock_context(",
+          "WHERE id=p_student FOR UPDATE;",
+          "ORDER BY t.effective_on DESC,t.sequence_number DESC LIMIT 1 FOR SHARE;",
+          "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",
+        ):
+            self.assertIn(marker,lockfix)
+        for forbidden in (
+          "GRANT UPDATE ON app_private.student_status_transitions",
+          "GRANT SELECT ON app_private.student_status_transitions",
+          "TO authenticated;", "TO anon;", "TO service_role;", "TO PUBLIC;",
+          "supabase db push",
+        ):
+            self.assertNotIn(forbidden,lockfix)
+
+        # Later exact-head runtime proved FOR SHARE also requires UPDATE
+        # privilege, which immutable status history must never receive.
+        # The last append-only definition uses parent-row FOR UPDATE and
+        # a narrow, unlocked read of the historical status transition.
+        narrow=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_06_student_status_narrow_history_read.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+          "SET ROLE schoolos_student_executor;",
+          "CREATE OR REPLACE FUNCTION app_private.d1_student_status_lock_context(",
+          "WHERE s.id=p_student FOR UPDATE;",
+          "SELECT t.id,t.new_status,t.effective_on,t.sequence_number",
+          "ORDER BY t.effective_on DESC,t.sequence_number DESC LIMIT 1;",
+          "x.effective_from<=CURRENT_DATE",
+          "ORDER BY r.id FOR UPDATE;",
+          "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",
+        ):
+            self.assertIn(marker,narrow)
+        for forbidden in (
+          "LIMIT 1 FOR SHARE;",
+          "LIMIT 1 FOR UPDATE;",
+          "SELECT t.* INTO",
+          "SELECT * INTO s FROM app_private.students",
+          "GRANT UPDATE",
+          "GRANT SELECT ON app_private",
+          "TO authenticated;", "TO anon;", "TO service_role;",
+          "TO PUBLIC;", "supabase db push",
+        ):
+            self.assertNotIn(forbidden,narrow)
+
+        # Runtime #515: d1_guard_record rejects direct updates to server-owned
+        # row_version/updated_at; zz_d1_version alone owns both fields.
+        # Status P1 and factual Status Correction P2 must respect that guard.
+        versions=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_07_student_status_server_owned_version.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+          "CREATE OR REPLACE FUNCTION app_private.d1_student_status_effect(",
+          "CREATE OR REPLACE FUNCTION app_private.d1_student_status_correct_effect(",
+          "UPDATE app_private.students SET current_status=p_new_status",
+          "UPDATE app_private.students SET current_status=pre.resulting_current_status",
+          "students.row_version=p_expected_version",
+          "row_version=p_expected_version",
+          "RETURNING students.row_version INTO new_version;",
+          "RETURNING row_version INTO new_version;",
+          "SET ROLE schoolos_student_executor;",
+          "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",
+        ):
+            self.assertIn(marker,versions)
+        self.assertEqual(versions.count("CREATE OR REPLACE FUNCTION app_private.d1_student_status"),2)
+        for forbidden in (
+          "SET current_status=p_new_status,row_version",
+          "SET current_status=pre.resulting_current_status,row_version",
+          "GRANT UPDATE ON app_private.students",
+          "GRANT SELECT ON app_private.students",
+          "TO authenticated;", "TO anon;", "TO service_role;", "TO PUBLIC;",
+          "supabase db push",
+        ):
+            self.assertNotIn(forbidden,versions)
+
+        # D1 exact-head runtime #519: replay of a valid Student Status change
+        # without PRIMARY enrollment must check current ALL authority, not
+        # dereference the still-unassigned scope_row record.
+        replay_scope=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_08_student_status_replay_unplaced_scope.sql.draft"
+        ).read_text(encoding="utf-8")
+        for marker in (
+          "SET ROLE schoolos_authz_reader;",
+          "CREATE OR REPLACE FUNCTION app_private.d1_student_status_authorized_enrollment(",
+          "SELECT NULL::uuid AS section_id,NULL::uuid AS class_id,NULL::uuid AS campus_id INTO scope_row;",
+          "p_enrollment IS NULL AND sc.scope_kind='ALL' AND sc.campus_id IS NULL",
+          "p_enrollment IS NOT NULL AND sc.scope_kind='CAMPUS'",
+          "p_enrollment IS NOT NULL AND sc.scope_kind='CLASS'",
+          "p_enrollment IS NOT NULL AND sc.scope_kind='SECTION'",
+          "p.code=p_permission AND p.state='ENABLED'",
+          "sc.resolver_key='DIRECT'",
+          "REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;",
+        ):
+            self.assertIn(marker,replay_scope)
+        self.assertEqual(replay_scope.count("CREATE OR REPLACE FUNCTION app_private."),1)
+        for forbidden in (
+          "GRANT SELECT ON app_private", "GRANT UPDATE ON app_private",
+          "TO authenticated;", "TO anon;", "TO service_role;", "TO PUBLIC;",
+          "supabase db push",
+        ):
+            self.assertNotIn(forbidden,replay_scope)
+
+        # P2 suites must resolve Auth fixture subjects as the test runner,
+        # before SET ROLE schoolos_schema_owner; the NOLOGIN schema owner
+        # correctly lacks USAGE on auth. Never grant auth access for tests.
+        for p2_name in (
+          "58_student_identity_p2_approval_history.sql",
+          "59_student_special_p2_approval_history.sql",
+          "60_student_status_correct_p2_approval_history.sql",
+        ):
+            p2=(root/"supabase/tests/domain"/p2_name).read_text(encoding="utf-8")
+            fixture_lookup="SELECT set_config('schoolos_test.reviewer_subject',"
+            self.assertEqual(p2.count(fixture_lookup),1)
+            self.assertIn("FROM auth.users WHERE email='foundation-test-001@example.invalid'",p2)
+            self.assertLess(p2.index(fixture_lookup),p2.index("SET ROLE schoolos_schema_owner;"))
+            self.assertGreater(p2.index(fixture_lookup),p2.index(r"\ir fixtures/command_actor.sql"))
+
+        # Identity/Special private corrections intentionally require a live
+        # PRIMARY enrollment. Never bypass that check simply because ALL
+        # permission is present: build the same valid academic path and
+        # current class/section capacity facts used in established tests.
+        for p2_name in (
+          "58_student_identity_p2_approval_history.sql",
+          "59_student_special_p2_approval_history.sql",
+        ):
+            p2=(root/"supabase/tests/domain"/p2_name).read_text(encoding="utf-8")
+            for exact in (
+              "INSERT INTO app.campuses(",
+              "INSERT INTO app.academic_years(",
+              "INSERT INTO app_private.academic_classes(",
+              "INSERT INTO app_private.class_offerings(",
+              "INSERT INTO app_private.section_offerings(",
+              "INSERT INTO app_private.enrollments(",
+              "INSERT INTO app_private.capacity_revisions(",
+              "'PRIMARY','INITIAL','ACTIVE'",
+              "Current Student P2 authorized placement",
+              "P2 class initial capacity",
+              "P2 section initial capacity",
+            ):
+                self.assertIn(exact,p2)
+            self.assertLess(p2.index("INSERT INTO app_private.enrollments("),
+                            p2.index("SET ROLE authenticated;"))
+
+        # Exact P2 application trigger -> immutable payload validator owner edge.
+        # Runtime #537 proves schoolos_schema_owner is NOT automatically
+        # allowed to execute the internal authz-reader-owned validator.
+        p2_acl=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_09_student_p2_application_validator_acl.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SET ROLE schoolos_authz_reader;",p2_acl)
+        self.assertEqual(p2_acl.count("GRANT EXECUTE ON FUNCTION"),2)
+        for f in (
+            "d1_student_identity_request_payload_valid(jsonb,jsonb)",
+            "d1_student_special_request_payload_valid(jsonb,jsonb)",
+        ):
+            self.assertIn("app_private."+f,p2_acl)
+        self.assertEqual(p2_acl.count("TO schoolos_schema_owner;"),2)
+        self.assertTrue(p2_acl.rstrip().endswith("RESET ROLE;"))
+        for forbidden in (
+            "GRANT SELECT", "GRANT UPDATE", "GRANT INSERT",
+            "TO authenticated;", "TO anon;", "TO PUBLIC;",
+            "TO service_role;", "GRANT CREATE", "supabase db push",
+        ):
+            self.assertNotIn(forbidden,p2_acl)
+        # Preserve verified roles on both sides of the grant dependency.
+        for f,trigger in (
+            ("21_01_student_identity_core","21_04_student_identity_application_guard"),
+            ("22_01_student_special_core","22_04_student_special_guard"),
+        ):
+            base=(root/"supabase/migrations"/
+                  ("20260928000000_domain_package_01_effect"+f+".sql.draft")).read_text(encoding="utf-8")
+            guard=(root/"supabase/migrations"/
+                   ("20260928000000_domain_package_01_effect"+trigger+".sql.draft")).read_text(encoding="utf-8")
+            self.assertIn("SET ROLE schoolos_authz_reader;",base)
+            self.assertIn("SET ROLE schoolos_schema_owner;",guard)
+            self.assertIn("SECURITY DEFINER",guard)
+
+        # The deferred Enrollment integrity guard also needs complete,
+        # exact pointwise roll coverage for the PRIMARY placement interval.
+        # Do not disable or bypass the Enrollment commit guard.
+        for p2_name in (
+          "58_student_identity_p2_approval_history.sql",
+          "59_student_special_p2_approval_history.sql",
+        ):
+            p2=(root/"supabase/tests/domain"/p2_name).read_text(encoding="utf-8")
+            for marker in (
+              "INSERT INTO app_private.roll_policy_revisions(",
+              "INSERT INTO app_private.roll_allocator_states(",
+              "INSERT INTO app_private.roll_allocations(",
+              "'PERSISTENT_STUDENT',12000",
+              "'b1000000-0000-4000-8000-000000000049',12000,CURRENT_DATE-20",
+              "P2 synthetic Student persistent roll policy",
+            ):
+                self.assertIn(marker,p2)
+            self.assertLess(p2.index("INSERT INTO app_private.enrollments("),
+                            p2.index("INSERT INTO app_private.roll_allocations("))
+            self.assertLess(p2.index("INSERT INTO app_private.roll_allocations("),
+                            p2.index("SET ROLE authenticated;"))
+
+        # Final Student Special D1_13 CHECK must enforce the canonical
+        # eight full blood codes from the newer frozen Effect22 contract,
+        # not the older short-code physical matrix. This is a replacement,
+        # NOT an expansion of the allowed enumeration. Retain end markers.
+        blood=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_10_student_special_frozen_blood_code_check.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SET ROLE schoolos_schema_owner;",blood)
+        self.assertIn("ALTER TABLE app_private.student_special_details",blood)
+        self.assertIn("DROP CONSTRAINT d1_13_ck;",blood)
+        self.assertIn("ADD CONSTRAINT d1_13_ck CHECK",blood)
+        for code in (
+            "A_POSITIVE","A_NEGATIVE","B_POSITIVE","B_NEGATIVE",
+            "AB_POSITIVE","AB_NEGATIVE","O_POSITIVE","O_NEGATIVE",
+        ):
+            self.assertIn("'"+code+"'",blood)
+        for short in (
+            "A_POS","A_NEG","B_POS","B_NEG","AB_POS","AB_NEG","O_POS","O_NEG",
+        ):
+            self.assertNotIn("'"+short+"'",blood)
+        for marker in (
+            "blood_group_code IS NULL",
+            "pg_catalog.btrim(reason)",
+            "effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL",
+            "effective_until > effective_from",
+            "RESET ROLE;",
+        ):
+            self.assertIn(marker,blood)
+        for forbidden in (
+            "GRANT ", "REVOKE ", "DISABLE TRIGGER", "DROP POLICY",
+            "TO authenticated;", "TO service_role;", "supabase db push",
+        ):
+            # Comments can mention grants; reject executable statements only.
+            self.assertFalse(any(
+                line.lstrip().startswith(forbidden)
+                for line in blood.splitlines() if not line.lstrip().startswith("--")
+            ))
+
+        # Status P2 preflight never requests FOR UPDATE on immutable
+        # status-history rows: it already locks the Student aggregate.
+        status_preflight=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_11_student_status_correct_preflight_immutable_read.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(status_preflight.count(
+            "CREATE OR REPLACE FUNCTION app_private.d1_student_status_correct_preflight("),1)
+        self.assertIn("SET ROLE schoolos_student_executor;",status_preflight)
+        self.assertIn("GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;",status_preflight)
+        self.assertTrue(status_preflight.rstrip().endswith(
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;"))
+        self.assertIn("FROM app_private.students WHERE id=p_student FOR UPDATE;",status_preflight)
+        self.assertIn("PERFORM 1 FROM app_private.student_status_transitions t",status_preflight)
+        self.assertNotIn("ORDER BY t.sequence_number FOR UPDATE",status_preflight)
+        self.assertIn("D1_STUDENT_STATUS_CORRECT_SOURCE_SUPERSEDED",status_preflight)
+        self.assertIn("D1_STUDENT_STATUS_CORRECT_NOOP",status_preflight)
+        self.assertIn("D1_STUDENT_STATUS_CORRECT_CHAIN_INVALID",status_preflight)
+        self.assertIn("D1_STUDENT_STATUS_CORRECT_ENROLLMENT_CONFLICT",status_preflight)
+        self.assertIn("SECURITY DEFINER",status_preflight)
+        for forbidden in (
+            "GRANT UPDATE", "GRANT SELECT", "TO authenticated;",
+            "TO anon;", "TO service_role;", "TO PUBLIC;",
+            "ALTER TABLE", "DISABLE TRIGGER",
+        ):
+            self.assertNotIn(forbidden,status_preflight)
+
+        # Status P2 submit must never receive broad history SELECT just
+        # to prepare the exact old snapshot. A private Student-owned helper
+        # returns only five required facts for one (Student, transition).
+        status_source=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_12_student_status_correct_source_read_boundary.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("CREATE FUNCTION app_private.d1_student_status_correct_source(",status_source)
+        self.assertIn("RETURNS TABLE(",status_source)
+        for field in ("previous_status text","new_status text",
+                      "effective_on date","sequence_number bigint","supersedes_id uuid"):
+            self.assertIn(field,status_source)
+        self.assertIn("t.student_id=p_student AND t.id=p_source_transition",status_source)
+        self.assertIn("SET ROLE schoolos_student_executor;",status_source)
+        self.assertIn("TO schoolos_workflow_executor;",status_source)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;",status_source)
+        self.assertIn("CREATE OR REPLACE FUNCTION app.d1_submit_student_status_correction(",status_source)
+        self.assertIn(
+            "app_private.d1_student_status_correct_source(p_student_id,p_source_transition_id)",
+            status_source)
+        self.assertNotIn("FROM app_private.student_status_transitions t WHERE t.id=p_source_transition_id",status_source)
+        self.assertIn("app_private.d1_student_status_correct_authorized_pair(",status_source)
+        self.assertIn("app_private.d1_student_status_correct_preflight(",status_source)
+        self.assertIn("SET ROLE schoolos_workflow_executor;",status_source)
+        self.assertIn("REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;",status_source)
+        for forbidden in ("GRANT SELECT", "GRANT UPDATE",
+                          "TO authenticated;", "TO anon;", "TO service_role;",
+                          "DROP POLICY", "DISABLE TRIGGER"):
+            self.assertNotIn(forbidden,status_source)
+
+        # Status P2 reviewer READ integration: all three authz-reader
+        # helpers must use explicit approval-request projections, and the
+        # only new RLS access is scoped to student.status.correct.
+        reviewer=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_13_student_status_correct_reviewer_authz_reads.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SET ROLE schoolos_schema_owner;",reviewer)
+        self.assertIn("SET ROLE schoolos_authz_reader;",reviewer)
+        for fn in (
+            "d1_student_status_correct_candidates",
+            "d1_student_status_correct_reviews_live",
+            "d1_student_status_correct_participant",
+        ):
+            self.assertEqual(reviewer.count(
+                "CREATE OR REPLACE FUNCTION app_private."+fn+"("),1)
+        self.assertEqual(reviewer.count(
+            "SELECT q.id,q.requester_id,q.target_ref,q.old_snapshot,q.requested_payload INTO req"),3)
+        self.assertNotIn("SELECT q.* INTO req",reviewer)
+        self.assertNotIn("SELECT t.* INTO templ",reviewer)
+        self.assertIn("t.id,t.selection_resolver_key,t.reviewer_role_id",reviewer)
+        self.assertIn("CREATE POLICY d1_effect35_status_correct_authz_requests",reviewer)
+        self.assertIn("CREATE POLICY d1_effect35_status_correct_authz_operation",reviewer)
+        self.assertIn("o.code='student.status.correct'",reviewer)
+        self.assertIn("USING (code='student.status.correct')",reviewer)
+        self.assertIn("TO schoolos_authz_reader;",reviewer)
+        self.assertIn("reviewer_assignment_id,decision",reviewer)
+        self.assertIn("step_number",reviewer)
+        self.assertIn("selection_resolver_key",reviewer)
+        self.assertIn("d1_student_status_correct_authorized_pair(",reviewer)
+        self.assertTrue(reviewer.rstrip().endswith(
+            "REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;"))
+        for forbidden in (
+            "GRANT SELECT ON app_private", "TO authenticated;",
+            "TO service_role;", "TO anon;", "TO PUBLIC;",
+            "GRANT UPDATE", "DISABLE TRIGGER", "DROP POLICY",
+        ):
+            self.assertNotIn(forbidden,reviewer)
+
+        # Status P2 application guard role must match the other
+        # schema-owner integrity guards rather than widening grants to
+        # the intentionally limited evidence writer (run #569).
+        application_owner=(root/"supabase/migrations/"
+          "20260928000000_domain_package_01_effect35_14_student_status_correct_application_guard_owner.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "ALTER FUNCTION app_private.d1_guard_student_status_correct_application()",
+            application_owner)
+        self.assertIn("OWNER TO schoolos_schema_owner;",application_owner)
+        self.assertEqual(application_owner.count("ALTER FUNCTION "),1)
+        for forbidden in (
+            "GRANT SELECT", "GRANT UPDATE", "GRANT EXECUTE",
+            "GRANT schoolos_schema_owner", "CREATE FUNCTION",
+            "CREATE OR REPLACE FUNCTION", "DISABLE ROW LEVEL SECURITY",
+            "DISABLE TRIGGER", "DROP TRIGGER", "DROP POLICY",
+        ):
+            self.assertNotIn(forbidden,application_owner)
+
+        for name,count,markers in additions:
+            sql=(root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
+            self.assertTrue(sql.startswith("--"))
+            self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+            self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+            self.assertIn("SELECT plan("+str(count)+");",sql)
+            self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),count)
+            self.assertIn("SET CONSTRAINTS ALL IMMEDIATE;",sql)
+            self.assertIn("SELECT * FROM finish();",sql)
+            for marker in markers:
+                self.assertIn(marker,sql)
+            for forbidden in ("GRANT SELECT ON app_private","supabase db push",
+                              "INSERT INTO app_private.approval_reviews"):
+                self.assertNotIn(forbidden,sql)
+            role="runner"
+            for line in sql.splitlines():
+                if line=="SET ROLE schoolos_schema_owner;":
+                    role="owner"
+                elif line=="SET ROLE authenticated;":
+                    role="authenticated"
+                elif line=="RESET ROLE;":
+                    role="runner"
+                if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                    self.assertNotEqual(role,"owner")
 
 
 if __name__ == "__main__":

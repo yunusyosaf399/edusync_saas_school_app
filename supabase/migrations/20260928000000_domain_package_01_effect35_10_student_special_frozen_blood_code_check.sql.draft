@@ -1,0 +1,26 @@
+-- D1C2A Student Special P2 #59 local runtime #547 found a frozen-contract
+-- mismatch: structural d1_13_ck (initial D1 table construction) still accepts
+-- abbreviated blood-group tokens (e.g. O_POS) while the later frozen Effect22
+-- contract, source validator and immutable apply evidence use canonical full
+-- tokens (e.g. O_POSITIVE). A valid P2 correction cannot apply while the
+-- physical CHECK denies the exact reviewed canonical values.
+-- Reconcile the physical CHECK to precisely the EIGHT Effect22 canonical
+-- tokens; DO NOT widen it to accept both formats or alter the frozen Effect22
+-- helpers. Retain all other d1_13_ck reason/history/end-marker conditions.
+-- This is an append-only *inactive* Migration 10 continuation, exclusively
+-- table owner DDL. No Auth, public, executor, RLS or table DML grants and
+-- absolutely no hosted deployment.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.student_special_details
+  DROP CONSTRAINT d1_13_ck;
+ALTER TABLE app_private.student_special_details
+  ADD CONSTRAINT d1_13_ck CHECK (
+    (blood_group_code IS NULL OR blood_group_code IN (
+      'A_POSITIVE','A_NEGATIVE','B_POSITIVE','B_NEGATIVE',
+      'AB_POSITIVE','AB_NEGATIVE','O_POSITIVE','O_NEGATIVE'))
+    AND (pg_catalog.length(pg_catalog.btrim(reason)) > 0)
+    AND (((effective_until IS NULL AND ended_at IS NULL AND ended_by IS NULL)
+       OR (effective_until IS NOT NULL AND ended_at IS NOT NULL
+           AND ended_by IS NOT NULL AND effective_until > effective_from)))
+  );
+RESET ROLE;

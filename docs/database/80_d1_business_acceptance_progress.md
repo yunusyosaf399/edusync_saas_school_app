@@ -1,6 +1,6 @@
 # D1 business acceptance progress
 
-Updated: 2026-10-14. Status: incomplete; no migration activation or deployment readiness claim.
+Updated: 2026-10-15. Status: incomplete; no migration activation or deployment readiness claim.
 
 ## Written acceptance coverage
 
@@ -557,3 +557,22 @@ Six merged paths: three rollback-only SQL tests, manifest, static guard and inac
 The first D1 runtime of the batch exposed a genuine application-integrity trigger dependency: NOLOGIN `schoolos_schema_owner` could not EXECUTE two private SECURITY INVOKER Class Teacher payload validators during a real successful P2 APPLY. [Append-only inactive Effect35_02](../../supabase/migrations/20260928000000_domain_package_01_effect35_02_class_teacher_p2_application_guard_acl.sql.draft) grants EXECUTE on only those two private validators to the exact NOLOGIN trigger owner, not to anon/authenticated/service_role/PUBLIC. Original frozen SQL remains unchanged, and a Python source guard pins the constrained fix.
 
 **New frozen D1C2A checkpoint: 55/55 suites, 2,696/2,696 assertions; 19/19 existing real observed-lock races; 66/66 D1 Python; 222/222 Foundation Python; 220/220 Foundation SQL.** These five suites deepen **three previously accepted distinct protected operations** only; accepted breadth remains **22/35**, **13 unaccepted**. Class Teacher multi-step/campus scopes, policy version swap, identity-specific concurrency and operation-specific races remain unaccepted. `student.create` remains blocked pending Admissions; `student.roll_policy.change` disabled/unimplemented pending [review #127](127_d1_roll_policy_p1_implementation_readiness_and_invariant_review.md). **Full D1 OPEN; Migration 10 stays inactive `.sql.draft`; no hosted Supabase deployment.**
+
+
+## Student five-operation acceptance candidate — PR #60 (2026-10-15)
+
+**Do not mark as merged/frozen until clean exact-head post-documentation CI and merge verification.** The frozen baseline before PR #60 stays **55 business suites, 2,696 assertions, 22/35 protected operations** at `067de4d5b13260678815a0f2b91c235fd83d0491`. This candidate adds five **previously unaccepted distinct** operations:
+
+| Suite | Protected operation and route | Tested assertions |
+|---|---|---:|
+| #56 | `student.status.change` P1 DIRECT | 11/11 |
+| #57 | `student.emergency_contact.change` P1 DIRECT | 12/12 |
+| #58 | `student.identity.correct` P2 REQUIRED_REVIEW | 11/11 |
+| #59 | `student.special.correct` P2 REQUIRED_REVIEW | 11/11 |
+| #60 | `student.status.correct` P2 REQUIRED_REVIEW | 10/10 |
+
+[PR #60](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/60) candidate SHA `43cd8cd883af5038b4e01115fdc625dd2adffaf6` earned **three exact-head PASS results**: [D1 runtime #573](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/38675105555), [Foundation #692](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/38675105413) and [draft static #198](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/38675105423). Runtime explicitly confirmed **60/60 business suites, 2,751/2,751 assertions**, 220/220 Foundation SQL, all existing 19 observed-lock races, 34 RLS-forced relations, 220 disposable local-only draft fragments, 542 functions (524 SECURITY DEFINER), and zero client/anon/service-role private function EXECUTE. Foundation: 224 Python unit tests; D1: 68 Python unit tests. The newer corrected catalog log printer now emits validated observed values rather than an outdated hardcoded 541/523/384 message.
+
+Full source/role/RLS/fixture/migration reconciliation and evidence boundaries: [Review #146](146_d1_student_five_operations_acceptance_review.md). The prior frozen structural fragments have **not** been edited; Effect35_03–14 provide append-only inactive corrections. Identity/Special canonical blood-code reconciliation and Status CORRECT private approval history access are documented there. The current scope proves accepted direct and P2 sample paths but not every remaining campus/time/race/stale-permission edge.
+
+**After** exact-head review and merge, target checkpoint: **60/60 suites, 2,751/2,751 assertions; 27/35 distinct protected operations, 8 unaccepted**. Until then those are *candidate* totals and the last merged `main` remains 55/2,696 and 22/35. Full D1 remains OPEN; Migration 10 remains an inactive `.sql.draft`; no staging/hosted production deployment authorized.

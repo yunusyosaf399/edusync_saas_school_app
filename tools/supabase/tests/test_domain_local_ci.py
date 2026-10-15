@@ -51,6 +51,26 @@ class DomainLocalCITests(unittest.TestCase):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
         runtime.validate_runtime_probe(observed)
 
+    def test_runtime_inventory_private_helper_delta(self):
+        # Effect35_12 adds one private Student-owned source read helper;
+        # never loosen the public RPC surface or table/client ACL ceilings.
+        expected = runtime.EXPECTED_RUNTIME_METRICS
+        self.assertEqual(expected["functions"], 542)
+        self.assertEqual(expected["security_definers"], 524)
+        self.assertEqual(expected["private_functions"], 385)
+        self.assertEqual(expected["app_functions"], 157)
+        self.assertEqual(expected["authenticated_app_execute"], 157)
+        self.assertEqual(expected["authenticated_private_execute"], 0)
+        self.assertEqual(expected["anon_execute"], 0)
+        self.assertEqual(expected["service_role_execute"], 0)
+        self.assertEqual(expected["authenticated_table_dml"], 0)
+        self.assertEqual(expected["unknown_function_owners"], 0)
+        self.assertEqual(expected["app_schema_owner_functions"], 0)
+        self.assertEqual(
+            expected["functions"],
+            expected["app_functions"] + expected["private_functions"] + 0,
+        )
+
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
         observed["authenticated_private_execute"] = 1

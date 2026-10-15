@@ -1,0 +1,20 @@
+-- D1C2A suite #58 exact-head runtime #537: identity P2 APPROVED apply
+-- reached the schema-owner SECURITY DEFINER approval-application trigger.
+-- The trigger's exact receipt/source payload validator was executable only by
+-- schoolos_workflow_executor and schoolos_read_executor. Trigger owner
+-- schoolos_schema_owner therefore raised SQLSTATE 42501 on valid apply.
+-- Student Special uses the same schema-owner trigger -> private validator
+-- edge. Give only the trigger owner EXECUTE on these two fixed immutable
+-- schema-specific JSON validators; no data or client role access is granted.
+-- Both validators were created under schoolos_authz_reader (Effect21/22),
+-- and already call their own owner-accessible underlying payload helpers.
+-- Preserve existing validation bodies, triggers, frozen SQL and RLS.
+-- Static inactive Migration 10 continuation, no hosted deployment.
+SET ROLE schoolos_authz_reader;
+GRANT EXECUTE ON FUNCTION
+  app_private.d1_student_identity_request_payload_valid(jsonb,jsonb)
+  TO schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION
+  app_private.d1_student_special_request_payload_valid(jsonb,jsonb)
+  TO schoolos_schema_owner;
+RESET ROLE;
