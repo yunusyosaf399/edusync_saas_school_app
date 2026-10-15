@@ -2111,7 +2111,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_batch_56_60_student_protected_operations(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
-        self.assertEqual(len(DOMAIN_TESTS),60)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),60)
         self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:55]),2696)
         additions=(
           ("56_student_status_p1_direct_lifecycle.sql",11,
@@ -2128,8 +2128,8 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
            ("app.d1_submit_student_status_correction","app.d1_review_student_status_correction",
             "app.d1_apply_student_status_correction","student.status.approve")),
         )
-        self.assertEqual(DOMAIN_TESTS[55:],[[n,c] for n,c,_ in additions])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2751)
+        self.assertEqual(DOMAIN_TESTS[55:60],[[n,c] for n,c,_ in additions])
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:60]),2751)
 
         # Real Student no-placement Status acceptance exposed a PL/pgSQL
         # uninitialized record exception before ALL scope was evaluated.
@@ -2571,6 +2571,95 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                     role="runner"
                 if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
                     self.assertNotEqual(role,"owner")
+
+    def test_batch_61_student_p0_initial_primary_placement(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        self.assertEqual(len(DOMAIN_TESTS),61)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:60]),2751)
+        self.assertEqual(DOMAIN_TESTS[60],[
+            "61_student_enrollment_place_p0_initial_roll.sql",18])
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),2769)
+        sql=(root/"supabase/tests/domain/61_student_enrollment_place_p0_initial_roll.sql").read_text(encoding="utf-8")
+        self.assertTrue(sql.startswith("-- D1 suite #61:"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertIn("SELECT plan(18);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),18)
+        self.assertIn("SET CONSTRAINTS ALL IMMEDIATE;",sql)
+        self.assertIn("SELECT * FROM finish();",sql)
+        for fragment in (
+            "student.enrollment.place","app.d1_place_student_enrollment(",
+            "'INITIAL'","'PROMOTION'","'PERSISTENT_STUDENT'",
+            "INSERT INTO app_private.roll_policy_revisions(",
+            "INSERT INTO app_private.roll_allocator_states(",
+            "INSERT INTO app_private.capacity_revisions(",
+            "INSERT INTO app_private.student_status_transitions(",
+            "capacity_overridden","enrollment.created",
+            "student-place-initial",
+        ):
+            self.assertIn(fragment,sql)
+        for forbidden in (
+            "INSERT INTO app_private.enrollments(",
+            "INSERT INTO app_private.roll_allocations(",
+            "INSERT INTO app_private.approval_reviews(",
+            "GRANT SELECT ON app_private",
+            "GRANT UPDATE ON app_private",
+            "supabase db push",
+        ):
+            self.assertNotIn(forbidden,sql)
+        role="runner"
+        for line in sql.splitlines():
+            if line=="SET ROLE schoolos_schema_owner;": role="owner"
+            elif line=="SET ROLE authenticated;": role="authenticated"
+            elif line=="RESET ROLE;": role="runner"
+            if re.match(r"SELECT (?:is|ok|throws_ok)\(",line):
+                self.assertNotEqual(role,"owner")
+
+        # Enrollment's first real P0 placement advances next_value only;
+        # M-row version and timestamp remain server-trigger-owned.
+        allocator=(root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect35_15_enrollment_place_allocator_server_version.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE OR REPLACE FUNCTION app_private.d1_enrollment_place_allocate_roll(",allocator)
+        self.assertEqual(allocator.count("SET next_value=candidate+1"),2)
+        self.assertIn("SET ROLE schoolos_student_executor;",allocator)
+        self.assertIn("REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",allocator)
+        self.assertIn("D1 Enrollment backdated persistent roll conflicts",allocator)
+        self.assertIn("origin:=prior.id;",allocator)
+        self.assertNotIn("SET next_value=candidate+1,row_version=",allocator)
+        # Academic-owned destination helper calls the schema-owner path
+        # lock. Effect25_16 removed direct Student access, so the owner-
+        # distinct dependency must explicitly execute as Academic executor.
+        path_lock=(root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect35_16_enrollment_place_academic_path_execution.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SET ROLE schoolos_schema_owner;",path_lock)
+        self.assertIn(
+            "GRANT EXECUTE ON FUNCTION app_private.d1_lock_academic_path(uuid,uuid,uuid)",
+            path_lock)
+        self.assertIn("TO schoolos_academic_executor;",path_lock)
+        self.assertIn("RESET ROLE;",path_lock)
+        for forbidden in (
+            "TO schoolos_student_executor", "TO authenticated", "TO anon",
+            "TO service_role", "TO PUBLIC", "GRANT SELECT", "GRANT UPDATE",
+            "GRANT schoolos", "DISABLE ROW LEVEL SECURITY",
+        ):
+            self.assertNotIn(forbidden,path_lock)
+        academic=(root/"supabase/migrations/"
+            "20260928000000_domain_package_01_effect25_16_enrollment_place_academic_boundary.sql.draft"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "REVOKE EXECUTE ON FUNCTION app_private.d1_lock_academic_path(uuid,uuid,uuid) FROM schoolos_student_executor;",
+            academic)
+        self.assertIn(
+            "CREATE FUNCTION app_private.d1_enrollment_place_lock_destination(p_section uuid)",
+            academic)
+
+        for forbidden in ("GRANT UPDATE", "GRANT SELECT", "TO authenticated;",
+                          "TO service_role;", "TO anon;", "DISABLE TRIGGER",
+                          "ALTER TABLE", "DROP POLICY"):
+            self.assertNotIn(forbidden,allocator)
 
 
 if __name__ == "__main__":
