@@ -3175,7 +3175,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_student_profile_review_grant_real_two_session_lock_races(self):
         from domain_student_profile_reviewer_grant_race_ci import (
-            CONTAINER, OLD_GRANT, NEW_GRANT, _apply, _revoke,
+            CONTAINER, OLD_GRANT, NEW_GRANT, _apply, _revoke, _request_id,
         )
         root=business.ROOT
         fixture=(root/"supabase/tests/domain/fixtures/"
@@ -3213,6 +3213,13 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                       _revoke(OLD_GRANT,"d1-profile-race-revoker-waiting",hold=True))
         self.assertIn(NEW_GRANT,runner)
         self.assertEqual(CONTAINER,"supabase_db_saas_OS_school_app")
+        sample_request="b1000000-0000-4000-8000-000000000001"
+        self.assertEqual(_request_id(CONTAINER,
+            lambda _container,_sql,_label,**_kw: sample_request+"\\n",
+            "profile-race-submit-1"),sample_request)
+        with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_RACE_APPROVED_REQUEST_NOT_UNIQUE"):
+            _request_id(CONTAINER,lambda _container,_sql,_label,**_kw: "unexpected\\n",
+                        "profile-race-submit-2")
         with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_RACE_UNEXPECTED_APPLY_INTENT"):
             _apply("b1000000-0000-4000-8000-000000000001",
                    "unknown", "d1-profile-race-apply-holder")
