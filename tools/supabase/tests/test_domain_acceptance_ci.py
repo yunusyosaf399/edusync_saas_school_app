@@ -3215,10 +3215,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(CONTAINER,"supabase_db_saas_OS_school_app")
         sample_request="b1000000-0000-4000-8000-000000000001"
         self.assertEqual(_request_id(CONTAINER,
-            lambda _container,_sql,_label,**_kw: sample_request+"\\n",
+            lambda _container,_sql,_label,**_kw: sample_request+"\n",
             "profile-race-submit-1"),sample_request)
         with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_RACE_APPROVED_REQUEST_NOT_UNIQUE"):
-            _request_id(CONTAINER,lambda _container,_sql,_label,**_kw: "unexpected\\n",
+            _request_id(CONTAINER,lambda _container,_sql,_label,**_kw: "unexpected\n",
                         "profile-race-submit-2")
         with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_RACE_UNEXPECTED_APPLY_INTENT"):
             _apply("b1000000-0000-4000-8000-000000000001",
