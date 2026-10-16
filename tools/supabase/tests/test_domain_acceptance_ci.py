@@ -3212,6 +3212,9 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertIn("pg_advisory_xact_lock(71001,1)",
                       _revoke(OLD_GRANT,"d1-profile-race-revoker-waiting",hold=True))
         self.assertIn(NEW_GRANT,runner)
+        second_script=runner.split("def _second_request(",1)[1].split("def _cleanup(",1)[0]
+        self.assertEqual(second_script.count("statement_timestamp()"),2)
+        self.assertNotIn("statement_timestamp()-interval '1 hour'",second_script)
         self.assertEqual(CONTAINER,"supabase_db_saas_OS_school_app")
         sample_request="b1000000-0000-4000-8000-000000000001"
         self.assertEqual(_request_id(CONTAINER,
