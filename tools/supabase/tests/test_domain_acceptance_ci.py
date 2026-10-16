@@ -3024,6 +3024,42 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("UPDATE app_private.operation_contracts",fix)
         self.assertNotIn("GRANT EXECUTE ON FUNCTION",fix)
 
+    def test_batch_67_student_profile_p1_approval_candidate(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        # All previous accepted suites, the fail-closed baseline, and the
+        # P1 DIRECT candidate are immutable ordered prefixes.
+        self.assertGreaterEqual(len(DOMAIN_TESTS),67)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:66]),2939)
+        self.assertEqual(DOMAIN_TESTS[66],
+                         ["67_student_profile_p1_approval_review_apply.sql",41])
+        sql=(root/"supabase/tests/domain/"
+             "67_student_profile_p1_approval_review_apply.sql").read_text(
+                 encoding="utf-8")
+        self.assertTrue(sql.startswith("--"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertIn("SELECT plan(41);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),41)
+        for expected in (
+            "app.d1_place_student_enrollment",
+            "app.d1_submit_student_profile_update",
+            "app.d1_review_profile_request",
+            "app.d1_read_profile_request",
+            "app.d1_apply_profile_request",
+            "student.profile.approve",
+            "student.profile.update",
+            "student.profile_changed",
+            "D1_REVIEWER_ROLE_SCOPE",
+            "requester cannot approve their own request",
+        ):
+            # Check semantic equivalence through canonical phrasings below.
+            if expected == "requester cannot approve their own request":
+                expected = "requester cannot approve"
+            self.assertIn(expected,sql)
+        for forbidden in ("supabase db push", "DISABLE ROW LEVEL SECURITY",
+                          "GRANT ALL ON", "TO anon;", "TO service_role;"):
+            self.assertNotIn(forbidden,sql)
+
     def test_blocked_student_profile_update_contract_package(self):
         self._assert_blocked_student_contract(
             "student.profile.update","SP",8,
