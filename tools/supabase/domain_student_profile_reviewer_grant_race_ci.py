@@ -80,7 +80,7 @@ SELECT r.id::text FROM app_private.approval_requests r
    AND r.operation_id=(SELECT id FROM app_private.operation_contracts
                        WHERE code='student.profile.update');
 """
-    rows=re.findall(r"(?m)^([0-9a-f]{8}(?:-[0-9a-f]{4}){{3}}-[0-9a-f]{12})$",
+    rows=re.findall(r"(?m)^([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$",
                     execute_sql(container,sql,"D1_PROFILE_RACE_REQUEST_LOOKUP",tuples=True))
     if len(rows)!=1:
         raise RuntimeError("D1_PROFILE_RACE_APPROVED_REQUEST_NOT_UNIQUE")
