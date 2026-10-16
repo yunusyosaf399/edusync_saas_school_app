@@ -233,9 +233,9 @@ SELECT is(:'reviewed_request_version'::bigint,4::bigint,
 RESET ROLE;
 
 SET ROLE schoolos_schema_owner;
--- A rollback-only fixture models an independently committed version advance;
--- this is not claimed as observed two-session concurrency.
-UPDATE app_private.students SET row_version=row_version+1,
+-- A rollback-only fixture models an independent permitted field update;
+-- the server-owned version trigger advances the version. No two-session race claim.
+UPDATE app_private.students SET
  previous_school='Independent Synthetic Correction'
  WHERE id='b1000000-0000-4000-8000-000000000001';
 RESET ROLE;
