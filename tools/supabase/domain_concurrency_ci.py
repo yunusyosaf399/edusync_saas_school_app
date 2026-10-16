@@ -7,6 +7,7 @@ from domain_cross_family_race_ci import run_cross_family_race
 from domain_cross_family_reverse_race_ci import run_cross_family_reverse_race
 from domain_authorization_revocation_race_ci import run_family_authority_revocation_races
 from domain_assignment_scope_revocation_race_ci import run_family_assignment_scope_races
+from domain_student_profile_reviewer_grant_race_ci import run_student_profile_reviewer_grant_races
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1855,3 +1856,6 @@ SELECT count(*) FROM app_private.approval_reviews v
     # two independent additional genuine observed-lock races, retaining
     # unrevoked role grants and staff role assignments.
     run_family_assignment_scope_races(container, execute_sql)
+    # Student Profile P1: real current permission revocation competes with
+    # actual typed approved apply in both PostgreSQL advisory lock orders.
+    run_student_profile_reviewer_grant_races(container, execute_sql)
