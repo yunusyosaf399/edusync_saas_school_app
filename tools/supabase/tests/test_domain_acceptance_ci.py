@@ -3280,6 +3280,70 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_SAME_STUDENT_FIELD_INTENT_INVALID"):
             _field_count(CONTAINER,lambda *_args,**_kwargs:"","not-a-test-payload")
 
+    def test_student_profile_submit_vs_approved_apply_true_row_lock_races(self):
+        from domain_student_profile_submit_vs_apply_race_ci import (
+            CASES, CONTAINER, _apply_worker, _submit_worker,
+            _approved_id, _key_counts, _field_evidence,
+        )
+        root=business.ROOT
+        runner=(root/"tools/supabase/"
+                "domain_student_profile_submit_vs_apply_race_ci.py").read_text(encoding="utf-8")
+        sequence=(root/"tools/supabase/domain_concurrency_ci.py").read_text(encoding="utf-8")
+        self.assertEqual(len(CASES),2)
+        self.assertEqual([c[0] for c in CASES],["apply-first","submit-first"])
+        self.assertEqual(len({x for c in CASES for x in c[3:7]}),8)
+        self.assertEqual(CONTAINER,"supabase_db_saas_OS_school_app")
+        self.assertGreater(
+            sequence.index("run_student_profile_submit_vs_approved_apply_races(container, execute_sql)"),
+            sequence.index("run_student_profile_competing_approved_applies(container, execute_sql)"))
+        for marker in (
+            "pg_blocking_pids", "_probe_worker", "app.d1_submit_student_profile_update(",
+            "app.d1_review_profile_request(", "app.d1_apply_profile_request(",
+            "D1_STUDENT_PROFILE_SUBMIT_APPLY_FIRST_RACE_PASS",
+            "D1_STUDENT_PROFILE_SUBMIT_SUBMIT_FIRST_RACE_PASS",
+            "D1_PROFILE_SUBMIT_RACE_STALE_SUBMISSION_EFFECT",
+            "D1_PROFILE_SUBMIT_RACE_PENDING_REQUEST_NOT_RETAINED",
+            "D1_PROFILE_SUBMIT_RACE_HISTORICAL_SUBMIT_REPLAY",
+            "D1_PROFILE_SUBMIT_RACE_SUBMIT_FIRST_REPLAY_DUPLICATED",
+            "approval_requests", "command_receipts", "student.profile_changed",
+            "student_identity_details", "student_special_details",
+            "Race Submit Stale Denied", "Race Submit Pending Then Drift",
+        ):
+            self.assertIn(marker,runner)
+        for excluded in ("supabase db push", "CREATE OR REPLACE FUNCTION",
+                         "GRANT ALL ON", "TO anon;", "TO service_role;"):
+            self.assertNotIn(excluded,runner)
+        req="b1000000-0000-4000-8000-000000000001"
+        holder=_apply_worker(req,"apply-first",hold=True)
+        self.assertIn("SET ROLE authenticated",holder)
+        self.assertIn("pg_sleep(4)",holder)
+        self.assertIn("app.d1_apply_profile_request",holder)
+        self.assertIn("foundation-test-001@example.invalid",holder)
+        blocked=_submit_worker("apply-first",6,hold=False)
+        self.assertIn("foundation-rbac-001@example.invalid",blocked)
+        self.assertIn("Race Submit Stale Denied",blocked)
+        self.assertIn("app.d1_submit_student_profile_update",blocked)
+        self.assertIn("pg_sleep(4)",_submit_worker("submit-first",7,hold=True))
+        self.assertEqual(
+            _approved_id(CONTAINER,lambda _c,_sql,_label,**_kw:req+"\n",
+                         "apply-first",6),req)
+        with self.assertRaisesRegex(RuntimeError,
+                                    "D1_PROFILE_SUBMIT_RACE_APPROVAL_NOT_UNIQUE"):
+            _approved_id(CONTAINER,lambda _c,_sql,_label,**_kw:"bad\n",
+                         "submit-first",7)
+        with self.assertRaisesRegex(RuntimeError,
+                                    "D1_PROFILE_SUBMIT_RACE_APPLY_INTENT_INVALID"):
+            _apply_worker(req,"unknown",hold=True)
+        with self.assertRaisesRegex(RuntimeError,
+                                    "D1_PROFILE_SUBMIT_RACE_SUBMIT_INTENT_INVALID"):
+            _submit_worker("submit-first",0,hold=True)
+        with self.assertRaisesRegex(RuntimeError,
+                                    "D1_PROFILE_SUBMIT_RACE_KEY_INVALID"):
+            _key_counts(CONTAINER,lambda *_a,**_k:"","untrusted-key")
+        with self.assertRaisesRegex(RuntimeError,
+                                    "D1_PROFILE_SUBMIT_RACE_FIELD_INTENT_INVALID"):
+            _field_evidence(CONTAINER,lambda *_a,**_k:"","not-a-case","also-not-a-case")
+
     def test_blocked_student_profile_update_contract_package(self):
         self._assert_blocked_student_contract(
             "student.profile.update","SP",8,
