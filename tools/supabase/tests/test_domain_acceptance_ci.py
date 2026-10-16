@@ -3024,6 +3024,83 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("UPDATE app_private.operation_contracts",fix)
         self.assertNotIn("GRANT EXECUTE ON FUNCTION",fix)
 
+    def test_batch_67_student_profile_p1_approval_candidate(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        # All previous accepted suites, the fail-closed baseline, and the
+        # P1 DIRECT candidate are immutable ordered prefixes.
+        self.assertGreaterEqual(len(DOMAIN_TESTS),67)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:66]),2939)
+        self.assertEqual(DOMAIN_TESTS[66],
+                         ["67_student_profile_p1_approval_review_apply.sql",41])
+        sql=(root/"supabase/tests/domain/"
+             "67_student_profile_p1_approval_review_apply.sql").read_text(
+                 encoding="utf-8")
+        self.assertTrue(sql.startswith("--"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertIn("SELECT plan(41);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),41)
+        for expected in (
+            "app.d1_place_student_enrollment",
+            "app.d1_submit_student_profile_update",
+            "app.d1_review_profile_request",
+            "app.d1_read_profile_request",
+            "app.d1_apply_profile_request",
+            "student.profile.approve",
+            "student.profile.update",
+            "student.profile_changed",
+            "D1_REVIEWER_ROLE_SCOPE",
+            "requester cannot approve their own request",
+        ):
+            # Check semantic equivalence through canonical phrasings below.
+            if expected == "requester cannot approve their own request":
+                expected = "requester cannot approve"
+            self.assertIn(expected,sql)
+        for forbidden in ("supabase db push", "DISABLE ROW LEVEL SECURITY",
+                          "GRANT ALL ON", "TO anon;", "TO service_role;"):
+            self.assertNotIn(forbidden,sql)
+        guard=(root/"supabase/migrations/"
+              "20260928000000_domain_package_01_effect35_20_student_profile_p1_submit_record_guard.sql.draft").read_text(
+                  encoding="utf-8")
+        self.assertIn("CREATE OR REPLACE FUNCTION app_private.d1_profile_submit(",guard)
+        self.assertIn("IF p_kind='STUDENT' THEN\n    IF student_row.row_version",guard)
+        self.assertIn("ELSE\n    IF employee_row.row_version",guard)
+        self.assertNotIn("OR (p_kind='EMPLOYEE' AND (employee_row.row_version",guard)
+        self.assertIn("SET ROLE schoolos_workflow_executor;",guard)
+        self.assertIn("REVOKE CREATE ON SCHEMA app_private FROM schoolos_workflow_executor;",guard)
+        for forbidden in ("UPDATE app_private.operation_contracts", "DISABLE ROW LEVEL SECURITY",
+                          "GRANT EXECUTE ON FUNCTION", "TO anon;", "TO service_role;"):
+            self.assertNotIn(forbidden,guard)
+        reviewer=(root/"supabase/migrations/"
+                  "20260928000000_domain_package_01_effect35_21_student_profile_approval_candidate_open_offerings.sql.draft").read_text(
+                      encoding="utf-8")
+        self.assertIn("CREATE OR REPLACE FUNCTION app_private.d1_review_candidates(",reviewer)
+        self.assertIn("ctx.operation_code = 'student.profile.update'",reviewer)
+        self.assertIn("so.state = 'OPEN' AND co.state = 'OPEN'",reviewer)
+        self.assertIn("ctx.operation_code = 'student.status.change'",reviewer)
+        self.assertIn("so.state = 'ACTIVE' AND co.state = 'ACTIVE'",reviewer)
+        self.assertIn("SET ROLE schoolos_authz_reader;",reviewer)
+        self.assertIn("REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;",reviewer)
+        for forbidden in ("UPDATE app_private.operation_contracts", "DISABLE ROW LEVEL SECURITY",
+                          "GRANT EXECUTE ON FUNCTION", "TO anon;", "TO service_role;"):
+            self.assertNotIn(forbidden,reviewer)
+
+        replay=(root/"supabase/migrations/"
+                "20260928000000_domain_package_01_effect35_22_profile_p1_historical_submission_receipt_lock.sql.draft").read_text(
+                    encoding="utf-8")
+        self.assertIn("CREATE OR REPLACE FUNCTION app_private.d1_profile_submit(",replay)
+        self.assertIn("IF receipt_row.receipt_id IS NOT NULL THEN\n      PERFORM app_private.d1_student_profile_lock",replay)
+        self.assertIn("ELSIF NOT app_private.d1_student_profile_lock",replay)
+        self.assertIn("IF receipt_row.receipt_id IS NOT NULL THEN\n      PERFORM app_private.d1_employee_profile_lock",replay)
+        self.assertIn("ELSIF NOT app_private.d1_employee_profile_lock",replay)
+        self.assertIn("IF NOT app_private.d1_profile_authorized(",replay)
+        self.assertIn("app_private.d1_profile_participant(receipt_row.result_ref",replay)
+        self.assertIn("SET ROLE schoolos_workflow_executor;",replay)
+        self.assertIn("REVOKE CREATE ON SCHEMA app_private FROM schoolos_workflow_executor;",replay)
+        for forbidden in ("UPDATE app_private.operation_contracts", "DISABLE ROW LEVEL SECURITY",
+                          "GRANT EXECUTE ON FUNCTION", "TO anon;", "TO service_role;"):
+            self.assertNotIn(forbidden,replay)
+
     def test_blocked_student_profile_update_contract_package(self):
         self._assert_blocked_student_contract(
             "student.profile.update","SP",8,
