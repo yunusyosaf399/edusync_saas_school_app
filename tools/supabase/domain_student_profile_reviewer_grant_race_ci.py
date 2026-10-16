@@ -178,7 +178,7 @@ def run_student_profile_reviewer_grant_races(container: str, execute_sql) -> Non
                 "D1_PROFILE_RACE_APPROVED_FIXTURE",timeout=120)
     first_id=_request_id(container,execute_sql,"profile-race-submit-1")
     initial=_checks(container,execute_sql)
-    if len(initial)!=10 or initial[1:]!=["0"]*9:
+    if len(initial)!=10 or initial[1:]!=["0","0","0","0","0","0","0","1","0"]:
         raise RuntimeError("D1_PROFILE_RACE_UNEXPECTED_BASELINE "+",".join(initial))
     version=int(initial[0])
 
