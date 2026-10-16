@@ -3229,6 +3229,57 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_RACE_UNEXPECTED_GRANT"):
             _revoke(NEW_GRANT,"d1-profile-race-revoker-waiting")
 
+    def test_student_profile_two_opposing_approved_apply_row_lock_races(self):
+        from domain_student_profile_competing_applies_race_ci import (
+            CASES, CONTAINER, THIRD_GRANT, THIRD_SCOPE,
+            _worker, _request_id, _field_count,
+        )
+        runner=(business.ROOT/"tools/supabase/"
+                "domain_student_profile_competing_applies_race_ci.py").read_text(encoding="utf-8")
+        sequence=(business.ROOT/"tools/supabase/domain_concurrency_ci.py").read_text(encoding="utf-8")
+        self.assertEqual(len(CASES),2)
+        self.assertEqual([c[7] for c in CASES],["requester","reviewer"])
+        self.assertEqual(len({value for c in CASES for value in c[1:3]}),4)
+        self.assertEqual(CONTAINER,"supabase_db_saas_OS_school_app")
+        self.assertIn("run_student_profile_competing_approved_applies(container, execute_sql)",
+                      sequence)
+        self.assertGreater(
+            sequence.index("run_student_profile_competing_approved_applies(container, execute_sql)"),
+            sequence.index("run_student_profile_reviewer_grant_races(container, execute_sql)"))
+        for marker in (
+            "app.d1_submit_student_profile_update(",
+            "app.d1_review_profile_request(",
+            "app.d1_apply_profile_request(",
+            "D1_STUDENT_PROFILE_SAME_STUDENT_",
+            "pg_blocking_pids", "_probe_worker",
+            "D1_PROFILE_SAME_STUDENT_LOSER_OVERWRITE",
+            "D1_PROFILE_SAME_STUDENT_RECEIPT_REPLAY_DUPLICATED_EFFECT",
+            "student.profile_changed", "approval_applications",
+            "request.submit", "request.review", "request.apply",
+            "statement_timestamp()", "row_version=4",
+            "D1_PROFILE_SAME_STUDENT_REQUIRES_PR75"):
+            self.assertIn(marker,runner)
+        self.assertIn(THIRD_GRANT,runner)
+        self.assertIn(THIRD_SCOPE,runner)
+        self.assertNotIn("supabase db push",runner)
+        self.assertNotIn("CREATE OR REPLACE FUNCTION",runner)
+        self.assertNotIn("statement_timestamp()-interval '1 hour'",runner)
+        req="b1000000-0000-4000-8000-000000000001"
+        self.assertIn("pg_sleep(4)",_worker(req,"requester",CASES[0][5],
+                      CASES[0][3],hold=True))
+        self.assertIn("SET ROLE authenticated",_worker(req,"reviewer",CASES[1][5],
+                      CASES[1][3],hold=True))
+        self.assertEqual(_request_id(CONTAINER,
+            lambda _c,_sql,_label,**_kwargs: req+"\n",
+            "one","left",3),req)
+        with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_SAME_STUDENT_APPROVAL_NOT_UNIQUE"):
+            _request_id(CONTAINER,lambda _c,_sql,_label,**_kwargs: "garbage\n",
+                        "two","right",3)
+        with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_SAME_STUDENT_UNEXPECTED_WORKER"):
+            _worker(req,"reviewer",CASES[0][5],CASES[0][3])
+        with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_SAME_STUDENT_FIELD_INTENT_INVALID"):
+            _field_count(CONTAINER,lambda *_args,**_kwargs:"","not-a-test-payload")
+
     def test_blocked_student_profile_update_contract_package(self):
         self._assert_blocked_student_contract(
             "student.profile.update","SP",8,
