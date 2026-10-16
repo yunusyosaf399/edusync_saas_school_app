@@ -3085,6 +3085,22 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                           "GRANT EXECUTE ON FUNCTION", "TO anon;", "TO service_role;"):
             self.assertNotIn(forbidden,reviewer)
 
+        replay=(root/"supabase/migrations/"
+                "20260928000000_domain_package_01_effect35_22_profile_p1_historical_submission_receipt_lock.sql.draft").read_text(
+                    encoding="utf-8")
+        self.assertIn("CREATE OR REPLACE FUNCTION app_private.d1_profile_submit(",replay)
+        self.assertIn("IF receipt_row.receipt_id IS NOT NULL THEN\n      PERFORM app_private.d1_student_profile_lock",replay)
+        self.assertIn("ELSIF NOT app_private.d1_student_profile_lock",replay)
+        self.assertIn("IF receipt_row.receipt_id IS NOT NULL THEN\n      PERFORM app_private.d1_employee_profile_lock",replay)
+        self.assertIn("ELSIF NOT app_private.d1_employee_profile_lock",replay)
+        self.assertIn("IF NOT app_private.d1_profile_authorized(",replay)
+        self.assertIn("app_private.d1_profile_participant(receipt_row.result_ref",replay)
+        self.assertIn("SET ROLE schoolos_workflow_executor;",replay)
+        self.assertIn("REVOKE CREATE ON SCHEMA app_private FROM schoolos_workflow_executor;",replay)
+        for forbidden in ("UPDATE app_private.operation_contracts", "DISABLE ROW LEVEL SECURITY",
+                          "GRANT EXECUTE ON FUNCTION", "TO anon;", "TO service_role;"):
+            self.assertNotIn(forbidden,replay)
+
     def test_blocked_student_profile_update_contract_package(self):
         self._assert_blocked_student_contract(
             "student.profile.update","SP",8,
