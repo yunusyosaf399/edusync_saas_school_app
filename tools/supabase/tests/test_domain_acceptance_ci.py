@@ -2873,11 +2873,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_batch_65_remaining_four_student_operations_fail_closed(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
-        self.assertEqual(len(DOMAIN_TESTS),65)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),65)
         self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:64]),2868)
         self.assertEqual(DOMAIN_TESTS[64],[
             "65_remaining_student_commands_fail_closed.sql",38])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2906)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:65]),2906)
         sql=(root/"supabase/tests/domain/"
              "65_remaining_student_commands_fail_closed.sql").read_text(
                  encoding="utf-8")
@@ -2947,8 +2947,8 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(registry["existing_accepted_business_suites"],65)
         self.assertEqual(registry["existing_accepted_business_assertions"],2906)
         self.assertIs(registry["migration_10_active"],False)
-        self.assertEqual(len(DOMAIN_TESTS),65)
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2906)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),65)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:65]),2906)
         self.assertEqual({e["code"] for e in registry["operations"]},{
             "student.profile.update","student.roll.correct",
             "student.roll_policy.change","student.create"})
@@ -2985,6 +2985,44 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertIn("code='"+code+"'",sql)
         self.assertIn(code+" remains explicitly disabled at runtime",sql)
         self.assertIn("o.code='"+code+"' AND r.state='SUCCEEDED'",sql)
+
+    def test_batch_66_student_profile_direct_candidate(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        # Keep all previous frozen business tests and negative gates in place.
+        self.assertGreaterEqual(len(DOMAIN_TESTS),66)
+        self.assertEqual(DOMAIN_TESTS[:65][-1],
+                         ["65_remaining_student_commands_fail_closed.sql",38])
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:65]),2906)
+        self.assertEqual(DOMAIN_TESTS[65],
+                         ["66_student_profile_p1_direct_history_authorization.sql",33])
+        sql=(root/"supabase/tests/domain/"
+             "66_student_profile_p1_direct_history_authorization.sql").read_text(
+                 encoding="utf-8")
+        self.assertTrue(sql.startswith("--"))
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertIn("SELECT plan(33);",sql)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),33)
+        for expected in (
+            "app.d1_change_student_profile", "app.d1_place_student_enrollment",
+            "student.profile.update", "student.profile_changed",
+            "SET ROLE authenticated;", "SET ROLE schoolos_schema_owner;",
+            "SET CONSTRAINTS ALL IMMEDIATE;", "SELECT * FROM finish();",
+            "student-profile-success-one", "student-profile-success-two",
+            "revoked live Student Profile scope"):
+            self.assertIn(expected,sql)
+        for forbidden in ("supabase db push", "DISABLE ROW LEVEL SECURITY",
+                          "GRANT ALL ON", "TO anon;", "TO service_role;"):
+            self.assertNotIn(forbidden,sql)
+        # A separate additive SQL draft fragment must narrow the impossible
+        # ACTIVE offering predicate without changing the Employee Profile path.
+        fix=(root/"supabase/migrations/"
+             "20260928000000_domain_package_01_effect35_19_student_profile_open_offering_binding.sql.draft").read_text(encoding="utf-8")
+        self.assertIn("so.state='OPEN' AND co.state='OPEN'",fix)
+        self.assertNotIn("so.state='ACTIVE' AND co.state='ACTIVE'",fix)
+        self.assertIn("CREATE OR REPLACE FUNCTION app_private.d1_profile_authorized",fix)
+        self.assertNotIn("UPDATE app_private.operation_contracts",fix)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTION",fix)
 
     def test_blocked_student_profile_update_contract_package(self):
         self._assert_blocked_student_contract(

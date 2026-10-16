@@ -1,0 +1,119 @@
+-- D1 Student Profile DIRECT readiness: correct an impossible academic offering state predicate.
+-- Existing D1 Class/Section offering states are PLANNED/OPEN/CLOSED/ARCHIVED.
+-- Student ACTIVE is a Student status, not a Class/Section offering state.
+-- Keep all permission, scope, current-PRIMARY ancestry, campus, actor and reviewer
+-- predicates unchanged; no permissions/operation flags or grants are enabled.
+-- Append-only non-executable Migration 10 draft correction.
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+-- Function is owned by the narrow authorization-reader role. Restore its
+-- temporary DDL privilege solely while replacing the same fixed function.
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+RESET ROLE;
+SET ROLE schoolos_authz_reader;
+CREATE OR REPLACE FUNCTION app_private.d1_profile_authorized(
+  p_principal_id uuid, p_permission_code text, p_target_kind text,
+  p_target_id uuid, p_campus_id uuid, p_reviewer_role_id uuid DEFAULT NULL
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  at_time timestamptz := pg_catalog.clock_timestamp();
+  actual_campus uuid;
+  actual_class uuid;
+  actual_section uuid;
+  placements bigint;
+BEGIN
+  IF p_principal_id IS NULL OR p_target_id IS NULL
+     OR NOT ((p_target_kind='STUDENT' AND p_permission_code IN
+       ('student.profile.update','student.profile.approve'))
+       OR (p_target_kind='EMPLOYEE' AND p_permission_code IN
+       ('employee.profile.update','employee.profile.approve'))) THEN
+    RETURN false;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM app_private.principals p
+    JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+   WHERE p.id=p_principal_id AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'
+     AND p.person_id IS NOT NULL AND b.auth_user_id IS NOT NULL
+  ) THEN RETURN false; END IF;
+  IF p_reviewer_role_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM app_private.principal_role_assignments a
+    JOIN app_private.roles r ON r.id=a.role_id
+   WHERE a.principal_id=p_principal_id AND a.role_id=p_reviewer_role_id
+     AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+     AND r.state='ACTIVE' AND NOT r.family_only
+     AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+     AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+  ) THEN RETURN false; END IF;
+  IF p_target_kind='STUDENT' THEN
+    IF NOT EXISTS (SELECT 1 FROM app_private.students s
+                    WHERE s.id=p_target_id AND s.current_status='ACTIVE') THEN
+      RETURN false;
+    END IF;
+    SELECT count(*) INTO placements FROM app_private.enrollments e
+     WHERE e.student_id=p_target_id AND e.placement_kind='PRIMARY'
+       AND e.placement_state='ACTIVE' AND e.effective_from<=at_time::date
+       AND (e.effective_until IS NULL OR at_time::date<e.effective_until);
+    IF placements<>1 THEN RETURN false; END IF;
+    SELECT so.id,co.id,co.campus_id
+      INTO actual_section,actual_class,actual_campus
+      FROM app_private.enrollments e
+      JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+      JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     WHERE e.student_id=p_target_id AND e.placement_kind='PRIMARY'
+       AND e.placement_state='ACTIVE' AND e.effective_from<=at_time::date
+       AND (e.effective_until IS NULL OR at_time::date<e.effective_until)
+       AND so.campus_id=co.campus_id AND so.state='OPEN' AND co.state='OPEN';
+    IF actual_section IS NULL OR (p_campus_id IS NOT NULL
+       AND p_campus_id<>actual_campus) THEN RETURN false; END IF;
+  ELSE
+    IF NOT EXISTS (SELECT 1 FROM app_private.employees e
+                    WHERE e.id=p_target_id AND e.current_state='ACTIVE') THEN
+      RETURN false;
+    END IF;
+    IF p_campus_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM app_private.employee_campus_affiliations ca
+       WHERE ca.employee_id=p_target_id AND ca.campus_id=p_campus_id
+         AND ca.effective_from<=at_time::date
+         AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until)
+    ) THEN RETURN false; END IF;
+  END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes s
+    JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+    JOIN app_private.permissions p ON p.id=s.permission_id
+    JOIN app_private.roles r ON r.id=s.role_id
+   WHERE a.principal_id=p_principal_id
+     AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+     AND a.role_id=s.role_id AND g.role_id=s.role_id
+     AND g.permission_id=s.permission_id AND c.permission_id=s.permission_id
+     AND c.scope_kind=s.scope_kind AND c.resolver_key=s.resolver_key
+     AND c.enabled AND p.code=p_permission_code AND p.state='ENABLED'
+     AND NOT p.family_safe AND r.state='ACTIVE' AND NOT r.family_only
+     AND a.valid_from<=at_time AND (a.valid_until IS NULL OR at_time<a.valid_until)
+     AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+     AND g.valid_from<=at_time AND (g.valid_until IS NULL OR at_time<g.valid_until)
+     AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+     AND s.valid_from<=at_time AND (s.valid_until IS NULL OR at_time<s.valid_until)
+     AND (s.revoked_at IS NULL OR at_time<s.revoked_at)
+     AND s.resolver_key='DIRECT' AND (
+       (s.scope_kind='ALL' AND s.campus_id IS NULL)
+       OR (p_target_kind='STUDENT' AND
+         ((s.scope_kind='CAMPUS' AND s.campus_id=actual_campus)
+           OR (s.scope_kind='CLASS' AND s.class_offering_id=actual_class)
+           OR (s.scope_kind='SECTION' AND s.section_offering_id=actual_section)))
+       OR (p_target_kind='EMPLOYEE' AND s.scope_kind='CAMPUS'
+           AND p_campus_id IS NOT NULL AND s.campus_id=p_campus_id
+           AND EXISTS (SELECT 1 FROM app_private.employee_campus_affiliations ca
+             WHERE ca.employee_id=p_target_id AND ca.campus_id=s.campus_id
+               AND ca.effective_from<=at_time::date
+               AND (ca.effective_until IS NULL OR at_time::date<ca.effective_until)))
+     )
+  );
+END $body$;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+RESET ROLE;
