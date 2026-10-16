@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "review_status": "NON_AUTHORIZING_READINESS_ONLY",
+  "frozen_main_baseline": "0936b5405664090bfa2d9444ef26dad82b4322c3",
+  "accepted_protected_operations": 31,
+  "tracked_protected_operations": 35,
+  "existing_accepted_business_suites": 65,
+  "existing_accepted_business_assertions": 2906,
+  "migration_10_active": false,
+  "operations": [
+    {
+      "code": "student.profile.update",
+      "readiness": "BLOCKED_UNRESOLVED_WRITE_CONTRACT",
+      "runnable_accepted": false,
+      "document": "docs/database/152_d1_student_profile_update_p1_contract_readiness.md",
+      "decision_ids": [
+        "SP-01",
+        "SP-02",
+        "SP-03",
+        "SP-04",
+        "SP-05",
+        "SP-06",
+        "SP-07",
+        "SP-08"
+      ],
+      "source_refs": [
+        "docs/security/09_domain_checked_reads_and_commands.md",
+        "docs/database/34_domain_package_01_query_retention_offline_review.md",
+        "supabase/migrations/20260928000000_domain_package_01.sql.draft"
+      ],
+      "evidence_to_unblock": [
+        "typed_profile_field_allowlist",
+        "photo_file_entitlement_contract",
+        "authorized_p1_direct_and_approval_paths",
+        "accepted_authenticated_mutation_and_races"
+      ]
+    },
+    {
+      "code": "student.roll.correct",
+      "readiness": "BLOCKED_UNRESOLVED_CORRECTION_CONTRACT",
+      "runnable_accepted": false,
+      "document": "docs/database/153_d1_student_roll_correct_p1_contract_readiness.md",
+      "decision_ids": [
+        "RC-01",
+        "RC-02",
+        "RC-03",
+        "RC-04",
+        "RC-05",
+        "RC-06",
+        "RC-07",
+        "RC-08"
+      ],
+      "source_refs": [
+        "docs/security/09_domain_checked_reads_and_commands.md",
+        "docs/database/34_domain_package_01_query_retention_offline_review.md",
+        "supabase/migrations/20260928000000_domain_package_01.sql.draft"
+      ],
+      "evidence_to_unblock": [
+        "roll_source_and_namespace_contract",
+        "retained_correction_and_origin_lineage",
+        "authorized_p1_direct_and_approval_paths",
+        "accepted_authenticated_mutation_and_races"
+      ]
+    },
+    {
+      "code": "student.roll_policy.change",
+      "readiness": "BLOCKED_UNRESOLVED_SCHOOL_POLICY",
+      "runnable_accepted": false,
+      "document": "docs/database/154_d1_student_roll_policy_change_p1_contract_readiness.md",
+      "decision_ids": [
+        "RP-01",
+        "RP-02",
+        "RP-03",
+        "RP-04",
+        "RP-05",
+        "RP-06",
+        "RP-07"
+      ],
+      "source_refs": [
+        "docs/database/127_d1_roll_policy_p1_implementation_readiness_and_invariant_review.md",
+        "docs/security/09_domain_checked_reads_and_commands.md",
+        "supabase/migrations/20260928000000_domain_package_01.sql.draft"
+      ],
+      "evidence_to_unblock": [
+        "approved_policy_version_and_temporal_actions",
+        "allocator_namespace_handoff",
+        "typed_p1_route_and_review",
+        "audited_evidence_event_selection",
+        "accepted_authenticated_mutation_and_races"
+      ]
+    },
+    {
+      "code": "student.create",
+      "readiness": "BLOCKED_UNAVAILABLE_ADMISSIONS_HANDOFF",
+      "runnable_accepted": false,
+      "document": "docs/database/155_d1_student_create_admissions_handoff_contract_readiness.md",
+      "decision_ids": [
+        "SC-01",
+        "SC-02",
+        "SC-03",
+        "SC-04",
+        "SC-05",
+        "SC-06",
+        "SC-07"
+      ],
+      "source_refs": [
+        "docs/database/76_domain_package_01_effect36_student_create_dependency_review.md",
+        "docs/database/79_admissions_student_intake_physical_design.md",
+        "docs/security/09_domain_checked_reads_and_commands.md"
+      ],
+      "evidence_to_unblock": [
+        "separately_approved_and_installed_admissions_package",
+        "server_verified_final_unused_handoff",
+        "dual_current_student_create_and_place_authority",
+        "atomic_single_consumption_and_roll_allocator",
+        "accepted_authenticated_cross_package_races"
+      ]
+    }
+  ]
+}
