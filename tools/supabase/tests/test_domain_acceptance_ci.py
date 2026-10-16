@@ -3173,6 +3173,50 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                               "GRANT ALL ON", "TO anon;", "TO service_role;"):
                 self.assertNotIn(forbidden,sql)
 
+    def test_student_profile_review_grant_real_two_session_lock_races(self):
+        from domain_student_profile_reviewer_grant_race_ci import (
+            CONTAINER, OLD_GRANT, NEW_GRANT, _apply, _revoke,
+        )
+        root=business.ROOT
+        fixture=(root/"supabase/tests/domain/fixtures/"
+                 "student_profile_reviewer_grant_true_race_setup.sql").read_text(encoding="utf-8")
+        runner=(root/"tools/supabase/"
+                "domain_student_profile_reviewer_grant_race_ci.py").read_text(encoding="utf-8")
+        sequence=(root/"tools/supabase/domain_concurrency_ci.py").read_text(encoding="utf-8")
+        for needle in ("app.d1_place_student_enrollment(",
+                       "app.d1_submit_student_profile_update(",
+                       "app.d1_review_profile_request(",
+                       "profile-race-submit-1", "profile-race-review-1",
+                       "76000000-0000-4000-8000-000000000005"):
+            self.assertIn(needle,fixture)
+        self.assertNotIn("supabase db push",fixture)
+        self.assertNotIn("CREATE OR REPLACE FUNCTION",fixture)
+        self.assertIn("run_student_profile_reviewer_grant_races(container, execute_sql)",
+                      sequence)
+        self.assertGreater(sequence.index("run_student_profile_reviewer_grant_races(container, execute_sql)"),
+                           sequence.index("run_family_assignment_scope_races(container, execute_sql)"))
+        for marker in ("pg_advisory_xact_lock(71001,1)",
+                       "mode=\"ShareLock\"","mode=\"ExclusiveLock\"",
+                       "profile-race-apply-success","profile-race-apply-revoked",
+                       "D1_STUDENT_PROFILE_APPLY_FIRST_RACE_PASS",
+                       "D1_STUDENT_PROFILE_REVOKE_FIRST_RACE_PASS",
+                       "D1_PROFILE_RACE_HISTORICAL_RECEIPT_REPLAY",
+                       "approval_applications","student.profile_changed",
+                       "D1_PROFILE_RACE_REPLAY_DUPLICATED_EFFECT"):
+            self.assertIn(marker,runner)
+        self.assertIn("BEGIN;",_apply("b1000000-0000-4000-8000-000000000001",
+                                     "profile-race-apply-success",
+                                     "d1-profile-race-apply-holder",hold=True))
+        self.assertIn("pg_advisory_xact_lock(71001,1)",
+                      _revoke(OLD_GRANT,"d1-profile-race-revoker-waiting",hold=True))
+        self.assertIn(NEW_GRANT,runner)
+        self.assertEqual(CONTAINER,"supabase_db_saas_OS_school_app")
+        with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_RACE_UNEXPECTED_APPLY_INTENT"):
+            _apply("b1000000-0000-4000-8000-000000000001",
+                   "unknown", "d1-profile-race-apply-holder")
+        with self.assertRaisesRegex(RuntimeError,"D1_PROFILE_RACE_UNEXPECTED_GRANT"):
+            _revoke(NEW_GRANT,"d1-profile-race-revoker-waiting")
+
     def test_blocked_student_profile_update_contract_package(self):
         self._assert_blocked_student_contract(
             "student.profile.update","SP",8,
