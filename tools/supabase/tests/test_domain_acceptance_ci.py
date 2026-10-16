@@ -3059,6 +3059,18 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         for forbidden in ("supabase db push", "DISABLE ROW LEVEL SECURITY",
                           "GRANT ALL ON", "TO anon;", "TO service_role;"):
             self.assertNotIn(forbidden,sql)
+        guard=(root/"supabase/migrations/"
+              "20260928000000_domain_package_01_effect35_20_student_profile_p1_submit_record_guard.sql.draft").read_text(
+                  encoding="utf-8")
+        self.assertIn("CREATE OR REPLACE FUNCTION app_private.d1_profile_submit(",guard)
+        self.assertIn("IF p_kind='STUDENT' THEN\n    IF student_row.row_version",guard)
+        self.assertIn("ELSE\n    IF employee_row.row_version",guard)
+        self.assertNotIn("OR (p_kind='EMPLOYEE' AND (employee_row.row_version",guard)
+        self.assertIn("SET ROLE schoolos_workflow_executor;",guard)
+        self.assertIn("REVOKE CREATE ON SCHEMA app_private FROM schoolos_workflow_executor;",guard)
+        for forbidden in ("UPDATE app_private.operation_contracts", "DISABLE ROW LEVEL SECURITY",
+                          "GRANT EXECUTE ON FUNCTION", "TO anon;", "TO service_role;"):
+            self.assertNotIn(forbidden,guard)
 
     def test_blocked_student_profile_update_contract_package(self):
         self._assert_blocked_student_contract(
