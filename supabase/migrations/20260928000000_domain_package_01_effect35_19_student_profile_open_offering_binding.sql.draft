@@ -6,6 +6,11 @@
 -- Append-only non-executable Migration 10 draft correction.
 RESET ROLE;
 SET ROLE schoolos_schema_owner;
+-- Function is owned by the narrow authorization-reader role. Restore its
+-- temporary DDL privilege solely while replacing the same fixed function.
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+RESET ROLE;
+SET ROLE schoolos_authz_reader;
 CREATE OR REPLACE FUNCTION app_private.d1_profile_authorized(
   p_principal_id uuid, p_permission_code text, p_target_kind text,
   p_target_id uuid, p_campus_id uuid, p_reviewer_role_id uuid DEFAULT NULL
@@ -108,4 +113,7 @@ BEGIN
      )
   );
 END $body$;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
 RESET ROLE;
