@@ -3189,6 +3189,8 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                        "profile-race-submit-1", "profile-race-review-1",
                        "76000000-0000-4000-8000-000000000005"):
             self.assertIn(needle,fixture)
+        self.assertIn("INSERT INTO app_private.people(id,display_name,created_by)",fixture)
+        self.assertIn("b1000000-0000-4000-8000-000000000003",fixture)
         self.assertNotIn("supabase db push",fixture)
         self.assertNotIn("CREATE OR REPLACE FUNCTION",fixture)
         self.assertIn("run_student_profile_reviewer_grant_races(container, execute_sql)",
