@@ -3101,6 +3101,42 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                           "GRANT EXECUTE ON FUNCTION", "TO anon;", "TO service_role;"):
             self.assertNotIn(forbidden,replay)
 
+    def test_batches_68_to_71_student_profile_p1_negative_candidates(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        expected=[
+            ("68_student_profile_p1_reject_no_effect.sql",20,
+             ("REJECTED","no success outbox event","p1-68-review")),
+            ("69_student_profile_p1_retired_policy_invalidation.sql",21,
+             ("RETIRED","INVALIDATED","p1-69-apply")),
+            ("70_student_profile_p1_requester_scope_revocation.sql",19,
+             ("revoked_at=clock_timestamp()","FINAL","p1-70-reviewer-apply")),
+            ("71_student_profile_p1_target_version_drift.sql",17,
+             ("row_version=row_version+1","INVALIDATED","p1-71-stale-apply")),
+        ]
+        self.assertEqual(len(DOMAIN_TESTS),71)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:67]),2980)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),3057)
+        for offset,(filename,count,evidence) in enumerate(expected,67):
+            self.assertEqual(DOMAIN_TESTS[offset],[filename,count])
+            sql=(root/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
+            self.assertTrue(sql.startswith("--"))
+            self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
+            self.assertEqual(sql.count("BEGIN;"),1)
+            self.assertEqual(sql.count("ROLLBACK;"),1)
+            self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+            self.assertIn("SELECT plan("+str(count)+");",sql)
+            self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),count)
+            self.assertIn("app.d1_place_student_enrollment(",sql)
+            self.assertIn("app.d1_submit_student_profile_update(",sql)
+            self.assertIn("app.d1_review_profile_request(",sql)
+            self.assertIn("app.d1_apply_profile_request(",sql)
+            self.assertIn("student.profile.approve",sql)
+            for marker in evidence:
+                self.assertIn(marker,sql)
+            for forbidden in ("supabase db push", "DISABLE ROW LEVEL SECURITY",
+                              "GRANT ALL ON", "TO anon;", "TO service_role;"):
+                self.assertNotIn(forbidden,sql)
+
     def test_blocked_student_profile_update_contract_package(self):
         self._assert_blocked_student_contract(
             "student.profile.update","SP",8,
