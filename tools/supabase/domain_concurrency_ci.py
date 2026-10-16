@@ -8,6 +8,7 @@ from domain_cross_family_reverse_race_ci import run_cross_family_reverse_race
 from domain_authorization_revocation_race_ci import run_family_authority_revocation_races
 from domain_assignment_scope_revocation_race_ci import run_family_assignment_scope_races
 from domain_student_profile_reviewer_grant_race_ci import run_student_profile_reviewer_grant_races
+from domain_student_profile_competing_applies_race_ci import run_student_profile_competing_approved_applies
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1859,3 +1860,6 @@ SELECT count(*) FROM app_private.approval_reviews v
     # Student Profile P1: real current permission revocation competes with
     # actual typed approved apply in both PostgreSQL advisory lock orders.
     run_student_profile_reviewer_grant_races(container, execute_sql)
+    # Two same-Student, independently authenticated approved P1 writes:
+    # reverse the winner and observe real target-row lock contention.
+    run_student_profile_competing_approved_applies(container, execute_sql)
