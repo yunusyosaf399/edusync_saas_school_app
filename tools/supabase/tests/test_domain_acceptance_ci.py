@@ -3000,9 +3000,9 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                  encoding="utf-8")
         self.assertTrue(sql.startswith("--"))
         self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
-        self.assertEqual(sql.count(r"\\ir fixtures/command_actor.sql"),1)
+        self.assertEqual(sql.count(r"\ir fixtures/command_actor.sql"),1)
         self.assertIn("SELECT plan(33);",sql)
-        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\\(",sql)),33)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),33)
         for expected in (
             "app.d1_change_student_profile", "app.d1_place_student_enrollment",
             "student.profile.update", "student.profile_changed",
