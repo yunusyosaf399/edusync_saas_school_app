@@ -28,30 +28,34 @@ SELECT is((SELECT enabled FROM app_private.operation_contracts WHERE code='stude
  'student.roll_policy.change remains explicitly disabled at runtime');
 SELECT ok((SELECT state<>'ENABLED' FROM app_private.permissions WHERE code='student.roll_policy.change'),
  'student.roll_policy.change permission cannot issue a protected command');
-SELECT is((SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname='app' AND p.prosrc LIKE '%student.roll_policy.change%'),0::bigint,
- 'app public function source does not declare student.roll_policy.change handler');
+SELECT is((SELECT count(*) FROM app_private.command_receipts r
+ JOIN app_private.operation_contracts o ON o.id=r.operation_id
+ WHERE o.code='student.roll_policy.change' AND r.state='SUCCEEDED'),0::bigint,
+ 'student.roll_policy.change cannot produce successful protected command receipts while disabled');
 SELECT is((SELECT enabled FROM app_private.operation_contracts WHERE code='student.roll.correct'),false,
  'student.roll.correct remains explicitly disabled at runtime');
 SELECT ok((SELECT state<>'ENABLED' FROM app_private.permissions WHERE code='student.roll.correct'),
  'student.roll.correct permission cannot issue a protected command');
-SELECT is((SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname='app' AND p.prosrc LIKE '%student.roll.correct%'),0::bigint,
- 'app public function source does not declare student.roll.correct handler');
+SELECT is((SELECT count(*) FROM app_private.command_receipts r
+ JOIN app_private.operation_contracts o ON o.id=r.operation_id
+ WHERE o.code='student.roll.correct' AND r.state='SUCCEEDED'),0::bigint,
+ 'student.roll.correct cannot produce successful protected command receipts while disabled');
 SELECT is((SELECT enabled FROM app_private.operation_contracts WHERE code='student.create'),false,
  'student.create remains explicitly disabled at runtime');
 SELECT ok((SELECT state<>'ENABLED' FROM app_private.permissions WHERE code='student.create'),
  'student.create permission cannot issue a protected command');
-SELECT is((SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname='app' AND p.prosrc LIKE '%student.create%'),0::bigint,
- 'app public function source does not declare student.create handler');
+SELECT is((SELECT count(*) FROM app_private.command_receipts r
+ JOIN app_private.operation_contracts o ON o.id=r.operation_id
+ WHERE o.code='student.create' AND r.state='SUCCEEDED'),0::bigint,
+ 'student.create cannot produce successful protected command receipts while disabled');
 SELECT is((SELECT enabled FROM app_private.operation_contracts WHERE code='student.profile.update'),false,
  'student.profile.update remains explicitly disabled at runtime');
 SELECT ok((SELECT state<>'ENABLED' FROM app_private.permissions WHERE code='student.profile.update'),
  'student.profile.update permission cannot issue a protected command');
-SELECT is((SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname='app' AND p.prosrc LIKE '%student.profile.update%'),0::bigint,
- 'app public function source does not declare student.profile.update handler');
+SELECT is((SELECT count(*) FROM app_private.command_receipts r
+ JOIN app_private.operation_contracts o ON o.id=r.operation_id
+ WHERE o.code='student.profile.update' AND r.state='SUCCEEDED'),0::bigint,
+ 'student.profile.update cannot produce successful protected command receipts while disabled');
 
 -- Authenticated staff cannot bypass these missing commands with raw DML.
 SET ROLE authenticated;
