@@ -118,6 +118,8 @@ SELECT count(*) FROM app_private.command_receipts receipt
 
 
 def _second_request(container: str, execute_sql, expected: int) -> None:
+    # A retired role grant retains a bounded history interval. The new grant
+    # and scope must start after its actual revocation, never an hour earlier.
     script=f"""
 BEGIN;
 {_requester()}
@@ -126,14 +128,14 @@ SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.role_permission_grants(
  id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
 SELECT '{NEW_GRANT}','b7000000-0000-4000-8000-000000000003',false,
- p.id,p.family_safe,statement_timestamp()-interval '1 hour','{OWNER}'
+ p.id,p.family_safe,statement_timestamp(),'{OWNER}'
 FROM app_private.permissions p WHERE p.code='student.profile.approve';
 INSERT INTO app_private.assignment_permission_scopes(
  id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
  scope_kind,resolver_key,valid_from,created_by)
 SELECT '{NEW_SCOPE}','b7000000-0000-4000-8000-000000000004',
  g.id,g.role_id,g.permission_id,c.id,'ALL','DIRECT',
- statement_timestamp()-interval '1 hour','{OWNER}'
+ statement_timestamp(),'{OWNER}'
 FROM app_private.role_permission_grants g
 JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
 WHERE g.id='{NEW_GRANT}' AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
