@@ -9,6 +9,7 @@ from domain_authorization_revocation_race_ci import run_family_authority_revocat
 from domain_assignment_scope_revocation_race_ci import run_family_assignment_scope_races
 from domain_student_profile_reviewer_grant_race_ci import run_student_profile_reviewer_grant_races
 from domain_student_profile_competing_applies_race_ci import run_student_profile_competing_approved_applies
+from domain_student_profile_submit_vs_apply_race_ci import run_student_profile_submit_vs_approved_apply_races
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1863,3 +1864,6 @@ SELECT count(*) FROM app_private.approval_reviews v
     # Two same-Student, independently authenticated approved P1 writes:
     # reverse the winner and observe real target-row lock contention.
     run_student_profile_competing_approved_applies(container, execute_sql)
+    # Student Profile P1: reviewer APPLY versus requester SUBMIT against one
+    # target row, with real tuple/transactionid blocking in both orderings.
+    run_student_profile_submit_vs_approved_apply_races(container, execute_sql)
