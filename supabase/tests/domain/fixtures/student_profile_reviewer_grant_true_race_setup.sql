@@ -30,8 +30,14 @@ SELECT 'b1000000-0000-4000-8000-000000000011','ffffffff-ffff-4fff-8fff-fffffffff
  JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
  WHERE g.id='b1000000-0000-4000-8000-000000000010' AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
 
+-- The accepted earlier concurrency races already created a Student for
+-- fixture Person 1000..0001. Use a fresh Person in this committed-only test.
+INSERT INTO app_private.people(id,display_name,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000003',
+ 'Independent P1 Profile lock-race Student',
+ '11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.students(id,person_id,school_student_id,admission_number,admission_serial,admitted_on,current_status,created_by)
-VALUES ('b1000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001',
+VALUES ('b1000000-0000-4000-8000-000000000001','b1000000-0000-4000-8000-000000000003',
  'STUDENT-ACCEPT','STD-ACCEPT-100',100,CURRENT_DATE-20,'ACTIVE','11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.student_status_transitions(
  id,student_id,previous_status,new_status,effective_on,sequence_number,reason,created_by)
