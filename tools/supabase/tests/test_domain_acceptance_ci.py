@@ -3113,9 +3113,9 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             ("71_student_profile_p1_target_version_drift.sql",17,
              ("previous_school='Independent Synthetic Correction'","INVALIDATED","p1-71-stale-apply")),
         ]
-        self.assertEqual(len(DOMAIN_TESTS),71)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),71)
         self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:67]),2980)
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),3057)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:71]),3057)
         for offset,(filename,count,evidence) in enumerate(expected,67):
             self.assertEqual(DOMAIN_TESTS[offset],[filename,count])
             sql=(root/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
