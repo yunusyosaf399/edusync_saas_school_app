@@ -2931,5 +2931,89 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertNotIn("protected operations accepted",sql)
 
 
+    def _assert_blocked_student_contract(self, code, prefix, count, required):
+        import json
+        from domain_business_ci import ROOT, DOMAIN_TESTS
+        base = ROOT / "docs/database/"
+        registry = json.loads(
+            (base / "156_d1_four_student_operation_decision_register.json").read_text(
+                encoding="utf-8"))
+        self.assertEqual(registry["schema_version"], 1)
+        self.assertEqual(registry["review_status"], "NON_AUTHORIZING_READINESS_ONLY")
+        self.assertEqual(registry["frozen_main_baseline"],
+                         "0936b5405664090bfa2d9444ef26dad82b4322c3")
+        self.assertEqual(registry["accepted_protected_operations"],31)
+        self.assertEqual(registry["tracked_protected_operations"],35)
+        self.assertEqual(registry["existing_accepted_business_suites"],65)
+        self.assertEqual(registry["existing_accepted_business_assertions"],2906)
+        self.assertIs(registry["migration_10_active"],False)
+        self.assertEqual(len(DOMAIN_TESTS),65)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS),2906)
+        self.assertEqual({e["code"] for e in registry["operations"]},{
+            "student.profile.update","student.roll.correct",
+            "student.roll_policy.change","student.create"})
+        self.assertEqual(len(registry["operations"]),4)
+        entry=next(e for e in registry["operations"] if e["code"]==code)
+        self.assertIs(entry["runnable_accepted"],False)
+        self.assertTrue(entry["readiness"].startswith("BLOCKED_"))
+        self.assertEqual(len(entry["decision_ids"]),count)
+        self.assertEqual(entry["decision_ids"],
+                         [f"{prefix}-{i:02d}" for i in range(1,count+1)])
+        self.assertTrue(entry["document"].startswith("docs/database/"))
+        self.assertTrue(entry["document"].endswith("_contract_readiness.md"))
+        self.assertGreaterEqual(len(entry["source_refs"]),3)
+        self.assertGreaterEqual(len(entry["evidence_to_unblock"]),4)
+        for source in entry["source_refs"]:
+            self.assertTrue(source.startswith(("docs/","supabase/migrations/")))
+            self.assertTrue((ROOT/source).is_file(),source)
+        document=(ROOT/entry["document"]).read_text(encoding="utf-8")
+        self.assertIn(code,document)
+        self.assertIn("Status: **BLOCKED",document)
+        for decision in entry["decision_ids"]:
+            self.assertIn(decision,document)
+        for phrase in required:
+            self.assertIn(phrase,document)
+        self.assertNotIn("CREATE OR REPLACE FUNCTION app.",document)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTION",document)
+        self.assertNotIn("supabase db push",document)
+        # The accepted runtime #65 remains a *negative* permission barrier,
+        # not an implementation or a reason to increase accepted 31/35.
+        sql=(ROOT/"supabase/tests/domain/"
+             "65_remaining_student_commands_fail_closed.sql").read_text(
+                 encoding="utf-8")
+        self.assertIn("SELECT plan(38);",sql)
+        self.assertIn("code='"+code+"'",sql)
+        self.assertIn(code+" remains explicitly disabled at runtime",sql)
+        self.assertIn("o.code='"+code+"' AND r.state='SUCCEEDED'",sql)
+
+    def test_blocked_student_profile_update_contract_package(self):
+        self._assert_blocked_student_contract(
+            "student.profile.update","SP",8,
+            ["profile_photo_file_id","student.profile_changed",
+             "student.profile.approve","Identity/Special",
+             "expected","P1","DIRECT"])
+
+    def test_blocked_student_roll_correction_contract_package(self):
+        self._assert_blocked_student_contract(
+            "student.roll.correct","RC",8,
+            ["origin_allocation_id","supersedes_id",
+             "enrollment.roll_corrected","student.roll.approve",
+             "MAX()+1","P1"])
+
+    def test_blocked_student_roll_policy_contract_package(self):
+        self._assert_blocked_student_contract(
+            "student.roll_policy.change","RP",7,
+            ["student.roll_policy.approve","PERSISTENT_STUDENT",
+             "ACADEMIC_CONTEXT","policy","reviewer",
+             "no invented","RP-07"])
+
+    def test_blocked_student_creation_admissions_contract_package(self):
+        self._assert_blocked_student_contract(
+            "student.create","SC",7,
+            ["student.enrollment.place","Admissions","READY",
+             "CONSUMED","student.created","trusted",
+             "single-consumption"])
+
+
 if __name__ == "__main__":
     unittest.main()
