@@ -2896,7 +2896,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         ]
         for operation in blocked:
             self.assertIn("code='"+operation+"'",sql)
-            self.assertIn("LIKE '%"+operation+"%'",sql)
+            self.assertIn("o.code='"+operation+"' AND r.state='SUCCEEDED'",sql)
             self.assertIn(operation+" remains explicitly disabled at runtime",sql)
         for table in (
             "app_private.students",
@@ -2913,6 +2913,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertIn("SET ROLE authenticated;",sql)
         self.assertNotIn("SET ROLE schoolos_schema_owner;",sql)
         self.assertNotIn("GRANT EXECUTE",sql)
+        self.assertNotIn("p.prosrc LIKE",sql)
         self.assertNotIn("UPDATE app_private.operation_contracts",sql)
         self.assertNotIn("UPDATE app_private.permissions",sql)
         self.assertNotIn("supabase db push",sql)
