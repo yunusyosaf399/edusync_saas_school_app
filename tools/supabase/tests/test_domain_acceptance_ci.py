@@ -3111,7 +3111,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             ("70_student_profile_p1_requester_scope_revocation.sql",19,
              ("revoked_at=clock_timestamp()","independent final approver","p1-70-reviewer-apply")),
             ("71_student_profile_p1_target_version_drift.sql",17,
-             ("row_version=row_version+1","INVALIDATED","p1-71-stale-apply")),
+             ("previous_school='Independent Synthetic Correction'","INVALIDATED","p1-71-stale-apply")),
         ]
         self.assertEqual(len(DOMAIN_TESTS),71)
         self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:67]),2980)
