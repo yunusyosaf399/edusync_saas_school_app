@@ -1,0 +1,176 @@
+-- Local-only injected approval acceptance after independently grantable reviewer.
+SAVEPOINT typed_approval_integration;
+SET ROLE authenticated;
+SELECT * FROM app.d1_submit_student_profile_typed_approval_trial(
+ 'b1000000-0000-4000-8000-000000000001',NULL,
+ :'initial_target_version'::bigint,
+ '{"date_of_birth":{"action":"UNCHANGED"},"gender_code":{"action":"UNCHANGED"},"nationality_code":{"action":"UNCHANGED"},"general_contact":{"action":"UNCHANGED"},"previous_school":{"action":"SET","value":"  Typed Approved Academy  "},"profile_photo_file_id":{"action":"UNCHANGED"}}'::jsonb,
+ '  Private typed approval reason  ','typed-profile-approval-submission'
+) \gset typed_ap_
+DO $typed_submit_check$
+BEGIN
+ IF :'typed_ap_request_version'::bigint<>3 THEN
+   RAISE EXCEPTION 'TYPED_APPROVAL_SUBMIT_VERSION';
+ END IF;
+END
+$typed_submit_check$;
+SELECT * FROM app.d1_submit_student_profile_typed_approval_trial(
+ 'b1000000-0000-4000-8000-000000000001',NULL,
+ :'initial_target_version'::bigint,
+ '{"date_of_birth":{"action":"UNCHANGED"},"gender_code":{"action":"UNCHANGED"},"nationality_code":{"action":"UNCHANGED"},"general_contact":{"action":"UNCHANGED"},"previous_school":{"action":"SET","value":"Typed Approved Academy"},"profile_photo_file_id":{"action":"UNCHANGED"}}'::jsonb,
+ 'Private typed approval reason','typed-profile-approval-submission'
+) \gset typed_ap_replay_
+DO $typed_submit_replay_check$
+BEGIN
+ IF :'typed_ap_replay_request_id'::uuid IS DISTINCT FROM :'typed_ap_request_id'::uuid THEN
+   RAISE EXCEPTION 'TYPED_APPROVAL_SUBMIT_REPLAY_MISMATCH';
+ END IF;
+END
+$typed_submit_replay_check$;
+
+-- Requester cannot review own request, nor apply while request is PENDING.
+DO $typed_pending_denials$
+BEGIN
+ BEGIN
+   PERFORM app.d1_review_profile_request(
+     :'typed_ap_request_id'::uuid,'APPROVE',3,'self','typed-approve-self');
+   RAISE EXCEPTION 'TYPED_APPROVAL_SELF_REVIEW_ALLOWED';
+ EXCEPTION WHEN OTHERS THEN
+   IF SQLERRM='TYPED_APPROVAL_SELF_REVIEW_ALLOWED' THEN RAISE; END IF;
+ END;
+ BEGIN
+   PERFORM app.d1_apply_student_profile_typed_approval_trial(
+     :'typed_ap_request_id'::uuid,3,'typed-apply-too-early');
+   RAISE EXCEPTION 'TYPED_APPROVAL_PRE_REVIEW_APPLY_ALLOWED';
+ EXCEPTION WHEN OTHERS THEN
+   IF SQLERRM='TYPED_APPROVAL_PRE_REVIEW_APPLY_ALLOWED' THEN RAISE; END IF;
+ END;
+END
+$typed_pending_denials$;
+RESET ROLE;
+DO $typed_before_review_history$
+BEGIN
+ IF (SELECT count(*) FROM app_private.student_profile_revisions)!=0
+ OR (SELECT previous_school FROM app_private.students
+     WHERE id='b1000000-0000-4000-8000-000000000001') IS NOT NULL THEN
+   RAISE EXCEPTION 'TYPED_APPROVAL_EARLY_PROFILE_EFFECT';
+ END IF;
+END
+$typed_before_review_history$;
+
+-- Different Person and authenticated Reviewer, using existing workflow code.
+SELECT pg_catalog.set_config('request.jwt.claim.sub',
+ current_setting('schoolos_test.reviewer_subject'),true);
+SELECT pg_catalog.set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
+ 'sub',current_setting('schoolos_test.reviewer_subject'),'role','authenticated',
+ 'iat',(SELECT pg_catalog.extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings
+ WHERE id='b7000000-0000-4000-8000-000000000002'),'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT * FROM app.d1_review_profile_request(
+ :'typed_ap_request_id','APPROVE',3,'Independent typed approval',
+ 'typed-approve-reviewer'
+) \gset typed_review_
+DO $typed_reviewed_check$
+BEGIN
+ IF :'typed_review_request_state' IS DISTINCT FROM 'APPROVED'
+    OR :'typed_review_request_version'::bigint<>4 THEN
+   RAISE EXCEPTION 'TYPED_APPROVAL_REVIEW_NOT_APPROVED';
+ END IF;
+END
+$typed_reviewed_check$;
+RESET ROLE;
+
+SELECT pg_catalog.set_config('request.jwt.claim.sub',
+ current_setting('schoolos_test.auth_subject'),true);
+SELECT pg_catalog.set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
+ 'sub',current_setting('schoolos_test.auth_subject'),'role','authenticated',
+ 'iat',(SELECT pg_catalog.extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings
+ WHERE id='66666666-6666-4666-8666-666666666666'),'is_anonymous',false)::text,true);
+
+-- Test existing stale-reviewer INVALIDATE semantics without retaining history.
+SAVEPOINT typed_reviewer_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.role_permission_grants SET revoked_at=pg_catalog.clock_timestamp()
+ WHERE id='b7000000-0000-4000-8000-000000000013';
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_profile_typed_approval_trial(
+ :'typed_ap_request_id',4,'typed-approval-reviewer-revoked'
+) \gset typed_invalid_
+DO $typed_invalidation_check$
+BEGIN
+ IF :'typed_invalid_request_state' IS DISTINCT FROM 'INVALIDATED' THEN
+   RAISE EXCEPTION 'TYPED_APPROVAL_REVOKED_REVIEWER_WAS_APPLIED';
+ END IF;
+END
+$typed_invalidation_check$;
+RESET ROLE;
+DO $typed_invalid_history_check$
+BEGIN
+ IF (SELECT count(*) FROM app_private.student_profile_revisions)<>0 THEN
+   RAISE EXCEPTION 'TYPED_APPROVAL_INVALIDATED_HISTORY_WRITTEN';
+ END IF;
+END
+$typed_invalid_history_check$;
+ROLLBACK TO SAVEPOINT typed_reviewer_revoked;
+
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_profile_typed_approval_trial(
+ :'typed_ap_request_id',4,'typed-approval-apply'
+) \gset typed_applied_
+DO $typed_applied_check$
+BEGIN
+ IF :'typed_applied_request_state' IS DISTINCT FROM 'EXECUTED'
+    OR :'typed_applied_request_version'::bigint<>5 THEN
+   RAISE EXCEPTION 'TYPED_APPROVAL_APPLY_FAILED';
+ END IF;
+END
+$typed_applied_check$;
+SELECT * FROM app.d1_apply_student_profile_typed_approval_trial(
+ :'typed_ap_request_id',4,'typed-approval-apply'
+) \gset typed_applied_replay_
+DO $typed_apply_replay$
+BEGIN
+ IF :'typed_applied_replay_request_state' IS DISTINCT FROM 'EXECUTED'
+    OR :'typed_applied_replay_request_version'::bigint<>5 THEN
+   RAISE EXCEPTION 'TYPED_APPROVAL_APPLY_REPLAY_FAILED';
+ END IF;
+END
+$typed_apply_replay$;
+RESET ROLE;
+
+DO $typed_approved_evidence$
+DECLARE
+ sid uuid:='b1000000-0000-4000-8000-000000000001';
+ req uuid:=:'typed_ap_request_id'::uuid;
+ v bigint:=:'initial_target_version'::bigint;
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM app_private.students s
+  WHERE s.id=sid AND s.row_version=v+1
+    AND s.previous_school='Typed Approved Academy')
+ OR (SELECT count(*) FROM app_private.student_profile_revisions
+   WHERE student_id=sid)<>1
+ OR NOT EXISTS (
+   SELECT 1 FROM app_private.student_profile_revisions h
+   JOIN app_private.command_receipts c ON c.id=h.command_receipt_id
+   JOIN app_private.approval_applications a ON a.command_receipt_id=c.id
+   WHERE h.student_id=sid AND h.approval_request_id=req
+    AND h.old_row_version=v AND h.new_row_version=v+1
+    AND h.old_previous_school IS NULL
+    AND h.new_previous_school='Typed Approved Academy'
+    AND h.private_reason='Private typed approval reason'
+    AND c.command_kind='request.apply' AND c.state='SUCCEEDED'
+    AND a.request_id=req
+ ) THEN RAISE EXCEPTION 'TYPED_APPROVAL_PRIVATE_HISTORY_BINDING'; END IF;
+ IF (SELECT count(*) FROM app_private.outbox_events
+       WHERE event_type='student.profile_changed')<>1
+ OR EXISTS (SELECT 1 FROM app_private.outbox_events
+     WHERE event_type='student.profile_changed'
+       AND (payload::text LIKE '%Typed Approved Academy%'
+         OR payload::text LIKE '%Private typed approval reason%'))
+ THEN RAISE EXCEPTION 'TYPED_APPROVAL_OUTBOX_PRIVACY'; END IF;
+END
+$typed_approved_evidence$;
+ROLLBACK TO SAVEPOINT typed_approval_integration;
+SET ROLE authenticated;
