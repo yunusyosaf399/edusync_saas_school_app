@@ -211,7 +211,7 @@ def run_student_profile_submit_vs_approved_apply_races(container: str, execute_s
         stale_out,stale_err=waiter.communicate(timeout=30)
         if (holder.returncode!=0 or APPLY_RESULT.findall(winner_out)!=[("EXECUTED","5")]
             or waiter.returncode==0
-            or "D1 profile request target version/state changed" not in stale_err):
+            or "D1 Student profile target version/state changed" not in stale_err):
             raise RuntimeError("D1_PROFILE_SUBMIT_RACE_APPLY_FIRST_OUTCOME "
                                +re.sub(r"[^A-Za-z0-9 .:_-]","",
                                       winner_err[-240:]+stale_err[-280:]))
