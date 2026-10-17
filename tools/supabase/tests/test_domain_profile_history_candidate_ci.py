@@ -206,6 +206,49 @@ class StudentProfileHistoryCandidateTests(unittest.TestCase):
         self.assertIn("SELECT * FROM finish();",sql)
         self.assertIn("ROLLBACK TO SAVEPOINT typed_approval_integration;",sql)
 
+    def test_student_photo_provenance_is_not_live_schema(self):
+        proposal=(ROOT/history.PHOTO_PROVENANCE_TRIAL).read_text(encoding="utf-8")
+        history.validate_photo_provenance_trial_source(proposal,ROOT)
+        self.assertIn("D1_PHOTO_PROVENANCE_TRIAL_NOT_ROLLED_BACK",
+                      history.PHOTO_PROVENANCE_CLEANUP)
+        self.assertIn("f.state='AVAILABLE'",proposal)
+        self.assertIn("b.student_id=p_student_id",proposal)
+        self.assertIn("b.school_id=expected_school",proposal)
+        self.assertNotIn("CREATE FUNCTION app.d1_change_student_profile(",proposal)
+
+    def test_student_photo_provenance_guard_refuses_unsafe_sql(self):
+        proposal=(ROOT/history.PHOTO_PROVENANCE_TRIAL).read_text(encoding="utf-8")
+        for changed in (
+            proposal+"\nCOMMIT;\n",
+            proposal.replace("FORCE ROW LEVEL SECURITY","DISABLE ROW LEVEL SECURITY"),
+            proposal.replace("b.student_id=p_student_id","true"),
+            proposal.replace("f.state='AVAILABLE'","true"),
+            proposal.replace("app_private.d1_profile_authorized(","wrong_photo_auth("),
+            proposal.replace("REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",""),
+        ):
+            with self.subTest(changed=changed[-35:]):
+                with self.assertRaises(RuntimeError):
+                    history.validate_photo_provenance_trial_source(changed,ROOT)
+
+    def test_student_photo_provenance_acceptance_injected_in_66_savepoint(self):
+        acceptance=(ROOT/history.PHOTO_PROVENANCE_ACCEPTANCE).read_text(encoding="utf-8")
+        self.assertIn("D1_PHOTO_ELIGIBLE_COMMITTED_FILE_DENIED",acceptance)
+        self.assertIn("D1_PHOTO_WRONG_PURPOSE_ACCEPTED",acceptance)
+        self.assertIn("D1_PHOTO_UPLOADER_EVIDENCE_MISMATCH_ACCEPTED",acceptance)
+        self.assertIn("D1_PHOTO_REVOKED_PERMISSION_ACCEPTED",acceptance)
+        sql=history.render_auth_trial_sql(
+            (ROOT/history.AUTH_BASELINE).read_text(encoding="utf-8"),
+            (ROOT/history.TYPED_FIXTURE).read_text(encoding="utf-8"),
+            (ROOT/history.CANDIDATE).read_text(encoding="utf-8"),
+            (ROOT/history.TYPED_TRIAL).read_text(encoding="utf-8"),
+            (ROOT/history.AUTH_PREFLIGHT).read_text(encoding="utf-8")+"\n"+
+                (ROOT/history.PHOTO_PROVENANCE_TRIAL).read_text(encoding="utf-8"),
+            acceptance)
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertIn("SAVEPOINT photo_provenance_trial_savepoint;",sql)
+        self.assertIn("ROLLBACK TO SAVEPOINT photo_provenance_trial_savepoint;",sql)
+        self.assertEqual(sql.count("CREATE TABLE app_private.student_profile_photo_provenance_trial ("),1)
+
     def test_local_runner_always_rolls_back(self):
         source=(ROOT / history.CANDIDATE).read_text(encoding="utf-8")
         self.assertIn("HISTORY_PRIVILEGE_LEAK",history.PROBE)

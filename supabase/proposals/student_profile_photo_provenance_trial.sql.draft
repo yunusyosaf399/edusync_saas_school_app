@@ -1,0 +1,137 @@
+-- STUDENT_PROFILE_PHOTO_PROVENANCE_LOCAL_TRIAL_ONLY
+-- The frozen file_objects schema cannot prove which Student owns a file.
+-- This companion proposal is trusted ONLY when an independently approved
+-- photo upload/binding transaction creates its evidence. Rollback-only here.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.student_profile_photo_provenance_trial (
+ file_id uuid NOT NULL,
+ student_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ uploaded_by_principal_id uuid NOT NULL,
+ certified_by_principal_id uuid NOT NULL,
+ committed_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ purpose_code text NOT NULL DEFAULT 'STUDENT_PROFILE_PHOTO',
+ CONSTRAINT spprov_trial_pk PRIMARY KEY (file_id),
+ CONSTRAINT spprov_trial_file_fk FOREIGN KEY (file_id)
+   REFERENCES app_private.file_objects(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT spprov_trial_student_fk FOREIGN KEY (student_id)
+   REFERENCES app_private.students(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT spprov_trial_school_fk FOREIGN KEY (school_id)
+   REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT spprov_trial_campus_fk FOREIGN KEY (campus_id)
+   REFERENCES app.campuses(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT spprov_trial_uploader_fk FOREIGN KEY (uploaded_by_principal_id)
+   REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT spprov_trial_certifier_fk FOREIGN KEY (certified_by_principal_id)
+   REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT spprov_trial_purpose CHECK (purpose_code='STUDENT_PROFILE_PHOTO')
+);
+ALTER TABLE app_private.student_profile_photo_provenance_trial ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.student_profile_photo_provenance_trial FORCE ROW LEVEL SECURITY;
+CREATE POLICY spprov_trial_schema_maintenance
+ ON app_private.student_profile_photo_provenance_trial
+ FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE TRIGGER spprov_trial_immutable
+ BEFORE UPDATE OR DELETE ON app_private.student_profile_photo_provenance_trial
+ FOR EACH ROW EXECUTE FUNCTION app_private.d1_student_profile_revision_immutable();
+REVOKE ALL ON TABLE app_private.student_profile_photo_provenance_trial
+ FROM PUBLIC,anon,authenticated,service_role,
+ schoolos_student_executor,schoolos_workflow_executor,schoolos_read_executor;
+CREATE POLICY spprov_trial_student_executor_read
+ ON app_private.student_profile_photo_provenance_trial
+ FOR SELECT TO schoolos_student_executor USING (true);
+GRANT SELECT (file_id,student_id,school_id,campus_id,purpose_code,
+ uploaded_by_principal_id,committed_at)
+ ON app_private.student_profile_photo_provenance_trial TO schoolos_student_executor;
+CREATE POLICY spprov_trial_photo_file_read ON app_private.file_objects
+ FOR SELECT TO schoolos_student_executor
+ USING (purpose_code='STUDENT_PROFILE_PHOTO');
+GRANT SELECT (id,campus_id,purpose_code,state,validated_at,
+ classification,content_type,byte_size,content_hash,uploaded_by_principal_id)
+ ON app_private.file_objects TO schoolos_student_executor;
+-- Existing Student trial scopes already expose Class Offering IDs/Campus,
+-- not its school_id. Limit this incremental join to the one school column.
+GRANT SELECT (school_id) ON app_private.class_offerings TO schoolos_student_executor;
+CREATE POLICY spprov_trial_campus_ancestry_read ON app.campuses
+ FOR SELECT TO schoolos_student_executor USING (true);
+GRANT SELECT (id,school_id) ON app.campuses TO schoolos_student_executor;
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+RESET ROLE;
+SET ROLE schoolos_student_executor;
+
+-- Check is Student-only and has no mutations, no arbitrary object-key input.
+-- Photo link is allowed only when two independent sources agree:
+--   file object current availability + exact Student-specific committed binding.
+-- It rechecks scope using the frozen auth model, rather than file uploader identity
+-- as an implicit grant. It returns false, never storage keys or private metadata.
+CREATE FUNCTION app_private.d1_student_profile_photo_provenance_trial(
+ p_student_id uuid,p_file_id uuid,p_campus_id uuid
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $student_photo_trial$
+DECLARE
+ actor uuid;
+ real_campus uuid;
+ expected_school uuid;
+ placements bigint;
+BEGIN
+ IF p_student_id IS NULL OR p_file_id IS NULL OR p_campus_id IS NULL THEN
+   RETURN false;
+ END IF;
+ PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ IF actor IS NULL THEN RETURN false; END IF;
+ PERFORM app_private.d1_lock_current_principal(actor);
+ SELECT count(*),min(co.campus_id::text)::uuid,min(co.school_id::text)::uuid
+ INTO placements,real_campus,expected_school
+ FROM app_private.enrollments e
+ JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+ JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+ WHERE e.student_id=p_student_id AND e.placement_kind='PRIMARY'
+ AND e.placement_state='ACTIVE'
+ AND e.effective_from<=pg_catalog.statement_timestamp()::date
+ AND (e.effective_until IS NULL OR
+      pg_catalog.statement_timestamp()::date<e.effective_until)
+ AND so.campus_id=co.campus_id;
+ IF placements<>1 OR real_campus IS DISTINCT FROM p_campus_id
+    OR expected_school IS NULL THEN
+   RETURN false;
+ END IF;
+ IF app_private.d1_profile_authorized(
+     actor,'student.profile.update','STUDENT',p_student_id,real_campus,NULL
+   ) IS DISTINCT FROM true THEN RETURN false; END IF;
+ -- Current upload permission is NOT inferred from profile-update grant.
+ IF app_private.d1_authorized('student.photo.submit','STUDENT',p_student_id)
+    IS DISTINCT FROM true THEN RETURN false; END IF;
+ RETURN EXISTS(
+  SELECT 1
+  FROM app_private.student_profile_photo_provenance_trial b
+  JOIN app_private.file_objects f ON f.id=b.file_id
+  JOIN app.campuses c ON c.id=b.campus_id
+  WHERE b.file_id=p_file_id
+    AND b.student_id=p_student_id
+    AND b.school_id=expected_school
+    AND b.campus_id=real_campus
+    AND c.school_id=expected_school
+    AND b.purpose_code='STUDENT_PROFILE_PHOTO'
+    AND b.uploaded_by_principal_id=f.uploaded_by_principal_id
+    AND b.committed_at<=pg_catalog.transaction_timestamp()
+    AND f.campus_id=real_campus
+    AND f.state='AVAILABLE' AND f.validated_at IS NOT NULL
+    AND f.purpose_code='STUDENT_PROFILE_PHOTO'
+    AND f.classification='PRIVATE'
+    AND f.content_type IN ('image/jpeg','image/png')
+    AND f.byte_size BETWEEN 1 AND 1048576
+    AND pg_catalog.octet_length(f.content_hash)=32
+ );
+END
+$student_photo_trial$;
+REVOKE ALL ON FUNCTION app_private.d1_student_profile_photo_provenance_trial(
+ uuid,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+-- Source-scoped column SELECT and Campus RLS remain valid only until
+-- the enclosing disposable BEGIN/ROLLBACK. No hosted grant is committed.
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+RESET ROLE;

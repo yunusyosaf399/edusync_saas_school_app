@@ -13,6 +13,9 @@ APPROVAL_TEST = Path("supabase/proposals/student_profile_typed_approval_acceptan
 APPROVAL_BASELINE = Path("supabase/tests/domain/67_student_profile_p1_approval_review_apply.sql")
 APPROVAL_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_APPROVAL_HISTORY_PASS"
 INTENT_SEAL_TRIAL = Path("supabase/proposals/student_profile_approval_intent_seal_trial.sql.draft")
+PHOTO_PROVENANCE_TRIAL = Path("supabase/proposals/student_profile_photo_provenance_trial.sql.draft")
+PHOTO_PROVENANCE_ACCEPTANCE = Path("supabase/proposals/student_profile_photo_provenance_acceptance.sql.draft")
+PHOTO_PROVENANCE_PASS_MARKER = "D1_STUDENT_PROFILE_PHOTO_PROVENANCE_GATE_PASS"
 INTENT_SEAL_CHECKS = Path("supabase/proposals/student_profile_approval_intent_seal_acceptance.sql.draft")
 INTENT_SEAL_PASS_MARKER = "D1_STUDENT_PROFILE_APPROVAL_INTENT_SEAL_PASS"
 DIRECT_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_DIRECT_RECEIPT_PASS"
@@ -476,6 +479,90 @@ def run_typed_approval_trial(
     print(INTENT_SEAL_PASS_MARKER+" original six-action canonical binding, same-result different-action conflict, authenticated historical replay, revoked-scope denial, receipt FK and rollback")
 
 
+
+def validate_photo_provenance_trial_source(source: str, root: Path = ROOT) -> None:
+    if not source.startswith("-- STUDENT_PROFILE_PHOTO_PROVENANCE_LOCAL_TRIAL_ONLY\n"):
+        raise RuntimeError("D1_PHOTO_PROVENANCE_QUARANTINE")
+    if "\r" in source or "\x00" in source or not source.endswith("\n"):
+        raise RuntimeError("D1_PHOTO_PROVENANCE_ENCODING")
+    for required in (
+        "CREATE TABLE app_private.student_profile_photo_provenance_trial (",
+        "CONSTRAINT spprov_trial_pk PRIMARY KEY (file_id)",
+        "CONSTRAINT spprov_trial_student_fk FOREIGN KEY (student_id)",
+        "CONSTRAINT spprov_trial_file_fk FOREIGN KEY (file_id)",
+        "CONSTRAINT spprov_trial_campus_fk FOREIGN KEY (campus_id)",
+        "CREATE TRIGGER spprov_trial_immutable",
+        "FORCE ROW LEVEL SECURITY",
+        "CREATE POLICY spprov_trial_student_executor_read",
+        "CREATE POLICY spprov_trial_photo_file_read",
+        "CREATE FUNCTION app_private.d1_student_profile_photo_provenance_trial(",
+        "app_private.d1_profile_authorized(",
+        "app_private.d1_authorized('student.photo.submit','STUDENT',p_student_id)",
+        "b.student_id=p_student_id",
+        "b.school_id=expected_school",
+        "b.campus_id=real_campus",
+        "b.uploaded_by_principal_id=f.uploaded_by_principal_id",
+        "f.state='AVAILABLE'",
+        "f.purpose_code='STUDENT_PROFILE_PHOTO'",
+        "GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;",
+        "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",
+    ):
+        if required not in source:
+            raise RuntimeError("D1_PHOTO_PROVENANCE_REQUIRED "+required)
+    for forbidden in (
+        "\nCOMMIT;", "\nBEGIN;", "CREATE ROLE ", "DROP TABLE ",
+        "DISABLE ROW LEVEL SECURITY",
+        "GRANT INSERT ON APP_PRIVATE.STUDENT_PROFILE_PHOTO_PROVENANCE_TRIAL TO AUTHENTICATED",
+        "GRANT SELECT ON APP_PRIVATE.STUDENT_PROFILE_PHOTO_PROVENANCE_TRIAL TO AUTHENTICATED",
+        "GRANT EXECUTE ON FUNCTION APP_PRIVATE.D1_STUDENT_PROFILE_PHOTO_PROVENANCE_TRIAL",
+    ):
+        if forbidden in source.upper():
+            raise RuntimeError("D1_PHOTO_PROVENANCE_UNSAFE "+forbidden.strip())
+    if PHOTO_PROVENANCE_TRIAL.parts[1]!="proposals" or any(
+       p.name==PHOTO_PROVENANCE_TRIAL.name for p in discover_drafts(root)):
+        raise RuntimeError("D1_PHOTO_PROVENANCE_ACTIVE_MIGRATION")
+
+PHOTO_PROVENANCE_CLEANUP = """
+DO $photo_provenance_clean$
+BEGIN
+  IF pg_catalog.to_regclass(
+    'app_private.student_profile_photo_provenance_trial') IS NOT NULL
+    OR pg_catalog.to_regprocedure(
+    'app_private.d1_student_profile_photo_provenance_trial(uuid,uuid,uuid)'
+    ) IS NOT NULL THEN
+    RAISE EXCEPTION 'D1_PHOTO_PROVENANCE_TRIAL_NOT_ROLLED_BACK';
+  END IF;
+END
+$photo_provenance_clean$;
+"""
+
+def run_student_photo_provenance_trial(
+  container: str, run_psql, history: str, typed: str, root: Path = ROOT
+) -> None:
+    proposal=(Path(root)/PHOTO_PROVENANCE_TRIAL).read_text(encoding="utf-8")
+    acceptance=(Path(root)/PHOTO_PROVENANCE_ACCEPTANCE).read_text(encoding="utf-8")
+    validate_photo_provenance_trial_source(proposal,root)
+    if not acceptance.startswith("-- STUDENT_PROFILE_PHOTO_PROVENANCE_ROLLBACK_ONLY\n") \
+       or "\nCOMMIT;" in acceptance or "\nBEGIN;" in acceptance \
+       or "ROLLBACK TO SAVEPOINT photo_provenance_trial_savepoint;" not in acceptance:
+        raise RuntimeError("D1_PHOTO_PROVENANCE_TEST_QUARANTINE")
+    auth=(Path(root)/AUTH_PREFLIGHT).read_text(encoding="utf-8")
+    validate_typed_auth_preflight_source(auth,root)
+    baseline=(Path(root)/AUTH_BASELINE).read_text(encoding="utf-8")
+    fixture=(Path(root)/TYPED_FIXTURE).read_text(encoding="utf-8")
+    # Keep PostgreSQL stderr visible when the new fixture fails. Hide only
+    # intermediate fixture stdout, restoring stdout before original suite 66.
+    sql=render_auth_trial_sql(baseline,fixture,history,typed,
+        auth+"\n"+proposal,acceptance+"\n\\o\n")
+    sql=sql.replace("BEGIN;\n","BEGIN;\n\\o /dev/null\n",1)
+    if container!="supabase_db_saas_OS_school_app":
+        raise RuntimeError("D1_PHOTO_PROVENANCE_DISPOSABLE_CONTAINER_ONLY")
+    run_psql(container,sql,"D1_STUDENT_PROFILE_PHOTO_PROVENANCE_TRIAL",timeout=300)
+    run_psql(container,PHOTO_PROVENANCE_CLEANUP,
+        "D1_STUDENT_PROFILE_PHOTO_PROVENANCE_CLEANUP",timeout=45)
+    print(PHOTO_PROVENANCE_PASS_MARKER+
+        " conditional Student-bound photo provenance, current scoped upload+profile grant, purpose/availability/campus/owner/file lifecycle, and rollback-only")
+
 def run_history_candidate(container: str, run_psql, root: Path = ROOT) -> None:
     source = (Path(root) / CANDIDATE).read_text(encoding="utf-8")
     validate_candidate_source(source, root)
@@ -497,5 +584,6 @@ def run_history_candidate(container: str, run_psql, root: Path = ROOT) -> None:
     run_typed_authenticated_preflight(container, run_psql, source, typed, root)
     run_typed_direct_trial(container, run_psql, source, typed, root)
     run_typed_approval_trial(container, run_psql, source, typed, root)
+    run_student_photo_provenance_trial(container, run_psql, source, typed, root)
     print(PASS_MARKER + " rollback-only DDL/RLS/ACL/check/FK smoke")
     print(TYPED_PASS_MARKER + " normalized fixed-six-field plan, row/revision atomic trial, rollback cleanup")
