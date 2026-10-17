@@ -423,8 +423,9 @@ def _main() -> int:
             raise DomainLocalCIError("FOUNDATION_TAP_TOTAL_MISMATCH " + str(total))
         print("D1C2A_FOUNDATION_REGRESSION_PASS 1 baseline catalog + 8 post-D1 behavior files / " + str(total) + "/" + str(total))
         run_business_tests()
-        run_concurrency_tests(container, run_psql)
+        # Run isolated trial before races, whose workers retain committed synthetic principals.
         run_history_candidate(container, run_psql, ROOT)
+        run_concurrency_tests(container, run_psql)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0

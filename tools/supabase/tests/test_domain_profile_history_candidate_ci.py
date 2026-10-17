@@ -25,6 +25,29 @@ class StudentProfileHistoryCandidateTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 history.validate_candidate_source(candidate,ROOT)
 
+    def test_typed_trial_is_quarantined_and_no_public_grant(self):
+        source = (ROOT / history.TYPED_TRIAL).read_text(encoding="utf-8")
+        history.validate_typed_trial_source(source, ROOT)
+        self.assertIn("SECURITY INVOKER",source)
+        self.assertNotIn("SECURITY DEFINER",source)
+        self.assertEqual(history.TYPED_TRIAL.parts[1], "proposals")
+        self.assertIn("TYPED_TRIAL_ATOMIC_HISTORY_FAILED", history.TRIAL_SQL)
+        self.assertIn("TYPED_TRIAL_CLEAR_VS_UNCHANGED_FAILED", history.TRIAL_SQL)
+        self.assertIn("TYPED_TRIAL_FUNCTIONS_NOT_ROLLED_BACK", history.TYPED_CLEANUP)
+
+    def test_typed_trial_source_guard_denies_unsafe_changes(self):
+        source = (ROOT / history.TYPED_TRIAL).read_text(encoding="utf-8")
+        for bad in (
+            source + "\nCOMMIT;\n",
+            source.replace("SECURITY INVOKER","SECURITY DEFINER"),
+            source.replace("D1_TYPED_PROFILE_NO_OP","DISABLED_NO_OP"),
+            source.replace("FOR UPDATE;",";"),
+            source + "\nGRANT EXECUTE ON FUNCTION x TO authenticated;\n",
+        ):
+            with self.subTest(marker=bad[-32:]):
+                with self.assertRaises(RuntimeError):
+                    history.validate_typed_trial_source(bad, ROOT)
+
     def test_local_runner_always_rolls_back(self):
         source=(ROOT / history.CANDIDATE).read_text(encoding="utf-8")
         self.assertIn("HISTORY_PRIVILEGE_LEAK",history.PROBE)
