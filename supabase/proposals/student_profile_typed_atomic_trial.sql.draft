@@ -1,0 +1,198 @@
+-- STUDENT_PROFILE_TYPED_ATOMIC_TRIAL_ONLY
+-- Post-D1 private algorithm candidate. No public entry point and no runtime grant.
+-- Installed only with the restricted history table inside local BEGIN/ROLLBACK.
+SET ROLE schoolos_schema_owner;
+
+CREATE FUNCTION app_private.d1_student_profile_typed_plan_trial(
+  p_before jsonb,p_actions jsonb
+) RETURNS jsonb
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $typed_trial$
+DECLARE
+  fields text[]:=ARRAY['date_of_birth','gender_code','nationality_code',
+    'general_contact','previous_school','profile_photo_file_id'];
+  fld text;
+  entry jsonb;
+  act text;
+  val text;
+  canonical jsonb:='{}'::jsonb;
+  after_values jsonb:=p_before;
+  prior_count integer;
+  action_count integer;
+BEGIN
+  IF pg_catalog.jsonb_typeof(p_before) IS DISTINCT FROM 'object'
+     OR pg_catalog.jsonb_typeof(p_actions) IS DISTINCT FROM 'object' THEN
+    RAISE EXCEPTION 'D1_TYPED_PROFILE_SHAPE';
+  END IF;
+  SELECT count(*) INTO prior_count FROM pg_catalog.jsonb_object_keys(p_before);
+  SELECT count(*) INTO action_count FROM pg_catalog.jsonb_object_keys(p_actions);
+  IF prior_count<>6 OR action_count<>6
+     OR NOT (p_before ?& fields) OR NOT (p_actions ?& fields) THEN
+    RAISE EXCEPTION 'D1_TYPED_PROFILE_FIELD_ALLOWLIST';
+  END IF;
+  FOREACH fld IN ARRAY fields LOOP
+    entry:=p_actions->fld;
+    IF pg_catalog.jsonb_typeof(entry) IS DISTINCT FROM 'object'
+       OR pg_catalog.jsonb_typeof(entry->'action') IS DISTINCT FROM 'string' THEN
+      RAISE EXCEPTION 'D1_TYPED_PROFILE_ACTION_SHAPE';
+    END IF;
+    act:=entry->>'action';
+    SELECT count(*) INTO action_count FROM pg_catalog.jsonb_object_keys(entry);
+    IF act='UNCHANGED' OR act='CLEAR' THEN
+      IF action_count<>1 OR entry ? 'value' THEN
+        RAISE EXCEPTION 'D1_TYPED_PROFILE_UNEXPECTED_VALUE';
+      END IF;
+      canonical:=canonical||pg_catalog.jsonb_build_object(
+        fld,pg_catalog.jsonb_build_object('action',act));
+      IF act='CLEAR' THEN
+        after_values:=pg_catalog.jsonb_set(after_values,ARRAY[fld],'null'::jsonb);
+      END IF;
+    ELSIF act='SET' THEN
+      IF action_count<>2 OR NOT (entry ? 'value')
+         OR pg_catalog.jsonb_typeof(entry->'value') IS DISTINCT FROM 'string' THEN
+        RAISE EXCEPTION 'D1_TYPED_PROFILE_SET_VALUE_REQUIRED';
+      END IF;
+      val:=pg_catalog.btrim(entry->>'value');
+      IF val='' THEN
+        RAISE EXCEPTION 'D1_TYPED_PROFILE_SET_BLANK';
+      END IF;
+      IF fld='date_of_birth' THEN
+        IF val !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+          RAISE EXCEPTION 'D1_TYPED_PROFILE_DATE_FORMAT';
+        END IF;
+        BEGIN
+          val:=((val)::date)::text;
+        EXCEPTION WHEN invalid_datetime_format OR datetime_field_overflow
+                       OR invalid_text_representation THEN
+          RAISE EXCEPTION 'D1_TYPED_PROFILE_DATE_INVALID';
+        END;
+      ELSIF fld='profile_photo_file_id' THEN
+        IF val !~* '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' THEN
+          RAISE EXCEPTION 'D1_TYPED_PROFILE_PHOTO_ID';
+        END IF;
+        val:=(val::uuid)::text;
+      END IF;
+      canonical:=canonical||pg_catalog.jsonb_build_object(
+        fld,pg_catalog.jsonb_build_object('action','SET','value',val));
+      after_values:=pg_catalog.jsonb_set(after_values,ARRAY[fld],pg_catalog.to_jsonb(val));
+    ELSE
+      RAISE EXCEPTION 'D1_TYPED_PROFILE_UNKNOWN_ACTION';
+    END IF;
+  END LOOP;
+  IF after_values=p_before THEN
+    RAISE EXCEPTION 'D1_TYPED_PROFILE_NO_OP';
+  END IF;
+  RETURN pg_catalog.jsonb_build_object('canonical_actions',canonical,
+    'after',after_values);
+END
+$typed_trial$;
+REVOKE ALL ON FUNCTION app_private.d1_student_profile_typed_plan_trial(jsonb,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+
+-- The trial writer is SECURITY INVOKER, has no client/worker EXECUTE grant,
+-- and cannot be installed by the Migration 10 assembler. A future live
+-- writer must be separately reviewed and executed under a no-login role
+-- with current scope, photo entitlement, receipt and workflow protection.
+CREATE FUNCTION app_private.d1_student_profile_typed_write_trial(
+  p_student_id uuid,p_expected_version bigint,p_actions jsonb,
+  p_private_reason text,p_actor uuid,p_receipt uuid,p_request uuid DEFAULT NULL
+) RETURNS bigint
+LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $write_trial$
+DECLARE
+  existing app_private.students%ROWTYPE;
+  pre jsonb;
+  projected jsonb;
+  post jsonb;
+  new_version bigint;
+BEGIN
+  IF CURRENT_USER <> 'schoolos_schema_owner' THEN
+    RAISE EXCEPTION 'D1_TYPED_TRIAL_OWNER_ONLY';
+  END IF;
+  IF p_student_id IS NULL OR p_expected_version IS NULL
+     OR p_expected_version<1 OR p_receipt IS NULL OR p_actor IS NULL
+     OR p_private_reason IS NULL OR pg_catalog.btrim(p_private_reason)='' THEN
+    RAISE EXCEPTION 'D1_TYPED_PROFILE_INTENT_INVALID';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id()
+     OR NOT EXISTS (SELECT 1 FROM app_private.principals p
+       WHERE p.id=p_actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE') THEN
+    RAISE EXCEPTION 'D1_TYPED_PROFILE_ACTOR_INVALID';
+  END IF;
+  SELECT s.* INTO existing FROM app_private.students s
+    WHERE s.id=p_student_id FOR UPDATE;
+  IF NOT FOUND OR existing.current_status IS DISTINCT FROM 'ACTIVE'
+     OR existing.row_version IS DISTINCT FROM p_expected_version THEN
+    RAISE EXCEPTION 'D1_TYPED_PROFILE_STALE_OR_ABSENT';
+  END IF;
+  -- This trial requires a pre-issued, typed, successful receipt containing the
+  -- anticipated postversion. The final public operation will also require
+  -- the verified canonical hash / current scoped authority and correct phase.
+  IF NOT EXISTS (
+    SELECT 1 FROM app_private.command_receipts r
+    JOIN app_private.operation_contracts o ON o.id=r.operation_id
+    WHERE r.id=p_receipt AND r.principal_id=p_actor
+      AND o.code='student.profile.update' AND o.contract_version=1
+      AND r.command_kind=CASE WHEN p_request IS NULL THEN
+        'student.profile.update' ELSE 'request.apply' END
+      AND r.state='SUCCEEDED' AND r.result_ref=p_student_id
+      AND r.request_id IS NOT DISTINCT FROM p_request
+      AND r.expected_target_version=p_expected_version
+      AND r.result_summary->>'row_version'=(p_expected_version+1)::text
+  ) THEN
+    RAISE EXCEPTION 'D1_TYPED_PROFILE_RECEIPT_INVALID';
+  END IF;
+  pre:=pg_catalog.jsonb_build_object(
+    'date_of_birth',existing.date_of_birth,
+    'gender_code',existing.gender_code,
+    'nationality_code',existing.nationality_code,
+    'general_contact',existing.general_contact,
+    'previous_school',existing.previous_school,
+    'profile_photo_file_id',existing.profile_photo_file_id);
+  projected:=app_private.d1_student_profile_typed_plan_trial(pre,p_actions);
+  post:=projected->'after';
+  -- Photo SET remains disabled until exact Student file ownership/purpose
+  -- and entitlement checks are integrated. Clearing and unchanged are safe.
+  IF (post->>'profile_photo_file_id') IS DISTINCT FROM
+        (pre->>'profile_photo_file_id')
+     AND (post->>'profile_photo_file_id') IS NOT NULL THEN
+    RAISE EXCEPTION 'D1_TYPED_PROFILE_PHOTO_SET_NEEDS_ENTITLEMENT';
+  END IF;
+  UPDATE app_private.students s SET
+    date_of_birth=(post->>'date_of_birth')::date,
+    gender_code=post->>'gender_code',
+    nationality_code=post->>'nationality_code',
+    general_contact=post->>'general_contact',
+    previous_school=post->>'previous_school',
+    profile_photo_file_id=(post->>'profile_photo_file_id')::uuid
+  WHERE s.id=p_student_id AND s.row_version=p_expected_version
+    AND s.current_status='ACTIVE'
+  RETURNING s.row_version INTO new_version;
+  IF new_version IS DISTINCT FROM p_expected_version+1 THEN
+    RAISE EXCEPTION 'D1_TYPED_PROFILE_POSTVERSION_FAILED';
+  END IF;
+  INSERT INTO app_private.student_profile_revisions (
+    student_id,old_row_version,new_row_version,command_receipt_id,
+    approval_request_id,applied_by_principal_id,private_reason,
+    old_date_of_birth,new_date_of_birth,old_gender_code,new_gender_code,
+    old_nationality_code,new_nationality_code,old_general_contact,new_general_contact,
+    old_previous_school,new_previous_school,
+    old_profile_photo_file_id,new_profile_photo_file_id
+  ) VALUES (
+    p_student_id,p_expected_version,new_version,p_receipt,p_request,p_actor,
+    pg_catalog.btrim(p_private_reason),
+    existing.date_of_birth,(post->>'date_of_birth')::date,
+    existing.gender_code,post->>'gender_code',
+    existing.nationality_code,post->>'nationality_code',
+    existing.general_contact,post->>'general_contact',
+    existing.previous_school,post->>'previous_school',
+    existing.profile_photo_file_id,(post->>'profile_photo_file_id')::uuid
+  );
+  RETURN new_version;
+END
+$write_trial$;
+REVOKE ALL ON FUNCTION app_private.d1_student_profile_typed_write_trial(
+  uuid,bigint,jsonb,text,uuid,uuid,uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+RESET ROLE;

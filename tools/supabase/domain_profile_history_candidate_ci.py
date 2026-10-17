@@ -5,6 +5,11 @@ from domain_draft_guard import ROOT, discover_drafts
 
 CANDIDATE = Path("supabase/proposals/student_profile_history_v1.sql.draft")
 PASS_MARKER = "D1_STUDENT_PROFILE_HISTORY_CANDIDATE_PASS"
+TYPED_TRIAL = Path("supabase/proposals/student_profile_typed_atomic_trial.sql.draft")
+TRIAL_SQL = "-- Typed six-field plan and truly atomic Student row + restricted revision smoke.\n-- This is a separate transaction savepoint inside the outer rollback test.\n\\ir fixtures/command_actor.sql\nSET ROLE schoolos_schema_owner;\nINSERT INTO app_private.students (\n  id,person_id,school_student_id,admission_number,admission_serial,\n  admitted_on,current_status,date_of_birth,gender_code,previous_school,\n  general_contact,created_by\n) VALUES (\n  'c1000000-0000-4000-8000-000000000001',\n  '10000000-0000-4000-8000-000000000001',\n  'TRIAL-STUDENT-1','TRIAL-ADM-1',98766,CURRENT_DATE-20,'ACTIVE',\n  NULL,'F','Old School','1234','11111111-1111-4111-8111-111111111111'\n);\nINSERT INTO app_private.student_status_transitions(\n  id,student_id,previous_status,new_status,effective_on,\n  sequence_number,reason,created_by\n) VALUES (\n  'c1000000-0000-4000-8000-000000000002',\n  'c1000000-0000-4000-8000-000000000001',\n  NULL,'ACTIVE',CURRENT_DATE-20,1,'Trial initial ACTIVE',\n  '11111111-1111-4111-8111-111111111111'\n);\nUPDATE app_private.operation_contracts SET enabled=true\n WHERE code='student.profile.update';\nINSERT INTO app_private.command_receipts(\n  id,principal_id,operation_id,command_kind,idempotency_key,\n  canonical_payload_hash,expected_target_version,state,\n  result_kind,result_ref,result_summary,completed_at,created_by\n) SELECT\n  'c1000000-0000-4000-8000-000000000003',\n  '55555555-5555-4555-8555-555555555555',\n  o.id,'student.profile.update','trial-typed-once',\n  pg_catalog.decode(pg_catalog.repeat('ac',32),'hex'),\n  1,'SUCCEEDED','D1_STUDENT_PROFILE',\n  'c1000000-0000-4000-8000-000000000001',\n  '{\"row_version\":2}'::jsonb,pg_catalog.clock_timestamp(),\n  '55555555-5555-4555-8555-555555555555'\nFROM app_private.operation_contracts o WHERE o.code='student.profile.update';\n\nDO $typed_trial_smoke$\nDECLARE\n  six_before jsonb:='{\"date_of_birth\":null,\"gender_code\":\"F\",\"nationality_code\":null,\"general_contact\":\"1234\",\"previous_school\":\"Old School\",\"profile_photo_file_id\":null}'::jsonb;\n  school jsonb:='{\"date_of_birth\":{\"action\":\"UNCHANGED\"},\"gender_code\":{\"action\":\"UNCHANGED\"},\"nationality_code\":{\"action\":\"UNCHANGED\"},\"general_contact\":{\"action\":\"UNCHANGED\"},\"previous_school\":{\"action\":\"SET\",\"value\":\"  Other School  \"},\"profile_photo_file_id\":{\"action\":\"UNCHANGED\"}}'::jsonb;\n  clear_contact jsonb:='{\"date_of_birth\":{\"action\":\"UNCHANGED\"},\"gender_code\":{\"action\":\"UNCHANGED\"},\"nationality_code\":{\"action\":\"UNCHANGED\"},\"general_contact\":{\"action\":\"CLEAR\"},\"previous_school\":{\"action\":\"UNCHANGED\"},\"profile_photo_file_id\":{\"action\":\"UNCHANGED\"}}'::jsonb;\n  unchanged jsonb:='{\"date_of_birth\":{\"action\":\"UNCHANGED\"},\"gender_code\":{\"action\":\"UNCHANGED\"},\"nationality_code\":{\"action\":\"UNCHANGED\"},\"general_contact\":{\"action\":\"UNCHANGED\"},\"previous_school\":{\"action\":\"UNCHANGED\"},\"profile_photo_file_id\":{\"action\":\"UNCHANGED\"}}'::jsonb;\n  projected jsonb;\n  observed bigint;\nBEGIN\n  projected:=app_private.d1_student_profile_typed_plan_trial(six_before,school);\n  IF projected->'after'->>'previous_school' <> 'Other School'\n     OR projected->'after'->>'general_contact' <> '1234'\n     OR projected->'after'->>'gender_code' <> 'F'\n     OR projected->'canonical_actions'->'previous_school'->>'value' <> 'Other School' THEN\n    RAISE EXCEPTION 'TYPED_TRIAL_UNCHANGED_OR_NORMALIZATION_FAILED';\n  END IF;\n  projected:=app_private.d1_student_profile_typed_plan_trial(six_before,clear_contact);\n  IF projected->'after'->'general_contact' <> 'null'::jsonb\n     OR projected->'after'->>'previous_school' <> 'Old School' THEN\n    RAISE EXCEPTION 'TYPED_TRIAL_CLEAR_VS_UNCHANGED_FAILED';\n  END IF;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_plan_trial(six_before,unchanged);\n    RAISE EXCEPTION 'TYPED_TRIAL_NO_OP_NOT_REJECTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_NO_OP%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_plan_trial(\n      six_before,school||'{\"person_id\":{\"action\":\"CLEAR\"}}'::jsonb);\n    RAISE EXCEPTION 'TYPED_TRIAL_UNKNOWN_FIELD_NOT_REJECTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_FIELD_ALLOWLIST%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_plan_trial(\n      six_before,jsonb_set(school,'{previous_school}',\n        '{\"action\":\"SET\",\"value\":null}'::jsonb));\n    RAISE EXCEPTION 'TYPED_TRIAL_SET_NULL_NOT_REJECTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_SET_VALUE_REQUIRED%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_plan_trial(\n      six_before,jsonb_set(school,'{previous_school}',\n        '{\"action\":\"SET\",\"value\":\"  \"}'::jsonb));\n    RAISE EXCEPTION 'TYPED_TRIAL_SET_BLANK_NOT_REJECTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_SET_BLANK%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_plan_trial(\n      six_before,jsonb_set(school,'{date_of_birth}',\n        '{\"action\":\"SET\",\"value\":\"2023-02-31\"}'::jsonb));\n    RAISE EXCEPTION 'TYPED_TRIAL_INVALID_DATE_NOT_REJECTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_DATE_INVALID%' THEN RAISE; END IF;\n  END;\n  observed:=app_private.d1_student_profile_typed_write_trial(\n    'c1000000-0000-4000-8000-000000000001',1,school,\n    'Trial change to previous school','55555555-5555-4555-8555-555555555555',\n    'c1000000-0000-4000-8000-000000000003',NULL);\n  IF observed<>2 OR NOT EXISTS (\n    SELECT 1 FROM app_private.students s\n    WHERE s.id='c1000000-0000-4000-8000-000000000001'\n      AND s.row_version=2 AND s.previous_school='Other School'\n      AND s.general_contact='1234' AND s.gender_code='F'\n  ) OR NOT EXISTS (\n    SELECT 1 FROM app_private.student_profile_revisions r\n    WHERE r.student_id='c1000000-0000-4000-8000-000000000001'\n      AND r.old_row_version=1 AND r.new_row_version=2\n      AND r.old_previous_school='Old School'\n      AND r.new_previous_school='Other School'\n      AND r.old_general_contact='1234'\n      AND r.new_general_contact='1234'\n      AND r.private_reason='Trial change to previous school'\n  ) THEN\n    RAISE EXCEPTION 'TYPED_TRIAL_ATOMIC_HISTORY_FAILED';\n  END IF;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_write_trial(\n      'c1000000-0000-4000-8000-000000000001',1,school,\n      'Trial replay','55555555-5555-4555-8555-555555555555',\n      'c1000000-0000-4000-8000-000000000003',NULL);\n    RAISE EXCEPTION 'TYPED_TRIAL_STALE_REPLAY_MUTATED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_STALE_OR_ABSENT%' THEN RAISE; END IF;\n  END;\n  IF (SELECT count(*) FROM app_private.student_profile_revisions)<>1 THEN\n    RAISE EXCEPTION 'TYPED_TRIAL_REPLAY_INSERTED_EXTRA_HISTORY';\n  END IF;\nEND\n$typed_trial_smoke$;\nRESET ROLE;\n"
+TYPED_FIXTURE = Path("supabase/tests/domain/fixtures/command_actor.sql")
+TYPED_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_ATOMIC_TRIAL_PASS"
+
 
 PROBE = r"""
 SET ROLE schoolos_schema_owner;
@@ -103,13 +108,66 @@ def validate_candidate_source(source: str, root: Path = ROOT) -> None:
     if any(path.name == CANDIDATE.name for path in discover_drafts(root)):
         raise RuntimeError("HISTORY_CANDIDATE_ASSEMBLED_IN_D1")
 
+
+def validate_typed_trial_source(source: str, root: Path = ROOT) -> None:
+    if not source.startswith("-- STUDENT_PROFILE_TYPED_ATOMIC_TRIAL_ONLY\n"):
+        raise RuntimeError("TYPED_TRIAL_INVALID_HEADER")
+    if "\r" in source or "\x00" in source or not source.endswith("\n"):
+        raise RuntimeError("TYPED_TRIAL_INVALID_ENCODING")
+    for required in (
+        "SECURITY INVOKER",
+        "CURRENT_USER <> 'schoolos_schema_owner'",
+        "FOR UPDATE;",
+        "app_private.d1_student_profile_typed_plan_trial(",
+        "app_private.d1_student_profile_typed_write_trial(",
+        "CREATE FUNCTION app_private.d1_student_profile_typed_plan_trial(",
+        "CREATE FUNCTION app_private.d1_student_profile_typed_write_trial(",
+        "D1_TYPED_PROFILE_NO_OP",
+        "D1_TYPED_PROFILE_PHOTO_SET_NEEDS_ENTITLEMENT",
+        "INSERT INTO app_private.student_profile_revisions",
+        "REVOKE ALL ON FUNCTION",
+    ):
+        if required not in source:
+            raise RuntimeError("TYPED_TRIAL_SOURCE_GUARD "+required)
+    for forbidden in ("\nCOMMIT;", "\nBEGIN;", "GRANT EXECUTE ",
+        "GRANT SELECT ", "GRANT INSERT ", "CREATE ROLE ",
+        "LANGUAGE plpgsql VOLATILE SECURITY DEFINER",
+        "ALTER TABLE app_private.student_profile_revisions DISABLE"):
+        if forbidden in source.upper() if forbidden.isupper() else forbidden in source:
+            raise RuntimeError("TYPED_TRIAL_UNSAFE_SQL "+forbidden.strip())
+    if TYPED_TRIAL.parts[1] != "proposals":
+        raise RuntimeError("TYPED_TRIAL_NOT_QUARANTINED")
+    if any(path.name == TYPED_TRIAL.name for path in discover_drafts(root)):
+        raise RuntimeError("TYPED_TRIAL_ASSEMBLED_IN_D1")
+
+TYPED_CLEANUP = """
+DO $trial_cleanup$
+BEGIN
+  IF pg_catalog.to_regprocedure('app_private.d1_student_profile_typed_plan_trial(jsonb,jsonb)') IS NOT NULL
+    OR pg_catalog.to_regprocedure('app_private.d1_student_profile_typed_write_trial(uuid,bigint,jsonb,text,uuid,uuid,uuid)') IS NOT NULL THEN
+    RAISE EXCEPTION 'TYPED_TRIAL_FUNCTIONS_NOT_ROLLED_BACK';
+  END IF;
+END
+$trial_cleanup$;
+"""
+
 def run_history_candidate(container: str, run_psql, root: Path = ROOT) -> None:
     source = (Path(root) / CANDIDATE).read_text(encoding="utf-8")
     validate_candidate_source(source, root)
+    typed = (Path(root) / TYPED_TRIAL).read_text(encoding="utf-8")
+    validate_typed_trial_source(typed, root)
+    fixture = (Path(root) / TYPED_FIXTURE).read_text(encoding="utf-8")
+    if fixture.count("SET ROLE schoolos_schema_owner;") < 1:
+        raise RuntimeError("TYPED_TRIAL_FIXTURE_MISSING")
+    synthetic = TRIAL_SQL.replace(r"\ir fixtures/command_actor.sql", fixture)
+    if r"\ir " in synthetic:
+        raise RuntimeError("TYPED_TRIAL_UNRESOLVED_INCLUDE")
     if container != "supabase_db_saas_OS_school_app":
         raise RuntimeError("HISTORY_LOCAL_CONTAINER_MISMATCH")
-    run_psql(container, "BEGIN;\n" + source + "\n" + PROBE + "\nROLLBACK;\n",
+    run_psql(container, "BEGIN;\n" + source + "\n" + typed + "\n" + PROBE + "\n" + synthetic + "\nROLLBACK;\n",
         "D1_STUDENT_PROFILE_HISTORY_DESIGN_SMOKE", timeout=180)
     run_psql(container, CLEANUP_PROBE,
         "D1_STUDENT_PROFILE_HISTORY_ROLLBACK_PROOF", timeout=45)
+    run_psql(container, TYPED_CLEANUP, "D1_STUDENT_PROFILE_TYPED_ATOMIC_TRIAL_CLEANUP", timeout=45)
     print(PASS_MARKER + " rollback-only DDL/RLS/ACL/check/FK smoke")
+    print(TYPED_PASS_MARKER + " normalized fixed-six-field plan, row/revision atomic trial, rollback cleanup")
