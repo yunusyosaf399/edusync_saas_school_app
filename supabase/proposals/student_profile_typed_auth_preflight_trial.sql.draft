@@ -1,0 +1,101 @@
+-- STUDENT_PROFILE_TYPED_AUTH_PREFLIGHT_TRIAL_ONLY
+-- Install only after the 34-relation D1 draft in a disposable BEGIN/ROLLBACK.
+-- A fixed-purpose, non-mutating auth preflight; NOT the DIRECT/APPLY writer.
+SET ROLE schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_profile_typed_plan_trial(jsonb,jsonb)
+  TO schoolos_student_executor;
+GRANT CREATE ON SCHEMA app TO schoolos_student_executor;
+RESET ROLE;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app.d1_student_profile_typed_preflight_trial(
+  p_student_id uuid,p_campus_hint uuid,p_expected_version bigint,
+  p_actions jsonb,p_reason text,p_route text
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $auth_preflight$
+DECLARE
+  actor uuid;
+  target_row app_private.students%ROWTYPE;
+  resolved_campus uuid;
+  placement_count bigint;
+  selected_policy record;
+  plan jsonb;
+  original jsonb;
+  after_values jsonb;
+BEGIN
+  IF p_student_id IS NULL OR p_expected_version IS NULL
+     OR p_expected_version<1 OR p_reason IS NULL
+     OR pg_catalog.btrim(p_reason)=''
+     OR p_route IS NULL OR p_route NOT IN ('DIRECT','APPROVAL') THEN
+    RAISE EXCEPTION 'D1_TYPED_PREFLIGHT_INPUT';
+  END IF;
+  -- Shared global authorization lock must precede Principal and Student locks.
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN
+    RAISE EXCEPTION 'D1_TYPED_PREFLIGHT_NO_PRINCIPAL';
+  END IF;
+  PERFORM app_private.d1_lock_current_principal(actor);
+  SELECT count(*),min(co.campus_id::text)::uuid
+    INTO placement_count,resolved_campus
+    FROM app_private.enrollments e
+    JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    WHERE e.student_id=p_student_id AND e.placement_kind='PRIMARY'
+      AND e.placement_state='ACTIVE'
+      AND e.effective_from<=pg_catalog.statement_timestamp()::date
+      AND (e.effective_until IS NULL OR
+           pg_catalog.statement_timestamp()::date<e.effective_until)
+      AND so.campus_id=co.campus_id;
+  -- No-placement ALL/schoolwide policy requires a distinct reviewed gate.
+  -- Do not guess an effective Campus or trust p_campus_hint.
+  IF placement_count<>1 OR resolved_campus IS NULL
+     OR (p_campus_hint IS NOT NULL AND p_campus_hint<>resolved_campus) THEN
+    RAISE EXCEPTION 'D1_TYPED_PREFLIGHT_PLACEMENT_OR_CAMPUS';
+  END IF;
+  SELECT s.* INTO target_row FROM app_private.students s
+    WHERE s.id=p_student_id FOR UPDATE;
+  IF NOT FOUND OR target_row.current_status IS DISTINCT FROM 'ACTIVE'
+     OR target_row.row_version IS DISTINCT FROM p_expected_version THEN
+    RAISE EXCEPTION 'D1_TYPED_PREFLIGHT_STALE';
+  END IF;
+  IF app_private.d1_profile_authorized(
+    actor,'student.profile.update','STUDENT',p_student_id,resolved_campus,NULL
+  ) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1_TYPED_PREFLIGHT_DENIED';
+  END IF;
+  SELECT * INTO selected_policy FROM app_private.d1_profile_policy(
+    'student.profile.update',resolved_campus);
+  IF selected_policy.policy_id IS NULL
+     OR selected_policy.route_mode IS DISTINCT FROM p_route
+     OR app_private.d1_p1_route('student.profile.update',resolved_campus)
+          IS DISTINCT FROM p_route THEN
+    RAISE EXCEPTION 'D1_TYPED_PREFLIGHT_ROUTE';
+  END IF;
+  original:=pg_catalog.jsonb_build_object(
+    'date_of_birth',target_row.date_of_birth,
+    'gender_code',target_row.gender_code,
+    'nationality_code',target_row.nationality_code,
+    'general_contact',target_row.general_contact,
+    'previous_school',target_row.previous_school,
+    'profile_photo_file_id',target_row.profile_photo_file_id);
+  plan:=app_private.d1_student_profile_typed_plan_trial(original,p_actions);
+  after_values:=plan->'after';
+  -- STAGED DENY: installed metadata alone cannot establish same-Student
+  -- business ownership or current subscription entitlement for photo SET.
+  IF (after_values->>'profile_photo_file_id') IS NOT NULL AND
+     (after_values->>'profile_photo_file_id')
+        IS DISTINCT FROM (original->>'profile_photo_file_id') THEN
+    RAISE EXCEPTION 'D1_TYPED_PREFLIGHT_PHOTO_ENTITLEMENT_PENDING';
+  END IF;
+  RETURN true;
+END
+$auth_preflight$;
+REVOKE ALL ON FUNCTION app.d1_student_profile_typed_preflight_trial(
+  uuid,uuid,bigint,jsonb,text,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_student_profile_typed_preflight_trial(
+  uuid,uuid,bigint,jsonb,text,text) TO authenticated;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app FROM schoolos_student_executor;
+RESET ROLE;

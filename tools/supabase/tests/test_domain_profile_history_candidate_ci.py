@@ -48,6 +48,39 @@ class StudentProfileHistoryCandidateTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     history.validate_typed_trial_source(bad, ROOT)
 
+    def test_authenticated_preflight_source_is_quarantined(self):
+        source=(ROOT/history.AUTH_PREFLIGHT).read_text(encoding="utf-8")
+        history.validate_typed_auth_preflight_source(source,ROOT)
+        self.assertIn("AUTH_PREFLIGHT",history.AUTH_PASS_MARKER)
+        self.assertIn("TYPED_AUTH_PREFLIGHT_REVOKED_GRANT_ACCEPTED",history.AUTH_TRIAL_CHECKS)
+        self.assertIn("TYPED_AUTH_PREFLIGHT_NOT_ROLLED_BACK",history.AUTH_CLEANUP)
+
+    def test_authenticated_preflight_refuses_unsafe_sql(self):
+        source=(ROOT/history.AUTH_PREFLIGHT).read_text(encoding="utf-8")
+        for changed in (
+            source+"\nCOMMIT;\n",
+            source.replace("FOR UPDATE;",";"),
+            source.replace("D1_TYPED_PREFLIGHT_DENIED","MISSING_AUTH_GUARD"),
+            source.replace("REVOKE CREATE ON SCHEMA app FROM schoolos_student_executor;",""),
+        ):
+            with self.assertRaises(RuntimeError):
+                history.validate_typed_auth_preflight_source(changed,ROOT)
+
+    def test_authenticated_preflight_baseline_injection_exact(self):
+        fixture=(ROOT/history.TYPED_FIXTURE).read_text(encoding="utf-8")
+        baseline=(ROOT/history.AUTH_BASELINE).read_text(encoding="utf-8")
+        sql=history.render_auth_trial_sql(
+            baseline, fixture,
+            (ROOT/history.CANDIDATE).read_text(encoding="utf-8"),
+            (ROOT/history.TYPED_TRIAL).read_text(encoding="utf-8"),
+            (ROOT/history.AUTH_PREFLIGHT).read_text(encoding="utf-8"),
+            history.AUTH_TRIAL_CHECKS)
+        self.assertEqual(sql.count("$typed_preflight_auth$"),2)
+        self.assertIn("SELECT * FROM finish();",sql)
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count("CREATE FUNCTION app.d1_student_profile_typed_preflight_trial"),1)
+        self.assertNotIn(r"\ir fixtures/command_actor.sql",sql)
+
     def test_local_runner_always_rolls_back(self):
         source=(ROOT / history.CANDIDATE).read_text(encoding="utf-8")
         self.assertIn("HISTORY_PRIVILEGE_LEAK",history.PROBE)
