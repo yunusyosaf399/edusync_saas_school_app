@@ -358,7 +358,8 @@ APPROVAL_INSERT_ANCHOR = (
   " 'b1000000-0000-4000-8000-000000000001',NULL,NULL,NULL,NULL,NULL,\n"
   " 'Candidate P1 Approved School',NULL,:'initial_target_version'::bigint,\n"
   " 'Review previous-school data','p1-profile-submit-one'\n"
-  ") \\gset req_"
+  ") \\gset req_\n"
+  "SELECT is(:\x27req_request_version\x27"
 )
 
 APPROVAL_CLEANUP = """
