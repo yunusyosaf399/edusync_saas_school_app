@@ -149,7 +149,8 @@ DECLARE
   recorded app_private.student_profile_approval_intent_seals%ROWTYPE;
   campus uuid;
   placement_count bigint;
-  student_record app_private.students%ROWTYPE;
+  target_version bigint;
+  target_state text;
   policy record;
   request_row record;
   receipt_id uuid;
@@ -208,9 +209,11 @@ BEGIN
      (p_campus_id IS NOT NULL AND p_campus_id<>campus) THEN
     RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_CONTEXT_DENIED';
   END IF;
-  SELECT x.* INTO student_record FROM app_private.students x
-    WHERE x.id=p_student_id FOR UPDATE;
-  IF NOT FOUND OR student_record.current_status IS DISTINCT FROM 'ACTIVE'
+  -- Workflow has only purpose-scoped SELECT columns; target locking and
+  -- version enforcement are delegated to the existing Student executor.
+  SELECT x.row_version,x.current_status INTO target_version,target_state
+    FROM app_private.students x WHERE x.id=p_student_id;
+  IF NOT FOUND OR target_state IS DISTINCT FROM 'ACTIVE'
     THEN RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_STUDENT_UNAVAILABLE'; END IF;
   IF app_private.d1_profile_authorized(
     actor,'student.profile.update','STUDENT',p_student_id,campus,NULL)
@@ -261,7 +264,7 @@ BEGIN
   IF legacy_count<>0 THEN
     RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_UNSEALED_KEY';
   END IF;
-  IF student_record.row_version IS DISTINCT FROM p_expected_version THEN
+  IF target_version IS DISTINCT FROM p_expected_version THEN
     RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_STALE';
   END IF;
   after_profile:=app_private.d1_student_profile_typed_approval_resolve_trial(
