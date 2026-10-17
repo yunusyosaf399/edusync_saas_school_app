@@ -106,5 +106,49 @@ class StudentPortraitContentValidatorTests(unittest.TestCase):
         self.assertNotEqual(result.sha256, hashlib.sha256(b"client says OK").digest())
 
 
+    def test_jpeg_exif_orientation_and_private_text_removed(self):
+        # EXIF orientation must be applied to pixels, never copied to storage.
+        photo = Image.new("RGB", (13, 7), (200, 10, 50))
+        exif = Image.Exif()
+        exif[274] = 6  # 90-degree orientation in untrusted source metadata.
+        exif[270] = "private parent data"
+        source = BytesIO()
+        photo.save(source, format="JPEG", exif=exif)
+        raw = source.getvalue()
+        self.assertIn(b"private parent data", raw)
+        result = validate_student_photo_content(raw, "image/jpeg")
+        self.assertEqual((result.pixel_width, result.pixel_height), (7, 13))
+        self.assertNotIn(b"private parent data", result.stored_bytes)
+        self.assertEqual(result.sha256, hashlib.sha256(result.stored_bytes).digest())
+        with Image.open(BytesIO(result.stored_bytes)) as clean:
+            clean.load()
+            self.assertEqual(clean.size, (7, 13))
+            self.assertIsNone(clean.getexif().get(274))
+            self.assertIsNone(clean.getexif().get(270))
+
+    def test_png_alpha_survives_metadata_free_sanitization(self):
+        source = BytesIO()
+        Image.new("RGBA", (10, 12), (10, 20, 30, 73)).save(
+            source, format="PNG"
+        )
+        result = validate_student_photo_content(source.getvalue(), "image/png")
+        self.assertEqual((result.pixel_width, result.pixel_height), (10, 12))
+        with Image.open(BytesIO(result.stored_bytes)) as clean:
+            clean.load()
+            self.assertEqual(clean.mode, "RGBA")
+            self.assertEqual(clean.getpixel((0, 0)), (10, 20, 30, 73))
+
+    def test_small_compressed_png_over_provisional_pixel_limit_denied(self):
+        # Small compressed upload bytes do not imply a safe decoded allocation.
+        source = BytesIO()
+        Image.new("RGB", (2001, 2000), (0, 0, 0)).save(
+            source, format="PNG", optimize=True
+        )
+        raw = source.getvalue()
+        self.assertLess(len(raw), LIMIT_BYTES)
+        with self.assertRaisesRegex(PhotoValidationDenied, "PHOTO_PIXEL_RESOURCE_CEILING"):
+            validate_student_photo_content(raw, "image/png")
+
+
 if __name__ == "__main__":
     unittest.main()
