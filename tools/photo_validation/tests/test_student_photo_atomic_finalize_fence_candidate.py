@@ -50,13 +50,15 @@ def signed(key, *, revision=7, enabled=True, state="ACTIVE"):
 
 
 def _spawned_operation(path, pubkey, action, envelope, locked_event,
-                       release_event, results):
+                       release_event, results, start_event=None):
     # Module-scope entry point guarantees a genuinely separate spawned process.
     try:
         store = LocalPhotoAtomicFinalizeTrial(
             path, pinned_issuer=ISSUER,
             pinned_public_keys={"trial-key": pubkey})
         results.put(("STARTED", action))
+        if start_event is not None and not start_event.wait(timeout=8):
+            raise RuntimeError("contender start interlock timed out")
 
         def hold():
             if locked_event is not None:
@@ -181,7 +183,7 @@ class StudentPhotoLocalAtomicFinalizeTests(unittest.TestCase):
         self.assertEqual(self.state()[1], [])
         self.store.accept_signed_revision_trial(
             signed(self.private, revision=8),
-            school=SCHOOL, project=PROJECT, now_epoch=150)
+            school=SCHOOL, project=PROJECT, now_epoch=152)
         self.assertEqual(self.finalize(store=self.new_store()), 8)
 
     def race(self, holder_action, challenger_action):
@@ -189,6 +191,7 @@ class StudentPhotoLocalAtomicFinalizeTests(unittest.TestCase):
         ready = ctx.Event()
         release = ctx.Event()
         qa, qb = ctx.Queue(), ctx.Queue()
+        contender_go = ctx.Event()
         revoked = signed(self.private, revision=8, enabled=False)
         holder = ctx.Process(
             target=_spawned_operation, args=(
@@ -198,19 +201,23 @@ class StudentPhotoLocalAtomicFinalizeTests(unittest.TestCase):
         contender = ctx.Process(
             target=_spawned_operation, args=(
                 self.path, self.public, challenger_action, revoked,
-                None, None, qb,
+                None, None, qb, contender_go,
             ))
+        # Initialize both separate process instances BEFORE holding the write
+        # lock; their constructor's schema checks must not fake lock evidence.
+        contender.start()
+        self.assertEqual(qb.get(timeout=6)[0], "STARTED")
         holder.start()
         try:
             self.assertEqual(qa.get(timeout=6)[0], "STARTED")
             self.assertTrue(ready.wait(timeout=6), "holder never acquired SQLite write lock")
-            contender.start()
-            self.assertEqual(qb.get(timeout=6)[0], "STARTED")
+            contender_go.set()
             # Contender has started but cannot finish while the other process
             # owns BEGIN IMMEDIATE. This is local-file lock evidence only.
             with self.assertRaises(Empty):
                 qb.get(timeout=0.35)
         finally:
+            contender_go.set()
             release.set()
         try:
             one = qa.get(timeout=6)
