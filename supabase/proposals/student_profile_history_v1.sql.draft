@@ -1,0 +1,89 @@
+-- STUDENT_PROFILE_HISTORY_POST_D1_REVIEW_ONLY
+-- Not part of frozen Migration 10. Only run inside local BEGIN/ROLLBACK
+-- after the complete D1 draft was installed on disposable PostgreSQL.
+SET ROLE schoolos_schema_owner;
+
+CREATE TABLE app_private.student_profile_revisions (
+  id uuid NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
+  student_id uuid NOT NULL,
+  old_row_version bigint NOT NULL,
+  new_row_version bigint NOT NULL,
+  command_receipt_id uuid NOT NULL,
+  approval_request_id uuid,
+  applied_by_principal_id uuid NOT NULL,
+  applied_actor_kind text NOT NULL DEFAULT 'INDIVIDUAL',
+  private_reason text NOT NULL,
+  occurred_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  old_date_of_birth date,
+  new_date_of_birth date,
+  old_gender_code text,
+  new_gender_code text,
+  old_nationality_code text,
+  new_nationality_code text,
+  old_general_contact text,
+  new_general_contact text,
+  old_previous_school text,
+  new_previous_school text,
+  old_profile_photo_file_id uuid,
+  new_profile_photo_file_id uuid,
+  CONSTRAINT sprev_pk PRIMARY KEY (id),
+  CONSTRAINT sprev_student_new_version_unique UNIQUE (student_id,new_row_version),
+  CONSTRAINT sprev_receipt_unique UNIQUE (command_receipt_id),
+  CONSTRAINT sprev_valid_versions CHECK (
+    old_row_version > 0 AND new_row_version = old_row_version + 1
+  ),
+  CONSTRAINT sprev_individual_actor CHECK (applied_actor_kind = 'INDIVIDUAL'),
+  CONSTRAINT sprev_nonblank_reason CHECK (
+    pg_catalog.length(pg_catalog.btrim(private_reason)) > 0
+  ),
+  CONSTRAINT sprev_has_actual_value_change CHECK (
+    old_date_of_birth IS DISTINCT FROM new_date_of_birth
+    OR old_gender_code IS DISTINCT FROM new_gender_code
+    OR old_nationality_code IS DISTINCT FROM new_nationality_code
+    OR old_general_contact IS DISTINCT FROM new_general_contact
+    OR old_previous_school IS DISTINCT FROM new_previous_school
+    OR old_profile_photo_file_id IS DISTINCT FROM new_profile_photo_file_id
+  ),
+  CONSTRAINT sprev_student_fk FOREIGN KEY (student_id)
+    REFERENCES app_private.students (id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT sprev_receipt_fk FOREIGN KEY (command_receipt_id)
+    REFERENCES app_private.command_receipts (id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT sprev_request_fk FOREIGN KEY (approval_request_id)
+    REFERENCES app_private.approval_requests (id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT sprev_actor_fk FOREIGN KEY (applied_by_principal_id,applied_actor_kind)
+    REFERENCES app_private.principals (id,kind) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT sprev_old_photo_fk FOREIGN KEY (old_profile_photo_file_id)
+    REFERENCES app_private.file_objects (id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT sprev_new_photo_fk FOREIGN KEY (new_profile_photo_file_id)
+    REFERENCES app_private.file_objects (id) ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+
+CREATE FUNCTION app_private.d1_student_profile_revision_immutable()
+RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path = pg_catalog, pg_temp AS $sprev_immutable$
+BEGIN
+  RAISE EXCEPTION 'Student Profile revision records are immutable'
+    USING ERRCODE = '23514';
+END
+$sprev_immutable$;
+REVOKE ALL ON FUNCTION app_private.d1_student_profile_revision_immutable()
+  FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER student_profile_revisions_immutable
+BEFORE UPDATE OR DELETE ON app_private.student_profile_revisions
+FOR EACH ROW EXECUTE FUNCTION app_private.d1_student_profile_revision_immutable();
+
+CREATE INDEX sprev_student_chronology_idx
+  ON app_private.student_profile_revisions
+    (student_id,new_row_version DESC,occurred_at DESC);
+ALTER TABLE app_private.student_profile_revisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.student_profile_revisions FORCE ROW LEVEL SECURITY;
+CREATE POLICY sprev_schema_maintenance ON app_private.student_profile_revisions
+  FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+REVOKE ALL ON TABLE app_private.student_profile_revisions
+  FROM PUBLIC,anon,authenticated,service_role,
+       schoolos_student_executor,schoolos_workflow_executor,
+       schoolos_read_executor,schoolos_authz_reader;
+COMMENT ON TABLE app_private.student_profile_revisions IS
+  'REVIEW-ONLY post-D1 proposal; no deployment installer or runtime read/write authority';
+RESET ROLE;
