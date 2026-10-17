@@ -1,6 +1,6 @@
 # ADR-005 — Restricted retained Student PROFILE value history
 
-Date: 2026-10-17  
+Date: 2026-10-17
 Status: **BUSINESS REQUIREMENT APPROVED (SP-08 B); PHYSICAL SQL/DEPLOYMENT NOT YET AUTHORIZED**
 
 ## Context
