@@ -6,6 +6,9 @@ from domain_draft_guard import ROOT, discover_drafts
 CANDIDATE = Path("supabase/proposals/student_profile_history_v1.sql.draft")
 PASS_MARKER = "D1_STUDENT_PROFILE_HISTORY_CANDIDATE_PASS"
 TYPED_TRIAL = Path("supabase/proposals/student_profile_typed_atomic_trial.sql.draft")
+AUTH_PREFLIGHT = Path("supabase/proposals/student_profile_typed_auth_preflight_trial.sql.draft")
+AUTH_BASELINE = Path("supabase/tests/domain/66_student_profile_p1_direct_history_authorization.sql")
+AUTH_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_AUTH_PREFLIGHT_PASS"
 TRIAL_SQL = "-- Typed six-field plan and truly atomic Student row + restricted revision smoke.\n-- This is a separate transaction savepoint inside the outer rollback test.\n\\ir fixtures/command_actor.sql\nSET ROLE schoolos_schema_owner;\nINSERT INTO app_private.students (\n  id,person_id,school_student_id,admission_number,admission_serial,\n  admitted_on,current_status,date_of_birth,gender_code,previous_school,\n  general_contact,created_by\n) VALUES (\n  'c1000000-0000-4000-8000-000000000001',\n  '10000000-0000-4000-8000-000000000001',\n  'TRIAL-STUDENT-1','TRIAL-ADM-1',98766,CURRENT_DATE-20,'ACTIVE',\n  NULL,'F','Old School','1234','11111111-1111-4111-8111-111111111111'\n);\nINSERT INTO app_private.student_status_transitions(\n  id,student_id,previous_status,new_status,effective_on,\n  sequence_number,reason,created_by\n) VALUES (\n  'c1000000-0000-4000-8000-000000000002',\n  'c1000000-0000-4000-8000-000000000001',\n  NULL,'ACTIVE',CURRENT_DATE-20,1,'Trial initial ACTIVE',\n  '11111111-1111-4111-8111-111111111111'\n);\nUPDATE app_private.operation_contracts SET enabled=true\n WHERE code='student.profile.update';\nINSERT INTO app_private.command_receipts(\n  id,principal_id,operation_id,command_kind,idempotency_key,\n  canonical_payload_hash,expected_target_version,state,\n  result_kind,result_ref,result_summary,completed_at,created_by\n) SELECT\n  'c1000000-0000-4000-8000-000000000003',\n  '55555555-5555-4555-8555-555555555555',\n  o.id,'student.profile.update','trial-typed-once',\n  pg_catalog.decode(pg_catalog.repeat('ac',32),'hex'),\n  1,'SUCCEEDED','D1_STUDENT_PROFILE',\n  'c1000000-0000-4000-8000-000000000001',\n  '{\"row_version\":2}'::jsonb,pg_catalog.clock_timestamp(),\n  '55555555-5555-4555-8555-555555555555'\nFROM app_private.operation_contracts o WHERE o.code='student.profile.update';\n\nDO $typed_trial_smoke$\nDECLARE\n  six_before jsonb:='{\"date_of_birth\":null,\"gender_code\":\"F\",\"nationality_code\":null,\"general_contact\":\"1234\",\"previous_school\":\"Old School\",\"profile_photo_file_id\":null}'::jsonb;\n  school jsonb:='{\"date_of_birth\":{\"action\":\"UNCHANGED\"},\"gender_code\":{\"action\":\"UNCHANGED\"},\"nationality_code\":{\"action\":\"UNCHANGED\"},\"general_contact\":{\"action\":\"UNCHANGED\"},\"previous_school\":{\"action\":\"SET\",\"value\":\"  Other School  \"},\"profile_photo_file_id\":{\"action\":\"UNCHANGED\"}}'::jsonb;\n  clear_contact jsonb:='{\"date_of_birth\":{\"action\":\"UNCHANGED\"},\"gender_code\":{\"action\":\"UNCHANGED\"},\"nationality_code\":{\"action\":\"UNCHANGED\"},\"general_contact\":{\"action\":\"CLEAR\"},\"previous_school\":{\"action\":\"UNCHANGED\"},\"profile_photo_file_id\":{\"action\":\"UNCHANGED\"}}'::jsonb;\n  unchanged jsonb:='{\"date_of_birth\":{\"action\":\"UNCHANGED\"},\"gender_code\":{\"action\":\"UNCHANGED\"},\"nationality_code\":{\"action\":\"UNCHANGED\"},\"general_contact\":{\"action\":\"UNCHANGED\"},\"previous_school\":{\"action\":\"UNCHANGED\"},\"profile_photo_file_id\":{\"action\":\"UNCHANGED\"}}'::jsonb;\n  projected jsonb;\n  observed bigint;\nBEGIN\n  projected:=app_private.d1_student_profile_typed_plan_trial(six_before,school);\n  IF projected->'after'->>'previous_school' <> 'Other School'\n     OR projected->'after'->>'general_contact' <> '1234'\n     OR projected->'after'->>'gender_code' <> 'F'\n     OR projected->'canonical_actions'->'previous_school'->>'value' <> 'Other School' THEN\n    RAISE EXCEPTION 'TYPED_TRIAL_UNCHANGED_OR_NORMALIZATION_FAILED';\n  END IF;\n  projected:=app_private.d1_student_profile_typed_plan_trial(six_before,clear_contact);\n  IF projected->'after'->'general_contact' <> 'null'::jsonb\n     OR projected->'after'->>'previous_school' <> 'Old School' THEN\n    RAISE EXCEPTION 'TYPED_TRIAL_CLEAR_VS_UNCHANGED_FAILED';\n  END IF;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_plan_trial(six_before,unchanged);\n    RAISE EXCEPTION 'TYPED_TRIAL_NO_OP_NOT_REJECTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_NO_OP%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_plan_trial(\n      six_before,school||'{\"person_id\":{\"action\":\"CLEAR\"}}'::jsonb);\n    RAISE EXCEPTION 'TYPED_TRIAL_UNKNOWN_FIELD_NOT_REJECTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_FIELD_ALLOWLIST%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_plan_trial(\n      six_before,jsonb_set(school,'{previous_school}',\n        '{\"action\":\"SET\",\"value\":null}'::jsonb));\n    RAISE EXCEPTION 'TYPED_TRIAL_SET_NULL_NOT_REJECTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_SET_VALUE_REQUIRED%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_plan_trial(\n      six_before,jsonb_set(school,'{previous_school}',\n        '{\"action\":\"SET\",\"value\":\"  \"}'::jsonb));\n    RAISE EXCEPTION 'TYPED_TRIAL_SET_BLANK_NOT_REJECTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_SET_BLANK%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_plan_trial(\n      six_before,jsonb_set(school,'{date_of_birth}',\n        '{\"action\":\"SET\",\"value\":\"2023-02-31\"}'::jsonb));\n    RAISE EXCEPTION 'TYPED_TRIAL_INVALID_DATE_NOT_REJECTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_DATE_INVALID%' THEN RAISE; END IF;\n  END;\n  observed:=app_private.d1_student_profile_typed_write_trial(\n    'c1000000-0000-4000-8000-000000000001',1,school,\n    'Trial change to previous school','55555555-5555-4555-8555-555555555555',\n    'c1000000-0000-4000-8000-000000000003',NULL);\n  IF observed<>2 OR NOT EXISTS (\n    SELECT 1 FROM app_private.students s\n    WHERE s.id='c1000000-0000-4000-8000-000000000001'\n      AND s.row_version=2 AND s.previous_school='Other School'\n      AND s.general_contact='1234' AND s.gender_code='F'\n  ) OR NOT EXISTS (\n    SELECT 1 FROM app_private.student_profile_revisions r\n    WHERE r.student_id='c1000000-0000-4000-8000-000000000001'\n      AND r.old_row_version=1 AND r.new_row_version=2\n      AND r.old_previous_school='Old School'\n      AND r.new_previous_school='Other School'\n      AND r.old_general_contact='1234'\n      AND r.new_general_contact='1234'\n      AND r.private_reason='Trial change to previous school'\n  ) THEN\n    RAISE EXCEPTION 'TYPED_TRIAL_ATOMIC_HISTORY_FAILED';\n  END IF;\n  BEGIN\n    PERFORM app_private.d1_student_profile_typed_write_trial(\n      'c1000000-0000-4000-8000-000000000001',1,school,\n      'Trial replay','55555555-5555-4555-8555-555555555555',\n      'c1000000-0000-4000-8000-000000000003',NULL);\n    RAISE EXCEPTION 'TYPED_TRIAL_STALE_REPLAY_MUTATED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_STALE_OR_ABSENT%' THEN RAISE; END IF;\n  END;\n  IF (SELECT count(*) FROM app_private.student_profile_revisions)<>1 THEN\n    RAISE EXCEPTION 'TYPED_TRIAL_REPLAY_INSERTED_EXTRA_HISTORY';\n  END IF;\nEND\n$typed_trial_smoke$;\nRESET ROLE;\n"
 TYPED_FIXTURE = Path("supabase/tests/domain/fixtures/command_actor.sql")
 TYPED_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_ATOMIC_TRIAL_PASS"
@@ -151,6 +154,95 @@ END
 $trial_cleanup$;
 """
 
+
+def validate_typed_auth_preflight_source(source: str, root: Path = ROOT) -> None:
+    if not source.startswith("-- STUDENT_PROFILE_TYPED_AUTH_PREFLIGHT_TRIAL_ONLY\n"):
+        raise RuntimeError("TYPED_AUTH_PREFLIGHT_QUARANTINE")
+    if "\r" in source or "\x00" in source or not source.endswith("\n"):
+        raise RuntimeError("TYPED_AUTH_PREFLIGHT_ENCODING")
+    for required in (
+        "CREATE FUNCTION app.d1_student_profile_typed_preflight_trial(",
+        "SET ROLE schoolos_student_executor;",
+        "SECURITY DEFINER",
+        "app_private.d1_student_profile_typed_plan_trial(original,p_actions)",
+        "app_private.d1_profile_authorized(",
+        "app_private.d1_profile_policy(",
+        "app_private.d1_lock_current_principal(actor)",
+        "pg_catalog.pg_advisory_xact_lock_shared(71001,1)",
+        "FOR UPDATE;",
+        "D1_TYPED_PREFLIGHT_DENIED",
+        "D1_TYPED_PREFLIGHT_PLACEMENT_OR_CAMPUS",
+        "D1_TYPED_PREFLIGHT_PHOTO_ENTITLEMENT_PENDING",
+        "REVOKE CREATE ON SCHEMA app FROM schoolos_student_executor;",
+    ):
+        if required not in source:
+            raise RuntimeError("TYPED_AUTH_PREFLIGHT_REQUIRED "+required)
+    for disallowed in (
+        "\nCOMMIT;","\nBEGIN;",
+        "CREATE TABLE ","DROP TABLE ","UPDATE APP_PRIVATE.STUDENTS ",
+        "INSERT INTO APP_PRIVATE.STUDENTS ", "ALTER TABLE APP_PRIVATE.STUDENTS ",
+        "GRANT SELECT ON TABLE APP_PRIVATE.STUDENT_PROFILE_REVISIONS",
+        "GRANT INSERT ON TABLE APP_PRIVATE.STUDENT_PROFILE_REVISIONS",
+        "SET ROLE POSTGRES;",
+    ):
+        if disallowed in source.upper():
+            raise RuntimeError("TYPED_AUTH_PREFLIGHT_UNSAFE_SQL "+disallowed.strip())
+    if AUTH_PREFLIGHT.parts[1]!="proposals" or any(
+      item.name==AUTH_PREFLIGHT.name for item in discover_drafts(root)
+    ):
+        raise RuntimeError("TYPED_AUTH_PREFLIGHT_ACTIVE_MIGRATION")
+
+AUTH_INSERT_ANCHOR = (
+  "SELECT * FROM app.d1_change_student_profile(\n"
+  " 'b1000000-0000-4000-8000-000000000001',NULL,NULL,NULL,NULL,NULL,\n"
+  " 'Old Academy',NULL,:'start_expected_version'::bigint,\n"
+  " 'student-profile-success-one'"
+)
+
+def render_auth_trial_sql(source66: str, fixture: str, history: str,
+                          typed: str, auth: str, checks: str) -> str:
+    if source66.count("BEGIN;\n") != 1 or not source66.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("TYPED_AUTH_BASELINE_BOUNDARY")
+    if source66.count(r"\ir fixtures/command_actor.sql")!=1:
+        raise RuntimeError("TYPED_AUTH_FIXTURE_BOUNDARY")
+    if source66.count(AUTH_INSERT_ANCHOR)!=1:
+        raise RuntimeError("TYPED_AUTH_ANCHOR_MISMATCH")
+    baseline=source66.replace(r"\ir fixtures/command_actor.sql",fixture)
+    baseline=baseline.replace("BEGIN;\n",
+      "BEGIN;\n"+history+"\n"+typed+"\n"+auth+"\n",1)
+    baseline=baseline.replace(AUTH_INSERT_ANCHOR,
+      checks+"\n"+AUTH_INSERT_ANCHOR,1)
+    if r"\ir " in baseline:
+        raise RuntimeError("TYPED_AUTH_UNRESOLVED_INCLUDE")
+    return baseline
+
+AUTH_TRIAL_CHECKS = "\n-- Added inside the existing 66-suite rollback transaction, just before\n-- its first authenticated DIRECT success, with real placement, grant and P1 policy.\nSELECT pg_catalog.set_config('schoolos_test.typed_preflight_expected',\n  :'start_expected_version',true);\nDO $typed_preflight_auth$\nDECLARE\n  v bigint:=current_setting('schoolos_test.typed_preflight_expected')::bigint;\n  student uuid:='b1000000-0000-4000-8000-000000000001';\n  actions jsonb:='{\"date_of_birth\":{\"action\":\"UNCHANGED\"},\"gender_code\":{\"action\":\"UNCHANGED\"},\"nationality_code\":{\"action\":\"UNCHANGED\"},\"general_contact\":{\"action\":\"UNCHANGED\"},\"previous_school\":{\"action\":\"SET\",\"value\":\"  Other Academy  \"},\"profile_photo_file_id\":{\"action\":\"UNCHANGED\"}}'::jsonb;\nBEGIN\n  IF app.d1_student_profile_typed_preflight_trial(student,NULL,v,actions,\n     'Private academic record correction','DIRECT') IS DISTINCT FROM true THEN\n    RAISE EXCEPTION 'TYPED_AUTH_PREFLIGHT_VALID_DIRECT_DENIED';\n  END IF;\n  BEGIN\n    PERFORM app.d1_student_profile_typed_preflight_trial(\n      student,'e9000000-0000-4000-8000-000000000099',v,actions,'reason','DIRECT');\n    RAISE EXCEPTION 'TYPED_AUTH_PREFLIGHT_WRONG_CAMPUS_ACCEPTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PREFLIGHT_PLACEMENT_OR_CAMPUS%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app.d1_student_profile_typed_preflight_trial(\n      student,NULL,v+1,actions,'reason','DIRECT');\n    RAISE EXCEPTION 'TYPED_AUTH_PREFLIGHT_STALE_ACCEPTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PREFLIGHT_STALE%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app.d1_student_profile_typed_preflight_trial(\n      student,NULL,v,actions,'reason','APPROVAL');\n    RAISE EXCEPTION 'TYPED_AUTH_PREFLIGHT_WRONG_ROUTE_ACCEPTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PREFLIGHT_ROUTE%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app.d1_student_profile_typed_preflight_trial(\n      'b1000000-0000-4000-8000-000000000099',NULL,v,actions,'reason','DIRECT');\n    RAISE EXCEPTION 'TYPED_AUTH_PREFLIGHT_MISSING_STUDENT_ACCEPTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PREFLIGHT_PLACEMENT_OR_CAMPUS%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app.d1_student_profile_typed_preflight_trial(\n      student,NULL,v,\n      pg_catalog.jsonb_set(actions,'{previous_school}','{\"action\":\"UNCHANGED\"}'),\n      'reason','DIRECT');\n    RAISE EXCEPTION 'TYPED_AUTH_PREFLIGHT_NOOP_ACCEPTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PROFILE_NO_OP%' THEN RAISE; END IF;\n  END;\n  BEGIN\n    PERFORM app.d1_student_profile_typed_preflight_trial(\n      student,NULL,v,\n      pg_catalog.jsonb_set(actions,'{profile_photo_file_id}',\n        '{\"action\":\"SET\",\"value\":\"e9000000-0000-4000-8000-000000000010\"}'),\n      'reason','DIRECT');\n    RAISE EXCEPTION 'TYPED_AUTH_PREFLIGHT_UNVERIFIED_PHOTO_ACCEPTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PREFLIGHT_PHOTO_ENTITLEMENT_PENDING%' THEN RAISE; END IF;\n  END;\nEND\n$typed_preflight_auth$;\nRESET ROLE;\nSAVEPOINT typed_preflight_revocation_probe;\nSET ROLE schoolos_schema_owner;\nUPDATE app_private.assignment_permission_scopes\n  SET revoked_at=pg_catalog.clock_timestamp()\n  WHERE id='b6000000-0000-4000-8000-000000000012';\nSET ROLE authenticated;\nDO $typed_preflight_revoked$\nDECLARE\n  v bigint:=current_setting('schoolos_test.typed_preflight_expected')::bigint;\n  actions jsonb:='{\"date_of_birth\":{\"action\":\"UNCHANGED\"},\"gender_code\":{\"action\":\"UNCHANGED\"},\"nationality_code\":{\"action\":\"UNCHANGED\"},\"general_contact\":{\"action\":\"UNCHANGED\"},\"previous_school\":{\"action\":\"SET\",\"value\":\"Other Academy\"},\"profile_photo_file_id\":{\"action\":\"UNCHANGED\"}}'::jsonb;\nBEGIN\n  BEGIN\n    PERFORM app.d1_student_profile_typed_preflight_trial(\n      'b1000000-0000-4000-8000-000000000001',NULL,v,actions,'reason','DIRECT');\n    RAISE EXCEPTION 'TYPED_AUTH_PREFLIGHT_REVOKED_GRANT_ACCEPTED';\n  EXCEPTION WHEN OTHERS THEN\n    IF SQLERRM NOT LIKE 'D1_TYPED_PREFLIGHT_DENIED%' THEN RAISE; END IF;\n  END;\nEND\n$typed_preflight_revoked$;\nRESET ROLE;\nROLLBACK TO SAVEPOINT typed_preflight_revocation_probe;\nSET ROLE authenticated;\n"
+
+AUTH_CLEANUP = """
+DO $cleanup$
+BEGIN
+  IF pg_catalog.to_regprocedure('app.d1_student_profile_typed_preflight_trial(uuid,uuid,bigint,jsonb,text,text)') IS NOT NULL
+    OR pg_catalog.to_regclass('app_private.student_profile_revisions') IS NOT NULL THEN
+    RAISE EXCEPTION 'TYPED_AUTH_PREFLIGHT_NOT_ROLLED_BACK';
+  END IF;
+END
+$cleanup$;
+"""
+
+def run_typed_authenticated_preflight(container: str, run_psql,
+      history: str, typed: str, root: Path = ROOT) -> None:
+    auth=(Path(root)/AUTH_PREFLIGHT).read_text(encoding="utf-8")
+    validate_typed_auth_preflight_source(auth,root)
+    src=(Path(root)/AUTH_BASELINE).read_text(encoding="utf-8")
+    fixture=(Path(root)/TYPED_FIXTURE).read_text(encoding="utf-8")
+    prepared=render_auth_trial_sql(src,fixture,history,typed,auth,AUTH_TRIAL_CHECKS)
+    if container!="supabase_db_saas_OS_school_app":
+        raise RuntimeError("TYPED_AUTH_PREFLIGHT_LOCAL_CONTAINER_ONLY")
+    run_psql(container,prepared,"D1_STUDENT_PROFILE_TYPED_AUTH_PREFLIGHT",timeout=300)
+    run_psql(container,AUTH_CLEANUP,"D1_STUDENT_PROFILE_TYPED_AUTH_PREFLIGHT_CLEANUP",timeout=45)
+    print(AUTH_PASS_MARKER+" authenticated DIRECT scope/P1/preflight+revocation, rollback-only")
+
+
 def run_history_candidate(container: str, run_psql, root: Path = ROOT) -> None:
     source = (Path(root) / CANDIDATE).read_text(encoding="utf-8")
     validate_candidate_source(source, root)
@@ -169,5 +261,6 @@ def run_history_candidate(container: str, run_psql, root: Path = ROOT) -> None:
     run_psql(container, CLEANUP_PROBE,
         "D1_STUDENT_PROFILE_HISTORY_ROLLBACK_PROOF", timeout=45)
     run_psql(container, TYPED_CLEANUP, "D1_STUDENT_PROFILE_TYPED_ATOMIC_TRIAL_CLEANUP", timeout=45)
+    run_typed_authenticated_preflight(container, run_psql, source, typed, root)
     print(PASS_MARKER + " rollback-only DDL/RLS/ACL/check/FK smoke")
     print(TYPED_PASS_MARKER + " normalized fixed-six-field plan, row/revision atomic trial, rollback cleanup")
