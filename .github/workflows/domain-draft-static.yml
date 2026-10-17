@@ -10,6 +10,7 @@ on:
       # Business acceptance additions must have the same exact-head static audit.
       - 'supabase/tests/domain/**'
       - 'supabase/proposals/**'
+      - 'tools/photo_validation/**'
       - 'tools/supabase/domain_business_ci.py'
       - 'tools/supabase/tests/test_domain_acceptance_ci.py'
       - 'supabase/config/**'
@@ -29,6 +30,7 @@ on:
       # Business acceptance additions must have the same exact-head static audit.
       - 'supabase/tests/domain/**'
       - 'supabase/proposals/**'
+      - 'tools/photo_validation/**'
       - 'tools/supabase/domain_business_ci.py'
       - 'tools/supabase/tests/test_domain_acceptance_ci.py'
       - 'supabase/config/**'
