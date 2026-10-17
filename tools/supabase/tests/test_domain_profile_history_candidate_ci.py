@@ -52,7 +52,7 @@ class StudentProfileHistoryCandidateTests(unittest.TestCase):
         source=(ROOT/history.AUTH_PREFLIGHT).read_text(encoding="utf-8")
         history.validate_typed_auth_preflight_source(source,ROOT)
         self.assertIn("AUTH_PREFLIGHT",history.AUTH_PASS_MARKER)
-        self.assertIn("D1_TYPED_PREFLIGHT_REVOKED_GRANT_ACCEPTED",history.AUTH_TRIAL_CHECKS)
+        self.assertIn("TYPED_AUTH_PREFLIGHT_REVOKED_GRANT_ACCEPTED",history.AUTH_TRIAL_CHECKS)
         self.assertIn("TYPED_AUTH_PREFLIGHT_NOT_ROLLED_BACK",history.AUTH_CLEANUP)
 
     def test_authenticated_preflight_refuses_unsafe_sql(self):

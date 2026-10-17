@@ -196,7 +196,8 @@ AUTH_INSERT_ANCHOR = (
   "SELECT * FROM app.d1_change_student_profile(\n"
   " 'b1000000-0000-4000-8000-000000000001',NULL,NULL,NULL,NULL,NULL,\n"
   " 'Old Academy',NULL,:'start_expected_version'::bigint,\n"
-  " 'student-profile-success-one'"
+  " 'student-profile-success-one'\n"
+  ") \\gset profile_one_"
 )
 
 def render_auth_trial_sql(source66: str, fixture: str, history: str,
