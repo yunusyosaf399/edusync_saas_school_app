@@ -118,6 +118,45 @@ class StudentProfileHistoryCandidateTests(unittest.TestCase):
         self.assertIn("ROLLBACK TO SAVEPOINT typed_direct_trial_boundary;",src)
         self.assertEqual(src.count("CREATE FUNCTION app.d1_student_profile_typed_direct_trial("),1)
 
+    def test_approval_is_quarantined_and_uses_existing_review_engine(self):
+        source=(ROOT/history.APPROVAL_TRIAL).read_text(encoding="utf-8")
+        history.validate_typed_approval_source(source,ROOT)
+        self.assertIn("app_private.d1_profile_submit(",source)
+        self.assertIn("app.d1_apply_profile_request(",source)
+        self.assertIn("D1_TYPED_APPROVAL_POSTIMAGE_MISMATCH",source)
+        self.assertNotIn("CREATE FUNCTION app.d1_review_profile_request(",source)
+        self.assertEqual(history.APPROVAL_TRIAL.parts[1],"proposals")
+
+    def test_approval_source_guard_rejects_unsafe_variants(self):
+        source=(ROOT/history.APPROVAL_TRIAL).read_text(encoding="utf-8")
+        for candidate in (
+            source+"\nCOMMIT;\n",
+            source.replace("D1_TYPED_APPROVAL_POSTIMAGE_MISMATCH","DISABLED_POST_CHECK"),
+            source.replace("app.d1_apply_profile_request(","unsafe_apply("),
+            source.replace("REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;",""),
+            source.replace("FOR UPDATE;",";"),
+        ):
+            with self.subTest(suffix=candidate[-35:]):
+                with self.assertRaises(RuntimeError):
+                    history.validate_typed_approval_source(candidate,ROOT)
+
+    def test_approval_injection_preserves_original_p1_fixture_and_rollback(self):
+        source=history.render_approval_trial(
+            (ROOT/history.APPROVAL_BASELINE).read_text(encoding="utf-8"),
+            (ROOT/history.TYPED_FIXTURE).read_text(encoding="utf-8"),
+            (ROOT/history.CANDIDATE).read_text(encoding="utf-8"),
+            (ROOT/history.TYPED_TRIAL).read_text(encoding="utf-8"),
+            (ROOT/history.AUTH_PREFLIGHT).read_text(encoding="utf-8"),
+            (ROOT/history.APPROVAL_TRIAL).read_text(encoding="utf-8"),
+            (ROOT/history.APPROVAL_TEST).read_text(encoding="utf-8"))
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertIn("SAVEPOINT typed_approval_integration;",source)
+        self.assertIn("ROLLBACK TO SAVEPOINT typed_approval_integration;",source)
+        self.assertIn("SELECT * FROM finish();",source)
+        self.assertEqual(source.count(
+            "CREATE FUNCTION app.d1_apply_student_profile_typed_approval_trial("),1)
+        self.assertEqual(source.count(history.APPROVAL_INSERT_ANCHOR),1)
+
     def test_local_runner_always_rolls_back(self):
         source=(ROOT / history.CANDIDATE).read_text(encoding="utf-8")
         self.assertIn("HISTORY_PRIVILEGE_LEAK",history.PROBE)

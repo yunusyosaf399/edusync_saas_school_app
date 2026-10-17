@@ -1,0 +1,227 @@
+-- STUDENT_PROFILE_TYPED_APPROVAL_ROLLBACK_ONLY
+-- LOCAL-ONLY Student Profile approval integration; never a hosted migration.
+SET ROLE schoolos_schema_owner;
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+CREATE POLICY sprev_typed_approval_trial_insert
+ON app_private.student_profile_revisions FOR INSERT TO schoolos_workflow_executor
+WITH CHECK (approval_request_id IS NOT NULL
+  AND applied_by_principal_id=app_private.current_principal_id()
+  AND old_row_version>0 AND new_row_version=old_row_version+1);
+GRANT INSERT ON app_private.student_profile_revisions TO schoolos_workflow_executor;
+-- The test helper must validate the exact approved receipt and inspect
+-- only approvals from its own typed Student Profile request.
+CREATE POLICY sprev_typed_approval_trial_read
+ON app_private.student_profile_revisions FOR SELECT TO schoolos_workflow_executor
+USING (approval_request_id IS NOT NULL);
+GRANT SELECT (approval_request_id,command_receipt_id,old_row_version,new_row_version)
+ ON app_private.student_profile_revisions TO schoolos_workflow_executor;
+CREATE POLICY typed_approval_application_trial_read
+ON app_private.approval_applications FOR SELECT TO schoolos_workflow_executor
+USING (true);
+GRANT SELECT (request_id,operation_id,applied_target_version,command_receipt_id)
+ ON app_private.approval_applications TO schoolos_workflow_executor;
+CREATE POLICY typed_approval_receipt_trial_read
+ON app_private.command_receipts FOR SELECT TO schoolos_workflow_executor
+USING (command_kind='request.apply' AND request_id IS NOT NULL);
+GRANT SELECT (id,principal_id,operation_id,request_id,command_kind,state,
+ expected_target_version,result_ref)
+ ON app_private.command_receipts TO schoolos_workflow_executor;
+RESET ROLE;
+
+SET ROLE schoolos_student_executor;
+-- Handles the private preimage and keeps the approval wrapper away from
+-- direct Student table SELECT permissions. Rechecks current P1 authority.
+CREATE FUNCTION app_private.d1_student_profile_typed_approval_resolve_trial(
+  p_student_id uuid,p_campus_id uuid,p_expected_version bigint,
+  p_actions jsonb,p_reason text
+) RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $approved_resolve$
+DECLARE
+ s app_private.students%ROWTYPE;
+ before_values jsonb;
+ plan jsonb;
+BEGIN
+ IF app.d1_student_profile_typed_preflight_trial(
+    p_student_id,p_campus_id,p_expected_version,p_actions,p_reason,'APPROVAL'
+ ) IS DISTINCT FROM true THEN
+   RAISE EXCEPTION 'D1_APPROVAL_TYPED_PREFLIGHT_DENIED';
+ END IF;
+ SELECT x.* INTO s FROM app_private.students x WHERE x.id=p_student_id FOR UPDATE;
+ IF NOT FOUND OR s.row_version IS DISTINCT FROM p_expected_version
+    OR s.current_status IS DISTINCT FROM 'ACTIVE' THEN
+    RAISE EXCEPTION 'D1_APPROVAL_TYPED_TARGET_STALE';
+ END IF;
+ before_values:=pg_catalog.jsonb_build_object(
+   'date_of_birth',s.date_of_birth,'gender_code',s.gender_code,
+   'nationality_code',s.nationality_code,'general_contact',s.general_contact,
+   'previous_school',s.previous_school,
+   'profile_photo_file_id',s.profile_photo_file_id);
+ plan:=app_private.d1_student_profile_typed_plan_trial(before_values,p_actions);
+ RETURN plan->'after';
+END
+$approved_resolve$;
+REVOKE ALL ON FUNCTION app_private.d1_student_profile_typed_approval_resolve_trial(
+ uuid,uuid,bigint,jsonb,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_profile_typed_approval_resolve_trial(
+ uuid,uuid,bigint,jsonb,text) TO schoolos_workflow_executor;
+
+-- Verify the actual locked POST image before saving any history supplied
+-- through the Workflow executor's typed request payload.
+CREATE FUNCTION app_private.d1_student_profile_approved_postimage_trial(
+ p_student_id uuid,p_expected_version bigint,p_after jsonb
+) RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $postcheck$
+DECLARE s app_private.students%ROWTYPE;
+BEGIN
+ SELECT x.* INTO s FROM app_private.students x WHERE x.id=p_student_id FOR UPDATE;
+ IF NOT FOUND OR s.current_status IS DISTINCT FROM 'ACTIVE'
+    OR s.row_version IS DISTINCT FROM p_expected_version+1
+    OR p_after IS NULL OR pg_catalog.jsonb_typeof(p_after)<>'object' THEN
+   RETURN false;
+ END IF;
+ RETURN pg_catalog.jsonb_build_object(
+   'date_of_birth',s.date_of_birth,'gender_code',s.gender_code,
+   'nationality_code',s.nationality_code,'general_contact',s.general_contact,
+   'previous_school',s.previous_school,
+   'profile_photo_file_id',s.profile_photo_file_id)=p_after;
+END
+$postcheck$;
+REVOKE ALL ON FUNCTION app_private.d1_student_profile_approved_postimage_trial(
+ uuid,bigint,jsonb) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_student_profile_approved_postimage_trial(
+ uuid,bigint,jsonb) TO schoolos_workflow_executor;
+RESET ROLE;
+
+SET ROLE schoolos_workflow_executor;
+-- This is an adapter to the frozen P1 approval engine. The six-key payload
+-- represents the resolved, typed result. The original tri-state ACTIONS
+-- are not sealed by this legacy receipt, a documented production blocker.
+CREATE FUNCTION app.d1_submit_student_profile_typed_approval_trial(
+  p_student_id uuid,p_campus_id uuid,p_expected_version bigint,
+  p_actions jsonb,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $typed_submit$
+DECLARE payload jsonb;
+BEGIN
+ IF p_reason IS NULL OR pg_catalog.btrim(p_reason)='' THEN
+   RAISE EXCEPTION 'D1_TYPED_APPROVAL_REASON_REQUIRED';
+ END IF;
+ payload:=app_private.d1_student_profile_typed_approval_resolve_trial(
+   p_student_id,p_campus_id,p_expected_version,p_actions,p_reason);
+ RETURN QUERY SELECT r.request_id,r.request_version
+ FROM app_private.d1_profile_submit(
+   'STUDENT',p_student_id,p_campus_id,p_expected_version,
+    payload,pg_catalog.btrim(p_reason),p_idempotency_key) r;
+END
+$typed_submit$;
+REVOKE ALL ON FUNCTION app.d1_submit_student_profile_typed_approval_trial(
+ uuid,uuid,bigint,jsonb,text,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_student_profile_typed_approval_trial(
+ uuid,uuid,bigint,jsonb,text,text) TO authenticated;
+
+-- The legacy REVIEW command remains the only reviewer decision entry point,
+-- preserving separate-Person participant, current role/scope, and step locks.
+-- APPLY uses the unchanged engine and appends one private revision in the SAME
+-- transaction. On a history error the whole apply rolls back.
+CREATE FUNCTION app.d1_apply_student_profile_typed_approval_trial(
+ p_request_id uuid,p_expected_request_version bigint,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint,request_state text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $typed_apply$
+DECLARE req app_private.approval_requests%ROWTYPE;
+ result record;
+ operation_code text;
+ matching_receipt uuid;
+ receipt_count bigint;
+ actor uuid;
+BEGIN
+ IF p_request_id IS NULL OR p_expected_request_version IS NULL
+    OR p_expected_request_version<1 THEN
+   RAISE EXCEPTION 'D1_TYPED_APPROVAL_APPLY_INTENT';
+ END IF;
+ PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ SELECT r.* INTO req FROM app_private.approval_requests r
+   WHERE r.id=p_request_id;
+ IF NOT FOUND OR req.target_ref IS NULL THEN
+   RAISE EXCEPTION 'D1_TYPED_APPROVAL_REQUEST_MISSING';
+ END IF;
+ SELECT o.code INTO operation_code FROM app_private.operation_contracts o
+   WHERE o.id=req.operation_id AND o.contract_version=1 AND o.enabled;
+ IF operation_code IS DISTINCT FROM 'student.profile.update' THEN
+   RAISE EXCEPTION 'D1_TYPED_APPROVAL_STUDENT_ONLY';
+ END IF;
+ -- An earlier same-key apply replays terminal success without writing history.
+ -- The frozen engine independently rechecks live participant authority.
+ SELECT a.request_id,a.request_version,a.request_state
+ INTO result FROM app.d1_apply_profile_request(
+    p_request_id,p_expected_request_version,p_idempotency_key) a;
+ IF NOT FOUND THEN RAISE EXCEPTION 'D1_TYPED_APPROVAL_NO_APPLY_RESULT'; END IF;
+ IF result.request_state='EXECUTED' THEN
+   -- On replay the matching receipt and application already exist with the
+   -- one committed history; do not append another row.
+   SELECT count(*),min(a.command_receipt_id::text)::uuid
+     INTO receipt_count,matching_receipt
+     FROM app_private.approval_applications a
+    WHERE a.request_id=p_request_id
+      AND a.operation_id=req.operation_id
+      AND a.applied_target_version=req.expected_target_version+1;
+   IF receipt_count<>1 OR matching_receipt IS NULL THEN
+     RAISE EXCEPTION 'D1_TYPED_APPROVAL_APPLICATION_PROOF_MISSING';
+   END IF;
+   IF NOT EXISTS (SELECT 1 FROM app_private.command_receipts c
+       WHERE c.id=matching_receipt AND c.principal_id=actor
+         AND c.operation_id=req.operation_id AND c.request_id=p_request_id
+         AND c.command_kind='request.apply' AND c.state='SUCCEEDED'
+         AND c.expected_target_version=req.expected_target_version
+         AND c.result_ref=req.target_ref) THEN
+     RAISE EXCEPTION 'D1_TYPED_APPROVAL_RECEIPT_BINDING';
+   END IF;
+   IF NOT EXISTS (SELECT 1 FROM app_private.student_profile_revisions h
+       WHERE h.approval_request_id=p_request_id
+         AND h.command_receipt_id=matching_receipt
+         AND h.old_row_version=req.expected_target_version
+         AND h.new_row_version=req.expected_target_version+1) THEN
+     IF NOT app_private.d1_student_profile_approved_postimage_trial(
+         req.target_ref,req.expected_target_version,req.requested_payload)
+         THEN RAISE EXCEPTION 'D1_TYPED_APPROVAL_POSTIMAGE_MISMATCH'; END IF;
+     IF pg_catalog.jsonb_typeof(req.old_snapshot)<>'object'
+        OR pg_catalog.jsonb_typeof(req.requested_payload)<>'object'
+        OR req.reason IS NULL OR pg_catalog.btrim(req.reason)='' THEN
+       RAISE EXCEPTION 'D1_TYPED_APPROVAL_SNAPSHOT_INCOMPLETE';
+     END IF;
+     INSERT INTO app_private.student_profile_revisions(
+        student_id,old_row_version,new_row_version,command_receipt_id,
+        approval_request_id,applied_by_principal_id,private_reason,
+        old_date_of_birth,new_date_of_birth,old_gender_code,new_gender_code,
+        old_nationality_code,new_nationality_code,
+        old_general_contact,new_general_contact,old_previous_school,new_previous_school,
+        old_profile_photo_file_id,new_profile_photo_file_id
+     ) VALUES (
+        req.target_ref,req.expected_target_version,req.expected_target_version+1,
+        matching_receipt,p_request_id,actor,pg_catalog.btrim(req.reason),
+        (req.old_snapshot->>'date_of_birth')::date,
+        (req.requested_payload->>'date_of_birth')::date,
+        req.old_snapshot->>'gender_code',req.requested_payload->>'gender_code',
+        req.old_snapshot->>'nationality_code',req.requested_payload->>'nationality_code',
+        req.old_snapshot->>'general_contact',req.requested_payload->>'general_contact',
+        req.old_snapshot->>'previous_school',req.requested_payload->>'previous_school',
+        (req.old_snapshot->>'profile_photo_file_id')::uuid,
+        (req.requested_payload->>'profile_photo_file_id')::uuid);
+   END IF;
+ END IF;
+ RETURN QUERY SELECT result.request_id,result.request_version,result.request_state;
+END
+$typed_apply$;
+REVOKE ALL ON FUNCTION app.d1_apply_student_profile_typed_approval_trial(
+ uuid,bigint,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_student_profile_typed_approval_trial(
+ uuid,bigint,text) TO authenticated;
+RESET ROLE;
+
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+RESET ROLE;
