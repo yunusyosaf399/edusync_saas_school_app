@@ -10,6 +10,8 @@ SELECT * FROM app.d1_submit_student_profile_typed_approval_trial(
 ) \gset sealed_historic_
 SELECT pg_catalog.set_config('schoolos_test.sealed_historic_request_id',
  :'sealed_historic_request_id',true);
+SELECT pg_catalog.set_config('schoolos_test.sealed_historic_request_version',
+ :'sealed_historic_request_version',true);
 DO $sealed_typed_acceptance$
 DECLARE
  sid uuid:='b1000000-0000-4000-8000-000000000001';
@@ -19,7 +21,7 @@ DECLARE
 BEGIN
  IF current_setting('schoolos_test.sealed_historic_request_id')::uuid
    IS DISTINCT FROM current_setting('schoolos_test.typed_req')::uuid
-   OR :'sealed_historic_request_version'::bigint<>3 THEN
+   OR current_setting('schoolos_test.sealed_historic_request_version')::bigint<>3 THEN
     RAISE EXCEPTION 'TYPED_SEAL_HISTORICAL_REPLAY_FAIL';
  END IF;
  -- Clearing a currently NULL field and leaving it UNCHANGED both resolve
