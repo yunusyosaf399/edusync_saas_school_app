@@ -12,6 +12,9 @@ APPROVAL_TRIAL = Path("supabase/proposals/student_profile_typed_approval_trial.s
 APPROVAL_TEST = Path("supabase/proposals/student_profile_typed_approval_acceptance.sql.draft")
 APPROVAL_BASELINE = Path("supabase/tests/domain/67_student_profile_p1_approval_review_apply.sql")
 APPROVAL_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_APPROVAL_HISTORY_PASS"
+INTENT_SEAL_TRIAL = Path("supabase/proposals/student_profile_approval_intent_seal_trial.sql.draft")
+INTENT_SEAL_CHECKS = Path("supabase/proposals/student_profile_approval_intent_seal_acceptance.sql.draft")
+INTENT_SEAL_PASS_MARKER = "D1_STUDENT_PROFILE_APPROVAL_INTENT_SEAL_PASS"
 DIRECT_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_DIRECT_RECEIPT_PASS"
 AUTH_BASELINE = Path("supabase/tests/domain/66_student_profile_p1_direct_history_authorization.sql")
 AUTH_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_AUTH_PREFLIGHT_PASS"
@@ -372,6 +375,7 @@ BEGIN
    'app.d1_apply_student_profile_typed_approval_trial(uuid,bigint,text)'
  ) IS NOT NULL
  OR pg_catalog.to_regclass('app_private.student_profile_revisions') IS NOT NULL
+ OR pg_catalog.to_regclass('app_private.student_profile_approval_intent_seals') IS NOT NULL
  THEN RAISE EXCEPTION 'D1_APPROVAL_TRIAL_NOT_ROLLED_BACK'; END IF;
 END
 $approval_trial_cleanup$;
@@ -397,25 +401,79 @@ def render_approval_trial(
         raise RuntimeError("D1_APPROVAL_UNRESOLVED_INCLUDE")
     return sql
 
+
+def validate_approval_intent_seal_source(source: str, root: Path = ROOT) -> None:
+    if not source.startswith("-- STUDENT_PROFILE_TYPED_APPROVAL_INTENT_SEAL_LOCAL_ONLY\n"):
+        raise RuntimeError("D1_TYPED_SEAL_QUARANTINE")
+    if "\r" in source or "\x00" in source or not source.endswith("\n"):
+        raise RuntimeError("D1_TYPED_SEAL_ENCODING")
+    for required in (
+        "CREATE TABLE app_private.student_profile_approval_intent_seals (",
+        "CONSTRAINT typed_seal_pk PRIMARY KEY (principal_id,idempotency_key)",
+        "CONSTRAINT typed_seal_receipt_fk FOREIGN KEY (submit_receipt_id)",
+        "CONSTRAINT typed_seal_request_fk FOREIGN KEY (request_id)",
+        "CREATE TRIGGER student_profile_approval_intent_seal_immutable",
+        "FORCE ROW LEVEL SECURITY",
+        "CREATE POLICY typed_approval_seal_read",
+        "CREATE POLICY typed_approval_seal_insert",
+        "CREATE POLICY typed_approval_seal_submit_receipt_read",
+        "CREATE FUNCTION app_private.d1_student_profile_approval_canonical_trial(",
+        "CREATE OR REPLACE FUNCTION app.d1_submit_student_profile_typed_approval_trial(",
+        "canonical_actions:=app_private.d1_student_profile_approval_canonical_trial(p_actions)",
+        "app_private.d1_lock_current_principal(actor)",
+        "app_private.d1_profile_authorized(",
+        "app_private.d1_profile_policy(",
+        "app_private.d1_profile_participant(",
+        "app_private.d1_profile_submit(",
+        "INSERT INTO app_private.student_profile_approval_intent_seals(",
+        "D1_TYPED_APPROVAL_SEALED_INTENT_CONFLICT",
+        "D1_TYPED_APPROVAL_SEAL_PERMISSION_REVOKED",
+        "D1_TYPED_APPROVAL_SEAL_UNSEALED_KEY",
+        "REVOKE CREATE ON SCHEMA app_private FROM schoolos_workflow_executor;",
+    ):
+        if required not in source:
+            raise RuntimeError("D1_TYPED_SEAL_SOURCE_MISSING "+required)
+    for denied in ("\nCOMMIT;", "\nBEGIN;", "CREATE ROLE ",
+       "DROP TABLE ", "DISABLE ROW LEVEL SECURITY",
+       "GRANT SELECT ON APP_PRIVATE.STUDENT_PROFILE_APPROVAL_INTENT_SEALS TO AUTHENTICATED",
+       "GRANT UPDATE ON APP_PRIVATE.STUDENT_PROFILE_APPROVAL_INTENT_SEALS",
+       "GRANT DELETE ON APP_PRIVATE.STUDENT_PROFILE_APPROVAL_INTENT_SEALS"):
+        if denied in source.upper():
+            raise RuntimeError("D1_TYPED_SEAL_UNSAFE_SQL "+denied.strip())
+    if INTENT_SEAL_TRIAL.parts[1]!="proposals" or any(
+       p.name==INTENT_SEAL_TRIAL.name for p in discover_drafts(root)):
+        raise RuntimeError("D1_TYPED_SEAL_ACTIVE_MIGRATION")
+
 def run_typed_approval_trial(
   container: str, run_psql, history: str, typed: str, root: Path = ROOT
 ) -> None:
     approval=(Path(root)/APPROVAL_TRIAL).read_text(encoding="utf-8")
     auth=(Path(root)/AUTH_PREFLIGHT).read_text(encoding="utf-8")
     checks=(Path(root)/APPROVAL_TEST).read_text(encoding="utf-8")
+    seal=(Path(root)/INTENT_SEAL_TRIAL).read_text(encoding="utf-8")
+    seal_checks=(Path(root)/INTENT_SEAL_CHECKS).read_text(encoding="utf-8")
     validate_typed_auth_preflight_source(auth,root)
     validate_typed_approval_source(approval,root)
+    validate_approval_intent_seal_source(seal,root)
+    if not seal_checks.startswith("-- STUDENT_PROFILE_APPROVAL_SEALED_INTENT_ACCEPTANCE_ROLLBACK_ONLY\n") or "\nCOMMIT;" in seal_checks:
+        raise RuntimeError("D1_TYPED_SEAL_TEST_QUARANTINE")
+    if checks.count("ROLLBACK TO SAVEPOINT typed_approval_integration;")!=1:
+        raise RuntimeError("D1_TYPED_SEAL_TEST_INSERTION_DRIFT")
+    checks=checks.replace("ROLLBACK TO SAVEPOINT typed_approval_integration;",
+        seal_checks+"\nROLLBACK TO SAVEPOINT typed_approval_integration;",1)
     if not checks.startswith("-- Local-only injected approval acceptance") or "\nCOMMIT;" in checks:
         raise RuntimeError("D1_APPROVAL_INTEGRATION_TEST_QUARANTINE")
     baseline=(Path(root)/APPROVAL_BASELINE).read_text(encoding="utf-8")
     fixture=(Path(root)/TYPED_FIXTURE).read_text(encoding="utf-8")
-    sql=render_approval_trial(baseline,fixture,history,typed,auth,approval,checks)
+    sql=render_approval_trial(baseline,fixture,history,typed,auth,
+        approval+"\n"+seal,checks)
     if container!="supabase_db_saas_OS_school_app":
         raise RuntimeError("D1_APPROVAL_TRIAL_DISPOSABLE_CONTAINER_ONLY")
     run_psql(container,sql,"D1_STUDENT_PROFILE_TYPED_APPROVAL_INTEGRATION",timeout=300)
     run_psql(container,APPROVAL_CLEANUP,
       "D1_STUDENT_PROFILE_TYPED_APPROVAL_ROLLBACK_PROOF",timeout=45)
     print(APPROVAL_PASS_MARKER+" authenticated SUBMIT/independent REVIEW/APPLY/stale invalidation/private history rollback-only")
+    print(INTENT_SEAL_PASS_MARKER+" original six-action canonical binding, same-result different-action conflict, authenticated historical replay, revoked-scope denial, receipt FK and rollback")
 
 
 def run_history_candidate(container: str, run_psql, root: Path = ROOT) -> None:
