@@ -1,0 +1,35 @@
+# Student Profile photo — isolated trusted-intent/entitlement decision model
+
+Date: 2026-10-17. **STATUS: candidate review, not an operational file-service or Student photo SET.** Prior frozen main: `3f6c218139a502eb6afdaff910ea47427a4cc6cd` (PR #87 freeze). This slice reads the confirmed [storage entitlement architecture](../architecture/05_storage_entitlements_and_document_purposes.md), [ADR-004](../decisions/ADR-004-storage-plan-entitlements.md), and the post-PR85 [synthetic Student-photo provenance guard](188_student_profile_photo_provenance_current_entitlement_trial.md).
+
+## Narrow deliverable
+
+`tools/photo_validation/student_photo_intent_entitlement_candidate.py` is a **pure, synthetic policy decision model**. It models the conditions that a future *private file service* must prove before issuing or finalizing a `STUDENT_PROFILE_PHOTO` upload intent. It returns no signed intent, no authorization token, no file identity and performs **zero I/O, uploads, metadata writes or Student mutations**. The evidence dataclasses are *not* secure proofs and are trivially constructible in Python: an actual service **MUST NOT** trust caller-supplied instances, booleans or identifiers. No route may call this model as an authorization service.
+
+On **ISSUE**, the modeled trusted caller presents all of:
+
+- A server-verified, pinned-issuer/key, supported-schema snapshot for the precise **school and project audience**, with a positive `storage.student_photo.upload` capability and active upload-eligible subscription; no plan names or arbitrary `storage.*` wildcard.
+- A **shared and durable authority** for exactly that school/project with the matching *currently active* monotonic revision, not invalidated and fresh at decision time. Snapshot must already be effective, issued and not expired. This model takes a shared revision/freshness assertion; **it does not implement cryptographic signatures, durable caches, atomic activation, push invalidation or cross-instance fencing**.
+- A server-verified initiating Principal, a private service execution path, enabled module, deployment-approved purpose registry entry, current `file.upload` and `student.photo.submit` grants, exact scope and actual Student-school/PRIMARY-placement ownership. These are independently required, not inferred from entitlement.
+- Only `STUDENT_PROFILE_PHOTO` in the internal code path; no client-selected purpose/Student owner/permission/snapshot can substitute for trusted server evidence. ISSUE cannot bring a previously supplied intent.
+
+On **FINALIZE**, the exact same *current* tests run again, plus a trusted, not-yet-consumed, not-expired intent must match original school, project, Student, Campus and initiating Principal and the photo purpose. An intent's issuance revision cannot be newer than the active entitlement. Earlier issuance revisions alone do not authorize finalization after downgrade: **the current entitlement and permission must still permit new use**. A revision upgrade retaining photo entitlement can pass the candidate check. This is an eligibility prerequisite only, **not finalization itself**: the future service must also validate/sanitize the actual bytes, bind provider-stored exact SHA/byte count, transition protected `PENDING → VALIDATED → AVAILABLE` file metadata, serialize intent consumption and entitlement activation, and reject direct authenticated-RPC bypass.
+
+All negative decisions use one generic public-free rejection; never include identifiers, photo contents, keys or token material in an error. Historical file reads follow their own security/retention rules and are **not** suppressed by loss of upload entitlement.
+
+## Tested synthetic scenarios
+
+The isolated Python unit tests construct in-memory, clearly fake verifier results. They cover a normal candidate ISSUE and FINALIZE; invalid snapshot signature/issuer/schema; wrong school/project; missing/wrong entitlement; inactive subscription; future-effective/expired snapshot; bad monotonic revision; missing freshness, already invalidated revision; bad module/purpose/worker/auth/grants/scope/ownership; forged type coercions; mismatched Student/Campus/Principal and purpose intent; stale/expired/consumed intent; permission revocation and entitlement downgrade between issue/finalize; and a newer still-entitled current revision that can satisfy the *policy prerequisite*. Tests assert **no token is returned**. They never simulate or claim actual cryptographic verification or multi-session DB locking.
+
+The dedicated `.github/workflows/student-photo-content-candidate.yml` now runs this independent test file alongside the previously frozen 11 Pillow decoded-image cases; no production dependencies are added.
+
+## Mandatory activation gates still open
+
+1. Real cryptographic signed/versioned control-plane snapshot verification with pinned issuer/keys, anti-rollback persistence, supported algorithm/schema, server-only cache and finite owner-approved TTL, freshness interval/clock policy, propagation SLA and actual suspension behavior; school/project audience isolation. Monotonic accepted revision and active effective revision must be coordinated without reactivating old permissions.
+2. Actual trusted verified-principal/domain authorization and Student PRIMARY placement resolver, private file service with purpose-bound worker authority, durable opaque upload-intent ledger and one-time consumption, protected purpose/domain/Student/Campus/file-owner binding, audited lifecycle and user-independent replay protection. No client-chosen UUID or metadata becomes provenance.
+3. Provider-neutral exact sanitized-byte persistence from the separately reviewed JPEG/PNG decoded-content validator, fully reviewed resource/sandbox dependency limits, controlled AVAILABLE transitions, missing/failed/quarantine reconciliation, retention/forensics policies and operator evidence. No production encoder integration is in this PR.
+4. Two genuine sessions and multiple service instances racing intent issue/finalization with subscription revision change, module/role/scope revocation and Student DIRECT/P1 APPLY; separate positive end-to-end Student photo LINK tests. File **photo SET remains DENY** until independent approved evidence and owner activation.
+
+**Project state unchanged:** 31/35 protected change operations accepted; Issue #67 remains open; D1 Migration 10 stays `.sql.draft`, no hosted Supabase operations, new public RPC, role grant or production storage upload. The existing 34 relations, 228 fragments, 97 permissions, 322 scope alternatives and 36 protected operation contracts are unmodified.
+
+**Simple example:** An administrator with valid photo permission starts an upload for Student A while the school's verified photo entitlement is active. Before finalization, the school subscription is downgraded. The model denies finalization even though the prior intent was valid; no file becomes AVAILABLE. A different administrator, Student, Campus or project cannot reuse that intent either.
