@@ -1,0 +1,148 @@
+-- STUDENT_PROFILE_APPROVAL_SEALED_INTENT_ACCEPTANCE_ROLLBACK_ONLY
+-- Insert at the end of PR #83 authenticated approval scenario before SAVEPOINT rollback.
+-- At this point APPLY=EXECUTED and the original Student row_version advanced.
+SET ROLE authenticated;
+SELECT * FROM app.d1_submit_student_profile_typed_approval_trial(
+ 'b1000000-0000-4000-8000-000000000001',NULL,
+ current_setting('schoolos_test.typed_start_v')::bigint,
+ '{"date_of_birth":{"action":"UNCHANGED"},"gender_code":{"action":"UNCHANGED"},"nationality_code":{"action":"UNCHANGED"},"general_contact":{"action":"UNCHANGED"},"previous_school":{"action":"SET","value":"Typed Approved Academy"},"profile_photo_file_id":{"action":"UNCHANGED"}}'::jsonb,
+ 'Private typed approval reason','typed-profile-approval-submission'
+) \gset sealed_historic_
+SELECT pg_catalog.set_config('schoolos_test.sealed_historic_request_id',
+ :'sealed_historic_request_id',true);
+SELECT pg_catalog.set_config('schoolos_test.sealed_historic_request_version',
+ :'sealed_historic_request_version',true);
+DO $sealed_typed_acceptance$
+DECLARE
+ sid uuid:='b1000000-0000-4000-8000-000000000001';
+ original jsonb:='{"date_of_birth":{"action":"UNCHANGED"},"gender_code":{"action":"UNCHANGED"},"nationality_code":{"action":"UNCHANGED"},"general_contact":{"action":"UNCHANGED"},"previous_school":{"action":"SET","value":"Typed Approved Academy"},"profile_photo_file_id":{"action":"UNCHANGED"}}'::jsonb;
+ same_projection_different_actions jsonb;
+ old_version bigint:=current_setting('schoolos_test.typed_start_v')::bigint;
+BEGIN
+ IF current_setting('schoolos_test.sealed_historic_request_id')::uuid
+   IS DISTINCT FROM current_setting('schoolos_test.typed_req')::uuid
+   OR current_setting('schoolos_test.sealed_historic_request_version')::bigint<>3 THEN
+    RAISE EXCEPTION 'TYPED_SEAL_HISTORICAL_REPLAY_FAIL';
+ END IF;
+ -- Clearing a currently NULL field and leaving it UNCHANGED both resolve
+ -- to the same six-field approval payload. Their action semantics differ.
+ same_projection_different_actions:=pg_catalog.jsonb_set(original,
+   '{general_contact}','{"action":"CLEAR"}'::jsonb);
+ BEGIN
+  PERFORM app.d1_submit_student_profile_typed_approval_trial(
+   sid,NULL,old_version,same_projection_different_actions,
+   'Private typed approval reason','typed-profile-approval-submission');
+  RAISE EXCEPTION 'TYPED_SEAL_DISTINCT_ACTIONS_ACCEPTED';
+ EXCEPTION WHEN OTHERS THEN
+  IF SQLERRM IS DISTINCT FROM 'D1_TYPED_APPROVAL_SEALED_INTENT_CONFLICT'
+  THEN RAISE; END IF;
+ END;
+ BEGIN
+  PERFORM app.d1_submit_student_profile_typed_approval_trial(
+   sid,NULL,old_version,original,
+   'Changed private reason','typed-profile-approval-submission');
+  RAISE EXCEPTION 'TYPED_SEAL_REASON_CONFLICT_ACCEPTED';
+ EXCEPTION WHEN OTHERS THEN
+  IF SQLERRM IS DISTINCT FROM 'D1_TYPED_APPROVAL_SEALED_INTENT_CONFLICT'
+  THEN RAISE; END IF;
+ END;
+ BEGIN
+  PERFORM app.d1_submit_student_profile_typed_approval_trial(
+   sid,NULL,old_version+1,original,
+   'Private typed approval reason','typed-profile-approval-submission');
+  RAISE EXCEPTION 'TYPED_SEAL_VERSION_CONFLICT_ACCEPTED';
+ EXCEPTION WHEN OTHERS THEN
+  IF SQLERRM IS DISTINCT FROM 'D1_TYPED_APPROVAL_SEALED_INTENT_CONFLICT'
+  THEN RAISE; END IF;
+ END;
+ BEGIN
+  PERFORM app.d1_submit_student_profile_typed_approval_trial(
+   sid,NULL,old_version,original,
+   'Private typed approval reason','typed-profile-new-key-stale');
+  RAISE EXCEPTION 'TYPED_SEAL_NEW_KEY_STALE_ACCEPTED';
+ EXCEPTION WHEN OTHERS THEN
+  IF SQLERRM IS DISTINCT FROM 'D1_TYPED_APPROVAL_SEAL_STALE'
+  THEN RAISE; END IF;
+ END;
+END
+$sealed_typed_acceptance$;
+-- The seal is inaccessible to a normal authenticated requester.
+DO $sealed_privacy_check$
+BEGIN
+ BEGIN
+   PERFORM 1 FROM app_private.student_profile_approval_intent_seals;
+   RAISE EXCEPTION 'TYPED_SEAL_AUTHENTICATED_READABLE';
+ EXCEPTION WHEN insufficient_privilege THEN
+   NULL;
+ END;
+END
+$sealed_privacy_check$;
+RESET ROLE;
+
+-- Revoking the submitting Principal's current Student permission must
+-- deny even exact historical key replay, without losing sealed evidence.
+SAVEPOINT typed_seal_authority_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.clock_timestamp()
+ WHERE id='b7000000-0000-4000-8000-000000000012';
+SET ROLE authenticated;
+DO $sealed_revoked_replay$
+DECLARE
+ old_version bigint:=current_setting('schoolos_test.typed_start_v')::bigint;
+ original jsonb:='{"date_of_birth":{"action":"UNCHANGED"},"gender_code":{"action":"UNCHANGED"},"nationality_code":{"action":"UNCHANGED"},"general_contact":{"action":"UNCHANGED"},"previous_school":{"action":"SET","value":"Typed Approved Academy"},"profile_photo_file_id":{"action":"UNCHANGED"}}'::jsonb;
+BEGIN
+ BEGIN
+  PERFORM app.d1_submit_student_profile_typed_approval_trial(
+   'b1000000-0000-4000-8000-000000000001',NULL,old_version,original,
+   'Private typed approval reason','typed-profile-approval-submission');
+  RAISE EXCEPTION 'TYPED_SEAL_REVOKED_REPLAY_ALLOWED';
+ EXCEPTION WHEN OTHERS THEN
+  IF SQLERRM IS DISTINCT FROM 'D1_TYPED_APPROVAL_SEAL_PERMISSION_REVOKED'
+  THEN RAISE; END IF;
+ END;
+END
+$sealed_revoked_replay$;
+RESET ROLE;
+ROLLBACK TO SAVEPOINT typed_seal_authority_revoked;
+
+SET ROLE schoolos_schema_owner;
+DO $sealed_final_integrity$
+DECLARE
+ sid uuid:='b1000000-0000-4000-8000-000000000001';
+ rid uuid:=current_setting('schoolos_test.typed_req')::uuid;
+ v bigint:=current_setting('schoolos_test.typed_start_v')::bigint;
+BEGIN
+ IF (SELECT count(*) FROM app_private.student_profile_approval_intent_seals)<>1
+ OR NOT EXISTS (
+   SELECT 1 FROM app_private.student_profile_approval_intent_seals s
+   JOIN app_private.approval_requests r ON r.id=s.request_id
+   JOIN app_private.command_receipts c ON c.id=s.submit_receipt_id
+   WHERE s.student_id=sid AND s.request_id=rid
+     AND s.expected_version=v
+     AND s.principal_id=r.requester_id
+     AND c.principal_id=s.principal_id
+     AND c.operation_id=r.operation_id
+     AND c.command_kind='request.submit'
+     AND c.idempotency_key=s.idempotency_key
+     AND c.state='SUCCEEDED' AND c.request_id=r.id
+     AND pg_catalog.octet_length(s.canonical_intent_sha256)=32
+ )
+ OR (SELECT count(*) FROM app_private.student_profile_revisions)<>1
+ OR (SELECT count(*) FROM app_private.approval_applications
+    WHERE request_id=rid)<>1
+ OR (SELECT count(*) FROM app_private.outbox_events
+    WHERE event_type='student.profile_changed')<>1
+ THEN
+   RAISE EXCEPTION 'TYPED_SEAL_RECEIPT_HISTORY_OUTBOX_NOT_ATOMIC';
+ END IF;
+ BEGIN
+  UPDATE app_private.student_profile_approval_intent_seals
+    SET canonical_intent_sha256=pg_catalog.sha256('tamper'::bytea);
+  RAISE EXCEPTION 'TYPED_SEAL_MUTABLE';
+ EXCEPTION WHEN OTHERS THEN
+  IF SQLERRM IS DISTINCT FROM 'Student Profile revision records are immutable'
+  THEN RAISE; END IF;
+ END;
+END
+$sealed_final_integrity$;
+RESET ROLE;

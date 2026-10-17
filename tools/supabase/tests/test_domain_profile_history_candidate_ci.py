@@ -157,6 +157,55 @@ class StudentProfileHistoryCandidateTests(unittest.TestCase):
             "CREATE FUNCTION app.d1_apply_student_profile_typed_approval_trial("),1)
         self.assertEqual(source.count(history.APPROVAL_INSERT_ANCHOR),1)
 
+    def test_typed_approval_intent_seal_isolated_and_linked(self):
+        source=(ROOT/history.INTENT_SEAL_TRIAL).read_text(encoding="utf-8")
+        history.validate_approval_intent_seal_source(source,ROOT)
+        self.assertIn("D1_TYPED_APPROVAL_SEALED_INTENT_CONFLICT",source)
+        self.assertIn("CREATE TRIGGER student_profile_approval_intent_seal_immutable",source)
+        self.assertIn("app_private.d1_profile_submit(",source)
+        self.assertIn("D1_TYPED_APPROVAL_SEAL_UNSEALED_KEY",source)
+        self.assertIn("D1_STUDENT_PROFILE_APPROVAL_INTENT_SEAL_PASS",
+                      history.INTENT_SEAL_PASS_MARKER)
+        self.assertNotIn("CREATE OR REPLACE FUNCTION app.d1_review_profile_request(",source)
+
+    def test_typed_approval_seal_security_source_guard(self):
+        source=(ROOT/history.INTENT_SEAL_TRIAL).read_text(encoding="utf-8")
+        for changed in (
+            source+"\nCOMMIT;\n",
+            source.replace("FORCE ROW LEVEL SECURITY","DISABLE ROW LEVEL SECURITY"),
+            source.replace("D1_TYPED_APPROVAL_SEALED_INTENT_CONFLICT","DISABLED_CONFLICT"),
+            source.replace("D1_TYPED_APPROVAL_SEAL_UNSEALED_KEY","UNSAFE_PRIOR_RECEIPT"),
+            source.replace("REVOKE CREATE ON SCHEMA app_private FROM schoolos_workflow_executor;",""),
+            source.replace("CREATE TRIGGER student_profile_approval_intent_seal_immutable","CREATE TRIGGER missing_immutability"),
+        ):
+            with self.subTest(variant=changed[-60:]):
+                with self.assertRaises(RuntimeError):
+                    history.validate_approval_intent_seal_source(changed,ROOT)
+
+    def test_typed_approval_seal_injected_into_auth_review_apply(self):
+        fixture=(ROOT/history.TYPED_FIXTURE).read_text(encoding="utf-8")
+        baseline=(ROOT/history.APPROVAL_BASELINE).read_text(encoding="utf-8")
+        checks=(ROOT/history.APPROVAL_TEST).read_text(encoding="utf-8")
+        seal_checks=(ROOT/history.INTENT_SEAL_CHECKS).read_text(encoding="utf-8")
+        self.assertEqual(checks.count("ROLLBACK TO SAVEPOINT typed_approval_integration;"),1)
+        checks=checks.replace("ROLLBACK TO SAVEPOINT typed_approval_integration;",
+            seal_checks+"\nROLLBACK TO SAVEPOINT typed_approval_integration;",1)
+        sql=history.render_approval_trial(
+            baseline,fixture,
+            (ROOT/history.CANDIDATE).read_text(encoding="utf-8"),
+            (ROOT/history.TYPED_TRIAL).read_text(encoding="utf-8"),
+            (ROOT/history.AUTH_PREFLIGHT).read_text(encoding="utf-8"),
+            (ROOT/history.APPROVAL_TRIAL).read_text(encoding="utf-8")+"\n"+
+              (ROOT/history.INTENT_SEAL_TRIAL).read_text(encoding="utf-8"),
+            checks)
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
+        self.assertEqual(sql.count(
+            "CREATE TABLE app_private.student_profile_approval_intent_seals ("),1)
+        self.assertIn("TYPED_SEAL_DISTINCT_ACTIONS_ACCEPTED",sql)
+        self.assertIn("D1_TYPED_APPROVAL_SEAL_PERMISSION_REVOKED",sql)
+        self.assertIn("SELECT * FROM finish();",sql)
+        self.assertIn("ROLLBACK TO SAVEPOINT typed_approval_integration;",sql)
+
     def test_local_runner_always_rolls_back(self):
         source=(ROOT / history.CANDIDATE).read_text(encoding="utf-8")
         self.assertIn("HISTORY_PRIVILEGE_LEAK",history.PROBE)

@@ -1,0 +1,308 @@
+-- STUDENT_PROFILE_TYPED_APPROVAL_INTENT_SEAL_LOCAL_ONLY
+-- Never a migration. Install after the prior Student typed approval proposal
+-- only inside the disposable psql BEGIN/ROLLBACK.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.student_profile_approval_intent_seals (
+  principal_id uuid NOT NULL,
+  principal_kind text NOT NULL DEFAULT 'INDIVIDUAL',
+  idempotency_key text NOT NULL,
+  student_id uuid NOT NULL,
+  campus_hint uuid,
+  expected_version bigint NOT NULL,
+  canonical_intent_sha256 bytea NOT NULL,
+  request_id uuid NOT NULL,
+  submit_receipt_id uuid NOT NULL,
+  recorded_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+  CONSTRAINT typed_seal_pk PRIMARY KEY (principal_id,idempotency_key),
+  CONSTRAINT typed_seal_request_unique UNIQUE (request_id),
+  CONSTRAINT typed_seal_receipt_unique UNIQUE (submit_receipt_id),
+  CONSTRAINT typed_seal_actor_kind CHECK (principal_kind='INDIVIDUAL'),
+  CONSTRAINT typed_seal_expected_version CHECK (expected_version>0),
+  CONSTRAINT typed_seal_key_length CHECK (
+    pg_catalog.length(idempotency_key) BETWEEN 1 AND 200
+  ),
+  CONSTRAINT typed_seal_hash_length CHECK (
+    pg_catalog.octet_length(canonical_intent_sha256)=32
+  ),
+  CONSTRAINT typed_seal_principal_fk FOREIGN KEY (principal_id,principal_kind)
+    REFERENCES app_private.principals(id,kind)
+    ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT typed_seal_student_fk FOREIGN KEY (student_id)
+    REFERENCES app_private.students(id)
+    ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT typed_seal_request_fk FOREIGN KEY (request_id)
+    REFERENCES app_private.approval_requests(id)
+    ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT typed_seal_receipt_fk FOREIGN KEY (submit_receipt_id)
+    REFERENCES app_private.command_receipts(id)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE TRIGGER student_profile_approval_intent_seal_immutable
+BEFORE UPDATE OR DELETE ON app_private.student_profile_approval_intent_seals
+FOR EACH ROW EXECUTE FUNCTION app_private.d1_student_profile_revision_immutable();
+ALTER TABLE app_private.student_profile_approval_intent_seals
+ ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.student_profile_approval_intent_seals
+ FORCE ROW LEVEL SECURITY;
+CREATE POLICY typed_approval_seal_maintenance
+ON app_private.student_profile_approval_intent_seals
+FOR ALL TO schoolos_schema_owner USING (true) WITH CHECK (true);
+CREATE POLICY typed_approval_seal_read
+ON app_private.student_profile_approval_intent_seals
+FOR SELECT TO schoolos_workflow_executor
+USING (principal_id=app_private.current_principal_id());
+CREATE POLICY typed_approval_seal_insert
+ON app_private.student_profile_approval_intent_seals
+FOR INSERT TO schoolos_workflow_executor
+WITH CHECK (principal_id=app_private.current_principal_id());
+REVOKE ALL ON app_private.student_profile_approval_intent_seals
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT SELECT,INSERT ON app_private.student_profile_approval_intent_seals
+ TO schoolos_workflow_executor;
+
+-- Existing trial's request.apply-only RLS must not be widened generically.
+CREATE POLICY typed_approval_seal_submit_receipt_read
+ON app_private.command_receipts FOR SELECT TO schoolos_workflow_executor
+USING (command_kind='request.submit' AND request_id IS NOT NULL);
+GRANT SELECT (idempotency_key)
+ ON app_private.command_receipts TO schoolos_workflow_executor;
+GRANT CREATE ON SCHEMA app_private TO schoolos_workflow_executor;
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+RESET ROLE;
+SET ROLE schoolos_workflow_executor;
+
+-- Pure six-slot tri-state canonicalization from the prior approved DIRECT
+-- trial, independent of the current Student values on replay.
+CREATE FUNCTION app_private.d1_student_profile_approval_canonical_trial(p_actions jsonb)
+RETURNS jsonb LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $canonical$
+DECLARE
+  keys text[]:=ARRAY['date_of_birth','gender_code','nationality_code',
+    'general_contact','previous_school','profile_photo_file_id'];
+  f text; entry jsonb; action text; val text; n bigint;
+  out_value jsonb:='[]'::jsonb;
+BEGIN
+  IF pg_catalog.jsonb_typeof(p_actions) IS DISTINCT FROM 'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_actions))<>6
+     OR NOT (p_actions ?& keys) THEN
+    RAISE EXCEPTION 'D1_DIRECT_CANONICAL_ALLOWLIST';
+  END IF;
+  FOREACH f IN ARRAY keys LOOP
+    entry:=p_actions->f;
+    IF pg_catalog.jsonb_typeof(entry) IS DISTINCT FROM 'object'
+       OR pg_catalog.jsonb_typeof(entry->'action') IS DISTINCT FROM 'string' THEN
+      RAISE EXCEPTION 'D1_DIRECT_CANONICAL_SHAPE';
+    END IF;
+    action:=entry->>'action';
+    SELECT count(*) INTO n FROM pg_catalog.jsonb_object_keys(entry);
+    IF action IN ('UNCHANGED','CLEAR') THEN
+      IF n<>1 OR entry ? 'value' THEN
+        RAISE EXCEPTION 'D1_DIRECT_CANONICAL_VALUE_FORBIDDEN';
+      END IF;
+      out_value:=out_value||pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_array(action));
+    ELSIF action='SET' THEN
+      IF n<>2 OR NOT (entry ? 'value')
+         OR pg_catalog.jsonb_typeof(entry->'value') IS DISTINCT FROM 'string' THEN
+        RAISE EXCEPTION 'D1_DIRECT_CANONICAL_SET_VALUE';
+      END IF;
+      val:=pg_catalog.btrim(entry->>'value');
+      IF val='' THEN RAISE EXCEPTION 'D1_DIRECT_CANONICAL_BLANK'; END IF;
+      IF f='date_of_birth' THEN
+        IF val !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+          RAISE EXCEPTION 'D1_DIRECT_CANONICAL_DATE';
+        END IF;
+        BEGIN
+          val:=(val::date)::text;
+        EXCEPTION WHEN invalid_datetime_format OR datetime_field_overflow
+                       OR invalid_text_representation THEN
+          RAISE EXCEPTION 'D1_DIRECT_CANONICAL_DATE_INVALID';
+        END;
+      ELSIF f='profile_photo_file_id' THEN
+        IF val !~* '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' THEN
+          RAISE EXCEPTION 'D1_DIRECT_CANONICAL_FILE_ID';
+        END IF;
+        val:=(val::uuid)::text;
+      END IF;
+      out_value:=out_value||pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_array('SET',val));
+    ELSE
+      RAISE EXCEPTION 'D1_DIRECT_CANONICAL_ACTION';
+    END IF;
+  END LOOP;
+  RETURN out_value;
+END
+$canonical$;
+REVOKE ALL ON FUNCTION app_private.d1_student_profile_approval_canonical_trial(jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+
+-- This wrapper owns the only commit path for the local-only immutable seal.
+-- It never changes the frozen legacy workflow or Employee Profile RPC.
+CREATE OR REPLACE FUNCTION app.d1_submit_student_profile_typed_approval_trial(
+  p_student_id uuid,p_campus_id uuid,p_expected_version bigint,
+  p_actions jsonb,p_reason text,p_idempotency_key text
+) RETURNS TABLE(request_id uuid,request_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $typed_sealed_submit$
+DECLARE
+  actor uuid;
+  canonical_actions jsonb;
+  normalized_reason text;
+  fingerprint bytea;
+  recorded app_private.student_profile_approval_intent_seals%ROWTYPE;
+  campus uuid;
+  placement_count bigint;
+  target_version bigint;
+  target_state text;
+  policy record;
+  request_row record;
+  receipt_id uuid;
+  receipt_count bigint;
+  legacy_count bigint;
+  after_profile jsonb;
+BEGIN
+  IF p_student_id IS NULL OR p_expected_version IS NULL
+     OR p_expected_version<1 OR p_reason IS NULL
+     OR pg_catalog.btrim(p_reason)=''
+     OR p_idempotency_key IS NULL
+     OR pg_catalog.length(p_idempotency_key) NOT BETWEEN 1 AND 200 THEN
+    RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_INVALID_INPUT';
+  END IF;
+  normalized_reason:=pg_catalog.btrim(p_reason);
+  canonical_actions:=app_private.d1_student_profile_approval_canonical_trial(p_actions);
+  fingerprint:=pg_catalog.sha256(pg_catalog.convert_to(
+    pg_catalog.jsonb_build_array(
+       'student.profile.update','request.submit',p_student_id,
+       p_campus_id,p_expected_version::text,canonical_actions,
+       normalized_reason)::text,'UTF8'));
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_NO_ACTOR'; END IF;
+  PERFORM app_private.d1_lock_current_principal(actor);
+  -- All callers of this typed wrapper use the same key-order advisory lock.
+  -- Legacy untyped paths are disabled by the frozen operation baseline.
+  PERFORM pg_catalog.pg_advisory_xact_lock(71031,
+    pg_catalog.hashtext(actor::text||':'||p_idempotency_key));
+  SELECT x.* INTO recorded
+    FROM app_private.student_profile_approval_intent_seals x
+   WHERE x.principal_id=actor AND x.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    -- Distinct intent is a conflict even when the resulting six field values
+    -- are identical. No Student projection is recomputed for a replay.
+    IF recorded.canonical_intent_sha256 IS DISTINCT FROM fingerprint
+       OR recorded.student_id IS DISTINCT FROM p_student_id
+       OR recorded.expected_version IS DISTINCT FROM p_expected_version
+       OR recorded.campus_hint IS DISTINCT FROM p_campus_id THEN
+      RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEALED_INTENT_CONFLICT';
+    END IF;
+  END IF;
+  -- Recompute current PRIMARY Student context and authority on every replay,
+  -- but do not require the original Student row_version after APPLY.
+  SELECT count(*),min(co.campus_id::text)::uuid INTO placement_count,campus
+  FROM app_private.enrollments e
+  JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+  JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+  WHERE e.student_id=p_student_id AND e.placement_kind='PRIMARY'
+    AND e.placement_state='ACTIVE'
+    AND e.effective_from<=pg_catalog.statement_timestamp()::date
+    AND (e.effective_until IS NULL
+         OR pg_catalog.statement_timestamp()::date<e.effective_until)
+    AND so.campus_id=co.campus_id;
+  IF placement_count<>1 OR campus IS NULL OR
+     (p_campus_id IS NOT NULL AND p_campus_id<>campus) THEN
+    RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_CONTEXT_DENIED';
+  END IF;
+  -- Workflow has only purpose-scoped SELECT columns; target locking and
+  -- version enforcement are delegated to the existing Student executor.
+  SELECT x.row_version,x.current_status INTO target_version,target_state
+    FROM app_private.students x WHERE x.id=p_student_id;
+  IF NOT FOUND OR target_state IS DISTINCT FROM 'ACTIVE'
+    THEN RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_STUDENT_UNAVAILABLE'; END IF;
+  IF app_private.d1_profile_authorized(
+    actor,'student.profile.update','STUDENT',p_student_id,campus,NULL)
+       IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_PERMISSION_REVOKED';
+  END IF;
+  SELECT * INTO policy FROM app_private.d1_profile_policy(
+     'student.profile.update',campus);
+  IF policy.policy_id IS NULL OR policy.route_mode IS DISTINCT FROM 'APPROVAL'
+    OR app_private.d1_p1_route('student.profile.update',campus)
+       IS DISTINCT FROM 'APPROVAL' THEN
+    RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_ROUTE_CHANGED';
+  END IF;
+  IF recorded.request_id IS NOT NULL THEN
+    -- Rebind old receipt/request/actor using persistent immutable evidence.
+    IF NOT EXISTS (
+      SELECT 1 FROM app_private.approval_requests r
+      JOIN app_private.command_receipts c
+        ON c.id=recorded.submit_receipt_id AND c.request_id=r.id
+      JOIN app_private.operation_contracts o ON o.id=r.operation_id
+      WHERE r.id=recorded.request_id
+        AND r.target_ref=p_student_id AND r.requester_id=actor
+        AND r.expected_target_version=p_expected_version
+        AND r.policy_id=policy.policy_id AND r.campus_id=campus
+        AND o.id=c.operation_id AND o.code='student.profile.update'
+        AND o.contract_version=1 AND o.enabled
+        AND c.principal_id=actor
+        AND c.command_kind='request.submit'
+        AND c.idempotency_key=p_idempotency_key
+        AND c.state='SUCCEEDED'
+        AND c.result_ref=r.id
+    ) OR app_private.d1_profile_participant(recorded.request_id,actor)
+       IS DISTINCT FROM 'REQUESTER' THEN
+      RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_RECEIPT_DENIED';
+    END IF;
+    RETURN QUERY SELECT recorded.request_id,3::bigint;
+    RETURN;
+  END IF;
+
+  -- Fail closed when this key previously belonged to a legacy unsealed
+  -- submission rather than silently adopting another entry point's receipt.
+  SELECT count(*) INTO legacy_count
+    FROM app_private.command_receipts c
+    JOIN app_private.operation_contracts o ON o.id=c.operation_id
+   WHERE c.principal_id=actor AND c.idempotency_key=p_idempotency_key
+     AND c.command_kind='request.submit'
+     AND o.code='student.profile.update' AND o.contract_version=1;
+  IF legacy_count<>0 THEN
+    RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_UNSEALED_KEY';
+  END IF;
+  IF target_version IS DISTINCT FROM p_expected_version THEN
+    RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_STALE';
+  END IF;
+  after_profile:=app_private.d1_student_profile_typed_approval_resolve_trial(
+     p_student_id,p_campus_id,p_expected_version,p_actions,normalized_reason);
+  SELECT r.request_id,r.request_version INTO request_row
+    FROM app_private.d1_profile_submit(
+      'STUDENT',p_student_id,p_campus_id,p_expected_version,
+      after_profile,normalized_reason,p_idempotency_key) r;
+  IF request_row.request_id IS NULL OR request_row.request_version<>3 THEN
+    RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_SUBMIT_FAILED';
+  END IF;
+  SELECT count(*),min(c.id::text)::uuid INTO receipt_count,receipt_id
+    FROM app_private.command_receipts c
+    JOIN app_private.operation_contracts o ON o.id=c.operation_id
+   WHERE c.request_id=request_row.request_id
+     AND c.principal_id=actor AND c.idempotency_key=p_idempotency_key
+     AND c.command_kind='request.submit' AND c.state='SUCCEEDED'
+     AND c.result_ref=request_row.request_id
+     AND o.code='student.profile.update' AND o.contract_version=1
+     AND o.id=c.operation_id;
+  IF receipt_count<>1 OR receipt_id IS NULL THEN
+    RAISE EXCEPTION 'D1_TYPED_APPROVAL_SEAL_SUBMIT_RECEIPT_MISSING';
+  END IF;
+  INSERT INTO app_private.student_profile_approval_intent_seals(
+    principal_id,idempotency_key,student_id,campus_hint,expected_version,
+    canonical_intent_sha256,request_id,submit_receipt_id)
+  VALUES (actor,p_idempotency_key,p_student_id,p_campus_id,
+    p_expected_version,fingerprint,request_row.request_id,receipt_id);
+  RETURN QUERY SELECT request_row.request_id,request_row.request_version;
+END
+$typed_sealed_submit$;
+REVOKE ALL ON FUNCTION app.d1_submit_student_profile_typed_approval_trial(
+ uuid,uuid,bigint,jsonb,text,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_submit_student_profile_typed_approval_trial(
+ uuid,uuid,bigint,jsonb,text,text) TO authenticated;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_workflow_executor;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
+RESET ROLE;
