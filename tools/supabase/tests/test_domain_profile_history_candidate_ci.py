@@ -81,6 +81,43 @@ class StudentProfileHistoryCandidateTests(unittest.TestCase):
         self.assertEqual(sql.count("CREATE FUNCTION app.d1_student_profile_typed_preflight_trial"),1)
         self.assertNotIn(r"\ir fixtures/command_actor.sql",sql)
 
+    def test_direct_authenticated_trial_quarantine(self):
+        source=(ROOT/history.DIRECT_TRIAL).read_text(encoding="utf-8")
+        history.validate_typed_direct_source(source,ROOT)
+        self.assertIn("TYPED_DIRECT_CANONICAL_REPLAY_FAIL",history.DIRECT_TRIAL_TESTS)
+        self.assertIn("TYPED_DIRECT_RESTRICTED_HISTORY_BINDING_FAIL",history.DIRECT_TRIAL_TESTS)
+        self.assertIn("D1_TYPED_DIRECT_TRIAL_NOT_ROLLED_BACK",history.DIRECT_TRIAL_CLEANUP)
+        self.assertEqual(history.DIRECT_TRIAL.parts[1],"proposals")
+
+    def test_direct_guard_denies_active_or_unsafe_variants(self):
+        source=(ROOT/history.DIRECT_TRIAL).read_text(encoding="utf-8")
+        cases=[
+            source+"\nCOMMIT;\n",
+            source.replace("D1_TYPED_DIRECT_STALE","REMOVED_VERSION_PROTECTION"),
+            source.replace("FOR UPDATE;",";"),
+            source.replace("app_private.d1_profile_authorized(","true("),
+            source.replace("app_private.d1_profile_receipt(","fake_receipt("),
+            source.replace("REVOKE CREATE ON SCHEMA app_private,app FROM schoolos_student_executor;",""),
+        ]
+        for altered in cases:
+            with self.subTest(kind=altered[-50:]):
+                with self.assertRaises(RuntimeError):
+                    history.validate_typed_direct_source(altered,ROOT)
+
+    def test_direct_trial_uses_genuine_66_fixture_and_savepoint(self):
+        src=history.render_auth_trial_sql(
+            (ROOT/history.AUTH_BASELINE).read_text(encoding="utf-8"),
+            (ROOT/history.TYPED_FIXTURE).read_text(encoding="utf-8"),
+            (ROOT/history.CANDIDATE).read_text(encoding="utf-8"),
+            (ROOT/history.TYPED_TRIAL).read_text(encoding="utf-8"),
+            (ROOT/history.AUTH_PREFLIGHT).read_text(encoding="utf-8")+"\n"+
+                (ROOT/history.DIRECT_TRIAL).read_text(encoding="utf-8"),
+            history.DIRECT_TRIAL_TESTS)
+        self.assertTrue(src.rstrip().endswith("ROLLBACK;"))
+        self.assertIn("SAVEPOINT typed_direct_trial_boundary;",src)
+        self.assertIn("ROLLBACK TO SAVEPOINT typed_direct_trial_boundary;",src)
+        self.assertEqual(src.count("CREATE FUNCTION app.d1_student_profile_typed_direct_trial("),1)
+
     def test_local_runner_always_rolls_back(self):
         source=(ROOT / history.CANDIDATE).read_text(encoding="utf-8")
         self.assertIn("HISTORY_PRIVILEGE_LEAK",history.PROBE)

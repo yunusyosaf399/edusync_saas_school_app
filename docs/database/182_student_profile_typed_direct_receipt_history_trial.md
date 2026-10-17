@@ -1,0 +1,23 @@
+# D1 Student Profile typed DIRECT receipt/history — disposable authenticated integration
+
+Date: 2026-10-17. **Status: TEST CANDIDATE, NOT REVIEW-APPROVED FOR DEPLOYMENT OR ACCEPTED AS A PROTECTED OPERATION.** Builds on SP-01…SP-08 owner decisions, merged PR #79 physical history candidate, #80 typed/atomic candidate, and #81 authenticated preflight.
+
+The separate, quarantined `supabase/proposals/student_profile_typed_direct_trial.sql.draft` installs a temporary Student-only authenticated DIRECT handler in a **disposable PostgreSQL BEGIN/ROLLBACK**. The executing role is existing non-login `schoolos_student_executor` (never service_role). The only table extension is a **temporary trial-only INSERT grant and RLS policy** on the uninstalled restricted history candidate. These do not survive rollback, are not a production authorization grant, and do not modify frozen D1 Migration 10.
+
+## Specific behavior under test
+
+- Requests contain six explicitly typed field actions (UNCHANGED, SET, CLEAR), Student UUID, optional campus hint, exact optimistic row version, nonblank private reason and a typed idempotency key. Unsupported payload keys and invalid actions are rejected.
+- A pure fixed-six-field canonicalizer creates JCS-compatible nested **arrays** with normalized SET values. The frozen D1 receipt mechanism accepts a four-element intent whose final element holds normalized actions and the **private reason**. No frozen JCS key list, operation catalog, contract version or Employee RPC is modified.
+- The handler takes the existing school-wide shared grant lock and receipt-key advisory lock, locks the actual individual Principal and affected Student, resolves the Student's single current PRIMARY Campus and current authorization/P1 DIRECT route, calls the separately accepted authenticated preflight on new commands, preserves unchanged PROFILE fields, updates the Student and creates a *matching* successful command receipt.
+- Within that same transaction it retains a single immutable, private typed before/after revision including the real actor, reason and Student old/new version, then emits the existing minimized Profile audit and `student.profile_changed` event. A failed insert/receipt/audit/outbox aborts the Student change, not just the history.
+- Same-key/canonically same-request historical replay rechecks **current** Student placement, live grant and effective DIRECT policy, returns the earlier result and adds no Student update/history/audit/event. Same key with a different reason/intent is rejected; stale new-key version denied. New unverified Student Profile photo SET is denied.
+- The unmodified 74-suite D1 baseline still runs normally. An **additional**, transaction-rolled-back copy of baseline authenticated suite 66 injects a SAVEPOINT around the new handler's successful call and negative/replay/evidence checks, then rolls back the savepoint and resumes the same untouched original suite. An independent connection checks that no history relation or test-only handler persisted.
+
+## Limits and next acceptance gates
+
+- **No live public Student RPC is replaced/activated** and no physical post-D1 history migration is installed. The legacy positional Student Profile functions still overwrite omitted fields with NULL and lack the mandated DIRECT private reason; they remain disabled in the frozen deployment baseline.
+- The current test-only history INSERT policy and Student executor authority are **not sufficient for a production purpose-scoped writer**. Independent security review must approve a narrowly dedicated history writer role, exact approved migration/upgrade/retention/erasure, value-lifetime safeguards, rollback and forensic checked reads.
+- This trial does not implement the independent, current reviewer SUBMIT/REVIEW/APPLY process or the no-PRIMARY-placement schoolwide ALL case; it does not validate positive same-Student photo file entitlement or true two-session Student DIRECT-vs-APPLY and grant revocation races. Both must be added before closing issue #67.
+- This PR can only be merged as an inactive, local-only candidate after exact-head D1 local runtime, Foundation and static workflow PASS. **Protected acceptance remains 31/35**. No hosted Supabase environment touched; Migration 10 remains .sql.draft with 34 D1 base relations, 97 permissions, 322 scope alternatives and 36 operations.
+
+**Simple example:** a permitted teacher corrects Previous School to “Corrected Academy”; the contact stays unchanged. The private history contains the previous and updated school, but broad events do not. A retry with the same normalized inputs returns the existing result instead of writing a second change.
