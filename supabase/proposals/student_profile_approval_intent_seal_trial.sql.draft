@@ -67,6 +67,7 @@ USING (command_kind='request.submit' AND request_id IS NOT NULL);
 GRANT SELECT (idempotency_key)
  ON app_private.command_receipts TO schoolos_workflow_executor;
 GRANT CREATE ON SCHEMA app_private TO schoolos_workflow_executor;
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
 RESET ROLE;
 SET ROLE schoolos_workflow_executor;
 
@@ -303,4 +304,5 @@ GRANT EXECUTE ON FUNCTION app.d1_submit_student_profile_typed_approval_trial(
 RESET ROLE;
 SET ROLE schoolos_schema_owner;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_workflow_executor;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
 RESET ROLE;
