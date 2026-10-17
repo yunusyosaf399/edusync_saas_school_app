@@ -388,9 +388,11 @@ def render_approval_trial(
     if source67.count(APPROVAL_INSERT_ANCHOR)!=1:
         raise RuntimeError("D1_APPROVAL_INJECTION_ANCHOR_DRIFT")
     sql=source67.replace(r"\ir fixtures/command_actor.sql",fixture)
-    sql=sql.replace("BEGIN;\n","BEGIN;\n"+history+"\n"+typed+"\n"+
+    # Quieten repeated pgTAP output until the injected check succeeds. SQL
+    # failures remain on stderr and cannot be buried under stdout tail.
+    sql=sql.replace("BEGIN;\n","BEGIN;\n\\o /dev/null\n"+history+"\n"+typed+"\n"+
       auth+"\n"+approval+"\n",1)
-    sql=sql.replace(APPROVAL_INSERT_ANCHOR,checks+"\n"+APPROVAL_INSERT_ANCHOR,1)
+    sql=sql.replace(APPROVAL_INSERT_ANCHOR,checks+"\n\\o\n"+APPROVAL_INSERT_ANCHOR,1)
     if r"\ir " in sql:
         raise RuntimeError("D1_APPROVAL_UNRESOLVED_INCLUDE")
     return sql
