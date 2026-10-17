@@ -115,7 +115,7 @@ BEGIN
     AND f.state='AVAILABLE' AND f.validated_at IS NOT NULL
     AND f.purpose_code='STUDENT_PROFILE_PHOTO'
     AND f.classification='PRIVATE'
-    AND f.content_type IN ('image/jpeg','image/png','image/webp')
+    AND f.content_type IN ('image/jpeg','image/png')
     AND f.byte_size BETWEEN 1 AND 1048576
     AND pg_catalog.octet_length(f.content_hash)=32
  );
