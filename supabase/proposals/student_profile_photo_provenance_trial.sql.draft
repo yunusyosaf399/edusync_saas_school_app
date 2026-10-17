@@ -53,7 +53,9 @@ GRANT SELECT (id,campus_id,purpose_code,state,validated_at,
 -- Existing Student trial scopes already expose Class Offering IDs/Campus,
 -- not its school_id. Limit this incremental join to the one school column.
 GRANT SELECT (school_id) ON app_private.class_offerings TO schoolos_student_executor;
-GRANT SELECT (school_id) ON app.campuses TO schoolos_student_executor;
+CREATE POLICY spprov_trial_campus_ancestry_read ON app.campuses
+ FOR SELECT TO schoolos_student_executor USING (true);
+GRANT SELECT (id,school_id) ON app.campuses TO schoolos_student_executor;
 GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
 RESET ROLE;
 SET ROLE schoolos_student_executor;
@@ -129,7 +131,7 @@ REVOKE ALL ON FUNCTION app_private.d1_student_profile_photo_provenance_trial(
  uuid,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
 RESET ROLE;
 SET ROLE schoolos_schema_owner;
-REVOKE SELECT (school_id) ON app_private.class_offerings FROM schoolos_student_executor;
-REVOKE SELECT (school_id) ON app.campuses FROM schoolos_student_executor;
+-- Source-scoped column SELECT and Campus RLS remain valid only until
+-- the enclosing disposable BEGIN/ROLLBACK. No hosted grant is committed.
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
 RESET ROLE;
