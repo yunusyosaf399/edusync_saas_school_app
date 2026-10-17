@@ -72,7 +72,7 @@ SELECT pg_catalog.set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
  WHERE id='b7000000-0000-4000-8000-000000000002'),'is_anonymous',false)::text,true);
 SET ROLE authenticated;
 SELECT * FROM app.d1_review_profile_request(
- current_setting('schoolos_test.typed_req'),'APPROVE',3,'Independent typed approval',
+ current_setting('schoolos_test.typed_req')::uuid,'APPROVE',3,'Independent typed approval',
  'typed-approve-reviewer'
 ) \gset typed_review_
 SELECT pg_catalog.set_config('schoolos_test.typed_review_v',:'typed_review_request_version',true);
@@ -102,7 +102,7 @@ UPDATE app_private.role_permission_grants SET revoked_at=pg_catalog.clock_timest
  WHERE id='b7000000-0000-4000-8000-000000000013';
 SET ROLE authenticated;
 SELECT * FROM app.d1_apply_student_profile_typed_approval_trial(
- current_setting('schoolos_test.typed_req'),4,'typed-approval-reviewer-revoked'
+ current_setting('schoolos_test.typed_req')::uuid,4,'typed-approval-reviewer-revoked'
 ) \gset typed_invalid_
 SELECT pg_catalog.set_config('schoolos_test.typed_invalid_state',:'typed_invalid_request_state',true);
 DO $typed_invalidation_check$
@@ -124,7 +124,7 @@ ROLLBACK TO SAVEPOINT typed_reviewer_revoked;
 
 SET ROLE authenticated;
 SELECT * FROM app.d1_apply_student_profile_typed_approval_trial(
- current_setting('schoolos_test.typed_req'),4,'typed-approval-apply'
+ current_setting('schoolos_test.typed_req')::uuid,4,'typed-approval-apply'
 ) \gset typed_applied_
 SELECT pg_catalog.set_config('schoolos_test.typed_applied_v',:'typed_applied_request_version',true);
 SELECT pg_catalog.set_config('schoolos_test.typed_applied_state',:'typed_applied_request_state',true);
@@ -137,7 +137,7 @@ BEGIN
 END
 $typed_applied_check$;
 SELECT * FROM app.d1_apply_student_profile_typed_approval_trial(
- current_setting('schoolos_test.typed_req'),4,'typed-approval-apply'
+ current_setting('schoolos_test.typed_req')::uuid,4,'typed-approval-apply'
 ) \gset typed_applied_replay_
 SELECT pg_catalog.set_config('schoolos_test.typed_replay_v',:'typed_applied_replay_request_version',true);
 SELECT pg_catalog.set_config('schoolos_test.typed_replay_state',:'typed_applied_replay_request_state',true);
