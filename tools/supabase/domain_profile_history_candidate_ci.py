@@ -8,6 +8,10 @@ PASS_MARKER = "D1_STUDENT_PROFILE_HISTORY_CANDIDATE_PASS"
 TYPED_TRIAL = Path("supabase/proposals/student_profile_typed_atomic_trial.sql.draft")
 AUTH_PREFLIGHT = Path("supabase/proposals/student_profile_typed_auth_preflight_trial.sql.draft")
 DIRECT_TRIAL = Path("supabase/proposals/student_profile_typed_direct_trial.sql.draft")
+APPROVAL_TRIAL = Path("supabase/proposals/student_profile_typed_approval_trial.sql.draft")
+APPROVAL_TEST = Path("supabase/proposals/student_profile_typed_approval_acceptance.sql.draft")
+APPROVAL_BASELINE = Path("supabase/tests/domain/67_student_profile_p1_approval_review_apply.sql")
+APPROVAL_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_APPROVAL_HISTORY_PASS"
 DIRECT_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_DIRECT_RECEIPT_PASS"
 AUTH_BASELINE = Path("supabase/tests/domain/66_student_profile_p1_direct_history_authorization.sql")
 AUTH_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_AUTH_PREFLIGHT_PASS"
@@ -313,6 +317,104 @@ def run_typed_direct_trial(container: str, run_psql, history: str,
     run_psql(container,DIRECT_TRIAL_CLEANUP,"D1_STUDENT_PROFILE_TYPED_DIRECT_ROLLBACK_PROOF",timeout=45)
     print(DIRECT_PASS_MARKER+" authenticated DIRECT canonical replay/receipt/locked Student/private history/outbox")
 
+
+def validate_typed_approval_source(source: str, root: Path = ROOT) -> None:
+    if not source.startswith("-- STUDENT_PROFILE_TYPED_APPROVAL_ROLLBACK_ONLY\n"):
+        raise RuntimeError("D1_APPROVAL_TRIAL_QUARANTINE")
+    if "\r" in source or "\x00" in source or not source.endswith("\n"):
+        raise RuntimeError("D1_APPROVAL_TRIAL_ENCODING")
+    for required in (
+        "CREATE FUNCTION app.d1_submit_student_profile_typed_approval_trial(",
+        "CREATE FUNCTION app.d1_apply_student_profile_typed_approval_trial(",
+        "CREATE FUNCTION app_private.d1_student_profile_typed_approval_resolve_trial(",
+        "CREATE FUNCTION app_private.d1_student_profile_approved_postimage_trial(",
+        "app_private.d1_student_profile_typed_plan_trial(",
+        "app_private.d1_profile_submit(",
+        "app.d1_apply_profile_request(",
+        "app_private.d1_student_profile_approved_postimage_trial(",
+        "INSERT INTO app_private.student_profile_revisions",
+        "FOR UPDATE;",
+        "schoolos_workflow_executor",
+        "schoolos_student_executor",
+        "D1_TYPED_APPROVAL_RECEIPT_BINDING",
+        "D1_TYPED_APPROVAL_POSTIMAGE_MISMATCH",
+        "REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;",
+    ):
+        if required not in source:
+            raise RuntimeError("D1_APPROVAL_TRIAL_MISSING "+required)
+    for forbidden in (
+        "\nCOMMIT;", "\nBEGIN;", "CREATE ROLE ", "CREATE TABLE ",
+        "DROP TABLE ", "DISABLE ROW LEVEL SECURITY",
+        "GRANT SELECT ON APP_PRIVATE.STUDENTS TO AUTHENTICATED",
+    ):
+        if forbidden in source.upper():
+            raise RuntimeError("D1_APPROVAL_TRIAL_UNSAFE "+forbidden.strip())
+    if APPROVAL_TRIAL.parts[1]!="proposals" or any(
+      p.name==APPROVAL_TRIAL.name for p in discover_drafts(root)):
+        raise RuntimeError("D1_APPROVAL_TRIAL_ACTIVE_MIGRATION")
+
+APPROVAL_INSERT_ANCHOR = (
+  "SELECT * FROM app.d1_submit_student_profile_update(\n"
+  " 'b1000000-0000-4000-8000-000000000001',NULL,NULL,NULL,NULL,NULL,\n"
+  " 'Candidate P1 Approved School',NULL,:'initial_target_version'::bigint,\n"
+  " 'Review previous-school data','p1-profile-submit-one'\n"
+  ") \\gset req_"
+)
+
+APPROVAL_CLEANUP = """
+DO $approval_trial_cleanup$
+BEGIN
+ IF pg_catalog.to_regprocedure(
+   'app.d1_submit_student_profile_typed_approval_trial(uuid,uuid,bigint,jsonb,text,text)'
+ ) IS NOT NULL
+ OR pg_catalog.to_regprocedure(
+   'app.d1_apply_student_profile_typed_approval_trial(uuid,bigint,text)'
+ ) IS NOT NULL
+ OR pg_catalog.to_regclass('app_private.student_profile_revisions') IS NOT NULL
+ THEN RAISE EXCEPTION 'D1_APPROVAL_TRIAL_NOT_ROLLED_BACK'; END IF;
+END
+$approval_trial_cleanup$;
+"""
+
+def render_approval_trial(
+  source67: str, fixture: str, history: str, typed: str, auth: str,
+  approval: str, checks: str
+) -> str:
+    if source67.count("BEGIN;\n") != 1 or not source67.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("D1_APPROVAL_BASELINE_TRANSACTION_DRIFT")
+    if source67.count(r"\ir fixtures/command_actor.sql")!=1:
+        raise RuntimeError("D1_APPROVAL_FIXTURE_DRIFT")
+    if source67.count(APPROVAL_INSERT_ANCHOR)!=1:
+        raise RuntimeError("D1_APPROVAL_INJECTION_ANCHOR_DRIFT")
+    sql=source67.replace(r"\ir fixtures/command_actor.sql",fixture)
+    sql=sql.replace("BEGIN;\n","BEGIN;\n"+history+"\n"+typed+"\n"+
+      auth+"\n"+approval+"\n",1)
+    sql=sql.replace(APPROVAL_INSERT_ANCHOR,checks+"\n"+APPROVAL_INSERT_ANCHOR,1)
+    if r"\ir " in sql:
+        raise RuntimeError("D1_APPROVAL_UNRESOLVED_INCLUDE")
+    return sql
+
+def run_typed_approval_trial(
+  container: str, run_psql, history: str, typed: str, root: Path = ROOT
+) -> None:
+    approval=(Path(root)/APPROVAL_TRIAL).read_text(encoding="utf-8")
+    auth=(Path(root)/AUTH_PREFLIGHT).read_text(encoding="utf-8")
+    checks=(Path(root)/APPROVAL_TEST).read_text(encoding="utf-8")
+    validate_typed_auth_preflight_source(auth,root)
+    validate_typed_approval_source(approval,root)
+    if not checks.startswith("-- Local-only injected approval acceptance") or "\nCOMMIT;" in checks:
+        raise RuntimeError("D1_APPROVAL_INTEGRATION_TEST_QUARANTINE")
+    baseline=(Path(root)/APPROVAL_BASELINE).read_text(encoding="utf-8")
+    fixture=(Path(root)/TYPED_FIXTURE).read_text(encoding="utf-8")
+    sql=render_approval_trial(baseline,fixture,history,typed,auth,approval,checks)
+    if container!="supabase_db_saas_OS_school_app":
+        raise RuntimeError("D1_APPROVAL_TRIAL_DISPOSABLE_CONTAINER_ONLY")
+    run_psql(container,sql,"D1_STUDENT_PROFILE_TYPED_APPROVAL_INTEGRATION",timeout=300)
+    run_psql(container,APPROVAL_CLEANUP,
+      "D1_STUDENT_PROFILE_TYPED_APPROVAL_ROLLBACK_PROOF",timeout=45)
+    print(APPROVAL_PASS_MARKER+" authenticated SUBMIT/independent REVIEW/APPLY/stale invalidation/private history rollback-only")
+
+
 def run_history_candidate(container: str, run_psql, root: Path = ROOT) -> None:
     source = (Path(root) / CANDIDATE).read_text(encoding="utf-8")
     validate_candidate_source(source, root)
@@ -333,5 +435,6 @@ def run_history_candidate(container: str, run_psql, root: Path = ROOT) -> None:
     run_psql(container, TYPED_CLEANUP, "D1_STUDENT_PROFILE_TYPED_ATOMIC_TRIAL_CLEANUP", timeout=45)
     run_typed_authenticated_preflight(container, run_psql, source, typed, root)
     run_typed_direct_trial(container, run_psql, source, typed, root)
+    run_typed_approval_trial(container, run_psql, source, typed, root)
     print(PASS_MARKER + " rollback-only DDL/RLS/ACL/check/FK smoke")
     print(TYPED_PASS_MARKER + " normalized fixed-six-field plan, row/revision atomic trial, rollback cleanup")
