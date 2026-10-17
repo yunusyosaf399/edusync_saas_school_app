@@ -38,6 +38,21 @@ CREATE TRIGGER spprov_trial_immutable
 REVOKE ALL ON TABLE app_private.student_profile_photo_provenance_trial
  FROM PUBLIC,anon,authenticated,service_role,
  schoolos_student_executor,schoolos_workflow_executor,schoolos_read_executor;
+CREATE POLICY spprov_trial_student_executor_read
+ ON app_private.student_profile_photo_provenance_trial
+ FOR SELECT TO schoolos_student_executor USING (true);
+GRANT SELECT (file_id,student_id,school_id,campus_id,purpose_code,
+ uploaded_by_principal_id,committed_at)
+ ON app_private.student_profile_photo_provenance_trial TO schoolos_student_executor;
+CREATE POLICY spprov_trial_photo_file_read ON app_private.file_objects
+ FOR SELECT TO schoolos_student_executor
+ USING (purpose_code='STUDENT_PROFILE_PHOTO');
+GRANT SELECT (id,campus_id,purpose_code,state,validated_at,
+ classification,content_type,byte_size,content_hash,uploaded_by_principal_id)
+ ON app_private.file_objects TO schoolos_student_executor;
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+RESET ROLE;
+SET ROLE schoolos_student_executor;
 
 -- Check is Student-only and has no mutations, no arbitrary object-key input.
 -- Photo link is allowed only when two independent sources agree:
@@ -108,6 +123,7 @@ END
 $student_photo_trial$;
 REVOKE ALL ON FUNCTION app_private.d1_student_profile_photo_provenance_trial(
  uuid,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
-GRANT EXECUTE ON FUNCTION app_private.d1_student_profile_photo_provenance_trial(
- uuid,uuid,uuid) TO schoolos_student_executor;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
 RESET ROLE;
