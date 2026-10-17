@@ -550,8 +550,11 @@ def run_student_photo_provenance_trial(
     validate_typed_auth_preflight_source(auth,root)
     baseline=(Path(root)/AUTH_BASELINE).read_text(encoding="utf-8")
     fixture=(Path(root)/TYPED_FIXTURE).read_text(encoding="utf-8")
+    # Keep PostgreSQL stderr visible when the new fixture fails. Hide only
+    # intermediate fixture stdout, restoring stdout before original suite 66.
     sql=render_auth_trial_sql(baseline,fixture,history,typed,
-        auth+"\n"+proposal,acceptance)
+        auth+"\n"+proposal,acceptance+"\n\\o\n")
+    sql=sql.replace("BEGIN;\n","BEGIN;\n\\o /dev/null\n",1)
     if container!="supabase_db_saas_OS_school_app":
         raise RuntimeError("D1_PHOTO_PROVENANCE_DISPOSABLE_CONTAINER_ONLY")
     run_psql(container,sql,"D1_STUDENT_PROFILE_PHOTO_PROVENANCE_TRIAL",timeout=300)
