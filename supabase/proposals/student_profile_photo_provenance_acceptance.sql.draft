@@ -1,0 +1,233 @@
+-- STUDENT_PROFILE_PHOTO_PROVENANCE_ROLLBACK_ONLY
+-- Authenticated suite 66 creates a genuine accepted Student P0 placement and
+-- a live Student Profile role grant. Run before its first profile success.
+SAVEPOINT photo_provenance_trial_savepoint;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.permissions SET state='ENABLED' WHERE code='student.photo.submit';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions
+   WHERE code='student.photo.submit') AND scope_kind='ALL' AND resolver_key='DIRECT';
+INSERT INTO app_private.role_permission_grants(
+ id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
+SELECT 'c8000000-0000-4000-8000-000000000011',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,p.id,p.family_safe,
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.permissions p WHERE p.code='student.photo.submit';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+ SELECT 'c8000000-0000-4000-8000-000000000012',
+ 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+ g.id,g.role_id,g.permission_id,c.id,'ALL','DIRECT',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.role_permission_grants g
+ JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+ WHERE g.id='c8000000-0000-4000-8000-000000000011'
+ AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+DO $photo_scope_assertions$
+BEGIN
+ IF (SELECT count(*) FROM app_private.role_permission_grants
+     WHERE id='c8000000-0000-4000-8000-000000000011')<>1 OR
+    (SELECT count(*) FROM app_private.assignment_permission_scopes
+     WHERE id='c8000000-0000-4000-8000-000000000012')<>1 THEN
+    RAISE EXCEPTION 'D1_PHOTO_SUBMIT_PERMISSION_SCOPE_UNAVAILABLE';
+ END IF;
+END
+$photo_scope_assertions$;
+-- Synthetic evidence is owned by the schema owner, NOT an upload API. This
+-- proves the SQL relationship predicate only, not entitlement issuance.
+INSERT INTO app_private.file_objects(
+ id,uploaded_by_principal_id,campus_id,storage_location_key,purpose_code,
+ object_key,content_type,byte_size,content_hash,created_by)
+VALUES
+('c8000000-0000-4000-8000-000000000001',
+ '55555555-5555-4555-8555-555555555555',
+ 'b1000000-0000-4000-8000-000000000041',
+ 'photo-gate-test','STUDENT_PROFILE_PHOTO','student-photo-correct',
+ 'image/png',100,pg_catalog.decode(pg_catalog.repeat('ab',32),'hex'),
+ '11111111-1111-4111-8111-111111111111'),
+('c8000000-0000-4000-8000-000000000002',
+ '55555555-5555-4555-8555-555555555555',
+ 'b1000000-0000-4000-8000-000000000041',
+ 'photo-gate-test','STUDENT_PROFILE_PHOTO','student-photo-pending',
+ 'image/jpeg',150,pg_catalog.decode(pg_catalog.repeat('ac',32),'hex'),
+ '11111111-1111-4111-8111-111111111111'),
+('c8000000-0000-4000-8000-000000000003',
+ '55555555-5555-4555-8555-555555555555',
+ 'b1000000-0000-4000-8000-000000000041',
+ 'photo-gate-test','BIRTH_CERTIFICATE','other-purpose',
+ 'image/png',150,pg_catalog.decode(pg_catalog.repeat('ad',32),'hex'),
+ '11111111-1111-4111-8111-111111111111'),
+('c8000000-0000-4000-8000-000000000004',
+ '55555555-5555-4555-8555-555555555555',
+ NULL,
+ 'photo-gate-test','STUDENT_PROFILE_PHOTO','unknown-campus',
+ 'image/png',150,pg_catalog.decode(pg_catalog.repeat('ae',32),'hex'),
+ '11111111-1111-4111-8111-111111111111'),
+('c8000000-0000-4000-8000-000000000005',
+ '55555555-5555-4555-8555-555555555555',
+ 'b1000000-0000-4000-8000-000000000041',
+ 'photo-gate-test','STUDENT_PROFILE_PHOTO','claimed-by-other-uploader',
+ 'image/png',150,pg_catalog.decode(pg_catalog.repeat('af',32),'hex'),
+ '11111111-1111-4111-8111-111111111111');
+UPDATE app_private.file_objects
+ SET state='VALIDATED',validated_at=pg_catalog.statement_timestamp()
+ WHERE id IN ('c8000000-0000-4000-8000-000000000001',
+   'c8000000-0000-4000-8000-000000000003',
+   'c8000000-0000-4000-8000-000000000004',
+   'c8000000-0000-4000-8000-000000000005');
+UPDATE app_private.file_objects SET state='AVAILABLE'
+ WHERE id IN ('c8000000-0000-4000-8000-000000000001',
+   'c8000000-0000-4000-8000-000000000003',
+   'c8000000-0000-4000-8000-000000000004',
+   'c8000000-0000-4000-8000-000000000005');
+INSERT INTO app_private.student_profile_photo_provenance_trial(
+file_id,student_id,school_id,campus_id,
+uploaded_by_principal_id,certified_by_principal_id) VALUES
+('c8000000-0000-4000-8000-000000000001',
+ 'b1000000-0000-4000-8000-000000000001',
+ '22222222-2222-4222-8222-222222222222',
+ 'b1000000-0000-4000-8000-000000000041',
+ '55555555-5555-4555-8555-555555555555',
+ '11111111-1111-4111-8111-111111111111'),
+('c8000000-0000-4000-8000-000000000002',
+ 'b1000000-0000-4000-8000-000000000001',
+ '22222222-2222-4222-8222-222222222222',
+ 'b1000000-0000-4000-8000-000000000041',
+ '55555555-5555-4555-8555-555555555555',
+ '11111111-1111-4111-8111-111111111111'),
+('c8000000-0000-4000-8000-000000000003',
+ 'b1000000-0000-4000-8000-000000000001',
+ '22222222-2222-4222-8222-222222222222',
+ 'b1000000-0000-4000-8000-000000000041',
+ '55555555-5555-4555-8555-555555555555',
+ '11111111-1111-4111-8111-111111111111'),
+('c8000000-0000-4000-8000-000000000004',
+ 'b1000000-0000-4000-8000-000000000001',
+ '22222222-2222-4222-8222-222222222222',
+ 'b1000000-0000-4000-8000-000000000041',
+ '55555555-5555-4555-8555-555555555555',
+ '11111111-1111-4111-8111-111111111111'),
+('c8000000-0000-4000-8000-000000000005',
+ 'b1000000-0000-4000-8000-000000000001',
+ '22222222-2222-4222-8222-222222222222',
+ 'b1000000-0000-4000-8000-000000000041',
+ '11111111-1111-4111-8111-111111111111',
+ '11111111-1111-4111-8111-111111111111');
+RESET ROLE;
+SET ROLE schoolos_student_executor;
+DO $photo_predicate_positive_and_negative$
+DECLARE
+  sid uuid:='b1000000-0000-4000-8000-000000000001';
+  campus uuid:='b1000000-0000-4000-8000-000000000041';
+  idp text:='c8000000-0000-4000-8000-00000000000';
+BEGIN
+ IF app_private.d1_student_profile_photo_provenance_trial(
+ sid,(idp||'1')::uuid,campus) IS DISTINCT FROM true THEN
+   RAISE EXCEPTION 'D1_PHOTO_ELIGIBLE_COMMITTED_FILE_DENIED';
+ END IF;
+ IF app_private.d1_student_profile_photo_provenance_trial(
+ sid,(idp||'2')::uuid,campus) IS DISTINCT FROM false THEN
+   RAISE EXCEPTION 'D1_PHOTO_PENDING_FILE_ACCEPTED';
+ END IF;
+ IF app_private.d1_student_profile_photo_provenance_trial(
+ sid,(idp||'3')::uuid,campus) IS DISTINCT FROM false THEN
+   RAISE EXCEPTION 'D1_PHOTO_WRONG_PURPOSE_ACCEPTED';
+ END IF;
+ IF app_private.d1_student_profile_photo_provenance_trial(
+ sid,(idp||'4')::uuid,campus) IS DISTINCT FROM false THEN
+   RAISE EXCEPTION 'D1_PHOTO_NO_CAMPUS_ACCEPTED';
+ END IF;
+ IF app_private.d1_student_profile_photo_provenance_trial(
+ sid,(idp||'5')::uuid,campus) IS DISTINCT FROM false THEN
+   RAISE EXCEPTION 'D1_PHOTO_UPLOADER_EVIDENCE_MISMATCH_ACCEPTED';
+ END IF;
+ IF app_private.d1_student_profile_photo_provenance_trial(
+ 'b1000000-0000-4000-8000-000000000099',(idp||'1')::uuid,campus)
+ IS DISTINCT FROM false THEN
+   RAISE EXCEPTION 'D1_PHOTO_UNRELATED_STUDENT_ACCEPTED';
+ END IF;
+ IF app_private.d1_student_profile_photo_provenance_trial(
+ sid,(idp||'1')::uuid,'b1000000-0000-4000-8000-000000000099')
+ IS DISTINCT FROM false THEN
+   RAISE EXCEPTION 'D1_PHOTO_WRONG_CAMPUS_ACCEPTED';
+ END IF;
+ IF app_private.d1_student_profile_photo_provenance_trial(
+ sid,'c8000000-0000-4000-8000-000000000099',campus)
+ IS DISTINCT FROM false THEN
+   RAISE EXCEPTION 'D1_PHOTO_UNKNOWN_FILE_ACCEPTED';
+ END IF;
+END
+$photo_predicate_positive_and_negative$;
+RESET ROLE;
+SAVEPOINT photo_provenance_scope_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes
+ SET revoked_at=pg_catalog.clock_timestamp()
+ WHERE id='c8000000-0000-4000-8000-000000000012';
+SET ROLE schoolos_student_executor;
+DO $photo_scope_live_denial$
+BEGIN
+ IF app_private.d1_student_profile_photo_provenance_trial(
+ 'b1000000-0000-4000-8000-000000000001',
+ 'c8000000-0000-4000-8000-000000000001',
+ 'b1000000-0000-4000-8000-000000000041') IS DISTINCT FROM false THEN
+ RAISE EXCEPTION 'D1_PHOTO_REVOKED_PERMISSION_ACCEPTED';
+ END IF;
+END
+$photo_scope_live_denial$;
+RESET ROLE;
+ROLLBACK TO SAVEPOINT photo_provenance_scope_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.file_objects SET state='QUARANTINED'
+ WHERE id='c8000000-0000-4000-8000-000000000001';
+SET ROLE schoolos_student_executor;
+DO $photo_current_state_recheck$
+BEGIN
+ IF app_private.d1_student_profile_photo_provenance_trial(
+ 'b1000000-0000-4000-8000-000000000001',
+ 'c8000000-0000-4000-8000-000000000001',
+ 'b1000000-0000-4000-8000-000000000041') IS DISTINCT FROM false THEN
+   RAISE EXCEPTION 'D1_PHOTO_QUARANTINED_RELINK_ACCEPTED';
+ END IF;
+END
+$photo_current_state_recheck$;
+RESET ROLE;
+SET ROLE authenticated;
+DO $photo_privacy_client$
+BEGIN
+ BEGIN
+  PERFORM 1 FROM app_private.student_profile_photo_provenance_trial;
+  RAISE EXCEPTION 'D1_PHOTO_BINDING_CLIENT_READ_ALLOWED';
+ EXCEPTION WHEN insufficient_privilege THEN NULL;
+ END;
+ BEGIN
+  PERFORM app_private.d1_student_profile_photo_provenance_trial(
+  'b1000000-0000-4000-8000-000000000001',
+  'c8000000-0000-4000-8000-000000000001',
+  'b1000000-0000-4000-8000-000000000041');
+  RAISE EXCEPTION 'D1_PHOTO_PRIVATE_CHECK_CLIENT_EXECUTE';
+ EXCEPTION WHEN insufficient_privilege THEN NULL;
+ END;
+END
+$photo_privacy_client$;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+DO $photo_immutable_evidence$
+BEGIN
+ BEGIN
+  DELETE FROM app_private.student_profile_photo_provenance_trial
+   WHERE file_id='c8000000-0000-4000-8000-000000000001';
+  RAISE EXCEPTION 'D1_PHOTO_PROVENANCE_MUTABLE';
+ EXCEPTION WHEN OTHERS THEN
+  IF SQLERRM IS DISTINCT FROM 'Student Profile revision records are immutable'
+  THEN RAISE; END IF;
+ END;
+END
+$photo_immutable_evidence$;
+RESET ROLE;
+ROLLBACK TO SAVEPOINT photo_provenance_trial_savepoint;
+SET ROLE authenticated;
