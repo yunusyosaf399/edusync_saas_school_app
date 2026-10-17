@@ -46,8 +46,7 @@ BEGIN
       AND e.effective_from<=pg_catalog.statement_timestamp()::date
       AND (e.effective_until IS NULL OR
            pg_catalog.statement_timestamp()::date<e.effective_until)
-      AND so.campus_id=co.campus_id AND so.state='ACTIVE'
-      AND co.state='ACTIVE';
+      AND so.campus_id=co.campus_id;
   -- No-placement ALL/schoolwide policy requires a distinct reviewed gate.
   -- Do not guess an effective Campus or trust p_campus_hint.
   IF placement_count<>1 OR resolved_campus IS NULL
