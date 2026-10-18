@@ -581,6 +581,10 @@ def validate_photo_actor_resolver_trial_source(source: str, root: Path = ROOT) -
         "e.placement_kind='PRIMARY'",
         "e.placement_state='ACTIVE'",
         "active_primary_count<>1",
+        "app_private.d1_enrollment_place_destination(",
+        "CROSS JOIN LATERAL",
+        "dst.class_state='OPEN'",
+        "dst.section_state='OPEN'",
         "resolved_campus IS DISTINCT FROM p_campus_id",
         "app_private.d1_profile_authorized(",
         "app_private.d1_authorized(",
@@ -590,6 +594,12 @@ def validate_photo_actor_resolver_trial_source(source: str, root: Path = ROOT) -
     ):
         if required not in source:
             raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_REQUIRED "+required)
+    # Student executor has NO Class/Section Offering SELECT privilege.
+    # Require the frozen academic-executor-owned destination helper instead.
+    if ("JOIN app_private.class_offerings " in source
+        or "JOIN app_private.section_offerings " in source
+        or "GRANT SELECT" in source.upper()):
+        raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_ACADEMIC_READ_BOUNDARY")
     for forbidden in ("\nCOMMIT;", "\nBEGIN;", "CREATE ROLE ", "CREATE TABLE ",
                       "DISABLE ROW LEVEL SECURITY", "GRANT EXECUTE ON FUNCTION ",
                       "GRANT ALL ON ", "GRANT SELECT ON APP_PRIVATE."):
