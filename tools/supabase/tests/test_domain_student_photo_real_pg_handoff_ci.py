@@ -20,6 +20,12 @@ class RealPostgresStudentPhotoHandoffGuards(unittest.TestCase):
         self.assertIn("app.d1_place_student_enrollment(",sql)
         self.assertIn("'INITIAL',CURRENT_DATE-20",sql)
         self.assertIn("CREATE FUNCTION app_private.d1_student_photo_private_issue_resolver_trial(",sql)
+        self.assertIn("CROSS JOIN LATERAL app_private.d1_enrollment_place_destination(",sql)
+        self.assertIn("dst.class_state='OPEN'",sql)
+        self.assertIn("dst.section_state='OPEN'",sql)
+        self.assertNotIn("JOIN app_private.class_offerings co",sql)
+        self.assertNotIn("JOIN app_private.section_offerings so",sql)
+        self.assertNotIn("GRANT SELECT ON app_private.class_offerings",sql)
         self.assertIn("CAMPUS','DIRECT'",sql)
         self.assertIn("D1_PHOTO_REAL_PG_P0_PRIMARY_MISSING",sql)
         # Auth must precede ALL mutations covered by the D1 guard, even
