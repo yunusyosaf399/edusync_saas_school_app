@@ -37,6 +37,8 @@ jobs:
         run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_atomic_finalize_fence_candidate.py' -v
       - name: Signed private-service opaque Student photo intent and process replay tests
         run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_durable_intent_candidate.py' -v
+      - name: Server-held PostgreSQL authorization session and opaque intent handoff trial tests
+        run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_postgres_verified_handoff_candidate.py' -v
       - name: Authenticated PostgreSQL Student photo Principal and Campus resolver static regressions
         run: python -m unittest discover -s tools/supabase/tests -p 'test_student_photo_real_actor_resolver_ci.py' -v
       - name: Confirm no operational upload endpoint exists here
@@ -58,5 +60,10 @@ jobs:
           assert "NOT an upload API" in ledger
           assert "photo_private_trial_intents" in ledger
           assert "never persists" in ledger
+          handoff = Path('tools/photo_validation/student_photo_postgres_verified_handoff_candidate.py').read_text()
+          assert "NEVER an operational worker" in handoff
+          assert "def issue_verified_trial(" in handoff
+          assert "def consume_verified_trial(" in handoff
+          assert "Ban the legacy caller-provided signed-Boolean path" in handoff
           print("D1_STUDENT_PHOTO_CONTENT_CANDIDATE_PASS decoded JPEG/PNG, sanitized bytes and measured SHA; upload remains disabled")
           PY
