@@ -20,11 +20,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "photo_validation"))
 sys.path.insert(0, str(ROOT / "tools" / "photo_validation" / "tests"))
 
-STUDENT = "b1000000-0000-4000-8000-000000000001"
-CAMPUS = "b1000000-0000-4000-8000-000000000041"
+STUDENT = "e4000000-0000-4000-8000-000000000001"
+CAMPUS = "e4000000-0000-4000-8000-000000000041"
 PRINCIPAL = "55555555-5555-4555-8555-555555555555"
 SUBJECT_EMAIL = "foundation-rbac-001@example.invalid"
-PHOTO_SCOPE = "d2000000-0000-4000-8000-000000000012"
+PHOTO_SCOPE = "e6000000-0000-4000-8000-000000000012"
 CONTAINER = "supabase_db_saas_OS_school_app"
 PORT = 54322
 
@@ -100,11 +100,49 @@ BEGIN
 END
 $real_pg_fixture_proof$;
 """
-    return ("\nBEGIN;\n" + placement_setup + "\n" + profile_enabled
+    # The prior D1 race harness commits its own test fixtures. The frozen
+    # suite 66 uses rollback-only IDs; namespace every fixture-owned PK and
+    # school-scoped code to avoid reusing those already committed in races.
+    # The protected P0 API and resolver source remain EXACTLY unchanged.
+    fixture_sql = ("\nBEGIN;\n" + placement_setup + "\n" + profile_enabled
         + "\n" + claims + placement_call + "\nRESET ROLE;\n"
         + "SET ROLE schoolos_schema_owner;\n" + grant + "\n"
         + photo + "\nRESET ROLE;\n" + resolver + "\n" + proof
         + "\nCOMMIT;\n")
+    replacements = (
+        ("b1000000-0000-4000-8000-", "e4000000-0000-4000-8000-"),
+        ("b6000000-0000-4000-8000-", "e5000000-0000-4000-8000-"),
+        ("d2000000-0000-4000-8000-", "e6000000-0000-4000-8000-"),
+        ("22222222-2222-4222-8222-222222222222",
+         "e7000000-0000-4000-8000-000000000001"),
+        ("10000000-0000-4000-8000-000000000001",
+         "e8000000-0000-4000-8000-000000000001"),
+        ("'STUDENT-ACCEPT'", "'PHOTO-REAL-PG-94-STUDENT'"),
+        ("'STD-ACCEPT-100'", "'PHOTO-REAL-PG-94-001'"),
+        ("'P0-STUDENT-CAMPUS'", "'PHOTO-REAL-PG-94-CAMPUS'"),
+        ("'P0-STUDENT-YEAR'", "'PHOTO-REAL-PG-94-YEAR'"),
+        ("'P0-STUDENT-CLASS'", "'PHOTO-REAL-PG-94-CLASS'"),
+        ("'student-profile-placement'", "'photo-real-pg-94-place'"),
+    )
+    for original, isolated in replacements:
+        if original not in fixture_sql:
+            raise RuntimeError("D1_PHOTO_REAL_PG_FIXTURE_REMAP_SOURCE_DRIFT")
+        fixture_sql = fixture_sql.replace(original, isolated)
+    isolated_context = """
+SET ROLE schoolos_schema_owner;
+INSERT INTO app_private.school_profiles(
+ id,code,name,timezone,currency_code,locale,created_by)
+VALUES ('e7000000-0000-4000-8000-000000000001',
+ 'PHOTO-REAL-PG-94','Disposable photo integration school','UTC','USD',
+ 'en','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.people(id,display_name,created_by) VALUES
+ ('e8000000-0000-4000-8000-000000000001',
+  'Disposable photo integration Student',
+  '11111111-1111-4111-8111-111111111111');
+RESET ROLE;
+"""
+    return fixture_sql.replace("BEGIN;\n",
+                               "BEGIN;\n"+isolated_context, 1)
 
 
 def _local_connect(psycopg):
