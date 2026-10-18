@@ -16,13 +16,15 @@ class PhotoProtectedEnrollmentEndRaceSourceTests(unittest.TestCase):
             "app.d1_end_student_enrollment(",
             "SET ROLE authenticated",
             "END_KEY",
-            "SOURCE_PRIMARY_COUNT",
-            "SOURCE_SECTION_CHANGED",
+            "_source_primary(psycopg)",
             "SELECT pg_catalog.pg_backend_pid()",
-            "SOURCE_SECTION",
             "NativePostgresPhotoIntentTrial",
         ):
             self.assertIn(required,src)
+        source_lookup=inspect.getsource(trial._source_primary)
+        self.assertIn("SOURCE_PRIMARY_COUNT",source_lookup)
+        self.assertIn("SOURCE_SECTION_CHANGED",source_lookup)
+        self.assertIn("SOURCE_SECTION",source_lookup)
         self.assertNotIn("UPDATE app_private.enrollments",src)
         self.assertNotIn("INSERT INTO app_private.roll_allocations",src)
         self.assertIn("'student.enrollment.end'",trial.SETUP_SQL)
