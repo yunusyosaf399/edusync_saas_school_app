@@ -1,0 +1,154 @@
+-- STUDENT_PHOTO_PRIVATE_ACTOR_SCOPE_ROLLBACK_ONLY
+-- Appended before suite #66's first Profile update, after real P0 PRIMARY
+-- placement, real verified JWT principal and current Profile grant/policy.
+SAVEPOINT student_photo_private_actor_scope_boundary;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.permissions SET state='ENABLED'
+ WHERE code='student.photo.submit';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions
+   WHERE code='student.photo.submit')
+   AND scope_kind='CAMPUS' AND resolver_key='DIRECT';
+INSERT INTO app_private.role_permission_grants(
+ id,role_id,role_family_only,permission_id,permission_family_safe,
+ valid_from,created_by)
+SELECT 'd2000000-0000-4000-8000-000000000011',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,
+ p.id,p.family_safe,pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.permissions p WHERE p.code='student.photo.submit';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,campus_id,valid_from,created_by)
+SELECT 'd2000000-0000-4000-8000-000000000012',
+ 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+ g.id,g.role_id,g.permission_id,c.id,'CAMPUS','DIRECT',
+ 'b1000000-0000-4000-8000-000000000041',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.role_permission_grants g
+ JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+ WHERE g.id='d2000000-0000-4000-8000-000000000011'
+ AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT';
+DO $scope_is_exact$
+BEGIN
+ IF (SELECT count(*) FROM app_private.assignment_permission_scopes
+   WHERE id='d2000000-0000-4000-8000-000000000012')<>1 THEN
+  RAISE EXCEPTION 'D1_PHOTO_REAL_SCOPE_SETUP_MISSING';
+ END IF;
+END $scope_is_exact$;
+RESET ROLE;
+SET ROLE schoolos_student_executor;
+DO $photo_real_actor_positive_and_denials$
+DECLARE
+ s uuid:='b1000000-0000-4000-8000-000000000001';
+ a uuid:='b1000000-0000-4000-8000-000000000041';
+ b uuid:='d2000000-0000-4000-8000-000000000099';
+BEGIN
+ IF app_private.d1_student_photo_private_issue_resolver_trial(s,a)
+   IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1_PHOTO_REAL_AUTHORIZED_PRIMARY_DENIED';
+ END IF;
+ IF app_private.d1_student_photo_private_issue_resolver_trial(s,b)
+   IS DISTINCT FROM false THEN
+    RAISE EXCEPTION 'D1_PHOTO_REAL_CALLER_CAMPUS_FORGERY_ACCEPTED';
+ END IF;
+ IF app_private.d1_student_photo_private_issue_resolver_trial(
+   'b1000000-0000-4000-8000-000000000099',a)
+   IS DISTINCT FROM false THEN
+    RAISE EXCEPTION 'D1_PHOTO_REAL_UNPLACED_STUDENT_ACCEPTED';
+ END IF;
+ IF app_private.d1_student_photo_private_issue_resolver_trial(NULL,a)
+   IS DISTINCT FROM false THEN
+    RAISE EXCEPTION 'D1_PHOTO_REAL_NULL_STUDENT_ACCEPTED';
+ END IF;
+END $photo_real_actor_positive_and_denials$;
+RESET ROLE;
+SET ROLE authenticated;
+DO $private_endpoint_not_public$
+BEGIN
+ BEGIN
+  PERFORM app_private.d1_student_photo_private_issue_resolver_trial(
+   'b1000000-0000-4000-8000-000000000001',
+   'b1000000-0000-4000-8000-000000000041');
+  RAISE EXCEPTION 'D1_PHOTO_REAL_RESOLVER_PUBLICLY_EXECUTABLE';
+ EXCEPTION WHEN insufficient_privilege THEN NULL;
+ END;
+END $private_endpoint_not_public$;
+RESET ROLE;
+SAVEPOINT photo_real_scope_revoke;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes
+ SET revoked_at=pg_catalog.clock_timestamp()
+ WHERE id='d2000000-0000-4000-8000-000000000012';
+SET ROLE schoolos_student_executor;
+DO $photo_real_revoke_denial$
+BEGIN
+ IF app_private.d1_student_photo_private_issue_resolver_trial(
+   'b1000000-0000-4000-8000-000000000001',
+   'b1000000-0000-4000-8000-000000000041')
+   IS DISTINCT FROM false THEN
+  RAISE EXCEPTION 'D1_PHOTO_REAL_REVOKED_SUBMIT_GRANT_ACCEPTED';
+ END IF;
+END $photo_real_revoke_denial$;
+RESET ROLE;
+ROLLBACK TO SAVEPOINT photo_real_scope_revoke;
+-- Simulate a staff member whose ONLY photo-submit grant belongs to Campus B.
+-- The actual Student stays in its real Campus A PRIMARY placement.
+SAVEPOINT photo_real_other_campus_grant;
+SET ROLE schoolos_schema_owner;
+INSERT INTO app.campuses(id,school_id,code,name,state,created_by) VALUES
+ ('d2000000-0000-4000-8000-000000000041',
+  '22222222-2222-4222-8222-222222222222',
+  'PHOTO-OTHER-CAMPUS','Isolated photo-scope other campus','ACTIVE',
+  '11111111-1111-4111-8111-111111111111');
+UPDATE app_private.assignment_permission_scopes
+ SET revoked_at=pg_catalog.clock_timestamp()
+ WHERE id='d2000000-0000-4000-8000-000000000012';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,campus_id,valid_from,created_by)
+SELECT 'd2000000-0000-4000-8000-000000000013',
+ 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+ g.id,g.role_id,g.permission_id,c.id,'CAMPUS','DIRECT',
+ 'd2000000-0000-4000-8000-000000000041',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.role_permission_grants g
+ JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+ WHERE g.id='d2000000-0000-4000-8000-000000000011'
+ AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT';
+SET ROLE schoolos_student_executor;
+DO $photo_real_other_campus_grant_denied$
+BEGIN
+ IF app_private.d1_student_photo_private_issue_resolver_trial(
+   'b1000000-0000-4000-8000-000000000001',
+   'b1000000-0000-4000-8000-000000000041')
+   IS DISTINCT FROM false THEN
+  RAISE EXCEPTION 'D1_PHOTO_REAL_OTHER_CAMPUS_ROLE_ACCEPTED';
+ END IF;
+END $photo_real_other_campus_grant_denied$;
+RESET ROLE;
+ROLLBACK TO SAVEPOINT photo_real_other_campus_grant;
+-- Removing profile permission independently also closes photo intent eligibility.
+SAVEPOINT photo_real_profile_revoke;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes
+ SET revoked_at=pg_catalog.clock_timestamp()
+ WHERE id='b6000000-0000-4000-8000-000000000012';
+SET ROLE schoolos_student_executor;
+DO $photo_real_profile_revoke_denial$
+BEGIN
+ IF app_private.d1_student_photo_private_issue_resolver_trial(
+   'b1000000-0000-4000-8000-000000000001',
+   'b1000000-0000-4000-8000-000000000041')
+   IS DISTINCT FROM false THEN
+  RAISE EXCEPTION 'D1_PHOTO_REAL_PROFILE_GRANT_REVOKED_ACCEPTED';
+ END IF;
+END $photo_real_profile_revoke_denial$;
+RESET ROLE;
+ROLLBACK TO SAVEPOINT photo_real_profile_revoke;
+-- No test permission, Student or Photo-purpose change leaks into suite 66.
+ROLLBACK TO SAVEPOINT student_photo_private_actor_scope_boundary;
+SET ROLE authenticated;
