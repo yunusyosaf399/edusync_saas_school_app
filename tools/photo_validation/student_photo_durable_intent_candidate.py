@@ -22,7 +22,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from student_photo_signed_entitlement_candidate import (
-    LocalSignedPhotoSnapshotCandidate, MAX_AGE_SECONDS,
+    LocalSignedPhotoSnapshotCandidate, MAX_AGE_SECONDS, SignedSnapshotDenied,
     _canonical, _identifier, _natural, _no_duplicate_object,
     _reject_json_constant,
 )
@@ -153,7 +153,7 @@ class LocalPrivatePhotoIntentCandidate(LocalSignedPhotoSnapshotCandidate):
                 }),
             )
         except (ValueError, TypeError, UnicodeError, binascii.Error,
-                OverflowError, InvalidSignature):
+                OverflowError, InvalidSignature, SignedSnapshotDenied):
             _deny()
         if set(payload) != FIELDS:
             _deny()
