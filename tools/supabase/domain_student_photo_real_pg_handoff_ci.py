@@ -40,7 +40,7 @@ def _fixture_sql(root: Path) -> str:
     resolver = (root / "supabase/proposals/student_photo_private_actor_scope_resolver_trial.sql.draft").read_text()
 
     def between(src: str, first: str, last: str) -> str:
-        if src.count(first) != 1 or src.count(last) != 1:
+        if src.count(first) != 1 or src.split(first, 1)[1].count(last) != 1:
             raise RuntimeError("D1_PHOTO_REAL_PG_FIXTURE_BOUNDARY_CHANGED")
         return src.split(first, 1)[1].split(last, 1)[0]
 
