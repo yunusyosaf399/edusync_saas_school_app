@@ -37,9 +37,10 @@ BEGIN
     AND e.effective_from<=pg_catalog.statement_timestamp()::date
     AND (e.effective_until IS NULL OR
          pg_catalog.statement_timestamp()::date<e.effective_until)
-    AND so.campus_id=co.campus_id
-    ; -- OPEN state is enforced by d1_profile_authorized below,
-      -- using the existing role-owned authz_reader, not by extra SELECT grants.
+    AND so.campus_id=co.campus_id;
+  -- The frozen authz_reader-owned d1_profile_authorized check below
+  -- independently verifies OPEN Section/Class states and Student ACTIVE,
+  -- without widening the Student executor's table SELECT privileges.
   IF active_primary_count<>1 OR resolved_school IS NULL
      OR resolved_campus IS DISTINCT FROM p_campus_id THEN
     RETURN false;
