@@ -365,3 +365,12 @@ def run_real_postgres_photo_handoff(container: str, run_psql, root: Path = ROOT)
           "live psycopg PG session, protected P0 Student PRIMARY, "
           "real Campus grant and observed exclusive/shared revocation race, "
           "opaque SQLite intent consumed once; LOCAL DISPOSABLE ONLY")
+
+    # Existing PR94 test intentionally revoked the Campus photo grant. The
+    # next independent P1 END fixture reinstates that disposable permission
+    # in its own guarded setup, then tests live Student placement invalidation.
+    from domain_photo_protected_enrollment_end_race_ci import (
+        run_photo_protected_enrollment_end_race,
+    )
+    run_photo_protected_enrollment_end_race(
+        psycopg, container=container, run_psql=run_psql)
