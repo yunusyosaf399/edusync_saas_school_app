@@ -69,6 +69,44 @@ SELECT 'ea000000-0000-4000-8000-000000000013',
  JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
  WHERE g.id='ea000000-0000-4000-8000-000000000012'
  AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+-- PR94's original photo scope was intentionally revoked by its previous
+-- security test. Never resurrect revoked history. Authorize this independent
+-- P1 END race with a new disposable Role/assignment and live photo scope.
+-- Profile update still belongs to the original test Role with current scope.
+INSERT INTO app_private.roles(
+ id,code,label,family_only,state,created_by) VALUES
+ ('eb000000-0000-4000-8000-000000000001',
+  'photo-p1-end-authorization-trial','Local P1 END photo scope test',
+  false,'ACTIVE','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principal_role_assignments(
+ id,principal_id,principal_kind,role_id,role_family_only,
+ context_kind,valid_from,created_by) VALUES
+ ('eb000000-0000-4000-8000-000000000002',
+  '55555555-5555-4555-8555-555555555555','INDIVIDUAL',
+  'eb000000-0000-4000-8000-000000000001',false,
+  'INDIVIDUAL',pg_catalog.statement_timestamp()-interval '1 hour',
+  '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.role_permission_grants(
+ id,role_id,role_family_only,permission_id,permission_family_safe,
+ valid_from,created_by)
+SELECT 'eb000000-0000-4000-8000-000000000011',
+ 'eb000000-0000-4000-8000-000000000001',false,id,family_safe,
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.permissions WHERE code='student.photo.submit';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,campus_id,valid_from,created_by)
+SELECT 'eb000000-0000-4000-8000-000000000012',
+ 'eb000000-0000-4000-8000-000000000002',
+ g.id,g.role_id,g.permission_id,c.id,'CAMPUS','DIRECT',
+ 'e4000000-0000-4000-8000-000000000041',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.role_permission_grants g
+ JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+ WHERE g.id='eb000000-0000-4000-8000-000000000011'
+ AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT';
 INSERT INTO app_private.approval_policy_versions(
  id,policy_key,version,operation_id,d1_route_mode,created_by)
 SELECT 'ea000000-0000-4000-8000-000000000027',
