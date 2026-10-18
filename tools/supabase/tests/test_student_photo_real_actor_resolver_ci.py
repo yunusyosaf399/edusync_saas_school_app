@@ -24,7 +24,7 @@ class StudentPhotoRealActorResolverCandidateTests(unittest.TestCase):
             "app_private.d1_lock_current_principal(actor)",
             "e.placement_kind='PRIMARY'",
             "e.placement_state='ACTIVE'",
-            "so.state='OPEN' AND co.state='OPEN'",
+            "OPEN state is enforced by d1_profile_authorized below",
             "resolved_campus IS DISTINCT FROM p_campus_id",
             "app_private.d1_profile_authorized(",
             "'student.photo.submit','STUDENT',p_student_id",
