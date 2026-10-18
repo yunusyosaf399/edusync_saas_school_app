@@ -30,6 +30,8 @@ jobs:
         run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_intent_entitlement_candidate.py' -v
       - name: Real signed entitlement and monotonic local revision tests
         run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_signed_entitlement_candidate.py' -v
+      - name: Spawned-process atomic photo finalize versus signed revocation race tests
+        run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_atomic_finalize_fence_candidate.py' -v
       - name: Confirm no operational upload endpoint exists here
         run: |
           python - <<'PY'
@@ -41,5 +43,9 @@ jobs:
           signed = Path('tools/photo_validation/student_photo_signed_entitlement_candidate.py').read_text()
           assert "NOT an API" in signed
           assert "NOT an authorization receipt" in signed
+          atomic = Path('tools/photo_validation/student_photo_atomic_finalize_fence_candidate.py').read_text()
+          assert "NOT an API" in atomic
+          assert "TRIAL_FINALIZED" in atomic
+          assert "photo_trial_intents" in atomic
           print("D1_STUDENT_PHOTO_CONTENT_CANDIDATE_PASS decoded JPEG/PNG, sanitized bytes and measured SHA; upload remains disabled")
           PY
