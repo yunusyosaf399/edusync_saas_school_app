@@ -13,7 +13,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from hashlib import sha256
-from pathlib import Path
 import re
 import secrets
 import time
@@ -244,23 +243,6 @@ def _row(psycopg, digest: bytes):
                 return cur.fetchone()
 
 
-def _wait_on_row(psycopg, other_pid: int, *, timeout: float=8):
-    from domain_student_photo_real_pg_handoff_ci import _local_connect
-    deadline=time.monotonic()+timeout
-    with closing(_local_connect(psycopg)) as observer:
-        while time.monotonic()<deadline:
-            with closing(observer.cursor()) as cur:
-                cur.execute(
-                    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks "
-                    "WHERE pid=%s AND NOT granted AND locktype IN "
-                    "('transactionid','tuple'))",(other_pid,))
-                blocked=cur.fetchone()[0]
-            observer.rollback()
-            if blocked:
-                return
-            time.sleep(.05)
-    raise RuntimeError("D1_PHOTO_NATIVE_PG_LOCK_WAIT_NOT_OBSERVED")
-
 
 def run_native_pg_intent_trial(psycopg, *, container: str, run_psql,
                                connect_actor, student_id: str, campus_id: str) -> None:
@@ -303,14 +285,8 @@ def run_native_pg_intent_trial(psycopg, *, container: str, run_psql,
             _check(cur.fetchone()==("REVOKED",),"RACE_REVOKER_UPDATE")
         with ThreadPoolExecutor(max_workers=1) as executor:
             def worker():
-                conn=connect_actor(psycopg)
-                # Worker connection PID is observed, not invented.
-                with closing(conn.cursor()) as cur:
-                    cur.execute("SELECT pg_catalog.pg_backend_pid()")
-                    pid=cur.fetchone()[0]
-                conn.rollback()
-                # The per-stage store will start a separate authenticated
-                # connection; observe it by application_name instead below.
+                # Each transition owns one freshly authenticated PostgreSQL
+                # connection; observe its true application_name/lock waiter.
                 return store.transition(pending,action="CONSUME")
             # Every store connection is tagged so pg_locks sees exact waiter.
             original=store._connect
