@@ -22,6 +22,13 @@ class RealPostgresStudentPhotoHandoffGuards(unittest.TestCase):
         self.assertIn("CREATE FUNCTION app_private.d1_student_photo_private_issue_resolver_trial(",sql)
         self.assertIn("CAMPUS','DIRECT'",sql)
         self.assertIn("D1_PHOTO_REAL_PG_P0_PRIMARY_MISSING",sql)
+        # Auth must precede ALL mutations covered by the D1 guard, even
+        # though the test schema-owner is permitted to populate fixtures.
+        self.assertLess(sql.index("SELECT set_config('request.jwt.claim.sub'"),
+                        sql.index("INSERT INTO app_private.students("))
+        self.assertLess(sql.index("SELECT set_config('request.jwt.claims'"),
+                        sql.index("INSERT INTO app_private.students("))
+        self.assertIn("SET ROLE authenticated;\nSELECT * FROM app.d1_place_student_enrollment(",sql)
         self.assertIn("'e4000000-0000-4000-8000-000000000001'",sql)
         self.assertIn("'e4000000-0000-4000-8000-000000000041'",sql)
         self.assertIn("'e6000000-0000-4000-8000-000000000012'",sql)
