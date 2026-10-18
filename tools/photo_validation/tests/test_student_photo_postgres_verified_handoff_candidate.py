@@ -46,6 +46,7 @@ class FakePrivatePgSession:
         self.principal = PRINCIPAL_A
         self.granted = True
         self.pg_failure = False
+        self.autocommit = False
         self.pg_nonboolean = None
         self.open_transactions = 0
         self.finished_transactions = 0
@@ -66,6 +67,7 @@ class FakeConnection:
         self.state = state
         self.in_tx = False
         self.closed = False
+        self.autocommit = state.autocommit
 
     def __enter__(self):
         assert not self.in_tx
@@ -242,6 +244,15 @@ class StudentPhotoPostgresVerifiedHandoffTests(unittest.TestCase):
                     self.issue()
         self.assertEqual(self.persisted(), ([], []))
         self.assertEqual(self.state.open_transactions, 0)
+
+    def test_autocommit_session_denied_before_any_sql_or_issuance(self):
+        self.state.autocommit = True
+        with self.assertRaises(PrivateIntentDenied):
+            self.issue()
+        self.assertEqual(self.state.queries, [])
+        self.assertEqual(self.persisted(), ([], []))
+        self.assertEqual(self.state.open_transactions, 0)
+        self.assertTrue(all(c.closed for c in self.state.connections))
 
     def test_bad_uuid_and_wrong_student_do_not_mint_intent(self):
         for student, campus in (
