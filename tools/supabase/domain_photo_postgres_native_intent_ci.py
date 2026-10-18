@@ -252,6 +252,20 @@ def run_native_pg_intent_trial(psycopg, *, container: str, run_psql,
     store=NativePostgresPhotoIntentTrial(
         db_connect=lambda:connect_actor(psycopg),
         student_id=student_id,campus_id=campus_id)
+    # An injected error after INSERT must roll the whole PostgreSQL
+    # transaction back, including its irreversible bearer digest.
+    from domain_student_photo_real_pg_handoff_ci import _local_connect
+    with closing(_local_connect(psycopg)) as probe:
+        with closing(probe.cursor()) as cur:
+            cur.execute("SELECT count(*) FROM photo_pg_trial.intents")
+            start_count=cur.fetchone()[0]
+        probe.rollback()
+    _denied(lambda:store.issue(fail_before_commit=True))
+    with closing(_local_connect(psycopg)) as probe:
+        with closing(probe.cursor()) as cur:
+            cur.execute("SELECT count(*) FROM photo_pg_trial.intents")
+            _check(cur.fetchone()[0]==start_count,"ISSUE_ROLLBACK")
+        probe.rollback()
     token=store.issue()
     digest=_digest(token)
     _check(_row(psycopg,digest)==("ISSUED",False,False,False),"ISSUE")
@@ -269,6 +283,19 @@ def run_native_pg_intent_trial(psycopg, *, container: str, run_psql,
     _check(store.transition(second,action="REVOKE")=="REVOKED","REVOKE")
     _denied(lambda:store.transition(second,action="CONSUME"))
     _check(_row(psycopg,_digest(second))==("REVOKED",False,False,True),"REVOKE_STATE")
+    # Server-clock expiration fails closed without mutating an ISSUED token.
+    expired=store.issue()
+    expired_key=_digest(expired)
+    with closing(_local_connect(psycopg)) as owner:
+        with owner:
+            with closing(owner.cursor()) as cur:
+                cur.execute(
+                    "UPDATE photo_pg_trial.intents "
+                    "SET expires_at=pg_catalog.clock_timestamp()-interval '1 second' "
+                    "WHERE token_digest=%s AND status='ISSUED'",
+                    (expired_key,))
+    _denied(lambda:store.transition(expired,action="CONSUME"))
+    _check(_row(psycopg,expired_key)==("ISSUED",False,False,False),"EXPIRY_DENIAL")
     # Test a second genuine PostgreSQL session blocking on the same durable
     # token row. REVOKE takes the row first and commits; CONSUME must not
     # create a second state transition or a success receipt after that commit.
