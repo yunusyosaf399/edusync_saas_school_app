@@ -32,6 +32,8 @@ jobs:
         run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_signed_entitlement_candidate.py' -v
       - name: Spawned-process atomic photo finalize versus signed revocation race tests
         run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_atomic_finalize_fence_candidate.py' -v
+      - name: Signed private-service opaque Student photo intent and process replay tests
+        run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_durable_intent_candidate.py' -v
       - name: Confirm no operational upload endpoint exists here
         run: |
           python - <<'PY'
@@ -47,5 +49,9 @@ jobs:
           assert "NOT an API" in atomic
           assert "TRIAL_FINALIZED" in atomic
           assert "photo_trial_intents" in atomic
+          ledger = Path('tools/photo_validation/student_photo_durable_intent_candidate.py').read_text()
+          assert "NOT an upload API" in ledger
+          assert "photo_private_trial_intents" in ledger
+          assert "never persists" in ledger
           print("D1_STUDENT_PHOTO_CONTENT_CANDIDATE_PASS decoded JPEG/PNG, sanitized bytes and measured SHA; upload remains disabled")
           PY
