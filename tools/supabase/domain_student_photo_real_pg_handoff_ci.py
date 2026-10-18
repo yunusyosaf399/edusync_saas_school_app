@@ -126,6 +126,13 @@ $real_pg_fixture_proof$;
         ("b1000000-0000-4000-8000-", "e4000000-0000-4000-8000-"),
         ("b6000000-0000-4000-8000-", "e5000000-0000-4000-8000-"),
         ("d2000000-0000-4000-8000-", "e6000000-0000-4000-8000-"),
+        # Reuse the authenticated Principal, not its already-active Role:
+        # overlapping role/permission intervals are rightly prohibited.
+        # Bind a new local-only permission-bearing Role and exact assignment.
+        ("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+         "e9000000-0000-4000-8000-000000000001"),
+        ("ffffffff-ffff-4fff-8fff-ffffffffffff",
+         "e9000000-0000-4000-8000-000000000002"),
         ("10000000-0000-4000-8000-000000000001",
          "e8000000-0000-4000-8000-000000000001"),
         ("'STUDENT-ACCEPT'", "'PHOTO-REAL-PG-94-STUDENT'"),
@@ -142,6 +149,21 @@ $real_pg_fixture_proof$;
         fixture_sql = fixture_sql.replace(original, isolated)
     isolated_context = """
 SET ROLE schoolos_schema_owner;
+-- A dedicated Role/assignment avoids overlapping grants in the previously
+-- committed same-Principal test role while leaving Foundation invariants on.
+INSERT INTO app_private.roles(
+ id,code,label,family_only,state,created_by) VALUES
+ ('e9000000-0000-4000-8000-000000000001',
+  'photo-real-pg-94-authz','Photo real PG integration private role',
+  false,'ACTIVE','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principal_role_assignments(
+ id,principal_id,principal_kind,role_id,role_family_only,
+ context_kind,valid_from,created_by) VALUES
+ ('e9000000-0000-4000-8000-000000000002',
+  '55555555-5555-4555-8555-555555555555','INDIVIDUAL',
+  'e9000000-0000-4000-8000-000000000001',false,
+  'INDIVIDUAL',pg_catalog.statement_timestamp()-interval '1 hour',
+  '11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.people(id,display_name,created_by) VALUES
  ('e8000000-0000-4000-8000-000000000001',
   'Disposable photo integration Student',
