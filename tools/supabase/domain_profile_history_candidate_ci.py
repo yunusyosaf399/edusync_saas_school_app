@@ -593,7 +593,7 @@ def validate_photo_actor_resolver_trial_source(source: str, root: Path = ROOT) -
     for forbidden in ("\nCOMMIT;", "\nBEGIN;", "CREATE ROLE ", "CREATE TABLE ",
                       "DISABLE ROW LEVEL SECURITY", "GRANT EXECUTE ON FUNCTION ",
                       "GRANT ALL ON ", "GRANT SELECT ON APP_PRIVATE."):
-        if forbidden.replace("\\\n","\n") in source.upper():
+        if forbidden in source.upper():
             raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_UNSAFE "+forbidden.strip())
     if PHOTO_ACTOR_RESOLVER_TRIAL.parts[1] != "proposals" or any(
         p.name == PHOTO_ACTOR_RESOLVER_TRIAL.name for p in discover_drafts(root)):
@@ -635,8 +635,8 @@ def run_student_photo_private_actor_scope_trial(
     fixture=(Path(root)/TYPED_FIXTURE).read_text(encoding="utf-8")
     sql=render_auth_trial_sql(
         baseline,fixture,history,typed,auth+"\n"+existing+"\n"+resolver,
-        checks+"\n\\\o\n")
-    sql=sql.replace("BEGIN;\n","BEGIN;\n\\\o /dev/null\n",1)
+        checks+"\n\\o\n")
+    sql=sql.replace("BEGIN;\n","BEGIN;\n\\o /dev/null\n",1)
     if container!="supabase_db_saas_OS_school_app":
         raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_DISPOSABLE_ONLY")
     run_psql(container,sql,"D1_STUDENT_PHOTO_REAL_ACTOR_SCOPE_TRIAL",timeout=300)
