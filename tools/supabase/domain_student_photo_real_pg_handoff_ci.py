@@ -104,6 +104,19 @@ $real_pg_fixture_proof$;
     # suite 66 uses rollback-only IDs; namespace every fixture-owned PK and
     # school-scoped code to avoid reusing those already committed in races.
     # The protected P0 API and resolver source remain EXACTLY unchanged.
+    # The Foundation school_profiles relation is a strict singleton.
+    # The existing committed concurrency fixture owns the only School and
+    # its persistent school-wide roll policy/allocator. Reuse that policy
+    # instead of creating another active revision or global allocator.
+    # Continue using the real P0 protected enrollment for a new Student.
+    policy_start = "INSERT INTO app_private.roll_policy_revisions("
+    policy_end = "\nRESET ROLE;"
+    if placement_setup.count(policy_start) != 1:
+        raise RuntimeError("D1_PHOTO_REAL_PG_ROLL_POLICY_SOURCE_DRIFT")
+    prior, tail = placement_setup.split(policy_start, 1)
+    if tail.count(policy_end) != 1:
+        raise RuntimeError("D1_PHOTO_REAL_PG_ROLL_POLICY_TAIL_DRIFT")
+    placement_setup = prior + "\nRESET ROLE;" + tail.split(policy_end,1)[1]
     fixture_sql = ("\nBEGIN;\n" + placement_setup + "\n" + profile_enabled
         + "\n" + claims + placement_call + "\nRESET ROLE;\n"
         + "SET ROLE schoolos_schema_owner;\n" + grant + "\n"
@@ -113,8 +126,6 @@ $real_pg_fixture_proof$;
         ("b1000000-0000-4000-8000-", "e4000000-0000-4000-8000-"),
         ("b6000000-0000-4000-8000-", "e5000000-0000-4000-8000-"),
         ("d2000000-0000-4000-8000-", "e6000000-0000-4000-8000-"),
-        ("22222222-2222-4222-8222-222222222222",
-         "e7000000-0000-4000-8000-000000000001"),
         ("10000000-0000-4000-8000-000000000001",
          "e8000000-0000-4000-8000-000000000001"),
         ("'STUDENT-ACCEPT'", "'PHOTO-REAL-PG-94-STUDENT'"),
@@ -131,11 +142,6 @@ $real_pg_fixture_proof$;
         fixture_sql = fixture_sql.replace(original, isolated)
     isolated_context = """
 SET ROLE schoolos_schema_owner;
-INSERT INTO app_private.school_profiles(
- id,code,name,timezone,currency_code,locale,created_by)
-VALUES ('e7000000-0000-4000-8000-000000000001',
- 'PHOTO-REAL-PG-94','Disposable photo integration school','UTC','USD',
- 'en','11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.people(id,display_name,created_by) VALUES
  ('e8000000-0000-4000-8000-000000000001',
   'Disposable photo integration Student',
