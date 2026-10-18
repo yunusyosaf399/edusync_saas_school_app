@@ -8,6 +8,7 @@ The SQL helper and test grants are installed solely in a disposable local stack.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from domain_photo_postgres_native_intent_ci import run_native_pg_intent_trial
 from contextlib import closing
 import json
 from pathlib import Path
@@ -277,6 +278,13 @@ def run_real_postgres_photo_handoff(container: str, run_psql, root: Path = ROOT)
             if c.fetchone() != (True,):
                 raise RuntimeError("D1_PHOTO_REAL_PG_LIVE_RESOLVER_DENIED")
         conn.rollback()
+
+    # New quarantined same-PostgreSQL transaction lifecycle is tested BEFORE
+    # the old cross-DB regression revokes the disposable photo scope.
+    # No storage, public ACL, hosted migrations or production action.
+    run_native_pg_intent_trial(
+        psycopg, container=container, run_psql=run_psql,
+        connect_actor=_actor_connection, student_id=STUDENT, campus_id=CAMPUS)
 
     with tempfile.TemporaryDirectory(prefix="edusync-photo-real-pg-") as tmp:
         path = str(Path(tmp)/"intents.sqlite")
