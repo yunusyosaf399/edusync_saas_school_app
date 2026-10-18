@@ -23,21 +23,26 @@ BEGIN
   actor:=app_private.current_principal_id();
   IF actor IS NULL THEN RETURN false; END IF;
   PERFORM app_private.d1_lock_current_principal(actor);
-  -- No service-signed Boolean, caller-supplied Campus or old Enrollment grants
-  -- authority. Resolve the one effective PRIMARY through stored ancestry.
-  SELECT count(*), min(co.campus_id::text)::uuid,
-         min(co.school_id::text)::uuid
+  -- No service-signed Boolean, caller-supplied Campus or old Enrollment
+  -- grants authority. Resolve the one effective PRIMARY through the existing
+  -- academic-executor-owned private destination helper; the Student executor
+  -- has EXECUTE but deliberately has no direct Class/Section SELECT grant.
+  -- Both underlying offering states must be OPEN, not merely identified.
+  SELECT count(*), min(dst.campus_id::text)::uuid,
+         min(dst.school_id::text)::uuid
     INTO active_primary_count,resolved_campus,resolved_school
   FROM app_private.enrollments e
-  JOIN app_private.section_offerings so ON so.id=e.section_offering_id
-  JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+  CROSS JOIN LATERAL app_private.d1_enrollment_place_destination(
+    e.section_offering_id) dst
   WHERE e.student_id=p_student_id
     AND e.placement_kind='PRIMARY'
     AND e.placement_state='ACTIVE'
     AND e.effective_from<=pg_catalog.statement_timestamp()::date
     AND (e.effective_until IS NULL OR
          pg_catalog.statement_timestamp()::date<e.effective_until)
-    AND so.campus_id=co.campus_id;
+    AND dst.campus_id IS NOT NULL
+    AND dst.class_state='OPEN'
+    AND dst.section_state='OPEN';
   -- The frozen authz_reader-owned d1_profile_authorized check below
   -- independently verifies OPEN Section/Class states and Student ACTIVE,
   -- without widening the Student executor's table SELECT privileges.
