@@ -16,6 +16,9 @@ INTENT_SEAL_TRIAL = Path("supabase/proposals/student_profile_approval_intent_sea
 PHOTO_PROVENANCE_TRIAL = Path("supabase/proposals/student_profile_photo_provenance_trial.sql.draft")
 PHOTO_PROVENANCE_ACCEPTANCE = Path("supabase/proposals/student_profile_photo_provenance_acceptance.sql.draft")
 PHOTO_PROVENANCE_PASS_MARKER = "D1_STUDENT_PROFILE_PHOTO_PROVENANCE_GATE_PASS"
+PHOTO_ACTOR_RESOLVER_TRIAL = Path("supabase/proposals/student_photo_private_actor_scope_resolver_trial.sql.draft")
+PHOTO_ACTOR_RESOLVER_ACCEPTANCE = Path("supabase/proposals/student_photo_private_actor_scope_resolver_acceptance.sql.draft")
+PHOTO_ACTOR_RESOLVER_PASS_MARKER = "D1_STUDENT_PHOTO_REAL_ACTOR_SCOPE_RESOLVER_PASS"
 INTENT_SEAL_CHECKS = Path("supabase/proposals/student_profile_approval_intent_seal_acceptance.sql.draft")
 INTENT_SEAL_PASS_MARKER = "D1_STUDENT_PROFILE_APPROVAL_INTENT_SEAL_PASS"
 DIRECT_PASS_MARKER = "D1_STUDENT_PROFILE_TYPED_DIRECT_RECEIPT_PASS"
@@ -563,6 +566,88 @@ def run_student_photo_provenance_trial(
     print(PHOTO_PROVENANCE_PASS_MARKER+
         " conditional Student-bound photo provenance, current scoped upload+profile grant, purpose/availability/campus/owner/file lifecycle, and rollback-only")
 
+def validate_photo_actor_resolver_trial_source(source: str, root: Path = ROOT) -> None:
+    if not source.startswith("-- STUDENT_PHOTO_PRIVATE_ACTOR_SCOPE_RESOLVER_LOCAL_ONLY\n"):
+        raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_QUARANTINE")
+    if "\r" in source or "\x00" in source or not source.endswith("\n"):
+        raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_ENCODING")
+    for required in (
+        "CREATE FUNCTION app_private.d1_student_photo_private_issue_resolver_trial(",
+        "RETURNS boolean",
+        "SECURITY DEFINER",
+        "pg_catalog.pg_advisory_xact_lock_shared(71001,1)",
+        "app_private.current_principal_id()",
+        "app_private.d1_lock_current_principal(actor)",
+        "e.placement_kind='PRIMARY'",
+        "e.placement_state='ACTIVE'",
+        "active_primary_count<>1",
+        "resolved_campus IS DISTINCT FROM p_campus_id",
+        "app_private.d1_profile_authorized(",
+        "app_private.d1_authorized(",
+        "'student.photo.submit','STUDENT',p_student_id",
+        "REVOKE ALL ON FUNCTION app_private.d1_student_photo_private_issue_resolver_trial(",
+        "REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;",
+    ):
+        if required not in source:
+            raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_REQUIRED "+required)
+    for forbidden in ("\nCOMMIT;", "\nBEGIN;", "CREATE ROLE ", "CREATE TABLE ",
+                      "DISABLE ROW LEVEL SECURITY", "GRANT EXECUTE ON FUNCTION ",
+                      "GRANT ALL ON ", "GRANT SELECT ON APP_PRIVATE."):
+        if forbidden in source.upper():
+            raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_UNSAFE "+forbidden.strip())
+    if PHOTO_ACTOR_RESOLVER_TRIAL.parts[1] != "proposals" or any(
+        p.name == PHOTO_ACTOR_RESOLVER_TRIAL.name for p in discover_drafts(root)):
+        raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_IN_MIGRATIONS")
+
+
+PHOTO_ACTOR_RESOLVER_CLEANUP = """
+DO $photo_actor_cleanup$
+BEGIN
+  IF pg_catalog.to_regprocedure(
+     'app_private.d1_student_photo_private_issue_resolver_trial(uuid,uuid)'
+  ) IS NOT NULL THEN
+    RAISE EXCEPTION 'D1_PHOTO_ACTOR_RESOLVER_NOT_ROLLED_BACK';
+  END IF;
+END
+$photo_actor_cleanup$;
+"""
+
+
+def run_student_photo_private_actor_scope_trial(
+    container: str, run_psql, history: str, typed: str, root: Path = ROOT
+) -> None:
+    resolver=(Path(root)/PHOTO_ACTOR_RESOLVER_TRIAL).read_text(encoding="utf-8")
+    checks=(Path(root)/PHOTO_ACTOR_RESOLVER_ACCEPTANCE).read_text(encoding="utf-8")
+    validate_photo_actor_resolver_trial_source(resolver,root)
+    if (not checks.startswith("-- STUDENT_PHOTO_PRIVATE_ACTOR_SCOPE_ROLLBACK_ONLY\n")
+            or "\nCOMMIT;" in checks or "\nBEGIN;" in checks
+            or "SAVEPOINT student_photo_private_actor_scope_boundary;" not in checks
+            or "ROLLBACK TO SAVEPOINT student_photo_private_actor_scope_boundary;" not in checks
+            or "D1_PHOTO_REAL_OTHER_CAMPUS_ROLE_ACCEPTED" not in checks
+            or "D1_PHOTO_REAL_PROFILE_GRANT_REVOKED_ACCEPTED" not in checks
+            or "D1_PHOTO_REAL_REVOKED_SUBMIT_GRANT_ACCEPTED" not in checks):
+        raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_TEST_QUARANTINE")
+    auth=(Path(root)/AUTH_PREFLIGHT).read_text(encoding="utf-8")
+    validate_typed_auth_preflight_source(auth,root)
+    existing=(Path(root)/PHOTO_PROVENANCE_TRIAL).read_text(encoding="utf-8")
+    validate_photo_provenance_trial_source(existing,root)
+    baseline=(Path(root)/AUTH_BASELINE).read_text(encoding="utf-8")
+    fixture=(Path(root)/TYPED_FIXTURE).read_text(encoding="utf-8")
+    sql=render_auth_trial_sql(
+        baseline,fixture,history,typed,auth+"\n"+existing+"\n"+resolver,
+        checks+"\n\\o\n")
+    sql=sql.replace("BEGIN;\n","BEGIN;\n\\o /dev/null\n",1)
+    if container!="supabase_db_saas_OS_school_app":
+        raise RuntimeError("D1_PHOTO_ACTOR_RESOLVER_DISPOSABLE_ONLY")
+    run_psql(container,sql,"D1_STUDENT_PHOTO_REAL_ACTOR_SCOPE_TRIAL",timeout=300)
+    run_psql(container,PHOTO_ACTOR_RESOLVER_CLEANUP,
+             "D1_STUDENT_PHOTO_REAL_ACTOR_SCOPE_CLEANUP",timeout=45)
+    run_psql(container,PHOTO_PROVENANCE_CLEANUP,
+             "D1_STUDENT_PHOTO_REAL_ACTOR_PROVENANCE_CLEANUP",timeout=45)
+    print(PHOTO_ACTOR_RESOLVER_PASS_MARKER +
+          " verified PostgreSQL Principal, one current PRIMARY Student placement, real Campus scope/photo+profile grants, revocation, private-only and rollback")
+
+
 def run_history_candidate(container: str, run_psql, root: Path = ROOT) -> None:
     source = (Path(root) / CANDIDATE).read_text(encoding="utf-8")
     validate_candidate_source(source, root)
@@ -585,5 +670,6 @@ def run_history_candidate(container: str, run_psql, root: Path = ROOT) -> None:
     run_typed_direct_trial(container, run_psql, source, typed, root)
     run_typed_approval_trial(container, run_psql, source, typed, root)
     run_student_photo_provenance_trial(container, run_psql, source, typed, root)
+    run_student_photo_private_actor_scope_trial(container, run_psql, source, typed, root)
     print(PASS_MARKER + " rollback-only DDL/RLS/ACL/check/FK smoke")
     print(TYPED_PASS_MARKER + " normalized fixed-six-field plan, row/revision atomic trial, rollback cleanup")
