@@ -121,7 +121,9 @@ class LocalPostgresPhotoHandoffTrial(LocalPrivatePhotoIntentCandidate):
                     )
                     authorized = cursor.fetchone()
                     if (type(authorized) not in (tuple, list)
-                            or authorized != (True,)):
+                            or len(authorized) != 1
+                            or type(authorized[0]) is not bool
+                            or authorized[0] is not True):
                         _deny()
                 yield principal
         except PrivateIntentDenied:
