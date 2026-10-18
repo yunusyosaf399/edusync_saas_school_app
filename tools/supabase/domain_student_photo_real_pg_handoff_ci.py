@@ -170,8 +170,16 @@ INSERT INTO app_private.people(id,display_name,created_by) VALUES
   '11111111-1111-4111-8111-111111111111');
 RESET ROLE;
 """
+    # As in the existing committed concurrency fixture, establish the
+    # synthetic verified Principal BEFORE owner-side Student mutation.
+    # Keep only session claims here; the real P0 command still changes to
+    # authenticated at its reviewed fixture boundary. These claims never
+    # originate from a request or an operational authentication service.
+    session_claims = claims.replace("SET ROLE authenticated;", "")
+    if "SET ROLE authenticated;" not in claims or not session_claims.startswith("\nSELECT set_config("):
+        raise RuntimeError("D1_PHOTO_REAL_PG_AUTH_CONTEXT_SOURCE_DRIFT")
     return fixture_sql.replace("BEGIN;\n",
-                               "BEGIN;\n"+isolated_context, 1)
+                               "BEGIN;\n" + session_claims + isolated_context, 1)
 
 
 def _local_connect(psycopg):
