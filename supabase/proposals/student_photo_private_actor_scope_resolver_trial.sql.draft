@@ -1,0 +1,65 @@
+-- STUDENT_PHOTO_PRIVATE_ACTOR_SCOPE_RESOLVER_LOCAL_ONLY
+-- Disposable PostgreSQL function; NOT an upload service, signer or real intent.
+-- Runs inside the already-accepted genuine authenticated suite #66 fixture.
+-- It independently resolves CURRENT identity, PRIMARY placement and live grants.
+SET ROLE schoolos_schema_owner;
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+RESET ROLE;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_student_photo_private_issue_resolver_trial(
+  p_student_id uuid, p_campus_id uuid
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $photo_issue_resolver$
+DECLARE
+  actor uuid;
+  resolved_campus uuid;
+  resolved_school uuid;
+  active_primary_count bigint;
+BEGIN
+  IF p_student_id IS NULL OR p_campus_id IS NULL THEN RETURN false; END IF;
+  -- Foundation grant changes take the exclusive version of this same lock.
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RETURN false; END IF;
+  PERFORM app_private.d1_lock_current_principal(actor);
+  -- No service-signed Boolean, caller-supplied Campus or old Enrollment grants
+  -- authority. Resolve the one effective PRIMARY through stored ancestry.
+  SELECT count(*), min(co.campus_id::text)::uuid,
+         min(co.school_id::text)::uuid
+    INTO active_primary_count,resolved_campus,resolved_school
+  FROM app_private.enrollments e
+  JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+  JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+  WHERE e.student_id=p_student_id
+    AND e.placement_kind='PRIMARY'
+    AND e.placement_state='ACTIVE'
+    AND e.effective_from<=pg_catalog.statement_timestamp()::date
+    AND (e.effective_until IS NULL OR
+         pg_catalog.statement_timestamp()::date<e.effective_until)
+    AND so.campus_id=co.campus_id
+    AND so.state='OPEN' AND co.state='OPEN';
+  IF active_primary_count<>1 OR resolved_school IS NULL
+     OR resolved_campus IS DISTINCT FROM p_campus_id THEN
+    RETURN false;
+  END IF;
+  -- Profile grant cannot stand in for independently live photo-submit grant.
+  IF app_private.d1_profile_authorized(
+      actor,'student.profile.update','STUDENT',p_student_id,
+      resolved_campus,NULL) IS DISTINCT FROM true THEN
+    RETURN false;
+  END IF;
+  IF app_private.d1_authorized(
+      'student.photo.submit','STUDENT',p_student_id)
+      IS DISTINCT FROM true THEN
+    RETURN false;
+  END IF;
+  RETURN true;
+END
+$photo_issue_resolver$;
+REVOKE ALL ON FUNCTION app_private.d1_student_photo_private_issue_resolver_trial(
+  uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+RESET ROLE;
