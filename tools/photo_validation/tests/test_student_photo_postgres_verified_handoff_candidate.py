@@ -235,11 +235,14 @@ class StudentPhotoPostgresVerifiedHandoffTests(unittest.TestCase):
         self.assertEqual(self.persisted()[1], [("ISSUE", 7)])
 
     def test_pg_failure_missing_principal_and_nonboolean_result_fail_closed(self):
-        for mode in ("connection", "none-principal", "str-true"):
+        for mode in ("connection", "none-principal", "str-true", "integer-one"):
             with self.subTest(mode=mode):
                 self.state.pg_failure = mode == "connection"
                 self.state.principal = None if mode == "none-principal" else PRINCIPAL_A
-                self.state.pg_nonboolean = "true" if mode == "str-true" else None
+                self.state.pg_nonboolean = (
+                    "true" if mode == "str-true" else
+                    1 if mode == "integer-one" else None
+                )
                 with self.assertRaises(PrivateIntentDenied):
                     self.issue()
         self.assertEqual(self.persisted(), ([], []))
