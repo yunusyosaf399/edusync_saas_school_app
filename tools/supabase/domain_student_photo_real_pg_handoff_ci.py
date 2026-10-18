@@ -120,7 +120,6 @@ $real_pg_fixture_proof$;
         ("'STUDENT-ACCEPT'", "'PHOTO-REAL-PG-94-STUDENT'"),
         ("'STD-ACCEPT-100',100,CURRENT_DATE-20",
          "'PHOTO-REAL-PG-94-001',94001,CURRENT_DATE-20"),
-        ("'STD-ACCEPT-100'", "'PHOTO-REAL-PG-94-001'"),
         ("'P0-STUDENT-CAMPUS'", "'PHOTO-REAL-PG-94-CAMPUS'"),
         ("'P0-STUDENT-YEAR'", "'PHOTO-REAL-PG-94-YEAR'"),
         ("'P0-STUDENT-CLASS'", "'PHOTO-REAL-PG-94-CLASS'"),
