@@ -101,6 +101,11 @@ class LocalPostgresPhotoHandoffTrial(LocalPrivatePhotoIntentCandidate):
             # acquired by the private D1 resolver must remain held while the
             # SQLite ledger does its atomic (single-file only) state update.
             connection = self._trial_db_connect()
+            # The shared Foundation grant lock must survive until after the
+            # SQLite operation. A DB-API connection in autocommit mode would
+            # silently release the lock at the end of the resolver SELECT.
+            if getattr(connection, "autocommit", None) is not False:
+                _deny()
             with connection:
                 with closing(connection.cursor()) as cursor:
                     cursor.execute(
