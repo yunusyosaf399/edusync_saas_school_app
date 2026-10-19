@@ -24,6 +24,10 @@ Continue from frozen `main` `e526de3fd4668483623ef52cccc34d38d893c249`, [PR #99 
 
 The last test intentionally distinguishes **processing completed as CANCELLED** from **successfully ACKED** by using a separate private disposition table; `outbox_events.delivery_state='DELIVERED'` by itself is only queue processing state and must **not** be presented as file availability. No live provider deletion guarantee is inferred from a SQLite metadata VOID.
 
+## First CI finding and narrow correction
+
+The initial runtime reported `D1_PHOTO_NATIVE_PG_PROVIDER_FINAL_EVENT_DUPLICATION` after the external mock and protected END compensation assertions. Its final aggregate mistakenly counted **all** `photo_pg_trial.outbox_events` in the disposable database, including retained receipts/events from the earlier PR #99 suite. The new local trial creates four events for its own Student; a global table count cannot equal four when earlier suites have already run. The corrected assertion joins the existing authoritative `ack_receipts` table and filters by this trial's exact `student_id`; a new fail-closed source test requires that Student-scoped check. This changes only acceptance measurement, not token authorization, outbox delivery, cancellation or any shared DB contract. **The failed first run is not acceptance**; both workflows must pass again on the exact corrected head.
+
 ## Exact-head acceptance
 
 The change must pass:
