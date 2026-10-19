@@ -4,7 +4,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(20);
+SELECT plan(25);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -200,6 +200,32 @@ SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
  :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
  pg_catalog.jsonb_set(:'proof_json'::jsonb,'{new_numeric_value}','12001'::jsonb)),
  false,'same-number correction denied');
+-- Canonical result typing must not accept castable JSON strings as BIGINT values.
+SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
+ pg_catalog.jsonb_set(:'proof_json'::jsonb,'{old_numeric_value}','"12001"'::jsonb)),
+ false,'old numeric as JSON string denied despite bigint castability');
+SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
+ pg_catalog.jsonb_set(:'proof_json'::jsonb,'{new_numeric_value}','"12009"'::jsonb)),
+ false,'new numeric as JSON string denied despite bigint castability');
+SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
+ pg_catalog.jsonb_set(:'proof_json'::jsonb,'{student_version}','"1"'::jsonb)),
+ false,'Student version as JSON string denied');
+SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
+ pg_catalog.jsonb_set(:'proof_json'::jsonb,'{correction_effective_from}','100'::jsonb)),
+ false,'date represented as JSON number denied');
+SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
+ pg_catalog.jsonb_set(:'proof_json'::jsonb,'{student_id}','100'::jsonb)),
+ false,'Student UUID represented as JSON number denied');
 SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
  'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
  :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
