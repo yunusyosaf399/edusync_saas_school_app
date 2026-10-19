@@ -27,11 +27,9 @@ BEGIN
  RETURN EXISTS (
    SELECT 1 FROM app_private.command_receipts r
      JOIN app_private.operation_contracts op ON op.id=r.operation_id
-     JOIN app_private.principals actor ON actor.id=r.principal_id
      JOIN app_private.audit_events a ON a.command_receipt_id=r.id
      JOIN app_private.outbox_events ev ON ev.command_receipt_id=r.id
     WHERE r.id=p_receipt AND r.principal_id=p_actor AND r.created_by=p_actor
-      AND actor.kind='INDIVIDUAL'
       AND r.idempotency_key=p_key AND r.canonical_payload_hash=p_expected_hash
       AND r.canonicalization_version=1
       AND op.code='student.roll.correct' AND op.contract_version=1
@@ -55,6 +53,8 @@ BEGIN
              WHERE e2.command_receipt_id=r.id)=1
       AND (SELECT count(*) FROM app_private.audit_events a2
              WHERE a2.command_receipt_id=r.id)=1
+      -- This typed INDIVIDUAL audit is FK-linked to the original Principal.
+      -- Avoid direct evidence-writer reads of the private Principal identity table.
       AND a.actor_id=p_actor AND a.actor_kind='INDIVIDUAL'
       AND a.created_by=p_actor AND a.outcome='SUCCEEDED'
       AND a.source_kind='API' AND a.event_type='student.roll.correct'
