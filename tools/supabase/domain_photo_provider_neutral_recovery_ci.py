@@ -353,10 +353,15 @@ def _pg_status(psycopg,event_id):
     return state
 
 
-def _outbox_count(psycopg):
+def _outbox_count(psycopg, student):
+    """Count this trial Student's events, not the prior PR99 CI events."""
     with closing(_local_connect(psycopg)) as con:
         with closing(con.cursor()) as cur:
-            cur.execute("SELECT count(*) FROM photo_pg_trial.outbox_events")
+            cur.execute("""
+              SELECT count(*) FROM photo_pg_trial.outbox_events o
+              JOIN photo_pg_trial.ack_receipts r ON r.event_id=o.event_id
+              WHERE r.student_id=%s::uuid
+            """,(student,))
             row=cur.fetchone()[0]
         con.rollback()
     return row
@@ -488,7 +493,7 @@ def run_photo_provider_neutral_recovery_trial(psycopg,*,container,run_psql):
         _check(_pg_status(psycopg,fourth)==("DELIVERED","CANCELLED")
                and provider.state(fourth)=="VOIDED",
                "PROVIDER_COMPENSATION_NOT_ATOMICALLY_RECORDED")
-        _check(len(provider.rows())==4 and _outbox_count(psycopg)==4,
+        _check(len(provider.rows())==4 and _outbox_count(psycopg,STUDENT)==4,
                "PROVIDER_FINAL_EVENT_DUPLICATION")
         _check(_row(psycopg,_digest(fourth_token))==
                ("CONSUMED",True,False,False),
