@@ -382,3 +382,12 @@ def run_real_postgres_photo_handoff(container: str, run_psql, root: Path = ROOT)
     )
     run_photo_reverse_end_campus_transfer_races(
         psycopg, container=container, run_psql=run_psql)
+
+    # PR98: fresh real P0 Student placements, native photo CONSUME wins
+    # before protected P1 Campus Transfer; separately terminate a genuine
+    # disposable PostgreSQL backend mid-transaction, then verify retries.
+    from domain_photo_consume_first_transfer_backend_retry_ci import (
+        run_photo_consume_first_transfer_backend_retry,
+    )
+    run_photo_consume_first_transfer_backend_retry(
+        psycopg, container=container, run_psql=run_psql)
