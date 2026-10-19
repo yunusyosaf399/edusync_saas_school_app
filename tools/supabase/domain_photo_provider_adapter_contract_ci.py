@@ -34,6 +34,11 @@ def _deny():
     raise Denied("PHOTO_ADAPTER_TRIAL_DENIED")
 
 
+def _check(predicate,code):
+    if predicate is not True:
+        raise RuntimeError("D1_PHOTO_PROVIDER_ADAPTER_"+code)
+
+
 def _must_deny(callback):
     try:
         callback()
