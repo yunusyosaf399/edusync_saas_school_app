@@ -4,7 +4,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(25);
+SELECT plan(30);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -226,6 +226,34 @@ SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
  :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
  pg_catalog.jsonb_set(:'proof_json'::jsonb,'{student_id}','100'::jsonb)),
  false,'Student UUID represented as JSON number denied');
+-- Avoid cast-compatible but noncanonical values masquerading as immutable evidence.
+SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
+ pg_catalog.jsonb_set(:'proof_json'::jsonb,'{old_numeric_value}','12001.4'::jsonb)),
+ false,'fractional old numeric cannot round-trip as BIGINT');
+SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
+ pg_catalog.jsonb_set(:'proof_json'::jsonb,'{new_numeric_value}','12009.4'::jsonb)),
+ false,'fractional new numeric cannot round-trip as BIGINT');
+SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
+ pg_catalog.jsonb_set(:'proof_json'::jsonb,'{student_version}','1.4'::jsonb)),
+ false,'fractional Student version cannot round-trip as BIGINT');
+SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
+ pg_catalog.jsonb_set(:'proof_json'::jsonb,'{correction_effective_from}',
+ pg_catalog.to_jsonb(pg_catalog.to_char((CURRENT_DATE-10)::timestamp,'DD Mon YYYY')))),
+ false,'noncanonical but date-castable correction boundary denied');
+SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
+ pg_catalog.jsonb_set(:'proof_json'::jsonb,'{student_id}',
+ '"B1000000-0000-4000-8000-000000000001"'::jsonb)),
+ false,'noncanonical uppercase UUID representation denied');
 SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
  'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
  :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060',
