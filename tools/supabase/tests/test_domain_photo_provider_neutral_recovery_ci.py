@@ -128,6 +128,15 @@ class ProviderNeutralRecoveryCI(unittest.TestCase):
                         src.index("UPDATE photo_pg_trial.outbox_events"))
         self.assertNotIn("UPDATE app_private.enrollments",src)
 
+    def test_provider_outbox_is_student_scoped_against_prior_suite_events(self):
+        source=inspect.getsource(trial._outbox_count)
+        self.assertIn("JOIN photo_pg_trial.ack_receipts r",source)
+        self.assertIn("WHERE r.student_id=%s::uuid",source)
+        self.assertIn("(student,)",source)
+        runtime=inspect.getsource(trial.run_photo_provider_neutral_recovery_trial)
+        self.assertIn("_outbox_count(psycopg,STUDENT)==4",runtime)
+        self.assertNotIn("_outbox_count(psycopg)==4",runtime)
+
     def test_full_runtime_markers_and_concurrent_worker_gate(self):
         src=inspect.getsource(trial.run_photo_provider_neutral_recovery_trial)
         for required in (
