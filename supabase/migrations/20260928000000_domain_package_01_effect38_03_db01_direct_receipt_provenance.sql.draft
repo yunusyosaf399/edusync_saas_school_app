@@ -3,8 +3,14 @@
 -- authenticate the original request. Expected key/hash must be reconstructed
 -- by a future protected RPC; do not pass untrusted caller-chosen hash as proof.
 -- APPROVAL APPLY must use separate reviewed request/application validation.
-GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+-- Read immutable evidence under its existing Foundation evidence-writer role.
+-- Only delegate the predecessor/successor proof to the Student-owned helper.
 SET ROLE schoolos_student_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_result_rows_match_exact(uuid,uuid,uuid,uuid,jsonb)
+ TO schoolos_evidence_writer;
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
 CREATE FUNCTION app_private.d1_roll_correct_direct_receipt_matches_exact(
  p_receipt uuid,p_actor uuid,p_key text,p_expected_hash bytea,
  p_student uuid,p_enrollment uuid,p_source_roll uuid,p_successor_roll uuid
@@ -72,4 +78,4 @@ REVOKE ALL ON FUNCTION app_private.d1_roll_correct_direct_receipt_matches_exact(
 GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_direct_receipt_matches_exact(uuid,uuid,text,bytea,uuid,uuid,uuid,uuid)
  TO schoolos_student_executor,schoolos_workflow_executor;
 RESET ROLE;
-REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
