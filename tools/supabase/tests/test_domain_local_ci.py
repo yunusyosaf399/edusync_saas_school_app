@@ -55,9 +55,9 @@ class DomainLocalCITests(unittest.TestCase):
         # Effect35_12 and DB-01 effect38_02 each add one reviewed private
         # Student-owned definer; public RPC, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 544)
-        self.assertEqual(expected["security_definers"], 526)
-        self.assertEqual(expected["private_functions"], 387)
+        self.assertEqual(expected["functions"], 545)
+        self.assertEqual(expected["security_definers"], 527)
+        self.assertEqual(expected["private_functions"], 388)
         self.assertEqual(expected["app_functions"], 157)
         self.assertEqual(expected["authenticated_app_execute"], 157)
         self.assertEqual(expected["authenticated_private_execute"], 0)
@@ -113,6 +113,24 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertIn("app_private.d1_roll_correct_result_rows_match_exact(", sql)
         self.assertNotIn("UPDATE app_private.operation_contracts", sql)
         self.assertNotIn("CREATE FUNCTION app.d1_correct_student_roll", sql)
+
+    def test_db01_approval_application_guard_is_scoped_and_private(self):
+        helper = runtime.ROOT / "supabase/migrations" / (
+            "20260928000000_domain_package_01_effect38_04_db01_apply_application_receipt_guard.sql.draft"
+        )
+        sql = helper.read_text(encoding="utf-8")
+        self.assertEqual(
+            sql.count("CREATE FUNCTION app_private.d1_roll_correct_application_receipt_guard()"), 1
+        )
+        self.assertIn("SET ROLE schoolos_schema_owner;", sql)
+        self.assertIn("RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER", sql)
+        self.assertIn("IF v_code IS DISTINCT FROM 'student.roll.correct' THEN RETURN NEW;", sql)
+        self.assertIn("CREATE TRIGGER d1_roll_correct_application_receipt_guard", sql)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
+        self.assertIn("TO schoolos_schema_owner;", sql)
+        self.assertIn("app_private.d1_roll_correct_result_rows_match_exact(", sql)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_application_receipt_guard", sql)
+        self.assertNotIn("UPDATE app_private.operation_contracts", sql)
 
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
