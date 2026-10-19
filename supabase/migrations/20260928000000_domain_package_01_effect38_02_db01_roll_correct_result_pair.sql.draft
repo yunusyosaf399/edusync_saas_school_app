@@ -60,6 +60,21 @@ BEGIN
      OR v_student_version IS NULL OR v_student_version<1
      OR v_source_start IS NULL OR v_enrollment_start IS NULL OR v_correction_date IS NULL
      OR v_source_start>=v_correction_date
+     -- The exact stored result must remain canonical across replay dates:
+     -- reject fractional-number round-trip, alternative UUID spellings,
+     -- date aliases (such as "today") and other cast-compatible payloads.
+     OR p_summary->'student_id' IS DISTINCT FROM pg_catalog.to_jsonb(v_student)
+     OR p_summary->'enrollment_id' IS DISTINCT FROM pg_catalog.to_jsonb(v_enrollment)
+     OR p_summary->'source_roll_allocation_id' IS DISTINCT FROM pg_catalog.to_jsonb(v_source)
+     OR p_summary->'corrected_roll_allocation_id' IS DISTINCT FROM pg_catalog.to_jsonb(v_successor)
+     OR p_summary->'source_policy_revision_id' IS DISTINCT FROM pg_catalog.to_jsonb(v_policy)
+     OR p_summary->'section_offering_id' IS DISTINCT FROM pg_catalog.to_jsonb(v_section)
+     OR p_summary->'old_numeric_value' IS DISTINCT FROM pg_catalog.to_jsonb(v_old)
+     OR p_summary->'new_numeric_value' IS DISTINCT FROM pg_catalog.to_jsonb(v_new)
+     OR p_summary->'student_version' IS DISTINCT FROM pg_catalog.to_jsonb(v_student_version)
+     OR p_summary->'source_roll_effective_from' IS DISTINCT FROM pg_catalog.to_jsonb(v_source_start)
+     OR p_summary->'source_enrollment_effective_from' IS DISTINCT FROM pg_catalog.to_jsonb(v_enrollment_start)
+     OR p_summary->'correction_effective_from' IS DISTINCT FROM pg_catalog.to_jsonb(v_correction_date)
   THEN RETURN false; END IF;
   IF NOT EXISTS (
     SELECT 1 FROM app_private.roll_allocations src
