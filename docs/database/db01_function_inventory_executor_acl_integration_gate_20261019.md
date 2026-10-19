@@ -158,6 +158,14 @@ WHERE n.nspname='app_private' AND p.proname='d1_roll_correct_result_rows_match_e
 
 **Other signatures remain blocked by separate integration reviews.** Approval of the narrow inventory delta does **not** approve DB-02 RP-02/03/07 School-local policy dates, MOVE source+destination prelock, physical one-successor uniqueness, future D1 function counts, CLI baseline replacement, or user exposure. Cross-domain [handoff](db01_school_local_roll_policy_lock_compatibility_handoff_20261019.md) owns their readiness state.
 
+## 5.1 Independent runtime fixture advancement — PR #109 suite #77
+
+**Scope:** Source-level internal row proof and real PostgreSQL effective ACL, **not** authenticated correction acceptance. On the integration branch, the new rollback-only `supabase/tests/domain/77_db01_retained_result_pair_private_acl.sql` uses the established P0 protected enrollment fixture from suite #75, a separately labeled privileged **synthetic retained R0→R1** row pair, and 20 pgTAP assertions for proper private-definer owner/search path, direct client EXECUTE denial, exact historical pair validation, rejected malformed/misbound summaries, immutable retained row count and disabled operation/no fake correction receipt. The integration-owned `tools/supabase/domain_business_ci.py` registers the new suite only in stacked draft PR #109; base SQL PR #107 is unchanged.
+
+The first #77 runtime CI run at `2be3e3339fbcf11f89f5e2887f6ac14a1d79b03c` failed in pgTAP before testing because the `pg_get_userbyid()` owner value (`name`) was compared against `text`; not a schema/ACL failure. This was corrected by a typed cast to `text` at `dc28627bfc8542957110bbbf523dfb61e1359e9c`; **the exact-head CI and suite results require review before claiming PASS**. The previously verified `4e396561986cc9f88a503dfde1cb4b527205d594` three-workflow pass predates this new suite.
+
+A later PR reviewer must specifically check that #77's success is counted **only** as structural/private-ACL acceptance; it cannot replace DIRECT/APPROVAL receipts, actor authorization, live Student correction races, or independent integration-owner acceptance. Issue [#108](https://github.com/yunusyosaf399/edusync_saas_school_app/issues/108) remains open.
+
 ## 6. Evidence ledger and next task
 
 | Stage | Finding |
