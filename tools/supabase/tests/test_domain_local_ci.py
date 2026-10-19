@@ -52,12 +52,12 @@ class DomainLocalCITests(unittest.TestCase):
         runtime.validate_runtime_probe(observed)
 
     def test_runtime_inventory_private_helper_delta(self):
-        # Effect35_12 adds one private Student-owned source read helper;
-        # never loosen the public RPC surface or table/client ACL ceilings.
+        # Effect35_12 and DB-01 effect38_02 each add one reviewed private
+        # Student-owned definer; public RPC, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 542)
-        self.assertEqual(expected["security_definers"], 524)
-        self.assertEqual(expected["private_functions"], 385)
+        self.assertEqual(expected["functions"], 543)
+        self.assertEqual(expected["security_definers"], 525)
+        self.assertEqual(expected["private_functions"], 386)
         self.assertEqual(expected["app_functions"], 157)
         self.assertEqual(expected["authenticated_app_execute"], 157)
         self.assertEqual(expected["authenticated_private_execute"], 0)
@@ -70,6 +70,28 @@ class DomainLocalCITests(unittest.TestCase):
             expected["functions"],
             expected["app_functions"] + expected["private_functions"] + 0,
         )
+
+    def test_db01_single_helper_signature_acl_and_non_activation(self):
+        # Source guard complements runtime pg_proc owner/has_function_privilege checks.
+        helper = runtime.ROOT / "supabase/migrations" / (
+            "20260928000000_domain_package_01_effect38_02_db01_roll_correct_result_pair.sql.draft"
+        )
+        sql = helper.read_text(encoding="utf-8")
+        self.assertEqual(
+            sql.count("CREATE FUNCTION app_private.d1_roll_correct_result_rows_match_exact("), 1
+        )
+        self.assertIn("p_student uuid,p_enrollment uuid,p_source_roll uuid,p_successor_roll uuid,p_summary jsonb", sql)
+        self.assertIn("SET ROLE schoolos_student_executor;", sql)
+        self.assertIn("SECURITY DEFINER SET search_path=pg_catalog,pg_temp", sql)
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION app_private.d1_roll_correct_result_rows_match_exact", sql
+        )
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
+        self.assertIn("TO schoolos_student_executor,schoolos_workflow_executor;", sql)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_result_rows_match_exact(uuid,uuid,uuid,uuid,jsonb) TO authenticated", sql)
+        self.assertNotIn("CREATE FUNCTION app.d1_correct_student_roll", sql)
+        self.assertNotIn("UPDATE app_private.operation_contracts", sql)
+        self.assertNotIn("INSERT INTO app_private.roll_allocations", sql)
 
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
