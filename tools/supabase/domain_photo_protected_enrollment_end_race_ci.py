@@ -147,25 +147,51 @@ def _tagged_actor(psycopg):
 
 
 def _observe_end_blocked_consumers(psycopg, end_pid, *, count=2, seconds=12):
-    """Confirm two actual consumer sessions wait on the Student row holder."""
+    """Prove both genuine workers wait in the END holder's lock graph.
+
+    PostgreSQL may queue a second FOR UPDATE waiter behind the first waiter
+    (a soft blocker), rather than behind the END holder directly. Require a
+    real unresolved tuple/transactionid lock for EACH tagged worker and a
+    complete pg_blocking_pids dependency path back to END's exact PID.
+    """
     deadline=time.monotonic()+seconds
+    observed_waiters=0
+    observed_chains=0
     with closing(_local_connect(psycopg)) as observer:
         while time.monotonic()<deadline:
             with closing(observer.cursor()) as cur:
                 cur.execute("""
-                    SELECT count(DISTINCT a.pid)
+                    SELECT DISTINCT a.pid, pg_catalog.pg_blocking_pids(a.pid)
                     FROM pg_catalog.pg_stat_activity a
                     JOIN pg_catalog.pg_locks l ON l.pid=a.pid
                     WHERE a.application_name=%s AND NOT l.granted
-                    AND l.locktype IN ('transactionid','tuple')
-                    AND %s=ANY(pg_catalog.pg_blocking_pids(a.pid))
-                """,(WORKER_NAME,end_pid))
-                blocked=cur.fetchone()[0]
+                      AND l.locktype IN ('transactionid','tuple')
+                """,(WORKER_NAME,))
+                waiters={int(pid):set(map(int, blockers))
+                         for pid, blockers in cur.fetchall()}
             observer.rollback()
-            if blocked>=count:
+            def _reaches_end(pid):
+                pending=[pid]
+                seen=set()
+                while pending:
+                    current=pending.pop()
+                    if current==end_pid:
+                        return True
+                    if current in seen:
+                        continue
+                    seen.add(current)
+                    pending.extend(waiters.get(current,()))
+                return False
+            matching=sum(_reaches_end(pid) for pid in waiters)
+            observed_waiters=max(observed_waiters,len(waiters))
+            observed_chains=max(observed_chains,matching)
+            if len(waiters)>=count and matching>=count:
                 return
             time.sleep(.05)
-    raise RuntimeError("D1_PHOTO_END_SHARED_STUDENT_LOCK_WAIT_NOT_OBSERVED")
+    raise RuntimeError(
+        "D1_PHOTO_END_SHARED_STUDENT_LOCK_WAIT_NOT_OBSERVED"
+        f" waiters={observed_waiters} chained={observed_chains}"
+    )
 
 
 def _source_primary(psycopg):
