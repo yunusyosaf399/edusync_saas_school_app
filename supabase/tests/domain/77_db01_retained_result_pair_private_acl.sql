@@ -121,7 +121,7 @@ SELECT pg_catalog.jsonb_build_object(
 ) AS proof_json \gset
 
 -- Catalog identity and effective ACL are checked via PostgreSQL, not GRANT text.
-SELECT is((SELECT pg_catalog.pg_get_userbyid(p.proowner)
+SELECT is((SELECT pg_catalog.pg_get_userbyid(p.proowner)::text
   FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
  WHERE n.nspname='app_private' AND p.proname='d1_roll_correct_result_rows_match_exact'),
  'schoolos_student_executor'::text,'private function has approved Student executor owner');
