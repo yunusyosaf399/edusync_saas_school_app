@@ -53,6 +53,10 @@ DB-01 PR #100 Roll Correction, DB-02 PR #101 Roll Policy, DB-03 PR #102 Admissio
 
 **Approval gates remain open**: PA-01 actual provider/SDK and safe conditional/write-once API; PA-02 location/mapping/key custody and staging/final bucket separation; PA-03 real decoded-image validation, stripping, scanning and exact allowed MIME matrix; PA-04 preupload intent durable expiry and idempotency (including ISSUE lost bearer response); PA-05 identity and signed entitlement revisions, upload purpose/module grants and Student scope; PA-06 object reconciliation/retention/legal hold, worker backoff and alarms; PA-07 authenticated receipts/HEAD-readback immutable proof, versioning, later File row lifecycle and photo SET link; PA-08 real provider CI and incident recovery across process/server/region failures. These are **design questions for approval**, not invented production choices.
 
+## First exact-head CI failure and correction
+
+Initial PR head `bf0fa93eb4577e1153f443258bbae6bba1cbffbe` had **both Foundation and D1 Python tooling failure**, before the D1 runtime phase, because `run_photo_provider_adapter_contract_trial` referenced a missing local `_check` helper. Every other new individual adapter test was green. The corrected head explicitly defines `_check` as a strict boolean fail-closed assertion; no provider logic, table grant, SQL migration or accepted D1 contract was changed. The first runs **do not count as acceptance** and both workflows must pass on the corrected head.
+
 ## Activation and merge constraints
 
 The current protected operations remain **31/35 accepted**; #67 Student Profile Photo SET stays **DENY**. Migration 10 remains `.sql.draft`. No actual file upload, new permission, hosted deployment, SDK or release enablement is allowed by this PR.
