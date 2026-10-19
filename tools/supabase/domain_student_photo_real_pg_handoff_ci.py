@@ -374,3 +374,11 @@ def run_real_postgres_photo_handoff(container: str, run_psql, root: Path = ROOT)
     )
     run_photo_protected_enrollment_end_race(
         psycopg, container=container, run_psql=run_psql)
+
+    # PR97: genuine P0 placements for two NEW Students, reverse winner
+    # and cross-Campus Transfer against live native PostgreSQL intents.
+    from domain_photo_reverse_end_campus_transfer_ci import (
+        run_photo_reverse_end_campus_transfer_races,
+    )
+    run_photo_reverse_end_campus_transfer_races(
+        psycopg, container=container, run_psql=run_psql)
