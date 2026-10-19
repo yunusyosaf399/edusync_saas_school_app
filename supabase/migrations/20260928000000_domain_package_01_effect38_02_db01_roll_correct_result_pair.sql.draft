@@ -24,18 +24,18 @@ BEGIN
        'correction_effective_from','student_version','section_offering_id','source_enrollment_effective_from'])
   THEN RETURN false; END IF;
   BEGIN
-    v_student:=pg_catalog.nullif(p_summary->>'student_id','')::uuid;
-    v_enrollment:=pg_catalog.nullif(p_summary->>'enrollment_id','')::uuid;
-    v_source:=pg_catalog.nullif(p_summary->>'source_roll_allocation_id','')::uuid;
-    v_successor:=pg_catalog.nullif(p_summary->>'corrected_roll_allocation_id','')::uuid;
-    v_policy:=pg_catalog.nullif(p_summary->>'source_policy_revision_id','')::uuid;
-    v_section:=pg_catalog.nullif(p_summary->>'section_offering_id','')::uuid;
-    v_old:=pg_catalog.nullif(p_summary->>'old_numeric_value','')::bigint;
-    v_new:=pg_catalog.nullif(p_summary->>'new_numeric_value','')::bigint;
-    v_student_version:=pg_catalog.nullif(p_summary->>'student_version','')::bigint;
-    v_source_start:=pg_catalog.nullif(p_summary->>'source_roll_effective_from','')::date;
-    v_enrollment_start:=pg_catalog.nullif(p_summary->>'source_enrollment_effective_from','')::date;
-    v_correction_date:=pg_catalog.nullif(p_summary->>'correction_effective_from','')::date;
+    v_student:=NULLIF(p_summary->>'student_id','')::uuid;
+    v_enrollment:=NULLIF(p_summary->>'enrollment_id','')::uuid;
+    v_source:=NULLIF(p_summary->>'source_roll_allocation_id','')::uuid;
+    v_successor:=NULLIF(p_summary->>'corrected_roll_allocation_id','')::uuid;
+    v_policy:=NULLIF(p_summary->>'source_policy_revision_id','')::uuid;
+    v_section:=NULLIF(p_summary->>'section_offering_id','')::uuid;
+    v_old:=NULLIF(p_summary->>'old_numeric_value','')::bigint;
+    v_new:=NULLIF(p_summary->>'new_numeric_value','')::bigint;
+    v_student_version:=NULLIF(p_summary->>'student_version','')::bigint;
+    v_source_start:=NULLIF(p_summary->>'source_roll_effective_from','')::date;
+    v_enrollment_start:=NULLIF(p_summary->>'source_enrollment_effective_from','')::date;
+    v_correction_date:=NULLIF(p_summary->>'correction_effective_from','')::date;
   EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow OR numeric_value_out_of_range THEN
     RETURN false;
   END;
