@@ -157,18 +157,27 @@ SELECT 'b1000000-0000-4000-8000-000000000092',op.id,op.payload_schema_version,
  'source_policy_revision_id','b1000000-0000-4000-8000-000000000049',
  'source_old_numeric_value','12001',
  'source_roll_origin_allocation_id',NULL::uuid),
- '{"proposed_numeric_value":"12009"}'::jsonb,'EXECUTED',pg_catalog.statement_timestamp(),
+ '{"proposed_numeric_value":"12009"}'::jsonb,'DRAFT',NULL::timestamptz,
  '55555555-5555-4555-8555-555555555555'
 FROM app_private.operation_contracts op WHERE op.code='student.roll.correct';
+-- Follow the frozen Foundation state machine; never insert terminal requests.
+UPDATE app_private.approval_requests
+ SET state='SUBMITTED',submitted_at=pg_catalog.statement_timestamp()
+ WHERE id='b1000000-0000-4000-8000-000000000092';
+UPDATE app_private.approval_requests SET state='PENDING'
+ WHERE id='b1000000-0000-4000-8000-000000000092';
 INSERT INTO app_private.approval_request_steps(
  id,request_id,policy_id,template_id,step_number,required_reviews,state,
  opened_at,closed_at,created_by)
 VALUES ('b1000000-0000-4000-8000-000000000093',
  'b1000000-0000-4000-8000-000000000092',
  'b1000000-0000-4000-8000-000000000090',
- 'b1000000-0000-4000-8000-000000000091',1,1,'APPROVED',
- pg_catalog.statement_timestamp(),pg_catalog.statement_timestamp(),
+ 'b1000000-0000-4000-8000-000000000091',1,1,'WAITING',
+ NULL::timestamptz,NULL::timestamptz,
  '55555555-5555-4555-8555-555555555555');
+UPDATE app_private.approval_request_steps
+ SET state='OPEN',opened_at=pg_catalog.statement_timestamp()
+ WHERE id='b1000000-0000-4000-8000-000000000093';
 INSERT INTO app_private.approval_step_reviewers(
  id,step_id,reviewer_id,assignment_reason,created_by)
 VALUES ('b1000000-0000-4000-8000-000000000094',
@@ -178,12 +187,21 @@ VALUES ('b1000000-0000-4000-8000-000000000094',
 INSERT INTO app_private.approval_reviews(
  id,reviewer_assignment_id,step_id,reviewer_id,decision,reason,
  expected_request_version,created_by)
-VALUES ('b1000000-0000-4000-8000-000000000095',
+SELECT 'b1000000-0000-4000-8000-000000000095',
  'b1000000-0000-4000-8000-000000000094',
  'b1000000-0000-4000-8000-000000000093',
  'b1000000-0000-4000-8000-000000000071','APPROVE',
- 'Synthetic independently reviewed',1,
- 'b1000000-0000-4000-8000-000000000071');
+ 'Synthetic independently reviewed',q.row_version,
+ 'b1000000-0000-4000-8000-000000000071'
+FROM app_private.approval_requests q
+ WHERE q.id='b1000000-0000-4000-8000-000000000092';
+UPDATE app_private.approval_request_steps
+ SET state='APPROVED',closed_at=pg_catalog.statement_timestamp()
+ WHERE id='b1000000-0000-4000-8000-000000000093';
+UPDATE app_private.approval_requests SET state='APPROVED'
+ WHERE id='b1000000-0000-4000-8000-000000000092';
+UPDATE app_private.approval_requests SET state='EXECUTED'
+ WHERE id='b1000000-0000-4000-8000-000000000092';
 INSERT INTO app_private.command_receipts(
  id,principal_id,operation_id,command_kind,idempotency_key,
  canonical_payload_hash,canonicalization_version,
@@ -197,9 +215,12 @@ SELECT 'b1000000-0000-4000-8000-000000000096',
  'SUCCEEDED','D1_STUDENT_ROLL_CORRECT',
  'b1000000-0000-4000-8000-000000000060',
  (:'proof_json'::jsonb ||
- pg_catalog.jsonb_build_object('state','EXECUTED','request_version','1')),
+ pg_catalog.jsonb_build_object('state','EXECUTED','request_version',q.row_version::text)),
  pg_catalog.statement_timestamp(),'55555555-5555-4555-8555-555555555555'
-FROM app_private.operation_contracts op WHERE op.code='student.roll.correct';
+FROM app_private.operation_contracts op
+ JOIN app_private.approval_requests q ON q.operation_id=op.id
+ WHERE op.code='student.roll.correct'
+   AND q.id='b1000000-0000-4000-8000-000000000092';
 RESET ROLE;
 
 SELECT is((SELECT count(*) FROM app_private.approval_applications
