@@ -34,6 +34,14 @@ def _deny():
     raise Denied("PHOTO_ADAPTER_TRIAL_DENIED")
 
 
+def _must_deny(callback):
+    try:
+        callback()
+    except Denied:
+        return
+    raise RuntimeError("PHOTO_ADAPTER_TRIAL_FAIL_OPEN")
+
+
 def _uuid(value):
     try:
         result=UUID(value)
@@ -136,16 +144,22 @@ class LocalPrivateByteProvider:
 
     def head(self,location,key):
         obj=self._objects.get((location,key))
-        if obj is None or obj.state!="STAGED":
+        if obj is None or obj.state not in ("STAGED","SEALED_TRIAL"):
             _deny()
         # Metadata is *untrusted* without reading back actual stored bytes.
         return {"reported_length":len(obj.payload),"etag":"NOT_A_SHA256"}
 
     def read_back_for_validation(self,location,key):
         obj=self._objects.get((location,key))
-        if obj is None or obj.state!="STAGED":
+        if obj is None or obj.state not in ("STAGED","SEALED_TRIAL"):
             _deny()
         return obj.payload
+
+    def seal_trial(self,location,key):
+        obj=self._objects.get((location,key))
+        if obj is None or obj.state!="STAGED":
+            _deny()
+        obj.state="SEALED_TRIAL"
 
     def tamper_bytes_for_test(self,location,key,payload):
         """Privileged malicious-provider fixture only."""
@@ -277,6 +291,8 @@ class LocalAdapterContractTrial:
         evidence=VerifiedTrialEvidence(
             intent.intent_id,intent.file_id,intent.location,
             intent.object_key,len(payload),actual,self._sign(data))
+        # Local trial seal forbids any further PUT, including same bytes.
+        self.provider.seal_trial(intent.location,intent.object_key)
         self.evidence[intent.intent_id]=evidence
         return evidence
 
@@ -348,16 +364,16 @@ def run_photo_provider_adapter_contract_trial():
     _check(adapter.put(ctx,intent,payload=payload),"ADAPTER_RETRY_MISMATCH")
     proof=adapter.inspect_trial(ctx,intent,expected_sha256=digest)
     _check(adapter.verify_receipt(intent,proof),"ADAPTER_RECEIPT_FAILURE")
-    _denied(lambda:adapter.put(ctx,intent,payload=payload+b"CHANGED"))
-    _denied(lambda:adapter.inspect_trial(
+    _must_deny(lambda:adapter.put(ctx,intent,payload=payload+b"CHANGED"))
+    _must_deny(lambda:adapter.inspect_trial(
         replace(ctx,entitlement_fresh=False),intent,expected_sha256=digest))
-    _denied(lambda:adapter.verify_receipt(
+    _must_deny(lambda:adapter.verify_receipt(
         intent,replace(proof,byte_size=proof.byte_size+1)))
     adapter.provider.tamper_bytes_for_test(
         intent.location,intent.object_key,b"OPAQUE-TEST-TAMPERED")
-    _denied(lambda:adapter.inspect_trial(ctx,intent,expected_sha256=digest))
+    _must_deny(lambda:adapter.inspect_trial(ctx,intent,expected_sha256=digest))
     adapter.quarantine(intent,reason="CONTENT_MISMATCH")
-    _denied(lambda:adapter.provider.read_back_for_validation(
+    _must_deny(lambda:adapter.provider.read_back_for_validation(
         intent.location,intent.object_key))
     print("D1_STUDENT_PHOTO_PROVIDER_ADAPTER_CONTRACT_PASS "
           "server-allocated private test key, committed-but-lost PUT response, "
