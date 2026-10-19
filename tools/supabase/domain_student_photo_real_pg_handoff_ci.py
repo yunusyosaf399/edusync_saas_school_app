@@ -408,3 +408,11 @@ def run_real_postgres_photo_handoff(container: str, run_psql, root: Path = ROOT)
     )
     run_photo_provider_neutral_recovery_trial(
         psycopg, container=container, run_psql=run_psql)
+
+    # Next provider trust boundary: pure disposable Python mock with synthetic
+    # opaque bytes only, AFTER all genuine D1 protected Photo tests. No
+    # actual image decoding/provider SDK, File AVAILABLE or Photo SET.
+    from domain_photo_provider_adapter_contract_ci import (
+        run_photo_provider_adapter_contract_trial,
+    )
+    run_photo_provider_adapter_contract_trial()
