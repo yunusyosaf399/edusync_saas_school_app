@@ -168,9 +168,18 @@ class NativePostgresPhotoIntentTrial:
             _deny()
 
     def transition(self, token: str, *, action: str,
-                   fail_before_commit=False) -> str:
+                   fail_before_commit=False,
+                   before_commit_test_hook=None) -> str:
+        """Internal local harness pause after a valid transition, before COMMIT.
+
+        This callback is a disposable race-test seam, not an application
+        extension point or a production token API.
+        """
         digest = _digest(token)
-        if action not in ("CONSUME", "FINALIZE_TRIAL", "REVOKE") or type(fail_before_commit) is not bool:
+        if (action not in ("CONSUME", "FINALIZE_TRIAL", "REVOKE")
+                or type(fail_before_commit) is not bool
+                or (before_commit_test_hook is not None
+                    and not callable(before_commit_test_hook))):
             _deny()
         source, target = {
             "CONSUME": ("ISSUED","CONSUMED"),
@@ -210,6 +219,8 @@ class NativePostgresPhotoIntentTrial:
                             _deny()
                         if fail_before_commit:
                             _deny()
+                        if before_commit_test_hook is not None:
+                            before_commit_test_hook()
             return target
         except NativeIntentDenied:
             raise
