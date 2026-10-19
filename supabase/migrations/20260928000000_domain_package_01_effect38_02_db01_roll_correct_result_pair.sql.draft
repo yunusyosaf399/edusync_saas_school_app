@@ -1,0 +1,83 @@
+-- DB-01: internal immutable correction-pair proof only.
+-- Does NOT enable student.roll.correct, implement a mutation, or grant a client RPC.
+-- Works on retained history after subsequent CORRECT, MOVE, or END.
+-- Receipt identity, approved request payload/reason equality, and current disclosure
+-- authorization are intentionally verified separately by the protected command.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_roll_correct_result_rows_match_exact(
+  p_student uuid,p_enrollment uuid,p_source_roll uuid,p_successor_roll uuid,p_summary jsonb
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  v_student uuid; v_enrollment uuid; v_source uuid; v_successor uuid; v_policy uuid; v_section uuid;
+  v_old bigint; v_new bigint; v_student_version bigint;
+  v_source_start date; v_enrollment_start date; v_correction_date date;
+BEGIN
+  IF p_student IS NULL OR p_enrollment IS NULL OR p_source_roll IS NULL OR p_successor_roll IS NULL
+     OR p_source_roll=p_successor_roll
+     OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>12
+     OR NOT (p_summary ?& ARRAY[
+       'student_id','enrollment_id','source_roll_allocation_id','corrected_roll_allocation_id',
+       'source_policy_revision_id','old_numeric_value','new_numeric_value','source_roll_effective_from',
+       'correction_effective_from','student_version','section_offering_id','source_enrollment_effective_from'])
+  THEN RETURN false; END IF;
+  BEGIN
+    v_student:=pg_catalog.nullif(p_summary->>'student_id','')::uuid;
+    v_enrollment:=pg_catalog.nullif(p_summary->>'enrollment_id','')::uuid;
+    v_source:=pg_catalog.nullif(p_summary->>'source_roll_allocation_id','')::uuid;
+    v_successor:=pg_catalog.nullif(p_summary->>'corrected_roll_allocation_id','')::uuid;
+    v_policy:=pg_catalog.nullif(p_summary->>'source_policy_revision_id','')::uuid;
+    v_section:=pg_catalog.nullif(p_summary->>'section_offering_id','')::uuid;
+    v_old:=pg_catalog.nullif(p_summary->>'old_numeric_value','')::bigint;
+    v_new:=pg_catalog.nullif(p_summary->>'new_numeric_value','')::bigint;
+    v_student_version:=pg_catalog.nullif(p_summary->>'student_version','')::bigint;
+    v_source_start:=pg_catalog.nullif(p_summary->>'source_roll_effective_from','')::date;
+    v_enrollment_start:=pg_catalog.nullif(p_summary->>'source_enrollment_effective_from','')::date;
+    v_correction_date:=pg_catalog.nullif(p_summary->>'correction_effective_from','')::date;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow OR numeric_value_out_of_range THEN
+    RETURN false;
+  END;
+  IF v_student IS DISTINCT FROM p_student OR v_enrollment IS DISTINCT FROM p_enrollment
+     OR v_source IS DISTINCT FROM p_source_roll OR v_successor IS DISTINCT FROM p_successor_roll
+     OR v_policy IS NULL OR v_section IS NULL
+     OR v_old IS NULL OR v_new IS NULL OR v_old=v_new
+     OR v_student_version IS NULL OR v_student_version<1
+     OR v_source_start IS NULL OR v_enrollment_start IS NULL OR v_correction_date IS NULL
+     OR v_source_start>=v_correction_date
+  THEN RETURN false; END IF;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM app_private.roll_allocations src
+      JOIN app_private.roll_allocations dst
+        ON dst.supersedes_id=src.id
+       AND dst.enrollment_id=src.enrollment_id
+       AND dst.student_id=src.student_id
+       AND dst.policy_revision_id=src.policy_revision_id
+      JOIN app_private.enrollments e ON e.id=src.enrollment_id
+      JOIN app_private.roll_policy_revisions pol ON pol.id=src.policy_revision_id
+     WHERE src.id=p_source_roll AND dst.id=p_successor_roll
+       AND src.student_id=p_student AND e.id=p_enrollment AND e.student_id=p_student
+       AND e.placement_kind='PRIMARY'
+       AND e.section_offering_id=v_section AND e.effective_from=v_enrollment_start
+       AND src.policy_revision_id=v_policy
+       AND src.effective_from=v_source_start AND src.effective_until=v_correction_date
+       AND src.ended_at IS NOT NULL AND src.ended_by IS NOT NULL
+       AND src.numeric_value=v_old
+       AND dst.effective_from=v_correction_date AND dst.numeric_value=v_new
+       AND dst.origin_allocation_id IS NOT DISTINCT FROM src.origin_allocation_id
+       AND dst.correction_reason IS NOT NULL
+       AND pg_catalog.length(pg_catalog.btrim(dst.correction_reason))>0
+       AND (pol.mode<>'ACADEMIC_CONTEXT' OR dst.origin_allocation_id IS NULL)
+       AND NOT EXISTS (SELECT 1 FROM app_private.roll_allocations other
+                       WHERE other.supersedes_id=src.id AND other.id<>dst.id)
+  ) THEN RETURN false; END IF;
+  RETURN true;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_correct_result_rows_match_exact(uuid,uuid,uuid,uuid,jsonb)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_result_rows_match_exact(uuid,uuid,uuid,uuid,jsonb)
+  TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
