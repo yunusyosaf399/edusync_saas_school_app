@@ -101,7 +101,9 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertEqual(
             sql.count("CREATE FUNCTION app_private.d1_roll_correct_direct_receipt_matches_exact("), 1
         )
-        self.assertIn("SET ROLE schoolos_student_executor;", sql)
+        self.assertIn("SET ROLE schoolos_evidence_writer;", sql)
+        self.assertIn("TO schoolos_evidence_writer;", sql)
+        self.assertIn("REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;", sql)
         self.assertIn("SECURITY DEFINER SET search_path=pg_catalog,pg_temp", sql)
         self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
         self.assertIn("TO schoolos_student_executor,schoolos_workflow_executor;", sql)
