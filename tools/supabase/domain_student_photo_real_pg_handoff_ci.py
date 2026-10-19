@@ -399,3 +399,12 @@ def run_real_postgres_photo_handoff(container: str, run_psql, root: Path = ROOT)
     )
     run_photo_native_lost_ack_outbox_trial(
         psycopg, container=container, run_psql=run_psql)
+
+    # PR100: provider-neutral deterministic metadata delivery to a separate
+    # durable SQLite stand-in, distinct from the PostgreSQL outbox commit.
+    # No bytes, external network, storage provider or Photo SET.
+    from domain_photo_provider_neutral_recovery_ci import (
+        run_photo_provider_neutral_recovery_trial,
+    )
+    run_photo_provider_neutral_recovery_trial(
+        psycopg, container=container, run_psql=run_psql)
