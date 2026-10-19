@@ -48,7 +48,18 @@ app.d1_correct_student_roll(
 
 -- P1 submit under APPROVAL: no Roll or counter effect
 app.d1_submit_student_roll_correction(
-  -- same exact 12 arguments and types/order as DIRECT above
+  p_student_id uuid,
+  p_expected_student_version bigint,
+  p_source_enrollment_id uuid,
+  p_expected_source_section_id uuid,
+  p_expected_enrollment_effective_from date,
+  p_source_roll_allocation_id uuid,
+  p_expected_source_roll_effective_from date,
+  p_expected_source_policy_revision_id uuid,
+  p_expected_old_numeric_value bigint,
+  p_requested_numeric_value bigint,
+  p_reason text,
+  p_idempotency_key text
 ) RETURNS TABLE(request_id uuid, request_version bigint);
 
 -- Reviewer can APPROVE or REJECT the current configured step; no Roll effect
@@ -153,10 +164,10 @@ The values are **illustrative types only**; UUIDs are placeholders, not live pay
 **Verifier `d1_roll_correct_result_rows_match_exact` (strict, failure → FALSE, never rewrite)**:
 1. `summary` object with exactly 12 allowlisted keys; strict parse and limits, no extra values, stable case; typed expected Student/Enrollment/source/successor IDs must match args, `receipt.result_ref = corrected_roll_allocation_id`, `result_kind` fixed, `command_kind` and receipt state matched by caller. Reject malformed bigint, date, UUID as `false` (catch only designated parse exceptions, not lock/DB infrastructure).
 2. Stored immutable source R0 exists, `R0.id=summary.source_roll_allocation_id`, `student_id`, `enrollment_id`, `policy_revision_id`, `numeric_value=old`, `effective_from=expected_source_start`, **`R0.effective_until=summary.correction_effective_from`** and `ended_at/ended_by` non-null. Earlier source can itself be a corrected successor; it may later have a descendant, but its committed correction close boundary remains immutable.
-3. Stored immutable correction successor R1 exists, `R1.id=summary.corrected_roll_allocation_id`, `R1.student_id=R0.student_id`, `R1.enrollment_id=R0.enrollment_id`, `R1.policy_revision_id=R0.policy_revision_id`, `R1.supersedes_id=R0.id`, `R1.numeric_value=new`, `R1.effective_from=R0.effective_until`, **`R1.origin_allocation_id IS NOT DISTINCT FROM R0.origin_allocation_id` only if RC-04 approved**, `R1.correction_reason` nonblank. `new<>old`. Ensure no second source successor and no conflicting numeric ownership by reviewing accepted commit invariant; do not recompute future *current* collision at replay.
+3. Stored immutable correction successor R1 exists, `R1.id=summary.corrected_roll_allocation_id`, `R1.student_id=R0.student_id`, `R1.enrollment_id=R0.enrollment_id`, `R1.policy_revision_id=R0.policy_revision_id`, `R1.supersedes_id=R0.id`, `R1.numeric_value=new`, `R1.effective_from=R0.effective_until`, **`R1.origin_allocation_id IS NOT DISTINCT FROM R0.origin_allocation_id` only if RC-04 approved**, `R1.correction_reason` nonblank **and exactly equals the typed original caller reason (DIRECT), or `approval_requests.reason` (approved APPLY), after the expressly approved normalization rule**. This equality must be checked privately, not exposed in result summary. `new<>old`. Ensure no second source successor and no conflicting numeric ownership by reviewing accepted commit invariant; do not recompute future *current* collision at replay.
 4. Retained named Enrollment E1 exists with original Student/Section/start matching summary; its `placement_kind='PRIMARY'` and original School/policy ancestry match; **do not require E1 ACTIVE, E1.effective_until IS NULL, R1.effective_until IS NULL, R1 unsuperseded or Student's current row_version=old Student version**. Those may change legally via later CORRECT/MOVE/END. Do not demand original source policy still active.
 5. Link the actor/key/operation/hash to one SUCCEEDED receipt, verify `created_by`/evidence ownership under approved fixed writer semantics, and—where result-proof visibility permits—exactly one selected outbox entry with receipt ID and ordinal 1. Never return receipt details to raw authenticated caller; wrapper separately applies current authority policy. Where needed, the schema-owner `approval_applications` guard calls **only the narrow private row-verifier**, not a check that requires current actor identity (a trigger's actor can be different from the reviewed user).
-6. **Important pending decision:** proposed immutable witness doesn't store immutable command-receipt FK on R1. Correlate through existing receipt-to-result reference + typed row proof and audit/outbox `command_receipt_id` (not untrusted JSON alone). Confirm trigger/foreign-key constraints ensure one successful receipt per correction result before activation; if they do not, require an integrator-owned exact uniqueness/evidence plan rather than adding a hidden new HE column.
+6. **Important pending decision:** proposed immutable witness doesn't store immutable command-receipt FK on R1. Correlate through existing receipt-to-result reference + typed row proof and audit/outbox `command_receipt_id` (not untrusted JSON alone). Confirm explicit uniqueness and secure receipt/result provenance enforcement exists before activation; immutable row identity plus a receipt result pointer alone does not prove authenticated command origin against privileged misbinding; if they do not, require an integrator-owned exact uniqueness/evidence plan rather than adding a hidden new HE column.
 
 **Required durable replay:** R0→R1 at date D1; next day R1→R2 at D2; later MOVE E1→E2 carries latest R2; later END closes E2. Every earlier original receipt still verifies its own Rn/Rn+1 pair using retained boundary Dn and immutable summary, with zero additional UPDATE, INSERT, counter advance, audit or event. **Separate current authorization/disclosure check** gates whether caller may receive the bounded old-number result at replay after transfer or revocation; approval to expose historic values is RC-07/08 pending, and a missing current placement does not grant fallback access.
 
