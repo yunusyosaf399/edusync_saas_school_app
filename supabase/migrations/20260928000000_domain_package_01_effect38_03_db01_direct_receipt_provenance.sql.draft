@@ -1,0 +1,75 @@
+-- DB-01 second, independently catalog-gated private provenance helper.
+-- DIRECT-only terminal receipt evidence. Does not authorize any caller or
+-- authenticate the original request. Expected key/hash must be reconstructed
+-- by a future protected RPC; do not pass untrusted caller-chosen hash as proof.
+-- APPROVAL APPLY must use separate reviewed request/application validation.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_roll_correct_direct_receipt_matches_exact(
+ p_receipt uuid,p_actor uuid,p_key text,p_expected_hash bytea,
+ p_student uuid,p_enrollment uuid,p_source_roll uuid,p_successor_roll uuid
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF p_receipt IS NULL OR p_actor IS NULL OR p_key IS NULL
+    OR pg_catalog.length(p_key) NOT BETWEEN 1 AND 200
+    OR p_expected_hash IS NULL OR pg_catalog.octet_length(p_expected_hash)<>32
+    OR p_student IS NULL OR p_enrollment IS NULL
+    OR p_source_roll IS NULL OR p_successor_roll IS NULL
+    OR p_source_roll=p_successor_roll THEN RETURN false; END IF;
+
+ RETURN EXISTS (
+   SELECT 1 FROM app_private.command_receipts r
+     JOIN app_private.operation_contracts op ON op.id=r.operation_id
+     JOIN app_private.principals actor ON actor.id=r.principal_id
+     JOIN app_private.audit_events a ON a.command_receipt_id=r.id
+     JOIN app_private.outbox_events ev ON ev.command_receipt_id=r.id
+    WHERE r.id=p_receipt AND r.principal_id=p_actor AND r.created_by=p_actor
+      AND actor.kind='INDIVIDUAL'
+      AND r.idempotency_key=p_key AND r.canonical_payload_hash=p_expected_hash
+      AND r.canonicalization_version=1
+      AND op.code='student.roll.correct' AND op.contract_version=1
+      AND r.command_kind='student.roll.correct' AND r.state='SUCCEEDED'
+      AND r.result_kind='D1_STUDENT_ROLL_CORRECT'
+      AND r.result_ref=p_successor_roll AND r.request_id IS NULL
+      AND r.expected_request_version IS NULL
+      AND r.expected_target_version>0
+      AND r.result_summary->'student_version'=pg_catalog.to_jsonb(r.expected_target_version)
+      AND app_private.d1_roll_correct_result_rows_match_exact(
+        p_student,p_enrollment,p_source_roll,p_successor_roll,r.result_summary)
+      -- At most one successful correction receipt may claim a Roll successor.
+      AND (SELECT count(*) FROM app_private.command_receipts other
+             WHERE other.operation_id=r.operation_id
+               AND other.state='SUCCEEDED'
+               AND other.result_kind='D1_STUDENT_ROLL_CORRECT'
+               AND other.result_ref=p_successor_roll)=1
+      -- A unique ordinal alone is insufficient: require one event total,
+      -- and one matching private audit for this receipt and correction.
+      AND (SELECT count(*) FROM app_private.outbox_events e2
+             WHERE e2.command_receipt_id=r.id)=1
+      AND (SELECT count(*) FROM app_private.audit_events a2
+             WHERE a2.command_receipt_id=r.id)=1
+      AND a.actor_id=p_actor AND a.actor_kind='INDIVIDUAL'
+      AND a.created_by=p_actor AND a.outcome='SUCCEEDED'
+      AND a.source_kind='API' AND a.event_type='student.roll.correct'
+      AND a.target_kind='STUDENT' AND a.target_ref=p_student
+      AND a.approval_request_id IS NULL
+      AND ev.event_ordinal=1 AND ev.event_type='enrollment.roll_corrected'
+      AND ev.schema_version=1 AND ev.aggregate_kind='ENROLLMENT'
+      AND ev.aggregate_ref=p_enrollment AND ev.created_by=p_actor
+      AND ev.correlation_id=a.correlation_id
+      -- Broad evidence may carry safe UUIDs, not numeric/reason secrets.
+      AND NOT ev.payload ?| ARRAY[
+        'numeric_value','old_numeric_value','new_numeric_value',
+        'correction_reason','reason','requested_payload','old_snapshot']
+      AND NOT a.details ?| ARRAY[
+        'numeric_value','old_numeric_value','new_numeric_value',
+        'correction_reason','reason','requested_payload','old_snapshot']
+ );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_correct_direct_receipt_matches_exact(uuid,uuid,text,bytea,uuid,uuid,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_direct_receipt_matches_exact(uuid,uuid,text,bytea,uuid,uuid,uuid,uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
