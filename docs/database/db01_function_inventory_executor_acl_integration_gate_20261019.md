@@ -166,6 +166,16 @@ The first #77 runtime CI run at `2be3e3339fbcf11f89f5e2887f6ac14a1d79b03c` faile
 
 A later PR reviewer must specifically check that #77's success is counted **only** as structural/private-ACL acceptance; it cannot replace DIRECT/APPROVAL receipts, actor authorization, live Student correction races, or independent integration-owner acceptance. Issue [#108](https://github.com/yunusyosaf399/edusync_saas_school_app/issues/108) remains open.
 
+## 5.2 DB-01 private verifier canonical JSON hardening — separate exact-head acceptance
+
+The original rollback-only suite #77 is **20/20 PASS** on integration PR #109 commit `0bf6b69ab1a41be14c2a31cf37428d19da5e6b83`, with all **three** exact-head workflows successful: D1 static, Foundation local and D1 local runtime. This is **structural retained-history and effective SQL ACL evidence only**; it does not prove authenticated `student.roll.correct` or an independent integration reviewer signature.
+
+Independent source review identified a result-integrity gap: PostgreSQL can cast a JSON string containing a number into BIGINT, and some fractional numbers can cast to an integer. Alternate date spelling or case-varied UUID strings can likewise cast to matching typed values. The approved receipt contract expects **canonical 12-slot typed JSON**, so these alternate encodings must not pass the private retained-row verifier.
+
+On the separate draft integration branch [PR #109](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/109), the existing `effect38_02_db01_roll_correct_result_pair.sql.draft` function now checks all 12 expected JSON types and additionally compares each decoded value to its canonical `to_jsonb(typed_value)` representation. No extra function, table, role, grant, migration activation, shared D1 allocator edit or count change was made. Suite #77 was extended from **20 to 30** to test stringified BIGINT/version, incorrect UUID/date types, fractional numeric coercion, noncanonical date spelling and uppercase UUID, while preserving positive retained-pair and actual effective ACL denials. The runner's exact plan was raised to 30; no other business-suite fixture expectation changed.
+
+**New implementation HEAD at review:** `7e2ac543a34ac42a08ed7a1c4096ebae6a15516b`. Its D1 draft-static workflow passed; Foundation and local D1 runtime were **running at documentation capture**. This subsection **does not claim 30/30 PASS until exact-head D1 logs confirm it**. The catalog remains **543 total / 525 definers / 157 public / 386 private**, no authenticated-private or anon/service-role EXECUTE. Integration issue [#108](https://github.com/yunusyosaf399/edusync_saas_school_app/issues/108) remains open, PR remains draft/unmerged and correction disabled.
+
 ## 6. Evidence ledger and next task
 
 | Stage | Finding |
