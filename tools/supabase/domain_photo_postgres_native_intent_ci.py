@@ -143,9 +143,13 @@ class NativePostgresPhotoIntentTrial:
         except Exception:
             _deny()
 
-    def issue(self, *, fail_before_commit=False) -> str:
+    def issue(self, *, fail_before_commit=False,
+              before_commit_test_hook=None) -> str:
+        """Local-only precommit injection point, never a production API."""
         # Unpredictable bearer is returned ONCE; the DB stores SHA-256 only.
-        if type(fail_before_commit) is not bool:
+        if (type(fail_before_commit) is not bool
+                or (before_commit_test_hook is not None
+                    and not callable(before_commit_test_hook))):
             _deny()
         token = secrets.token_hex(32)
         digest = _digest(token)
@@ -161,6 +165,8 @@ class NativePostgresPhotoIntentTrial:
                             (digest,self._student,self._campus,principal))
                         if fail_before_commit:
                             _deny()
+                        if before_commit_test_hook is not None:
+                            before_commit_test_hook()
             return token
         except NativeIntentDenied:
             raise
