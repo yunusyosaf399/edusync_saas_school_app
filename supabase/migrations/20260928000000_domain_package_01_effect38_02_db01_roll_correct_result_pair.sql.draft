@@ -21,6 +21,21 @@ BEGIN
        'student_id','enrollment_id','source_roll_allocation_id','corrected_roll_allocation_id',
        'source_policy_revision_id','old_numeric_value','new_numeric_value','source_roll_effective_from',
        'correction_effective_from','student_version','section_offering_id','source_enrollment_effective_from'])
+     -- The receipt result is a typed JSON object: UUID/DATE as strings,
+     -- BIGINT/version as JSON numbers. Casting a JSON string to bigint
+     -- must not silently satisfy an independently retained result proof.
+     OR pg_catalog.jsonb_typeof(p_summary->'student_id') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(p_summary->'enrollment_id') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(p_summary->'source_roll_allocation_id') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(p_summary->'corrected_roll_allocation_id') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(p_summary->'source_policy_revision_id') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(p_summary->'section_offering_id') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(p_summary->'source_roll_effective_from') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(p_summary->'source_enrollment_effective_from') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(p_summary->'correction_effective_from') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(p_summary->'old_numeric_value') IS DISTINCT FROM 'number'
+     OR pg_catalog.jsonb_typeof(p_summary->'new_numeric_value') IS DISTINCT FROM 'number'
+     OR pg_catalog.jsonb_typeof(p_summary->'student_version') IS DISTINCT FROM 'number'
   THEN RETURN false; END IF;
   BEGIN
     v_student:=NULLIF(p_summary->>'student_id','')::uuid;
