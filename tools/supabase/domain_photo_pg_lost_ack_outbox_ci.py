@@ -25,6 +25,15 @@ from domain_student_photo_real_pg_handoff_ci import (
 STUDENT="f1000000-0000-4000-8000-000000000001"
 SETUP_SQL="""
 BEGIN;
+SELECT set_config('request.jwt.claim.sub',
+ (SELECT id::text FROM auth.users
+  WHERE email='foundation-rbac-001@example.invalid'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('request.jwt.claim.sub'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+  FROM app_private.principal_auth_bindings
+  WHERE id='66666666-6666-4666-8666-666666666666'),
+ 'is_anonymous',false)::text,true);
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.people(id,display_name,created_by) VALUES (
  'f1000000-0000-4000-8000-000000000003',
