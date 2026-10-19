@@ -11,7 +11,7 @@ DOMAIN_TESTS = [["01_employee_create.sql",37],["02_academic_class.sql",25],["03_
 
 DOMAIN_TESTS.extend([["75_db01_allocator_retained_history.sql",12],
                      ["76_db01_end_stored_policy_prelock.sql",30],
-                     ["77_db01_retained_result_pair_private_acl.sql",25]])
+                     ["77_db01_retained_result_pair_private_acl.sql",30]])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
