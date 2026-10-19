@@ -139,6 +139,19 @@ WHERE c.id=:'receipt'::uuid AND op.code='student.roll.correct'
 -- private d1_roll_correct_result_rows_match_exact helper after approval.
 -- 'receipt exists' alone is INSUFFICIENT provenance proof.
 ```
+**Additional uniqueness proof for a committed result:** the following query must equal **1**, not merely prove the nominated receipt exists:
+```sql
+SELECT count(*) AS success_receipts_for_corrected_roll
+FROM app_private.command_receipts c
+JOIN app_private.operation_contracts o ON o.id=c.operation_id
+WHERE o.code='student.roll.correct' AND c.state='SUCCEEDED'
+  AND c.result_kind='D1_STUDENT_ROLL_CORRECT'
+  AND c.result_ref=:'r1'::uuid
+  AND c.command_kind IN ('student.roll.correct','request.apply');
+-- expected 1. If the implementation cannot enforce this atomically using
+-- existing permission/evidence constraints, raise an integration uniqueness gate.
+```
+
 The hash verifier must recompute the **exact 11-slot caller-intent array** using the stored/caller typed values plus the operation/principal/key envelope, and compare to `canonical_payload_hash` using the existing `d1_jcs_typed` function, not merely require a nonempty 32-byte field. The restricted `dst.correction_reason` must equal the original DIRECT intent reason or approved `approval_requests.reason` under a signed normalization rule; this is **not** copied into broad result/audit/outbox. The D1 helper and schema-owner application trigger need an independent receipt/result ownership check: unique receipt key does *not* prove a Result UUID is used by only one distinct success receipt.
 
 **D. Audit/outbox once, no broad numeric/private reason:**
@@ -147,6 +160,15 @@ SELECT count(*) FROM app_private.outbox_events ev
 WHERE ev.command_receipt_id=:'receipt'::uuid
  AND ev.event_ordinal=1 AND ev.event_type='enrollment.roll_corrected';
 -- expected = 1 on success; 0 on DIRECT denial, INVALIDATED apply, rollback
+SELECT count(*) AS all_correction_events
+FROM app_private.outbox_events ev
+WHERE ev.command_receipt_id=:'receipt'::uuid
+  AND ev.event_type='enrollment.roll_corrected';
+-- expected EXACTLY 1 across *all* event ordinals, not just ordinal=1.
+SELECT count(*) AS all_outbox_rows_for_correction_receipt
+FROM app_private.outbox_events ev
+WHERE ev.command_receipt_id=:'receipt'::uuid;
+-- proposed success event contract expected 1 total, pending RC-07.
 SELECT count(*) FROM app_private.audit_events a
 WHERE a.command_receipt_id=:'receipt'::uuid
  AND a.actor_id=:'actor'::uuid
