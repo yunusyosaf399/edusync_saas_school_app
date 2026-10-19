@@ -1,9 +1,0 @@
--- DB-01 non-activating physical prerequisite. The existing retained-history
--- guard already rejects a second successor for a source Roll; make that
--- invariant concurrency-safe in the index as well. The partial index also
--- supports the existing unsuperseded-head and replay lineage lookups.
--- NULL means the allocation did not correct a prior allocation; any number
--- of original/placement allocations may therefore coexist.
-CREATE UNIQUE INDEX d1_pu04_roll_supersedes_idx
-  ON app_private.roll_allocations (supersedes_id)
-  WHERE supersedes_id IS NOT NULL;
