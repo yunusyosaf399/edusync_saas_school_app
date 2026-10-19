@@ -129,7 +129,10 @@ SELECT is((SELECT p.prosecdef
   FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
  WHERE n.nspname='app_private' AND p.proname='d1_roll_correct_result_rows_match_exact'),
  true,'retained proof uses narrow SECURITY DEFINER owner');
-SELECT ok((SELECT 'search_path=pg_catalog,pg_temp' = ANY(p.proconfig)
+SELECT ok((SELECT EXISTS (
+    SELECT 1 FROM pg_catalog.unnest(p.proconfig) AS setting(value)
+    WHERE pg_catalog.regexp_replace(setting.value,'[[:space:]]','','g')
+      = 'search_path=pg_catalog,pg_temp')
   FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
  WHERE n.nspname='app_private' AND p.proname='d1_roll_correct_result_rows_match_exact'),
  'private definer pins trusted search path');
