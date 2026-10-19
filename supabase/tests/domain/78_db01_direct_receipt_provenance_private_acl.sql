@@ -4,7 +4,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(18);
+SELECT plan(24);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -189,6 +189,38 @@ SELECT is((SELECT count(*) FROM app_private.roll_allocations WHERE student_id='b
 
 SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE id='b1000000-0000-4000-8000-000000000080'),1::bigint,'only one synthetic receipt remains');
 
+-- Actual pg_proc ownership/definer/search_path, not text-only SQL assertions.
+SELECT is((SELECT pg_catalog.pg_get_userbyid(p.proowner)::text
+ FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='app_private' AND p.proname='d1_roll_correct_direct_receipt_matches_exact'),
+ 'schoolos_schema_owner'::text,'receipt verifier runs under narrowly reviewed schema owner');
+SELECT is((SELECT p.prosecdef
+ FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='app_private' AND p.proname='d1_roll_correct_direct_receipt_matches_exact'),
+ true,'receipt verifier is SECURITY DEFINER');
+SELECT ok((SELECT EXISTS(SELECT 1 FROM pg_catalog.unnest(p.proconfig) AS v(value)
+ WHERE pg_catalog.regexp_replace(v.value,'[[:space:]]','','g')='search_path=pg_catalog,pg_temp')
+ FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='app_private' AND p.proname='d1_roll_correct_direct_receipt_matches_exact'),
+ 'receipt verifier has pinned safe search_path');
+SELECT is(app_private.d1_roll_correct_direct_receipt_matches_exact(
+ NULL::uuid,'55555555-5555-4555-8555-555555555555','db01-direct-synthetic',
+ pg_catalog.sha256(pg_catalog.convert_to('db01 synthetic direct','UTF8')),
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060'),false,
+ 'missing receipt UUID denied');
+SELECT is(app_private.d1_roll_correct_direct_receipt_matches_exact(
+ 'b1000000-0000-4000-8000-000000000080','55555555-5555-4555-8555-555555555555','',
+ pg_catalog.sha256(pg_catalog.convert_to('db01 synthetic direct','UTF8')),
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060'),false,
+ 'empty idempotency key denied');
+SELECT is(app_private.d1_roll_correct_direct_receipt_matches_exact(
+ 'b1000000-0000-4000-8000-000000000080','55555555-5555-4555-8555-555555555555',
+ 'db01-direct-synthetic','\x11'::bytea,
+ 'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,
+ :'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060'),false,
+ 'incorrect hash length denied');
 SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
 ROLLBACK;
