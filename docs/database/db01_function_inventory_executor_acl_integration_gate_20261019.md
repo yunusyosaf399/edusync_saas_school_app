@@ -1,6 +1,6 @@
 # DB-01 — D1 function-catalog expansion and executor-ACL integration approval gate
 
-**Prepared:** 2026-10-19. **Status: EXACT INTEGRATION REQUEST COMPLETE; SHARED TOOLING CHANGE NOT YET APPROVED / APPLIED.**  
+**Prepared:** 2026-10-19. **Status: EXACT INTEGRATION REQUEST COMPLETE; implementation proposed in [draft PR #109](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/109), NOT INDEPENDENTLY APPROVED / MERGED / DEPLOYED.**  
 **Owner:** DB-01 `student.roll.correct` documentation, [PR #100](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/100). Protected SQL is in stacked draft [PR #107](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/107) on [PR #106](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/106). DB-01 RC-01…RC-08 and T-B School-local date are [product approved](db01_student_roll_correct_owner_approved_contract_20261019.md); DB-02 RP-02/03/07 and shared Enrollment MOVE/date coordination remain separate pending work.
 
 This document **requests** the D1 runtime-inventory and security/tooling owner to authorize a precisely scoped inventory expansion. It does **not** modify `tools/supabase/**`, change any shared regression acceptance expectation, authorize a public RPC, enable `student.roll.correct`, deploy Migration 10, or treat the request itself as an integration sign-off.
@@ -165,8 +165,8 @@ WHERE n.nspname='app_private' AND p.proname='d1_roll_correct_result_rows_match_e
 | Exact frozen catalog root cause and post-revert CI | **VERIFIED** (3 workflows green on rollback commit) |
 | One-function exact runtime delta and owner/EXECUTE design | **COMPLETE AS REVIEW REQUEST** |
 | Five public / fourteen private candidate inventory | **DOCUMENTED, NOT IMPLEMENTED / NOT APPROVED** |
-| Shared tooling expected-count edit and tests | **NOT PERFORMED; INTEGRATION-OWNED** |
+| Shared tooling expected-count edit and tests | **PROPOSED ON STACKED DRAFT PR #109**, not owner-accepted or merged; exact-head CI/security acceptance to be checked |
 | Independent security evaluation of new helper in a composed SQL + guard branch | **NOT RUN / NOT ACCEPTED** |
 | DB-01 operation activation, hosted deployment or merge | **NOT AUTHORIZED** |
 
-**Next execution step after integration approval:** compose the precise reviewed D1 guard/test update with DB-01 SQL helper on a controlled integration branch, execute current static/foundation/local runtime and full negative ACL/receipt-proof acceptance; commit and leave PR #107 draft until successful independent review. If approval is not given, continue source/design review only and do not raise expected counts by fiat. **DB-01 remains incomplete until actual protected DIRECT/APPROVAL and replay are implemented and accepted.**
+**Next execution step:** review the already-submitted [stacked integration PR #109](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/109) (three files: one private helper, guarded three-count update, corresponding test assertions); confirm exact-head static/foundation/local runtime, direct negative ACL/receipt-proof tests and obtain independent integration-owner acceptance. Only after that review may it be merged in the correct stacked order. The function is not operative correction and PR #107 remains draft. If approval is not given, continue source/design review only and do not raise expected counts by fiat. **DB-01 remains incomplete until actual protected DIRECT/APPROVAL and replay are implemented and accepted.**
