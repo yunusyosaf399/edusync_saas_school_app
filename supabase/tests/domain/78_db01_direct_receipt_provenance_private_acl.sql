@@ -180,7 +180,7 @@ SELECT is(pg_catalog.has_function_privilege('anon','app_private.d1_roll_correct_
 SELECT is(pg_catalog.has_function_privilege('service_role','app_private.d1_roll_correct_direct_receipt_matches_exact(uuid,uuid,text,bytea,uuid,uuid,uuid,uuid)','EXECUTE'),false,'service_role has no private receipt verifier privilege');
 
 SET ROLE authenticated;
-SELECT throws_ok($q$SELECT app_private.d1_roll_correct_direct_receipt_matches_exact('b1000000-0000-4000-8000-000000000080','55555555-5555-4555-8555-555555555555','db01-direct-synthetic',pg_catalog.sha256(pg_catalog.convert_to('db01 synthetic direct','UTF8')),'b1000000-0000-4000-8000-000000000001',:'placed_enrollment_id'::uuid,:'placed_roll_allocation_id'::uuid,'b1000000-0000-4000-8000-000000000060')$q$,'42501'::char(5),NULL::text,'authenticated direct function invocation denied');
+SELECT throws_ok($q$SELECT app_private.d1_roll_correct_direct_receipt_matches_exact('b1000000-0000-4000-8000-000000000080','55555555-5555-4555-8555-555555555555','db01-direct-synthetic',pg_catalog.sha256(pg_catalog.convert_to('db01 synthetic direct','UTF8')),'b1000000-0000-4000-8000-000000000001','b1000000-0000-4000-8000-000000000002'::uuid,'b1000000-0000-4000-8000-000000000003'::uuid,'b1000000-0000-4000-8000-000000000060')$q$,'42501'::char(5),NULL::text,'authenticated direct function invocation denied');
 RESET ROLE;
 
 SELECT is((SELECT enabled FROM app_private.operation_contracts WHERE code='student.roll.correct'),false,'correction remains disabled');
