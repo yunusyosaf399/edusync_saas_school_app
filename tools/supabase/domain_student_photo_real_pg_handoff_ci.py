@@ -391,3 +391,11 @@ def run_real_postgres_photo_handoff(container: str, run_psql, root: Path = ROOT)
     )
     run_photo_consume_first_transfer_backend_retry(
         psycopg, container=container, run_psql=run_psql)
+
+    # PR99: single-PostgreSQL committed-but-lost receipt and private local
+    # outbox/mock sink trials, only after all P0/P1 security race suites pass.
+    from domain_photo_pg_lost_ack_outbox_ci import (
+        run_photo_native_lost_ack_outbox_trial,
+    )
+    run_photo_native_lost_ack_outbox_trial(
+        psycopg, container=container, run_psql=run_psql)
