@@ -1,6 +1,6 @@
 # DB-04 — CUR-02 Subject-Category and Selection Semantics: Owner Decision Gate
 
-**Status: CUR-02 PRODUCT DECISION REQUIRED; NOT APPROVED.** 2026-10-20. DB-04 design-only candidate for PR #103. Current verified `main` `df1c98d5c2d19424946986fc6ba7615202b0a443`. No SQL, active permission/operation registration, runtime test, school-policy default or downstream Exam implementation is authorized by this document.
+**Status update 2026-10-20: CUR-02 A1+B1+C1 APPROVED at product-semantic level.** [Owner-approved decision record](db04_cur02_approved_subject_category_decision_20261020.md) supersedes this document's historical unsigned question/alternative wording. Final physical classification fields, group parameters, grants and Exams interfaces remain undecided. 2026-10-20. DB-04 design-only candidate for PR #103. Current verified `main` `df1c98d5c2d19424946986fc6ba7615202b0a443`. No SQL, active permission/operation registration, runtime test, school-policy default or downstream Exam implementation is authorized by this document.
 
 ## 1. What the authoritative requirements do—and do not—decide
 
@@ -10,7 +10,7 @@
 - Existing DB-04 [seven-entity schema candidate](db04_seven_entity_schema_temporal_cur_decision_package_20261020.md) includes `curriculum_subject_rules`, `curriculum_choice_groups`, `curriculum_section_subject_offerings` and `student_subject_selections`. They are unapproved proposals. CUR-01's no-overlap/no-precedence scope is separately [approved](db04_cur01_approved_applicability_decision_20261020.md); that approval **does not** settle CUR-02.
 - The [D1 checked-read/workflow contract](../security/09_domain_checked_reads_and_commands.md) requires live exact permission/scope, and P0/P1/P2 are **suggested behavior categories** in DB-04 until owner/registrar approval. Subject teacher assignments establish **context, not authority**.
 
-## 2. CUR-02 choice A — recommended candidate
+## 2. Owner-approved CUR-02 A1 compulsory/optional/elective distinction (physical details pending)
 
 **One obligation category per published revision+Subject**, with categories held on DB-04 `curriculum_subject_rules`, not the D1 Subject catalog:
 
@@ -32,9 +32,9 @@
 
 ## 3. Practical / Extra-curricular / Custom / Exam components — an unresolved orthogonality choice
 
-**Important:** The master specification calls all six values "supported Subject types"; it has **not approved** the claim that Practical, Extra-curricular and Custom are merely attributes alongside COMPULSORY/OPTIONAL/ELECTIVE. Do not silently narrow them to three or insert a new D1 subject enum.
+**Product decision update:** The master specification lists six supported Subject types. The owner now **approved B1**, separating Practical/Extra-curricular/Custom classification from selection obligation; exact storage/vocabulary remains subject to physical design review. Do not silently narrow them to three or insert a new D1 subject enum.
 
-**Recommendation for owner review:** treat **curricular selection obligation** (COMPULSORY/OPTIONAL/ELECTIVE) independently from a separately modeled **delivery/assessment classification** (Practical/Extra-curricular/Custom and theory/practical/passing components) *if* the owner wants both dimensions. That would require an explicit typed classification decision and possibly new DB-04 rule metadata; Exams still owns assessment components/pass calculations. **No field or eighth table is authorized here.**
+**Owner-approved B1 conceptual rule:** treat **curricular selection obligation** (COMPULSORY/OPTIONAL/ELECTIVE) independently from a separately modeled **delivery/assessment classification** (Practical/Extra-curricular/Custom and theory/practical/passing components) *if* the owner wants both dimensions. That would require an explicit typed classification decision and possibly new DB-04 rule metadata; Exams still owns assessment components/pass calculations. **No field or eighth table is authorized here.**
 
 | Alternative | Behavior | Impact requiring owner review |
 |---|---|---|
@@ -42,7 +42,7 @@
 | **B — single mutually exclusive Subject type** | A Subject is one of all six types, e.g. Practical cannot also be Compulsory. | Need new explicit eligibility/obligation policy for Practical/Extra-curricular/Custom (otherwise undefined Student eligibility); impacts Exams compatibility and CUR-02. |
 | **C — independent configurable School types** | School defines custom classification vocabulary beyond fixed labels. | Needs approved typed registry/validation and migration impact; must not invent a JSON/text permission bypass or mutate D1 Subject. |
 
-## 4. Typed DB-04 operation and constraints if choice A is later approved
+## 4. Typed DB-04 operation and constraints under approved A1+B1+C1, subject to CUR-03–08
 
 - Parent lineage: D1 School/Class Offering/Section Offering and exact published `curriculum_revisions`/`curriculum_applicabilities`. Source Subject FK always points to `app_private.subjects(id)`, not a copied identity/name. Parent `curriculum_subject_rules` has unique `(revision_id,subject_id)` (one active obligation category per Subject in one published content version); Rule+Applicability+Section offering must reference the same Revision and School/Year/Class/Campus ancestry.
 - Rule `category` candidate finite enum/text checked strictly; no inferred category from a teacher's `assignment_kind`. After PUBLISH the Rule category and group references are immutable; any reclassification requires a new revised published Snapshot, scoped cutover and history.
@@ -74,9 +74,9 @@
 
 **Not covered until CUR-02/03/05/06/07 choices are frozen:** exact group default, prerequisite edges, special Extra-curricular/Custom treatment, enrollment deadline, historical grandfather policy and downstream Exam lock/freeze point.
 
-**Cross-reference:** [CUR-02 unsigned owner decision record and physical approval matrix](db04_cur02_owner_decision_record_and_physical_approval_matrix_20261020.md) identifies all seven candidate entities, conditional constraints, specialist signoffs and A1/B1/C1 alternatives. This is **not** owner approval.
+**Cross-reference:** [CUR-02 approved decision](db04_cur02_approved_subject_category_decision_20261020.md) records A1/B1/C1; the [original unsigned physical matrix, now annotated with approval](db04_cur02_owner_decision_record_and_physical_approval_matrix_20261020.md) retains conditional field/constraint alternatives. The schema is not frozen.
 
-## 6. Decision request — no implied approval
+## 6. Historical owner question — APPROVED A1+B1+C1 on 2026-10-20
 
 **CUR-02-A (obligation semantics):** Approve **derived compulsory obligation** with **no compulsory Student selection row**, plus explicit accepted OPTIONAL and ELECTIVE selections? Or require compulsory rows / other categories?
 
@@ -84,6 +84,6 @@
 
 **CUR-02-C (individual Optional vs grouped Elective):** Approve the *semantic distinction* "Optional may be chosen individually; Elective is group-governed", leaving detailed group cardinality and cross-category group membership to CUR-03? Or use the terms interchangeably?
 
-No answers above are inferred from "Complete next task". CUR-01's specifically approved **nonoverlap/no-implicit-precedence** rule remains intact, with CUR-01 effective start/mid-year-change still open. CUR-03–CUR-08 remain pending. Record exact owner wording and date only after explicit selection.
+**Resolved:** The owner replied “Yes I approve complete it” to the immediately preceding explicit A1+B1+C1 question; see the approved decision record. This is semantic approval only; CUR-03 detailed group cardinality, CUR-04 Student/FAMILY/teacher authority, CUR-05 P1/P2 routes, CUR-06 historical transfer rules, CUR-07 Exams signoff and CUR-08 SQL remain open. CUR-01's specifically approved **nonoverlap/no-implicit-precedence** rule remains intact, with CUR-01 effective start/mid-year-change still open. CUR-03–CUR-08 remain pending. Record exact owner wording and date only after explicit selection.
 
-**Disposition: CUR-02 CATEGORY DESIGN READY FOR OWNER DECISION; NO PHYSICAL SQL OR ACTIVE OPERATIONS AUTHORIZED.**
+**Disposition: CUR-02 A1+B1+C1 PRODUCT SEMANTICS APPROVED; PHYSICAL SCHEMA/ACTIVE OPERATIONS NOT AUTHORIZED.**
