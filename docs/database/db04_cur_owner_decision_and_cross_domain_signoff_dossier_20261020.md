@@ -2,6 +2,8 @@
 
 **Status update 2026-10-20: CUR-02 A1+B1+C1 PRODUCT-SEMANTIC APPROVAL RECORDED. CUR-03–CUR-08 and CUR-01 timing remain unapproved; downstream/domain signoffs outstanding.** Prepared 2026-10-20. Documentation only; DB-04 PR #103 `db/db-04-curriculum-electives-design`. Base `main` verified `df1c98d5c2d19424946986fc6ba7615202b0a443`. No SQL migration, D1 implementation, Foundation permissions, Exams/Learning/Timetable edits, acceptance results, hosted deployment or PR merge. All signatures/decisions explicitly absent except the scoped owner CUR-01 selection below.
 
+> **CUR-03 design update, 2026-10-20:** [Choice-group, prerequisite and collision decision gate](db04_cur03_choice_groups_prerequisites_collision_owner_gate_20261020.md) now presents **A1/B1/C1/D1/E1** recommendations and alternatives, 18 planned cases and six two-session races. **No CUR-03 owner approval has been received.** Prior CUR-01/02 approvals are unchanged; the physical seven-entity design is not frozen.
+
 ## 1. Evidence register and decision provenance
 
 | Evidence ID | Read-only authority | Meaning and limitation |
@@ -93,7 +95,7 @@ The actual PostgreSQL schema `app_private`, column list, EXECUTE target role, de
 
 ## 6. Next task queue
 
-1. **CUR-02 completed at product-semantic level:** [A1/B1/C1 owner approval](db04_cur02_approved_subject_category_decision_20261020.md) recorded; request Exams signoff and separate CUR-08 approval for the physical B1 classification field. **Next owner gate: CUR-03** exact choice groups, prerequisites, capacities and min/max requirements.
+1. **CUR-02 completed at product-semantic level:** [A1/B1/C1 owner approval](db04_cur02_approved_subject_category_decision_20261020.md) recorded; request Exams signoff and separate CUR-08 approval for the physical B1 classification field. **Next owner gate: [CUR-03-A…E](db04_cur03_choice_groups_prerequisites_collision_owner_gate_20261020.md)** exact choice groups, prerequisites, capacities, limits and deadlines; all recommendations unapproved.
 2. While CUR-03 onward remain open, a safe independent task is **DB-04-specific test fixture and API denial-code catalog (design-only)**. It can specify realistic Grade 9-A/B, two Campus and Year synthetic cases, expected canonical idempotency and negative outcomes, without writing tests/shared runners.
 3. After all choices and specialist signoffs, freeze seven-entity or owner-approved variant and request separate implementation authorization, then Schema → constraints/history → typed commands → checked reads → concurrency → downstream validation. Do not self-merge, activate Migration 10, modify other workstreams or deploy hosted Supabase.
 
