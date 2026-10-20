@@ -1,0 +1,48 @@
+"""Approval fixture and transactional lock-proof safety boundaries."""
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import Mock
+
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0,str(ROOT/'tools/supabase'))
+import domain_enrollment_move_approval_ci as trial
+
+
+class MoveApprovalTests(unittest.TestCase):
+    def test_hosted_target_fails_before_driver_import(self):
+        with self.assertRaisesRegex(RuntimeError,'MOVE_APPROVAL_DISPOSABLE_ONLY'):
+            trial.run_enrollment_move_approval('hosted',None)
+
+    def test_fixture_cannot_fabricate_approval_or_enrollment_success(self):
+        fixture = (ROOT/'supabase/tests/domain/fixtures/enrollment_move_approval.sql').read_text()
+        for table in ('enrollments','roll_allocations','approval_requests','approval_reviews','approval_applications','command_receipts'):
+            self.assertNotIn('INSERT INTO app_private.'+table,fixture)
+        self.assertIn('D1_REVIEWER_ROLE_SCOPE',fixture)
+        self.assertNotIn('revoked_at=NULL',fixture)
+        self.assertNotIn('DISABLE ROW LEVEL SECURITY',fixture)
+
+    def test_fresh_fixture_namespace_disjoint_from_other_suites(self):
+        prefix = trial.STUDENT.rsplit('-',1)[0]+'-'
+        own = ROOT/'tools/supabase/domain_enrollment_move_approval_ci.py'
+        for path in (ROOT/'tools/supabase').glob('domain_*ci.py'):
+            if path != own:
+                self.assertNotIn(prefix,path.read_text(),str(path))
+
+    def test_approval_gate_is_required_before_final_runtime_pass(self):
+        source = (ROOT/'tools/supabase/domain_local_ci.py').read_text()
+        self.assertLess(source.index('run_enrollment_move_roll_union(container,'),source.index('run_enrollment_move_approval(container,'))
+        self.assertLess(source.index('run_enrollment_move_approval(container,'),source.index('print("D1C2A_PASS'))
+
+    def test_reviewer_setup_closes_connection_on_setup_failure(self):
+        from unittest.mock import MagicMock,patch
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value.execute.side_effect = RuntimeError('setup fails')
+        with patch.object(trial,'_local_connect',return_value=conn):
+            with self.assertRaisesRegex(RuntimeError,'setup fails'):
+                trial._reviewer(Mock())
+        conn.close.assert_called_once()
+
+
+if __name__ == '__main__':
+    unittest.main()
