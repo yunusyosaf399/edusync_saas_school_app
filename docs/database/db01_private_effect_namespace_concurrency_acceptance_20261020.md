@@ -18,6 +18,10 @@ PR #118 at `9d3d09354f06f00ef3321d134800acf7af7ed309` passed three workflows on 
 
 **Retained permanent history across revisions:** `84_db01_persistent_cross_revision_roll_correction.sql` (12 rollback-only assertions) uses an old retained 12001 owned by Student A under revision 1, a test-owned current revision 2 with a different allocator and Student B's genuine P0 number 13001. Student B's attempt to select retired-policy Student A's permanent 12001 must be rejected even if below the new allocator high-water. A permitted 13009 corrects B, advances **only** revision 2 high-water, retains original old A number and its revision-1 allocator, and never enables the command.
 
+## 2.1 Runtime fixture correction before any acceptance claim
+
+The first #119 runtime attempted to inline the shared `fixtures/command_actor.sql` again after prior domain concurrency tests had already **committed the same Foundation Principal IDs** into the disposable stack; PostgreSQL raised `23505 duplicate key principals_pkey` during **test setup**, before any DB-01 new lock proof ran. That run is explicitly **FAIL**, not an effect/lock-order failure and not proof of a pass. The real race runner now reuses the already committed shared Principal/Role, initializes only the per-transaction JWT via `settings_sql()`, and seeds fresh DB-01 Student/Enrollment/Roll rows through the genuine authenticated P0 command. The correction is commit `53e58176886c13e26a3b647852a6969ce0e66465`. A fresh exact-head D1 runtime must prove all wait/collision assertions independently before claiming acceptance.
+
 ## 3. Truthful acceptance boundary
 
 **Initial SQL CI state:** the baseline PR #118 is GREEN; new #119 source/test diffs trigger fresh static, Foundation and D1 local runtime jobs on each exact HEAD. **Do not claim any #83/#84 or 7-wait result until the corresponding exact-head logs demonstrate it.** The test suite and real-race runner must be maintained together; any failure requires a code/fixture correction and a new exact-head run.
