@@ -14,6 +14,8 @@ Reviewed `AGENTS.md`, master specification ``6–9, 12, 17–21, 23–27, `DECIS
 
 **Ownership exclusion**: No new Class, Subject, School, Year, Section Offering, Enrollment, roll allocation, admission, timetable period, Exam component/result or Learning assignment. Do not add permission codes/grants, Foundation engines, shared manifest/CI or modify any other workstream. Proposed private relations use FORCE RLS and restricted fixed checked interfaces, not authenticated base DML. All new relations and fields below are candidate structures, not deployed catalog objects.
 
+> **Physical model uncertainty (2026-10-20):** [Foundation receipt capability audit](db04_cur03_finalization_receipt_capability_and_schema_options_20261020.md) shows generic receipts cannot alone establish a per-Student/Enrollment/Revision **finalized-empty set**. Seven-table schema is **not frozen**; BF-1 optionally proposes an **eighth DB-04 `student_subject_selection_sets` relation**, subject to CUR-08 owner approval. No DDL/permissions were added; `student_subject_selections` remains the existing candidate seventh relation.
+
 ## 2. Final candidate entity count and schema conventions
 
 **Recommendation: retain exactly SEVEN DB-04-owned relations**, consistent with prior PR documents. The seventh is actual Student elected-subject history; the sixth, explicit Section-specific Subject availability, is necessary if Section A can offer Biology while Section B does not. A six-table derivation is possible **only after** a product-owner decision prohibiting Section-specific availability/versioned closures and consumer-stable offering IDs. True course-completion prerequisite graphs might require an eighth typed-edge relation, **not included in the seven**; CUR-03 controls that gate.
