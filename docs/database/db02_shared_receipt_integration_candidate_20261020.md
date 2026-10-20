@@ -41,14 +41,14 @@ These are **receipt-envelope structural checks**, not authorization or complete 
 
 ## Disposable runtime acceptance
 
-- `supabase/tests/domain/86_db02_roll_policy_receipt_allowlist.sql`: rollback-only **26 pgTAP** assertions for ownership, fixed search path, private ACL denial, both typed positive phases under a temporary enabled-operation fixture, cryptographically distinct phase digests, disabled operation denial, wrong lengths/action/reason/types/UUIDs and unapproved review/apply phases, valid typed REPLACE and no receipt/history/event effects.
+- `supabase/tests/domain/86_db02_roll_policy_receipt_allowlist.sql`: rollback-only **27 pgTAP** assertions for ownership, fixed search path, private ACL denial, both typed positive phases under a temporary enabled-operation fixture, cryptographically distinct phase digests, disabled operation denial, wrong lengths/action/reason/types/UUIDs/JSON-null School and unapproved review/apply phases, valid typed REPLACE and no receipt/history/event effects.
 - Appended `#86` only to DB-02-stacked business acceptance runner and its tooling unit expectation; existing 1–80 and #82–85 keep their order and counts.
 - DB-01 draft PR #117 still owns **#81** and has not been imported or represented as executed on this branch.
 - No function-count delta: complete replacement of existing private definer, not a new function, table, role, RLS policy, permission, or public RPC.
 
 ## Hard freeze gates and exclusions
 
-1. Verify exact candidate commit and D1 disposable PostgreSQL, draft static and Foundation workflow PASS, including suite #86 **26/26**. Passing older #82–85 alone is insufficient.
+1. Verify exact candidate commit and D1 disposable PostgreSQL, draft static and Foundation workflow PASS, including suite #86 **27/27**. Passing older #82–85 alone is insufficient.
 2. Obtain an independent non-author review specifically of the shared evidence-writer function, typed shape, ACLs, actor/idempotency binding and preservation of all prior operation cases. Self-review and green CI do not count.
 3. Merge/composition must preserve DB-01 #81 from PR #117, any concurrently landed shared receipt owner changes and all existing test suites. Do not fast-forward main merely because this stacked PR passes.
 4. Protected Roll Policy DIRECT and SUBMIT remain *unimplemented*. Receipt-lookup acceptance is not a success receipt, policy revision, namespace allocator effect or P1 request submission.
