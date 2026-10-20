@@ -1,6 +1,6 @@
 # DB-01 — Post-#116 integration reconciliation and protected source-lock readiness
 
-**Date:** 2026-10-20. **Owner:** DB-01 `student.roll.correct` workstream. **Status:** shared inactive prerequisites MERGED; DB-01 source-lock SQL proposed on **[draft PR #117](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/117)**; protected correction RPCs **NOT IMPLEMENTED or enabled**. The product-owner approved DB-01 RC-01…08 in [the owner contract](db01_student_roll_correct_owner_approved_contract_20261019.md). This dated record **updates integration status**, not the prior approval's semantics.
+**Date:** 2026-10-20. **Owner:** DB-01 `student.roll.correct` workstream. **Status:** shared inactive prerequisites MERGED; DB-01 source-lock SQL technically validated (20/20) and proposed on **[draft PR #117](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/117)**; protected correction RPCs **NOT IMPLEMENTED or enabled**. The product-owner approved DB-01 RC-01…08 in [the owner contract](db01_student_roll_correct_owner_approved_contract_20261019.md). This dated record **updates integration status**, not the prior approval's semantics.
 
 ## 1. What is actually merged and verified
 
@@ -44,7 +44,7 @@ The helper **does not itself authorize any actor**, read private history for a c
 
 **ACL:** owner `schoolos_student_executor`; private EXECUTE for named Student/Workflow internal executors only. No direct `PUBLIC`, `anon`, `authenticated` or `service_role` execute. Strict catalog delta to **547 functions / 529 definers / 157 public / 390 private**, all previous zero-privilege, table/index/RLS counters unchanged. No new table/role/membership.
 
-**Acceptance:** new rollback-only local suite `81_db01_roll_correct_source_prelock.sql` supplies a real protected P0 Enrollment/Roll seed and checks **20** exact source, School/mode/pool/day, stale/malformed input, client-denial and no-mutation assertions. This is not CORRECT acceptance; observe the final *exact-head* CI and independent reviewer before claiming any runtime pass. Review School/policy/pool/Student wait ordering with genuine two-backend lock probes before enabling the future mutation.
+**Acceptance:** new rollback-only local suite `81_db01_roll_correct_source_prelock.sql` supplies a real protected P0 Enrollment/Roll seed and checks **20** exact source, School/mode/pool/day, stale/malformed input, client-denial and no-mutation assertions. **VERIFIED PASS at SQL PR #117 HEAD `e1bc75ef80f25fa6c1d0ad5b36fea45f950c3f96`: all three workflows GREEN** (D1 draft static, Foundation local stack, [D1 runtime #39392705799](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39392705799)); PostgreSQL log `D1_BUSINESS_TEST_PASS 81_db01_roll_correct_source_prelock.sql 20/20`, `D1_BUSINESS_PASS 3278 assertions`, `D1C2A_APPLY_PASS 244 draft fragments`, `D1C2A_CATALOG_PASS tables=34 rls=34/34 functions=547 definers=529 app=157 private=390 auth_private=0 anon=0 service_role=0`, and final `D1C2A_PASS` local-only. This is *internal prelock and ACL* technical acceptance, not protected CORRECT acceptance; independent security review and direct CORRECT two-backend waits remain required before enabling the mutation.
 
 ## 3. Remaining hard engineering gates for actual `student.roll.correct`
 
