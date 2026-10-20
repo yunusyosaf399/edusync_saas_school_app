@@ -52,12 +52,13 @@ class DomainLocalCITests(unittest.TestCase):
         runtime.validate_runtime_probe(observed)
 
     def test_runtime_inventory_private_helper_delta(self):
-        # Effect35_12 and DB-01 effect38_02 each add one reviewed private
-        # Student-owned definer; public RPC, client grants and RLS remain frozen.
+        # DB-01 effects 41_01/02 add Student-owned private functions;
+        # effect 41_03 adds two authz-reader-owned private gates.
+        # Public RPCs, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 548)
-        self.assertEqual(expected["security_definers"], 530)
-        self.assertEqual(expected["private_functions"], 391)
+        self.assertEqual(expected["functions"], 550)
+        self.assertEqual(expected["security_definers"], 532)
+        self.assertEqual(expected["private_functions"], 393)
         self.assertEqual(expected["app_functions"], 157)
         self.assertEqual(expected["authenticated_app_execute"], 157)
         self.assertEqual(expected["authenticated_private_execute"], 0)
