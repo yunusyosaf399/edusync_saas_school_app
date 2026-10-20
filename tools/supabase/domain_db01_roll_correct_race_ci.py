@@ -16,9 +16,8 @@ from domain_student_photo_real_pg_handoff_ci import _actor_connection, _local_co
 ROOT = Path(__file__).resolve().parents[2]
 STUDENT = "db190000-0000-4000-8000-000000000001"
 SECTION = "db190000-0000-4000-8000-000000000045"
-POLICY = "db190000-0000-4000-8000-000000000049"
 ALLOCATOR = "db190000-0000-4000-8000-000000000050"
-SCHOOL = "db190000-0000-4000-8000-0000000000ee"
+SCHOOL = "22222222-2222-4222-8222-222222222222"
 ACTOR = "55555555-5555-4555-8555-555555555555"
 
 
@@ -28,25 +27,25 @@ def _require(ok, code):
 
 
 def _source(cur):
-    cur.execute("""SELECT e.id,r.id
+    cur.execute("""SELECT e.id,r.id,r.policy_revision_id,r.numeric_value
       FROM app_private.enrollments e
       JOIN app_private.roll_allocations r ON r.enrollment_id=e.id
       WHERE e.student_id=%s::uuid AND e.placement_state='ACTIVE'
         AND r.effective_until IS NULL""", (STUDENT,))
     rows = cur.fetchall()
     _require(len(rows) == 1, "SOURCE_COUNT")
-    return tuple(map(str, rows[0]))
+    return str(rows[0][0]),str(rows[0][1]),str(rows[0][2]),int(rows[0][3])
 
 
-def _effect(conn, enrollment, roll, number=12009):
+def _effect(conn, enrollment, roll, policy, old_numeric, number=18009):
     with conn.cursor() as cur:
         cur.execute("SET LOCAL statement_timeout='15s'")
         cur.execute("""SELECT corrected_roll_id,student_version,correction_effective_from
           FROM app_private.d1_roll_correct_effect(
-           %s::uuid,%s::uuid,1,%s::uuid,%s::uuid,CURRENT_DATE-20,
-           %s::uuid,CURRENT_DATE-20,%s::uuid,12001,%s,
+           %s::uuid,%s::uuid,1,%s::uuid,%s::uuid,CURRENT_DATE-1,
+           %s::uuid,CURRENT_DATE-1,%s::uuid,%s,%s,
            'D1 DB01 synthetic lock test')""",
-           (ACTOR, STUDENT, enrollment, SECTION, roll, POLICY, number))
+           (ACTOR, STUDENT, enrollment, SECTION, roll, policy, old_numeric, number))
         row = cur.fetchone()
         _require(row is not None and row[1] == 2, "TRUSTED_EFFECT_RESULT")
         return tuple(map(str, row))
@@ -75,21 +74,25 @@ def _seed(container, run_psql, root):
     cut = "SELECT is((SELECT error_code FROM app_private.d1_roll_correct_lock_source("
     _require(source.count(marker) == 1 and source.count(cut) >= 1, "FIXTURE_ANCHOR")
     setup = source.split(marker, 1)[1].split(cut, 1)[0]
-    # The other D1 concurrency fixtures commit permanent test records. Give
-    # this School and EVERY DB-01 seed identifier a separate fixed namespace,
-    # including P0 Role grant and scope UUIDs (not just Student/Enrollment).
+    # Reuse singleton School and its currently effective POLICY, following
+    # previously committed Enrollment MOVE/END test policy cutovers.
+    # Own only the isolated DB-01 Student/Section/pool/Role grant UUIDs.
     setup = setup.replace("b1000000", "db190000")
-    setup = setup.replace("22222222-2222-4222-8222-222222222222", SCHOOL)
-    setup = setup.replace(
-        "SET ROLE schoolos_schema_owner;",
-        """SET ROLE schoolos_schema_owner;
-INSERT INTO app_private.school_profiles(
- id,code,name,timezone,currency_code,locale,created_by)
-VALUES ('db190000-0000-4000-8000-0000000000ee',
- 'DB01-RACE-ONLY','DB01 private effect disposable race School',
- 'UTC','USD','en','11111111-1111-4111-8111-111111111111');""",
-        1,
-    )
+    setup = setup.replace("CURRENT_DATE-20", "CURRENT_DATE-1")
+    start = setup.index("INSERT INTO app_private.roll_policy_revisions(")
+    stop = setup.index("RESET ROLE;", start)
+    pool = """INSERT INTO app_private.roll_allocator_states(
+ id,policy_revision_id,class_offering_id,next_value,created_by)
+SELECT 'db190000-0000-4000-8000-000000000050',rp.id,
+ CASE WHEN rp.mode='ACADEMIC_CONTEXT'
+ THEN 'db190000-0000-4000-8000-000000000044'::uuid ELSE NULL::uuid END,
+ 18001,'11111111-1111-4111-8111-111111111111'
+FROM app_private.roll_policy_revisions rp
+WHERE rp.school_id='22222222-2222-4222-8222-222222222222'
+ AND rp.effective_from<=CURRENT_DATE-1
+ AND (rp.effective_until IS NULL OR CURRENT_DATE-1<rp.effective_until);
+"""
+    setup = setup[:start] + pool + setup[stop:]
     # run_concurrency_tests has already committed the shared test Principal
     # and test Role earlier in this SAME disposable stack. Do not re-insert
     # command_actor.sql or its primary keys. Set this transaction's JWT only.
@@ -104,12 +107,13 @@ def run_db01_roll_correct_races(container, run_psql, root=ROOT):
     _seed(container, run_psql, root)
     with closing(_local_connect(psycopg)) as check:
         with check.cursor() as cur:
-            enrollment, roll = _source(cur)
-            _require(_evidence(cur, roll) == (1, 0, 0, 12002, 1, 0),
+            enrollment, roll, policy, old_numeric = _source(cur)
+            _require(old_numeric == 18001, "CURRENT_POLICY_POOL_SEED")
+            _require(_evidence(cur, roll) == (1, 0, 0, 18002, 1, 0),
                      "INITIAL_HISTORY")
         check.rollback()
 
-    prefix = (("school", SCHOOL), ("policy", POLICY), ("allocator", ALLOCATOR))
+    prefix = (("school", SCHOOL), ("policy", policy), ("allocator", ALLOCATOR))
     waits = 0
     for kind, row in prefix:
         for outcome in ("commit", "rollback"):
@@ -119,7 +123,7 @@ def run_db01_roll_correct_races(container, run_psql, root=ROOT):
                 with holder.cursor() as cur:
                     _lock(cur, kind, row)
                 with ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(_effect, worker, enrollment, roll)
+                    future = pool.submit(_effect, worker, enrollment, roll, policy, old_numeric)
                     try:
                         with observer.cursor() as cur:
                             _observe(cur, worker.info.backend_pid,
@@ -135,7 +139,7 @@ def run_db01_roll_correct_races(container, run_psql, root=ROOT):
                              "POST_WAIT_RESULT")
                     worker.rollback()
                 with observer.cursor() as cur:
-                    _require(_evidence(cur, roll) == (1, 0, 0, 12002, 1, 0),
+                    _require(_evidence(cur, roll) == (1, 0, 0, 18002, 1, 0),
                              "UPSTREAM_ROLLBACK_LEAK")
                     observer.rollback()
             waits += 1
@@ -145,7 +149,7 @@ def run_db01_roll_correct_races(container, run_psql, root=ROOT):
     # Reverse arrival: a held, uncommitted correction owns School/Policy/Pool
     # and Student and must block exact row-level NOWAIT contenders.
     with closing(_actor_connection(psycopg)) as winner:
-        result = _effect(winner, enrollment, roll)
+        result = _effect(winner, enrollment, roll, policy, old_numeric)
         for kind, row in prefix + (("student", STUDENT),):
             with closing(_local_connect(psycopg)) as contender:
                 try:
@@ -159,7 +163,7 @@ def run_db01_roll_correct_races(container, run_psql, root=ROOT):
         winner.rollback()
     with closing(_local_connect(psycopg)) as check:
         with check.cursor() as cur:
-            _require(_evidence(cur, roll) == (1, 0, 0, 12002, 1, 0),
+            _require(_evidence(cur, roll) == (1, 0, 0, 18002, 1, 0),
                      "REVERSE_ROLLBACK_LEAK")
         check.rollback()
 
@@ -168,11 +172,11 @@ def run_db01_roll_correct_races(container, run_psql, root=ROOT):
     with closing(_actor_connection(psycopg)) as winner, \
          closing(_actor_connection(psycopg)) as loser, \
          closing(_local_connect(psycopg)) as observer:
-        first = _effect(winner, enrollment, roll, number=12009)
+        first = _effect(winner, enrollment, roll, policy, old_numeric, number=18009)
         with ThreadPoolExecutor(max_workers=1) as pool:
             def competing():
                 try:
-                    _effect(loser, enrollment, roll, number=12010)
+                    _effect(loser, enrollment, roll, policy, old_numeric, number=18010)
                 except psycopg.errors.RaiseException:
                     loser.rollback()
                     return "STALE_DENIED"
@@ -188,10 +192,10 @@ def run_db01_roll_correct_races(container, run_psql, root=ROOT):
             _require(future.result(timeout=18) == "STALE_DENIED",
                      "COMPETING_STALE_ACCEPTED")
         with observer.cursor() as cur:
-            _require(_evidence(cur, roll) == (2, 1, 1, 12010, 2, 0),
+            _require(_evidence(cur, roll) == (2, 1, 1, 18010, 2, 0),
                      "COMMIT_OR_DUPLICATE_HISTORY")
             cur.execute("""SELECT count(*) FROM app_private.roll_allocations
-                WHERE student_id=%s::uuid AND numeric_value=12009
+                WHERE student_id=%s::uuid AND numeric_value=18009
                 AND effective_until IS NULL""", (STUDENT,))
             _require(cur.fetchone() == (1,), "WINNER_NUMBER_NOT_UNIQUE")
             observer.rollback()
