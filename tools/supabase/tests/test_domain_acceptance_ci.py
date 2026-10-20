@@ -3466,13 +3466,13 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(DOMAIN_TESTS.count(current),1)
         self.assertGreater(DOMAIN_TESTS.index(current),DOMAIN_TESTS.index(previous))
         source=(root/"supabase/tests/domain"/current[0]).read_text(encoding="utf-8")
-        self.assertEqual(source.count(r"\\ir fixtures/command_actor.sql"),1)
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
         self.assertEqual(source.count("BEGIN;"),1)
         self.assertEqual(source.count("ROLLBACK;"),1)
         self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
         self.assertIn("SELECT plan(26);",source)
         self.assertEqual(len(re.findall(
-            r"SELECT (?:is|isnt|ok|throws_ok|lives_ok)\\(",source)),26)
+            r"SELECT (?:is|isnt|ok|throws_ok|lives_ok)\(",source)),26)
         for marker in ("request.submit","request.review","request.apply",
                        "D1 receipt operation phase or shape unsupported",
                        "schoolos_evidence_writer","P1 version reference",
