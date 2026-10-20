@@ -4,7 +4,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(13);
+SELECT plan(14);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -232,6 +232,37 @@ SELECT throws_ok($q$INSERT INTO app_private.approval_applications(
  'P0001','D1 roll correction application evidence invalid',
  'APPLY receipt naming version 1 cannot apply the APPROVED version 4');
 ROLLBACK TO SAVEPOINT mismatched_apply_version;
+SET ROLE schoolos_schema_owner;
+SAVEPOINT mismatched_result_student_version;
+INSERT INTO app_private.command_receipts(
+ id,principal_id,operation_id,command_kind,idempotency_key,
+ canonical_payload_hash,canonicalization_version,
+ expected_target_version,request_id,expected_request_version,
+ state,result_kind,result_ref,result_summary,completed_at,created_by)
+SELECT 'b1000000-0000-4000-8000-000000000096',
+ '55555555-5555-4555-8555-555555555555',op.id,
+ 'request.apply','db01-synthetic-reviewed-apply',
+ pg_catalog.sha256(pg_catalog.convert_to('synthetic apply only','UTF8')),1,
+ 1,'b1000000-0000-4000-8000-000000000092',q.row_version-1,
+ 'SUCCEEDED','D1_STUDENT_ROLL_CORRECT',
+ 'b1000000-0000-4000-8000-000000000060',
+ (:'proof_json'::jsonb || pg_catalog.jsonb_build_object('student_version',999) ||
+ pg_catalog.jsonb_build_object('state','EXECUTED','request_version',q.row_version::text)),
+ pg_catalog.statement_timestamp(),'55555555-5555-4555-8555-555555555555'
+FROM app_private.operation_contracts op
+ JOIN app_private.approval_requests q ON q.operation_id=op.id
+ WHERE op.code='student.roll.correct'
+   AND q.id='b1000000-0000-4000-8000-000000000092';
+RESET ROLE;
+SELECT throws_ok($q$INSERT INTO app_private.approval_applications(
+ id,request_id,command_receipt_id,operation_id,applied_target_version,result_ref,created_by)
+ SELECT 'b1000000-0000-4000-8000-000000000097',
+ 'b1000000-0000-4000-8000-000000000092','b1000000-0000-4000-8000-000000000096',op.id,1,
+ 'b1000000-0000-4000-8000-000000000060','55555555-5555-4555-8555-555555555555'
+ FROM app_private.operation_contracts op WHERE op.code='student.roll.correct'$q$,
+ 'P0001','D1 roll correction application evidence invalid',
+ 'result Student version 999 cannot claim approved target version 1');
+ROLLBACK TO SAVEPOINT mismatched_result_student_version;
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.command_receipts(
  id,principal_id,operation_id,command_kind,idempotency_key,

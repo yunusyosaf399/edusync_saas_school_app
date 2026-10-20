@@ -67,6 +67,7 @@ BEGIN
     OR rec.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_CORRECT'
     OR rec.result_ref IS DISTINCT FROM NEW.result_ref
     OR rec.expected_target_version IS DISTINCT FROM req.expected_target_version
+    OR rec.result_summary->'student_version' IS DISTINCT FROM pg_catalog.to_jsonb(req.expected_target_version)
     OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
     OR rec.result_summary->>'state' IS DISTINCT FROM 'EXECUTED'
     OR rec.result_summary->>'request_version' IS DISTINCT FROM req.row_version::text
