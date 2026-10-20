@@ -5,6 +5,8 @@
 **Companion owner packet:** [PA-01…PA-08 decisions](222_student_photo_pa01_pa08_owner_security_decision_packet_20261020.md).  
 **Authoritative:** [ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md), [ADR-004](../decisions/ADR-004-storage-plan-entitlements.md), [storage architecture](../architecture/04_provider_neutral_object_storage.md), [entitlement architecture](../architecture/05_storage_entitlements_and_document_purposes.md), [F23 catalog](05_foundation_physical_catalog.md). New choices here are **recommendations, not approved engineering contracts**.
 
+**Recorded PA-01 sandbox preference (2026-10-20):** The Product Owner prefers **Supabase Storage** as the first provider to evaluate. This resolves only **which vendor to test first**. It does not choose region, authorize live IAM/credentials, approve production provider selection, satisfy immutability/security acceptance, or change the PA-01…PA-08 **OPEN** design/release gates. [Provider evaluation record #224](224_student_photo_pa01_provider_selection_evidence_and_sandbox_gate_20261020.md) now scopes the first eventual sandbox to Supabase Storage; all P01-01…P01-12 and STP-001…STP-035 gates still apply.
+
 ## 1. Dependency graph (do not treat document signoff as permission to deploy)
 
 ```text
