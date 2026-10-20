@@ -278,6 +278,8 @@ These cases require **real authenticated operations and SQL catalog**, with norm
 
 **No newly inferred owner approval.** SC-03 selected business rule Finance clearance or explicitly approved waiver remains intact but its verifier/waiver authority and reversal fence remain open. SC-04 D1 Student ID/capacity/roll, SC-05 typed `student.create`, SC-06 interdomain locks, SC-07 integrated acceptance stay separate dependencies.
 
+> **Next-stage dependency, 20 October 2026:** The [P3 Admissions document/stage SQL-readiness](db03_p3_document_verification_stage_outcome_readiness_20261020.md) depends on P2's real application relation, verified Person before SUBMITTED and server-owned evidence epochs. Document attachment during unresolved DRAFT requires a separate P3-D02 owner choice; P2-D01 approves DRAFT itself, **not** automatic upload or identity verification.
+
 ## 10. Release/readiness statement and independently queued next task
 
 **P2 APPLICATION / VERIFIED IDENTITY SQL-READINESS SPECIFICATION COMPLETE FOR OWNER REVIEW; NOT INSTALLED OR EXECUTED.** All P2-owned candidate columns, FKs, duplicate uniqueness, RLS/read controls, stage/version invalidations, typed command intents, SQL guard examples, 40 planned acceptance scenarios and 12 actual-backend race designs are documented. Positive identity creation/matching and submission SQL **must not be implemented under unapproved identity semantics**. No change to Person, D1 Student Creation, DB-01/02/04, Finance, Foundation, global permissions/CI or hosted database.
