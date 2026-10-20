@@ -3216,6 +3216,26 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertIn(marker,source)
         self.assertNotIn("app.d1_change_student_roll_policy(",source)
 
+    def test_db02_global_p1_policy_version_84_registration(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        candidate=["84_db02_roll_policy_p1_version_selector.sql",20]
+        previous=["83_db02_roll_policy_source_preflight.sql",18]
+        self.assertEqual(DOMAIN_TESTS.count(candidate),1)
+        self.assertGreater(DOMAIN_TESTS.index(candidate),DOMAIN_TESTS.index(previous))
+        source=(root/"supabase/tests/domain"/candidate[0]).read_text(encoding="utf-8")
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertEqual(source.count("BEGIN;"),1)
+        self.assertEqual(source.count("ROLLBACK;"),1)
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertIn("SELECT plan(20);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),20)
+        for marker in ("app_private.d1_roll_policy_p1_version(",
+                       "D1_ROLL_POLICY_P1_UNAVAILABLE",
+                       "D1_ROLL_POLICY_P1_AMBIGUOUS",
+                       "schoolos_student_executor","schoolos_workflow_executor"):
+            self.assertIn(marker,source)
+        self.assertNotIn("app.d1_change_student_roll_policy(",source)
+
     def test_student_profile_review_grant_real_two_session_lock_races(self):
         from domain_student_profile_reviewer_grant_race_ci import (
             CONTAINER, OLD_GRANT, NEW_GRANT, _apply, _revoke, _request_id,
