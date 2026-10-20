@@ -3147,7 +3147,6 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             ("74_student_profile_p1_reviewer_scope_revoked.sql",23,
              ("reviewer exact ALL/DIRECT scope","cannot access protected request","INVALIDATED")),
         ]
-        # Preserve all 74 frozen predecessor suites; DB-02 adds #82 separately.
         self.assertGreaterEqual(len(DOMAIN_TESTS),74)
         self.assertEqual(sum(n for _, n in DOMAIN_TESTS[:71]),3057)
         self.assertEqual(sum(n for _, n in DOMAIN_TESTS[:74]),3124)
@@ -3175,24 +3174,26 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                 self.assertNotIn(forbidden,sql)
 
     def test_db02_school_reviewer_82_rollback_acceptance_registration(self):
-        # PR #117 owns suite #81; DB-02 must not claim its file/entry.
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
-        self.assertEqual(DOMAIN_TESTS[-1],
-            ["82_db02_school_reviewer_candidates.sql", 10])
-        self.assertEqual(DOMAIN_TESTS.count(["82_db02_school_reviewer_candidates.sql", 10]),1)
-        filename="82_db02_school_reviewer_candidates.sql"
-        source=(root/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
+        entry=["82_db02_school_reviewer_candidates.sql",10]
+        self.assertEqual(DOMAIN_TESTS.count(entry),1)
+        self.assertGreaterEqual(DOMAIN_TESTS.index(entry),80)
+        db01=["81_db01_roll_correct_source_prelock.sql",20]
+        if db01 in DOMAIN_TESTS:
+            self.assertLess(DOMAIN_TESTS.index(db01),DOMAIN_TESTS.index(entry))
+        source=(root/"supabase/tests/domain"/entry[0]).read_text(encoding="utf-8")
         self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
         self.assertEqual(source.count("BEGIN;"),1)
         self.assertEqual(source.count("ROLLBACK;"),1)
         self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
         self.assertIn("SELECT plan(10);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),10)
-        self.assertIn("app_private.d1_review_candidates(",source)
-        self.assertIn("app_private.d1_current_reviewer_eligible(",source)
-        self.assertIn("revoked ALL review grant",source)
-        self.assertIn("overlapping active global policies",source)
-        self.assertIn("authenticated cannot directly enumerate private",source)
+        for marker in ("app_private.d1_review_candidates(",
+                       "app_private.d1_current_reviewer_eligible(",
+                       "revoked ALL review grant",
+                       "overlapping active global policies",
+                       "authenticated cannot directly enumerate private"):
+            self.assertIn(marker,source)
         self.assertNotIn("app.d1_change_student_roll_policy(",source)
 
     def test_student_profile_review_grant_real_two_session_lock_races(self):
