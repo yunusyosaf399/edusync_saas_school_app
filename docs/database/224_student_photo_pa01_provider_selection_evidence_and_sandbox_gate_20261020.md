@@ -1,7 +1,7 @@
 # Student Photo PA-01 — Storage-provider evidence, shortlist and sandbox selection gate
 
 **Reviewed:** 2026-10-20.  
-**Status:** **PA-01 RESEARCH COMPLETE / PROVIDER NOT SELECTED / PRODUCT AND SECURITY APPROVAL PENDING**.  
+**Status:** **PA-01 RESEARCH COMPLETE / SUPABASE STORAGE PREFERRED FOR FIRST SANDBOX / PRODUCTION PROVIDER AND SECURITY APPROVAL PENDING**.  
 **Parent owner/security decision packet:** [#222](222_student_photo_pa01_pa08_owner_security_decision_packet_20261020.md).  
 **Implementation and test-gate matrix:** [#223](223_student_photo_provider_activation_dependency_and_test_matrix_20261020.md).  
 **Source snapshot:** repository `main` `df1c98d5c2d19424946986fc6ba7615202b0a443`; this review is independent of DB-01–04 PRs #100–103 and of non-executable Migration 10 drafts.
@@ -30,10 +30,12 @@ Official primary sources (observed on 2026-10-20):
 
 **Evidence discipline:** Vendor docs establish advertised behavior only. They do **not** establish the compatibility of a particular EduSync account, SDK release, bucket policy, IAM principal, tenant mapping, jurisdiction, price or your incident/recovery plan. No current vendor is approved or authorized by this review.
 
-## 3. Recommended next PA-01 decision — a bounded two-provider evaluation, not selection
+## 3. Recorded owner preference — Supabase Storage first, no production selection
 
-**Recommended evaluation plan, subject to owner/security approval:**
-- Evaluate **Supabase Storage** against **Amazon S3** in isolated nonproduction infrastructure using dummy payloads only (no actual Student data), because these provide distinct practical models: project-integrated private RLS versus explicit API conditional-create + bucket-policy enforcement.
+**Product Owner preference recorded on 2026-10-20:** **“Supabase storage is prefered.”** This is treated as selection of **Supabase Storage for the first isolated sandbox evaluation**, responding to the previously offered Supabase-vs-AWS-first choice. It is **not** approval of a production provider, sandbox secrets, live project, region, upload launch, or PA-01 full security signoff.
+
+**Updated evaluation plan, subject to environment/IAM/security approval:**
+- Evaluate **Supabase Storage first** in a verified isolated nonproduction project with synthetic bytes only (no Student information). Retain **Amazon S3** as the comparison/fallback candidate if actual overwrite/retention tests fail, or if an approved architecture constraint requires reconsideration.
 - Keep **R2** and **Azure Blob** as alternatives if residency, retention requirements, existing operator tooling, cost, billing/export policy, or sandbox results favor them. Avoid claiming a precise provider cost without the School fleet's object counts, real reads/egress, chosen region and retention requirements.
 - Start with a *single* approved provider sandbox if setting up two is not desired; still use the **same provider-neutral acceptance harness**. Do not configure live buckets or buy a service by treating this comparison as a signed owner decision.
 - **No automatic PA-01 APPROVED state.** Two signoffs required: Product Owner names sandbox candidate/region, independent Security Reviewer approves the threat model, IAM policy and testing boundary. Selecting a sandbox candidate is **not** permission to expose a live file.upload/photo endpoint or to deploy a real adapter.
@@ -64,21 +66,19 @@ The eventual sandbox harness must be self-contained, restricted to an explicitly
 | Required field | Value |
 |---|---|
 | PA gate | PA-01, provider selection and write-once strategy |
-| Provider selected | **NONE** |
-| Candidate to evaluate first | **PENDING owner choice**: Supabase Storage, AWS S3, R2, Azure Blob, or reviewed alternative |
+| Production provider selected | **NONE** — do not infer a production decision from preference |
+| Candidate to evaluate first | **Supabase Storage — Product Owner preference recorded 2026-10-20** |
 | Target region / School residency constraint | **PENDING** — don't infer School location from user interface location |
 | Sandbox IAM/policy and funding approval | **PENDING** |
 | Chosen conditional-write / immutable-final/version strategy | **PENDING real sandbox evidence** |
-| Product Owner | **UNSIGNED** |
+| Product Owner | **Sandbox-first preference recorded (2026-10-20); final PA-01 product approval UNSIGNED** |
 | Independent Security Reviewer | **UNSIGNED** |
 | Required test evidence | P01-01…P01-12 + applicable STP-001…STP-035, future exact-head CI |
 | Effective state | **DESIGN ONLY / NOT APPROVED / UPLOAD DISABLED** |
 
-### What to ask the Product Owner
+### Remaining product/security details after the owner preference
 
-> Which provider should EduSync evaluate **first in a sandbox**, and do you have a required data-residency jurisdiction? A reasonable shortlist is Supabase Storage and AWS S3. Approving a sandbox evaluation does **not** activate Student Photo upload or authorize storing real Student data.
-
-Owner can select **“Evaluate Supabase Storage first”** or **“Evaluate AWS S3 first”** without approving live deployment. PA-02…PA-08 remain independently open regardless.
+Supabase Storage is now the **preferred first sandbox candidate**, so the provider-first question is resolved. Still open before actual provider-side tests: required School data-residency jurisdiction/project region; designation of an isolated disposable test project; who authorizes test IAM/secret custody, budget and audit; actual write-once/seal design and P01-01…P01-12 acceptance; independent security reviewer. No live project or Student data may be used. PA-02…PA-08 remain independently open, and **PA-01 itself remains OPEN** until full evidence and signoff.
 
 ## 6. Workstream and release guard
 
