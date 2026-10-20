@@ -1,5 +1,8 @@
 # DB-03 — Admissions physical schema reconciliation, phased SQL and verification gates
 
+> **Owner decision recorded — 20 October 2026, P2-D01 / SC-01 (draft Person timing only): APPROVED OPTION A.** The owner explicitly approved permitting `admission_applications` in `DRAFT` without a verified Person; **before transition to `SUBMITTED` the application must have a verified canonical Foundation Person binding**. Accordingly `person_id` is nullable for DRAFT only and mandatory with valid authoritative `admission_identity_resolutions` head for SUBMITTED and every subsequent pre-consumption state. Duplicate delivery of the same approval does not count as a second decision. **Not approved by this selection:** Person-create/matching mechanism or evidence source (P2-D02), sensitive draft identity storage/retention (P2-D07), subsequent Person correction/waiver rules, numbering, publication, global authorization, Finance or D1 consumer. Do not treat this approval as permission to install identity-resolution SQL or enable `student.create`.
+
+
 **Date:** 2026-10-20. **Status:** IMPLEMENTATION-READINESS DESIGN / PRODUCT AND INTEGRATION DECISIONS OPEN. **No SQL installed or approved by this document.** Owned by DB-03 only; PR [#102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102), parent `c4e8fe4206663c2d07d2957556cb5592f1c8dc9d`, inspected main `df1c98d5c2d19424946986fc6ba7615202b0a443`. Future source changes must re-audit latest branch/SQL.
 
 ## 0. Authority, reconciliation and boundary (read before historical DB-03 proposals)
