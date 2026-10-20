@@ -1,5 +1,8 @@
 # DB-03 P3 — Admissions document verification, private evidence and stage-outcome SQL readiness
 
+> **PRODUCT OWNER SELECTION — P3-D01 Option B, 20 October 2026: APPROVED.** Schools configure document requirements **per immutable published Admissions policy**. Add proposed relation **#16 `admission_policy_document_requirements`** linked to the DOCUMENT_VERIFICATION stage, with `document_kind`/required-or-optional rule; see [decision record](db03_p3_owner_decision_p3_d01_option_b_20261020.md). Earlier Option A/B comparisons below are historical and **P3-D01 is no longer undecided**. Exact document-kind codes, verifier, draft-upload, storage purpose activation, retention and the temporal/invalidation lock are **NOT** approved by this choice. No SQL installed. [P4 assessment/interview readiness](db03_p4_assessment_interview_sql_readiness_20261020.md) is a separate workstream follow-on.
+
+
 **Date:** 2026-10-20. **Status:** DESIGN AND ACCEPTANCE SPECIFICATION READY FOR OWNER REVIEW; **NOT SQL IMPLEMENTED, TESTED, ACTIVATED OR APPROVED**. Existing [draft PR #102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102), branch `db/db-03-admissions-intake-design`. Audited `main df1c98d5c2d19424946986fc6ba7615202b0a443` and preceding DB-03 HEAD `b23f35387032e8168109e0c13ec1a8a285339a4c`. New document belongs to DB-03 only.
 
 ## 1. Inspected authority and precise boundary

@@ -221,6 +221,8 @@ This is a **plan**, not approved migration numbers; exact installation slot must
 
 > **Dependency update (20 October 2026):** [P2 application/identity SQL-readiness](db03_p2_application_identity_duplicate_intake_readiness_20261020.md) specifies the application FK parent and verified Person gate required before enabling P1 application-number issuance. This is design only; P2 identity source/SC-01 and P1 format-policy owner decisions are not signed and no runtime SQL was installed.
 
+> **P3-D01 owner decision, 20 October 2026:** Option B approves **School-configurable document categories per published Admissions policy**. The new DB-03-owned [`admission_policy_document_requirements` relation #16](db03_p3_owner_decision_p3_d01_option_b_20261020.md) has a real FK to the P1 `admission_policy_stages` DOCUMENT_VERIFICATION row and must be frozen at its PUBLISHED parent; complete policy publication validates the child roster as well as the existing stage set. No active purpose registration, document kind/retention defaults or SQL permission is inferred from Option B. P4 testing/interview stages still use separate typed [assessment outcome readiness](db03_p4_assessment_interview_sql_readiness_20261020.md).
+
 ## 7. Decisions and sign-off required before executable P1 SQL
 
 This specification resolves **engineering precision**, not any owner-policy choice.
