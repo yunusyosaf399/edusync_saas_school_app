@@ -4,7 +4,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(26);
+SELECT plan(27);
 \ir fixtures/command_actor.sql
 SELECT is((SELECT pg_catalog.pg_get_userbyid(proowner)::text
   FROM pg_catalog.pg_proc
@@ -100,6 +100,12 @@ SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  '["not12"]'::jsonb)$q$,
  'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
  'short ambiguous array rejected');
+SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
+ 'student.roll_policy.change','student.roll_policy.change','db02-null-school',
+ pg_catalog.jsonb_set(current_setting('schoolos_test.db02_receipt_intent')::jsonb,
+ '{0}','null'::jsonb))$q$,
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'NULL School fails closed instead of bypassing three-valued SQL logic');
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','student.roll_policy.change','db02-reason',
  pg_catalog.jsonb_set(current_setting('schoolos_test.db02_receipt_intent')::jsonb,
