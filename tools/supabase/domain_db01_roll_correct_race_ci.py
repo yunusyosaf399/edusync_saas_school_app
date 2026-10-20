@@ -202,8 +202,8 @@ COMMIT;"""
     # Frozen D1 mutation guards require the verified JWT Principal even for
     # privileged fixture insertions. Reuse the existing actor context; never
     # bypass current-principal verification or change production guards.
-    script = script.replace("BEGIN;\\nSET ROLE schoolos_schema_owner;",
-                            "BEGIN;\\n" + settings_sql() + "\\nSET ROLE schoolos_schema_owner;")
+    script = script.replace("BEGIN;\nSET ROLE schoolos_schema_owner;",
+                            "BEGIN;\n" + settings_sql() + "\nSET ROLE schoolos_schema_owner;")
     run_psql(container, script, "D1_DB01_COMPETING_P0_STUDENT_SEED", timeout=90)
 
 
