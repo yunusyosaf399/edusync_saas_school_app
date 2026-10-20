@@ -133,9 +133,10 @@ SELECT * FROM app.d1_place_student_enrollment(
 RESET ROLE;
 SELECT is(:'other_numeric_value'::bigint,13001::bigint,
  'new-revision Student B received 13001 from own allocator');
-SELECT is(:'other_policy_revision_id'::uuid,
+SELECT is((SELECT policy_revision_id FROM app_private.roll_allocations
+ WHERE id=:'other_roll_allocation_id'::uuid),
  'b1000000-0000-4000-8000-0000000000b1'::uuid,
- 'genuine P0 selection used new active revision');
+ 'genuine P0 persisted new active policy revision');
 SELECT is((SELECT effective_until FROM app_private.roll_policy_revisions
  WHERE id='b1000000-0000-4000-8000-000000000049'),
  (CURRENT_DATE-5)::date,
