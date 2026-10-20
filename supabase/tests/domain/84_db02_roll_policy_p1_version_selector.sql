@@ -24,8 +24,8 @@ RESET ROLE;
 SET ROLE schoolos_student_executor;
 SELECT coalesce(error_code::text,'NONE') AS school_missing FROM app_private.d1_roll_policy_p1_version(NULL::uuid) \gset p1_
 RESET ROLE;
-SELECT is(:'p1_disabled','D1_ROLL_POLICY_P1_UNAVAILABLE','disabled operation fails closed');
-SELECT is(:'p1_school_missing','D1_ROLL_POLICY_P1_SCHOOL_REQUIRED','null School rejected');
+SELECT is(:'p1_disabled'::text,'D1_ROLL_POLICY_P1_UNAVAILABLE','disabled operation fails closed');
+SELECT is(:'p1_school_missing'::text,'D1_ROLL_POLICY_P1_SCHOOL_REQUIRED','null School rejected');
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.operation_contracts SET enabled=true
 WHERE code='student.roll_policy.change';
@@ -49,8 +49,8 @@ SET ROLE schoolos_student_executor;
 SELECT coalesce(error_code::text,'NONE') AS direct_error FROM app_private.d1_roll_policy_p1_version('22222222-2222-4222-8222-222222222222') \gset p1_
 RESET ROLE;
 SELECT is(:'p1_direct_id'::uuid,'b8400000-0000-4000-8000-000000000001'::uuid,'DIRECT selected exact global version UUID');
-SELECT is(:'p1_direct_mode','DIRECT','DIRECT route selected');
-SELECT is(:'p1_direct_error','NONE','DIRECT has no error');
+SELECT is(:'p1_direct_mode'::text,'DIRECT','DIRECT route selected');
+SELECT is(:'p1_direct_error'::text,'NONE','DIRECT has no error');
 SAVEPOINT before_ambiguous;
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.approval_policy_versions(id,policy_key,version,operation_id,d1_route_mode,created_by)
@@ -63,7 +63,7 @@ RESET ROLE;
 SET ROLE schoolos_workflow_executor;
 SELECT coalesce(error_code::text,'NONE') AS ambiguous FROM app_private.d1_roll_policy_p1_version('22222222-2222-4222-8222-222222222222') \gset p1_
 RESET ROLE;
-SELECT is(:'p1_ambiguous','D1_ROLL_POLICY_P1_AMBIGUOUS','overlap of two active global versions denied');
+SELECT is(:'p1_ambiguous'::text,'D1_ROLL_POLICY_P1_AMBIGUOUS','overlap of two active global versions denied');
 ROLLBACK TO SAVEPOINT before_ambiguous;
 ROLLBACK TO SAVEPOINT before_direct;
 SET ROLE schoolos_schema_owner;
@@ -89,8 +89,8 @@ SET ROLE schoolos_workflow_executor;
 SELECT coalesce(error_code::text,'NONE') AS approval_error FROM app_private.d1_roll_policy_p1_version('22222222-2222-4222-8222-222222222222') \gset p1_
 RESET ROLE;
 SELECT is(:'p1_approval_id'::uuid,'b8400000-0000-4000-8000-000000000004'::uuid,'APPROVAL selected exact policy UUID');
-SELECT is(:'p1_approval_mode','APPROVAL','configured APPROVAL route selected');
-SELECT is(:'p1_approval_error','NONE','valid APPROVAL has no error');
+SELECT is(:'p1_approval_mode'::text,'APPROVAL','configured APPROVAL route selected');
+SELECT is(:'p1_approval_error'::text,'NONE','valid APPROVAL has no error');
 SELECT is(app_private.d1_p1_route('student.roll_policy.change',NULL),'APPROVAL',
 'global route agrees with existing Foundation selector');
 SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions),0::bigint,
