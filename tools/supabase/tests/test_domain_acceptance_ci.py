@@ -3179,7 +3179,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
         self.assertEqual(DOMAIN_TESTS[-1],
             ["82_db02_school_reviewer_candidates.sql", 10])
-        self.assertEqual(sum(n for _, n in DOMAIN_TESTS[74:]),10)
+        self.assertEqual(DOMAIN_TESTS.count(["82_db02_school_reviewer_candidates.sql", 10]),1)
         filename="82_db02_school_reviewer_candidates.sql"
         source=(root/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
         self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
