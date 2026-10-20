@@ -6,7 +6,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(9);
+SELECT plan(10);
 \ir fixtures/command_actor.sql
 SELECT set_config('schoolos_test.db02_reviewer_subject',
  (SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),true);
