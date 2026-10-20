@@ -64,7 +64,7 @@ SET ROLE schoolos_evidence_writer;
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','student.roll_policy.change','db02-disabled',
  current_setting('schoolos_test.db02_receipt_intent')::jsonb)$q$,
- 'P0001'::char(5),'D1 operation is not enabled',
+ 'P0001'::char(5),'D1 operation is not enabled'::text,
  'typed receipt is denied while Roll Policy operation is disabled');
 RESET ROLE;
 SET ROLE schoolos_schema_owner;
@@ -98,59 +98,59 @@ SET ROLE schoolos_evidence_writer;
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','student.roll_policy.change','db02-short',
  '["not12"]'::jsonb)$q$,
- 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported'::text,
  'short ambiguous array rejected');
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','student.roll_policy.change','db02-null-school',
  pg_catalog.jsonb_set(current_setting('schoolos_test.db02_receipt_intent')::jsonb,
  '{0}','null'::jsonb))$q$,
- 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported'::text,
  'NULL School fails closed instead of bypassing three-valued SQL logic');
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','student.roll_policy.change','db02-reason',
  pg_catalog.jsonb_set(current_setting('schoolos_test.db02_receipt_intent')::jsonb,
  '{10}','""'::jsonb))$q$,
- 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported'::text,
  'empty protected reason rejected');
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','student.roll_policy.change','db02-end',
  pg_catalog.jsonb_set(current_setting('schoolos_test.db02_receipt_intent')::jsonb,
  '{1}','"END"'::jsonb))$q$,
- 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported'::text,
  'unapproved END action rejected');
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','student.roll_policy.change','db02-p1-id',
  pg_catalog.jsonb_set(current_setting('schoolos_test.db02_receipt_intent')::jsonb,
  '{11}','"not-a-uuid"'::jsonb))$q$,
- 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported'::text,
  'P1 version reference requires typed UUID');
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','request.submit','db02-init-source',
  pg_catalog.jsonb_set(current_setting('schoolos_test.db02_receipt_intent')::jsonb,
  '{2}','"unexpected-source"'::jsonb))$q$,
- 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported'::text,
  'INIT may not supply a source');
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','request.submit','db02-start-string',
  pg_catalog.jsonb_set(current_setting('schoolos_test.db02_receipt_intent')::jsonb,
  '{9}','"100"'::jsonb))$q$,
- 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported'::text,
  'start counter must be a JSON number rather than string');
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','request.review','db02-review',
  current_setting('schoolos_test.db02_receipt_intent')::jsonb)$q$,
- 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported'::text,
  'unapproved review phase rejected');
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','request.apply','db02-apply',
  current_setting('schoolos_test.db02_receipt_intent')::jsonb)$q$,
- 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported'::text,
  'unapproved apply phase rejected');
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','request.submit','db02-replace-source',
  pg_catalog.jsonb_set(current_setting('schoolos_test.db02_receipt_intent')::jsonb,
  '{1}','"REPLACE"'::jsonb))$q$,
- 'P0001'::char(5),'D1 receipt operation phase or shape unsupported',
+ 'P0001'::char(5),'D1 receipt operation phase or shape unsupported'::text,
  'REPLACE with absent predecessor fields denied');
 SELECT lives_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','request.submit','db02-replace',
