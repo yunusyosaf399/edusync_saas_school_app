@@ -141,6 +141,31 @@ WHERE p.code='student.enrollment.place'
  ORDER BY g.valid_from DESC LIMIT 1;
 """
     setup = setup[:grant_start] + permission_setup + setup[students_start:]
+    # d1_u09_key enforces exactly one Student per Person, including across
+    # prior committed D1 concurrency fixtures. Our Student must receive its
+    # OWN freshly seeded Person rather than reusing shared command_actor Person.
+    setup = setup.replace(
+        "'10000000-0000-4000-8000-000000000001'",
+        "'db190000-0000-4000-8000-000000000090'",
+    )
+    setup = setup.replace(
+        "INSERT INTO app_private.students(",
+        """INSERT INTO app_private.people(id,display_name,created_by)
+VALUES ('db190000-0000-4000-8000-000000000090',
+ 'DB-01 isolated real race test Student Person',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.students(""", 1,
+    )
+    # School-facing and academic code uniqueness must also be independent
+    # of earlier committed fixtures within the same disposable database.
+    for original, unique in (
+        ("'STUDENT-ACCEPT'", "'DB01-RACE-REAL-STUDENT'"),
+        ("'STD-ACCEPT-100'", "'DB01-RACE-ADMISSION-100'"),
+        ("'P0-STUDENT-CAMPUS'", "'DB01-RACE-CAMPUS'"),
+        ("'P0-STUDENT-YEAR'", "'DB01-RACE-YEAR'"),
+        ("'P0-STUDENT-CLASS'", "'DB01-RACE-CLASS'"),
+    ):
+        setup = setup.replace(original, unique)
     # run_concurrency_tests has already committed the shared test Principal
     # and test Role earlier in this SAME disposable stack. Do not re-insert
     # command_actor.sql or its primary keys. Set this transaction's JWT only.
