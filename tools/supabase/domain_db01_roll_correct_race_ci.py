@@ -14,11 +14,11 @@ from domain_concurrency_ci import settings_sql
 from domain_student_photo_real_pg_handoff_ci import _actor_connection, _local_connect
 
 ROOT = Path(__file__).resolve().parents[2]
-STUDENT = "b1000000-0000-4000-8000-000000000001"
-SECTION = "b1000000-0000-4000-8000-000000000045"
-POLICY = "b1000000-0000-4000-8000-000000000049"
-ALLOCATOR = "b1000000-0000-4000-8000-000000000050"
-SCHOOL = "22222222-2222-4222-8222-222222222222"
+STUDENT = "db190000-0000-4000-8000-000000000001"
+SECTION = "db190000-0000-4000-8000-000000000045"
+POLICY = "db190000-0000-4000-8000-000000000049"
+ALLOCATOR = "db190000-0000-4000-8000-000000000050"
+SCHOOL = "db190000-0000-4000-8000-0000000000ee"
 ACTOR = "55555555-5555-4555-8555-555555555555"
 
 
@@ -75,6 +75,21 @@ def _seed(container, run_psql, root):
     cut = "SELECT is((SELECT error_code FROM app_private.d1_roll_correct_lock_source("
     _require(source.count(marker) == 1 and source.count(cut) >= 1, "FIXTURE_ANCHOR")
     setup = source.split(marker, 1)[1].split(cut, 1)[0]
+    # The other D1 concurrency fixtures commit permanent test records. Give
+    # this School and EVERY DB-01 seed identifier a separate fixed namespace,
+    # including P0 Role grant and scope UUIDs (not just Student/Enrollment).
+    setup = setup.replace("b1000000", "db190000")
+    setup = setup.replace("22222222-2222-4222-8222-222222222222", SCHOOL)
+    setup = setup.replace(
+        "SET ROLE schoolos_schema_owner;",
+        """SET ROLE schoolos_schema_owner;
+INSERT INTO app_private.school_profiles(
+ id,code,name,timezone,currency_code,locale,created_by)
+VALUES ('db190000-0000-4000-8000-0000000000ee',
+ 'DB01-RACE-ONLY','DB01 private effect disposable race School',
+ 'UTC','USD','en','11111111-1111-4111-8111-111111111111');""",
+        1,
+    )
     # run_concurrency_tests has already committed the shared test Principal
     # and test Role earlier in this SAME disposable stack. Do not re-insert
     # command_actor.sql or its primary keys. Set this transaction's JWT only.
