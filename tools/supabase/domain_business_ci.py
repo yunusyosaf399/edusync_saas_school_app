@@ -15,6 +15,12 @@ def render_fixture(source: str,fixture: str) -> str:
         raise RuntimeError("D1_BUSINESS_FIXTURE_MARKER")
     return source.replace(marker,fixture)
 
+# DB-02 isolated acceptance registration, independent of DB-01's unmerged #81.
+# Keep the canonical DOMAIN_TESTS list intact so that DB-01's upcoming
+# append-only #81 manifest patch and this operation-owned #82 do not overwrite
+# each other during coordinated integration.
+DOMAIN_TESTS.append(["82_db02_school_reviewer_candidates.sql", 10])
+
 def run_business_tests() -> int:
     total = 0
     for filename, expected in DOMAIN_TESTS:
