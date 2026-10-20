@@ -138,7 +138,7 @@ BEGIN
        -- [School UUID, INIT|REPLACE, source UUID|null, old revision|null,
        -- old mode|null, old start|null, old from|null, old until=null,
        -- new mode, new start, private reason, global policy version UUID].
-       OR (p_operation_code='student.roll_policy.change'
+       OR ((p_operation_code='student.roll_policy.change'
            AND p_command_kind IN ('student.roll_policy.change','request.submit')
            AND pg_catalog.jsonb_array_length(p_intent)=12
            AND p_intent->>0 ~ '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$'
@@ -165,7 +165,7 @@ BEGIN
               AND p_intent->>5 ~ '^(0|[1-9][0-9]*)$'
               AND pg_catalog.jsonb_typeof(p_intent->6)='string'
               AND p_intent->>6 ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-             END)
+             END) IS TRUE)
        OR (p_operation_code='family.child_access.change' AND (
             (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
          OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
