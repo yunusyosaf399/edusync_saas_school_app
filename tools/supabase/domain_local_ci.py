@@ -430,6 +430,8 @@ def _main() -> int:
         # Run AFTER frozen suites: synthetic fixture rows commit only in this
         # disposable stack and are torn down by the existing supabase stop.
         run_real_postgres_photo_handoff(container, run_psql, ROOT)
+        from domain_enrollment_end_lock_prefix_ci import run_enrollment_end_lock_prefix
+        run_enrollment_end_lock_prefix(container, run_psql, ROOT)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
