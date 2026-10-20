@@ -54,6 +54,7 @@ def _observe(cur, waiter, blocker, future):
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         _check(not future.done(), "WORKER_FINISHED_BEFORE_WAIT")
+        cur.execute("SELECT pg_catalog.pg_stat_clear_snapshot()")
         cur.execute("""SELECT EXISTS (
             SELECT 1 FROM pg_catalog.pg_stat_activity a
             WHERE a.pid=%s AND a.wait_event_type='Lock'
