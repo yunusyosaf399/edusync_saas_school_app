@@ -1,0 +1,90 @@
+-- DB-02 non-activating School-wide P1 approval-policy VERSION selector.
+-- Returns an exact immutable Foundation policy version UUID and its route.
+-- This is NOT current caller authorization, a public command, a permission
+-- enablement or a policy-change effect. Protected callers must first acquire
+-- the Foundation SHARED auth lock, independently prove School ALL scope,
+-- and reselect/recheck UUID at review/apply; the School row is validated by
+-- the separately accepted source preflight before mutating policy history.
+-- Existing Foundation d1_p1_route(text,uuid) is not modified.
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+RESET ROLE;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_roll_policy_p1_version(p_school uuid)
+RETURNS TABLE(school_id uuid,policy_version_id uuid,route_mode text,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  at_time timestamptz := pg_catalog.clock_timestamp();
+  matches bigint;
+  selected_id uuid;
+  selected_mode text;
+  steps bigint;
+  invalid_steps bigint;
+  first_step integer;
+  last_step integer;
+BEGIN
+  -- School is an exact typed target binding, NEVER a Campus route selector.
+  -- Source preflight validates the actual School before any business effect.
+  IF p_school IS NULL THEN
+    RETURN QUERY SELECT p_school,NULL::uuid,NULL::text,
+      'D1_ROLL_POLICY_P1_SCHOOL_REQUIRED'::text; RETURN;
+  END IF;
+  -- Replicate the existing d1_p1_route('student.roll_policy.change',NULL)
+  -- selection predicate but retain the selected approval_policy_versions.id.
+  -- NULL Campus cannot match a Campus-specific policy.
+  SELECT count(*),min(v.id::text)::uuid,min(v.d1_route_mode)
+    INTO matches,selected_id,selected_mode
+    FROM app_private.operation_contracts o
+    JOIN app_private.approval_policy_versions v ON v.operation_id=o.id
+   WHERE o.code='student.roll_policy.change' AND o.contract_version=1
+     AND o.enabled AND NOT o.requires_approval
+     AND v.state='ACTIVE' AND v.campus_id IS NULL
+     AND v.effective_from<=at_time
+     AND (v.effective_until IS NULL OR at_time<v.effective_until);
+  IF matches=0 THEN
+    RETURN QUERY SELECT p_school,NULL::uuid,NULL::text,
+      'D1_ROLL_POLICY_P1_UNAVAILABLE'::text; RETURN;
+  END IF;
+  IF matches<>1 THEN
+    RETURN QUERY SELECT p_school,NULL::uuid,NULL::text,
+      'D1_ROLL_POLICY_P1_AMBIGUOUS'::text; RETURN;
+  END IF;
+  IF selected_mode='DIRECT' THEN
+    IF app_private.d1_p1_route('student.roll_policy.change',NULL)
+       IS DISTINCT FROM 'DIRECT' THEN
+      RETURN QUERY SELECT p_school,NULL::uuid,NULL::text,
+        'D1_ROLL_POLICY_P1_ROUTE_STALE'::text; RETURN;
+    END IF;
+    RETURN QUERY SELECT p_school,selected_id,'DIRECT'::text,NULL::text;
+    RETURN;
+  END IF;
+  IF selected_mode='APPROVAL' THEN
+    SELECT count(*),
+           count(*) FILTER (WHERE role_row.id IS NULL
+             OR role_row.state<>'ACTIVE' OR t.required_reviews<>1
+             OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'),
+           min(t.step_number),max(t.step_number)
+      INTO steps,invalid_steps,first_step,last_step
+      FROM app_private.approval_step_templates t
+      LEFT JOIN app_private.roles role_row ON role_row.id=t.reviewer_role_id
+     WHERE t.policy_id=selected_id;
+    IF steps>0 AND invalid_steps=0 AND first_step=1
+       AND last_step::bigint=steps
+       AND app_private.d1_p1_route('student.roll_policy.change',NULL)='APPROVAL' THEN
+      RETURN QUERY SELECT p_school,selected_id,'APPROVAL'::text,NULL::text;
+      RETURN;
+    END IF;
+  END IF;
+  RETURN QUERY SELECT p_school,NULL::uuid,NULL::text,
+    'D1_ROLL_POLICY_P1_INVALID_STEPS_OR_ROUTE'::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_p1_version(uuid)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_p1_version(uuid)
+  TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+RESET ROLE;

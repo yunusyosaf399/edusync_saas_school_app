@@ -16,6 +16,13 @@ DOMAIN_TESTS.extend([["75_db01_allocator_retained_history.sql",12],
                      ["79_db01_approval_application_receipt_guard.sql",14],
                      ["80_school_local_roll_business_date.sql",24]])
 
+# DB-02 isolated non-activating reviewer acceptance. Preserve #1-80 and
+# DB-01 owner-managed #81 when its separate PR is integrated.
+DOMAIN_TESTS.append(["82_db02_school_reviewer_candidates.sql",10])
+DOMAIN_TESTS.append(["83_db02_roll_policy_source_preflight.sql",18])
+DOMAIN_TESTS.append(["84_db02_roll_policy_p1_version_selector.sql",20])
+DOMAIN_TESTS.append(["85_db02_school_actor_all_authority.sql",19])
+
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
     if source.count(marker) != 1:

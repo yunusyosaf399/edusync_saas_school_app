@@ -1,0 +1,133 @@
+-- DB-02 non-activating typed School policy source preflight.
+-- A future protected student.roll_policy.change executor MUST separately:
+-- take Foundation SHARED auth + receipt locks, validate current ALL change
+-- authority + global P1 policy version and recheck it at APPLY. This helper
+-- is NOT an authorization decision, RPC, policy effect or activation.
+-- Source: School-local business date and School->policy->allocator lock order.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_roll_policy_change_preflight(
+  p_school uuid, p_action text,
+  p_source uuid, p_expected_revision integer,
+  p_expected_mode text, p_expected_start_value bigint,
+  p_expected_effective_from date, p_expected_effective_until date,
+  p_new_mode text, p_new_start_value bigint)
+RETURNS TABLE(school_id uuid, business_date date, source_policy_id uuid,
+  source_revision integer, source_mode text, locked_allocator_count bigint,
+  error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  today date;
+  n bigint;
+  pol app_private.roll_policy_revisions%ROWTYPE;
+  pool_row record;
+  pool_count bigint := 0;
+BEGIN
+  -- Validate typed mode, start value, action and School before touching any
+  -- mutable domain row. END, RESUME, scheduling and backdating are excluded.
+  IF p_school IS NULL OR p_action IS NULL OR p_action NOT IN ('INIT','REPLACE')
+     OR p_new_mode IS NULL
+     OR p_new_mode NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
+     OR p_new_start_value IS NULL OR p_new_start_value < 0 THEN
+    RETURN QUERY SELECT p_school,NULL::date,NULL::uuid,NULL::integer,
+      NULL::text,0::bigint,'D1_ROLL_POLICY_PREFLIGHT_INVALID'::text; RETURN;
+  END IF;
+  -- Shared academic-owned School row lock is the same placement anchor.
+  -- No Student/academic child is locked before School.
+  IF app_private.d1_enrollment_place_lock_school(p_school) IS DISTINCT FROM true THEN
+    RETURN QUERY SELECT p_school,NULL::date,NULL::uuid,NULL::integer,
+      NULL::text,0::bigint,'D1_ROLL_POLICY_SCHOOL_MISSING'::text; RETURN;
+  END IF;
+  today := app_private.d1_roll_business_date(p_school);
+  -- The School lock serializes concurrent policy changes and placements.
+  -- A replacement must be re-read after waiting on this lock.
+  SELECT count(*) INTO n FROM app_private.roll_policy_revisions r
+    WHERE r.school_id=p_school;
+  IF p_action='INIT' THEN
+    IF p_source IS NOT NULL OR p_expected_revision IS NOT NULL
+       OR p_expected_mode IS NOT NULL OR p_expected_start_value IS NOT NULL
+       OR p_expected_effective_from IS NOT NULL
+       OR p_expected_effective_until IS NOT NULL THEN
+      RETURN QUERY SELECT p_school,today,NULL::uuid,NULL::integer,
+        NULL::text,0::bigint,'D1_ROLL_POLICY_INIT_SOURCE_NOT_EMPTY'::text; RETURN;
+    END IF;
+    IF n<>0 THEN
+      RETURN QUERY SELECT p_school,today,NULL::uuid,NULL::integer,
+        NULL::text,0::bigint,'D1_ROLL_POLICY_INIT_HISTORY_EXISTS'::text; RETURN;
+    END IF;
+    RETURN QUERY SELECT p_school,today,NULL::uuid,NULL::integer,
+      NULL::text,0::bigint,NULL::text; RETURN;
+  END IF;
+  IF p_source IS NULL OR p_expected_revision IS NULL
+     OR p_expected_revision<1 OR p_expected_mode IS NULL
+     OR p_expected_start_value IS NULL OR p_expected_effective_from IS NULL
+     OR p_expected_effective_until IS NOT NULL THEN
+    RETURN QUERY SELECT p_school,today,NULL::uuid,NULL::integer,
+      NULL::text,0::bigint,'D1_ROLL_POLICY_REPLACE_SOURCE_INVALID'::text; RETURN;
+  END IF;
+  -- Select precisely one current open revision; no fallback to an ended
+  -- revision. Under School lock, this cannot race placement's prelock.
+  SELECT count(*) INTO n FROM app_private.roll_policy_revisions r
+    WHERE r.school_id=p_school AND r.effective_from<=today
+      AND r.effective_until IS NULL;
+  IF n<>1 THEN
+    RETURN QUERY SELECT p_school,today,NULL::uuid,NULL::integer,
+      NULL::text,0::bigint,'D1_ROLL_POLICY_REPLACE_SOURCE_MISSING'::text; RETURN;
+  END IF;
+  SELECT r.* INTO pol FROM app_private.roll_policy_revisions r
+    WHERE r.school_id=p_school AND r.effective_from<=today
+      AND r.effective_until IS NULL
+    FOR UPDATE;
+  IF pol.id IS DISTINCT FROM p_source
+     OR pol.revision IS DISTINCT FROM p_expected_revision
+     OR pol.mode IS DISTINCT FROM p_expected_mode
+     OR pol.start_value IS DISTINCT FROM p_expected_start_value
+     OR pol.effective_from IS DISTINCT FROM p_expected_effective_from
+     OR pol.effective_until IS DISTINCT FROM p_expected_effective_until THEN
+    RETURN QUERY SELECT p_school,today,pol.id,pol.revision,pol.mode,
+      0::bigint,'D1_ROLL_POLICY_REPLACE_STALE'::text; RETURN;
+  END IF;
+  -- Do not create empty [today,today) predecessor interval.
+  IF pol.effective_from>=today THEN
+    RETURN QUERY SELECT p_school,today,pol.id,pol.revision,pol.mode,
+      0::bigint,'D1_ROLL_POLICY_REPLACE_SAME_DAY'::text; RETURN;
+  END IF;
+  -- No pre-scheduled successor or skipped revision is legal in today-only
+  -- mode. History remains retained and exact.
+  IF EXISTS (SELECT 1 FROM app_private.roll_policy_revisions x
+             WHERE x.school_id=p_school AND x.id<>pol.id
+               AND (x.revision>=pol.revision OR x.supersedes_id=pol.id)) THEN
+    RETURN QUERY SELECT p_school,today,pol.id,pol.revision,pol.mode,
+      0::bigint,'D1_ROLL_POLICY_REPLACE_SUCCESSOR_EXISTS'::text; RETURN;
+  END IF;
+  -- An accepted future-dated Roll may not be silently reinterpreted under
+  -- the replacement revision: deny rather than rewriting any child history.
+  IF EXISTS (SELECT 1 FROM app_private.roll_allocations a
+              WHERE a.policy_revision_id=pol.id AND a.effective_from>=today) THEN
+    RETURN QUERY SELECT p_school,today,pol.id,pol.revision,pol.mode,
+      0::bigint,'D1_ROLL_POLICY_REPLACE_FUTURE_ROLL'::text; RETURN;
+  END IF;
+  -- Lock the existing source allocator pool(s) in stable UUID order.
+  -- These are existing pools, not newly provisioned target pools.
+  FOR pool_row IN
+    SELECT a.id FROM app_private.roll_allocator_states a
+      WHERE a.policy_revision_id=pol.id
+      ORDER BY a.id FOR UPDATE
+  LOOP
+    pool_count:=pool_count+1;
+  END LOOP;
+  IF pol.mode='PERSISTENT_STUDENT' AND pool_count<>1 THEN
+    RETURN QUERY SELECT p_school,today,pol.id,pol.revision,pol.mode,
+      pool_count,'D1_ROLL_POLICY_REPLACE_SOURCE_POOL_INVALID'::text; RETURN;
+  END IF;
+  RETURN QUERY SELECT p_school,today,pol.id,pol.revision,pol.mode,
+    pool_count,NULL::text;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_change_preflight(
+ uuid,text,uuid,integer,text,bigint,date,date,text,bigint)
+ FROM PUBLIC,anon,authenticated,service_role;
+-- Function owner (Student executor) is the ONLY executable internal actor.
+-- Neither Workflow nor app/client receives direct EXECUTE.
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
