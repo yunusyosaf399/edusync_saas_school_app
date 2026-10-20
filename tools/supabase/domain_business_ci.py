@@ -18,7 +18,8 @@ DOMAIN_TESTS.extend([["75_db01_allocator_retained_history.sql",12],
                      ["81_db01_roll_correct_source_prelock.sql",20],
                      ["82_db01_private_correct_effect.sql",21],
                      ["83_db01_academic_cross_section_correct_effect.sql",22],
-                     ["84_db01_persistent_cross_revision_roll_correction.sql",12]])
+                     ["84_db01_persistent_cross_revision_roll_correction.sql",12],
+                     ["85_db01_roll_correct_private_authority_p1.sql",22]])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
