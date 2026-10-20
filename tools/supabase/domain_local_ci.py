@@ -43,9 +43,14 @@ FINAL_FUNCTION_OWNERS = (
     "schoolos_teaching_executor",
     "schoolos_workflow_executor",
 )
-# Effect35_12 adds one narrowly scoped, Student-executor-owned private
-# SECURITY DEFINER helper for the Status P2 exact source transition lookup.
-# Keep the public RPC count, client grants and all RLS/table-DML metrics frozen.
+# Effect35_12 adds one narrowly scoped Status P2 private helper.
+# DB-01 effect38_02 adds ONLY app_private.d1_roll_correct_result_rows_match_exact
+# (uuid,uuid,uuid,uuid,jsonb), Student-executor-owned SECURITY DEFINER.
+# Integration request #108; effect38_03 adds exactly one additional
+# Student-owned, private DIRECT receipt provenance definer (issue #110).
+# DB-01 effect38_04 adds one operation-specific schema-owner trigger on
+# Foundation approval_applications (independent review issue #112).
+# Do not allow public RPC/client grants or RLS/table-DML drift.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
     "d1_tables": 34,
@@ -56,10 +61,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 542,
-    "security_definers": 524,
+    "functions": 545,
+    "security_definers": 527,
     "app_functions": 157,
-    "private_functions": 385,
+    "private_functions": 388,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
