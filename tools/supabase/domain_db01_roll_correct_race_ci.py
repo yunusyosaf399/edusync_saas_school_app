@@ -93,6 +93,54 @@ WHERE rp.school_id='22222222-2222-4222-8222-222222222222'
  AND (rp.effective_until IS NULL OR CURRENT_DATE-1<rp.effective_until);
 """
     setup = setup[:start] + pool + setup[stop:]
+    # Existing domain concurrency fixtures already committed the P0 role grant
+    # and ALL/DIRECT assignment scope for the shared authenticated actor.
+    # Preserve them: duplicate UUIDs are not the only danger -- a new grant
+    # for the SAME role/permission/overlapping period violates Foundation.
+    grant_start = setup.index("INSERT INTO app_private.role_permission_grants(")
+    students_start = setup.index("INSERT INTO app_private.students(", grant_start)
+    permission_setup = """-- Reuse valid already committed P0 authorization evidence.
+INSERT INTO app_private.role_permission_grants(
+ id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
+SELECT 'db190000-0000-4000-8000-000000000010',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,p.id,p.family_safe,
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.permissions p WHERE p.code='student.enrollment.place'
+ AND NOT EXISTS(
+   SELECT 1 FROM app_private.role_permission_grants g
+   WHERE g.role_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+     AND g.permission_id=p.id
+     AND g.valid_from<=pg_catalog.statement_timestamp()
+     AND (g.valid_until IS NULL OR g.valid_until>pg_catalog.statement_timestamp())
+     AND g.revoked_at IS NULL);
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+SELECT 'db190000-0000-4000-8000-000000000011',
+ 'ffffffff-ffff-4fff-8fff-ffffffffffff',g.id,g.role_id,g.permission_id,
+ c.id,'ALL','DIRECT',pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permissions p ON p.id=g.permission_id
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE p.code='student.enrollment.place'
+ AND g.role_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+ AND c.scope_kind='ALL' AND c.resolver_key='DIRECT'
+ AND g.valid_from<=pg_catalog.statement_timestamp()
+ AND (g.valid_until IS NULL OR g.valid_until>pg_catalog.statement_timestamp())
+ AND g.revoked_at IS NULL
+ AND NOT EXISTS (
+   SELECT 1 FROM app_private.assignment_permission_scopes aps
+    WHERE aps.assignment_id='ffffffff-ffff-4fff-8fff-ffffffffffff'
+      AND aps.permission_id=g.permission_id AND aps.scope_kind='ALL'
+      AND aps.resolver_key='DIRECT'
+      AND aps.valid_from<=pg_catalog.statement_timestamp()
+      AND (aps.valid_until IS NULL OR aps.valid_until>pg_catalog.statement_timestamp())
+      AND aps.revoked_at IS NULL)
+ ORDER BY g.valid_from DESC LIMIT 1;
+"""
+    setup = setup[:grant_start] + permission_setup + setup[students_start:]
     # run_concurrency_tests has already committed the shared test Principal
     # and test Role earlier in this SAME disposable stack. Do not re-insert
     # command_actor.sql or its primary keys. Set this transaction's JWT only.
