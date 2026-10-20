@@ -182,6 +182,8 @@ For true concurrent tests use **two PostgreSQL sessions**, explicit transaction 
 - [ ] SC-06 cross-domain Foundation/Admissions/Finance/D1 owners sign total lock DAG and observed losers.
 - [ ] SC-07 independent real installation/security/race/upgrade acceptance and activation.
 
+> **P1 follow-on, 20 October 2026:** The [numbering/policy SQL-readiness and acceptance specification](db03_p1_numbering_policy_sql_readiness_acceptance_20261020.md) refines relations #01–05, records 32 proposed acceptance cases plus 10 true two-backend races, and explains the `admission_number_allocations.application_id` FK dependency on the P2 application relation. It is a **design/acceptance specification**, not executable SQL or owner authorization. SC-01 numbering, temporal publication, format/correction/stage rules and the registrar/lock placement remain approval gates; no new admission number or final READY handoff may be issued because this document exists.
+
 ## 8. Implementation-safe stop line and next work queue
 
 **Completed in this document:** reconcile latest owner choices, disposition all 15 proposed entities, exact candidate keys/history/indexes/intervals/RLS/triggers, remove avoidable circular FK and handoff-number uniqueness traps, phase decomposition and acceptance specifications. No runnable Admissions schema or command can be treated approved merely because this design is precise.
