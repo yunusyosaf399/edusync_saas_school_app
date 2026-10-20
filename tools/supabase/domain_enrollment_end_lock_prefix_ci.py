@@ -14,10 +14,10 @@ from domain_student_photo_real_pg_handoff_ci import _local_connect, _actor_conne
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTAINER = "supabase_db_saas_OS_school_app"
-STUDENT = "f2000000-0000-4000-8000-000000000001"
-SECTION = "f2000000-0000-4000-8000-000000000045"
+STUDENT = "c83125a4-42f9-4d63-9176-000000000001"
+SECTION = "c83125a4-42f9-4d63-9176-000000000045"
 SCHOOL = "22222222-2222-4222-8222-222222222222"
-NEXT_POLICY = "f2000000-0000-4000-8000-000000000061"
+NEXT_POLICY = "c83125a4-42f9-4d63-9176-000000000061"
 KEY = "end-prefix-protected-command"
 TABLES = {"school": "school_profiles", "policy": "roll_policy_revisions",
           "allocator": "roll_allocator_states", "student": "students"}
@@ -53,7 +53,9 @@ def _end(conn, source):
 def _observe(cur, waiter, blocker, future):
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
-        _check(not future.done(), "WORKER_FINISHED_BEFORE_WAIT")
+        if future.done():
+            future.result()  # Preserve an actual SQL failure for diagnostics.
+            _check(False, "WORKER_FINISHED_BEFORE_WAIT")
         cur.execute("SELECT pg_catalog.pg_stat_clear_snapshot()")
         cur.execute("""SELECT EXISTS (
             SELECT 1 FROM pg_catalog.pg_stat_activity a

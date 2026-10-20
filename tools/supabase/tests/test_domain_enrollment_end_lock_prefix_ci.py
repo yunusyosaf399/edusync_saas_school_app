@@ -11,6 +11,13 @@ import domain_enrollment_end_lock_prefix_ci as trial
 
 
 class EnrollmentEndPrefixTests(unittest.TestCase):
+    def test_fixture_namespace_does_not_overlap_other_runtime_suites(self):
+        prefix = trial.STUDENT.rsplit('-', 1)[0] + '-'
+        own = ROOT/'tools/supabase/domain_enrollment_end_lock_prefix_ci.py'
+        for path in (ROOT/'tools/supabase').glob('domain_*ci.py'):
+            if path != own:
+                self.assertNotIn(prefix, path.read_text(), str(path))
+
     def test_hosted_target_rejected_before_connecting(self):
         with self.assertRaisesRegex(RuntimeError, 'DISPOSABLE_CONTAINER_ONLY'):
             trial.run_enrollment_end_lock_prefix('hosted', None)

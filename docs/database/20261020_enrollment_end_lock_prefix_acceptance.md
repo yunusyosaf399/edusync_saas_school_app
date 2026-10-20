@@ -23,12 +23,12 @@ After P0, an owner-only synthetic policy cutover expires the source persistent r
 
 An eight-second observer deadline and fifteen-second worker statement timeout bound failures. `pg_stat_clear_snapshot` refreshes each activity observation. A worker finishing before a genuine wait fails the test. Blockers release in `finally` before the worker thread joins. No arbitrary timing sleep counts as lock proof.
 
-Seven unit tests check the local target boundary, completed/missing wait failures, exact backend-ID binding, parameterized row locks, missing rows and genuine protected fixture wiring. These are harness tests; PostgreSQL acceptance requires the runtime PASS marker.
+Eight unit tests check the local target boundary, completed/missing wait failures, exact backend-ID binding, parameterized row locks, missing rows and genuine protected fixture wiring. These are harness tests; PostgreSQL acceptance requires the runtime PASS marker.
 
 ## Validation and integration
 
-Local tooling: 323 tests passed, including 163 D1 CI tests. D1 draft and final function/ACL guards passed with 230 fragments, 34 forced-RLS relations and 542 functions; client-private EXECUTE remains zero. Git diff whitespace validation passed.
+Local tooling: 324 tests passed, including 164 D1 CI tests. D1 draft and final function/ACL guards passed with 230 fragments, 34 forced-RLS relations and 542 functions; client-private EXECUTE remains zero. Git diff whitespace validation passed.
 
-GitHub PostgreSQL validation is pending on the latest PR #114 head. Acceptance requires all three workflows (D1 static, Foundation local stack and D1 local runtime) on that head, with `D1_ENROLLMENT_END_LOCK_PREFIX_PASS` in the runtime job log. Do not substitute unit/static success for that evidence.
+At submission, GitHub PostgreSQL validation was pending; see PR #114 for the latest tested head and run evidence. The first run exposed a fixture UUID collision with the earlier provider-recovery suite; the fixture now uses a disjoint namespace with an explicit non-overlap check. Acceptance requires all three workflows (D1 static, Foundation local stack and D1 local runtime) on that head, with `D1_ENROLLMENT_END_LOCK_PREFIX_PASS` in the runtime job log. Do not substitute unit/static success for that evidence.
 
 This is scoped END concurrency acceptance. Roll CORRECT, Roll Policy Change, Admissions creation, Enrollment MOVE source/destination lock-union, independent security review, populated upgrades and overall D1/database completion remain separate work. The PR stack remains reviewable and unmerged; Migration 10 remains non-executable and no hosted deployment is performed.
