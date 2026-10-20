@@ -1,0 +1,10 @@
+-- A committed MOVE application exists, but Workflow's SELECT policies covered
+-- only other operations. Permit exact MOVE evidence for immutable APPLY replay.
+SET ROLE schoolos_schema_owner;
+CREATE POLICY d1_effect39_move_workflow_application_replay
+  ON app_private.approval_applications FOR SELECT TO schoolos_workflow_executor
+  USING (EXISTS (SELECT 1 FROM app_private.operation_contracts o
+    WHERE o.id=approval_applications.operation_id AND o.code='student.enrollment.move'));
+GRANT SELECT (request_id,command_receipt_id,operation_id,result_ref)
+  ON app_private.approval_applications TO schoolos_workflow_executor;
+RESET ROLE;

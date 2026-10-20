@@ -115,6 +115,13 @@ def run_enrollment_move_approval(container,run_psql,root=ROOT):
             _check(cur.fetchone() == (True,False,False,False),'MOVE_APPROVAL_PRELOCK_EFFECTIVE_ACL')
             cur.execute("SELECT has_table_privilege('schoolos_authz_reader','app_private.approval_requests','SELECT')")
             _check(cur.fetchone() == (False,),'MOVE_APPROVAL_BROAD_AUTHZ_REQUEST_GRANT')
+            cur.execute("""SELECT
+                has_table_privilege('schoolos_workflow_executor','app_private.approval_applications','SELECT'),
+                has_column_privilege('schoolos_workflow_executor','app_private.approval_applications','request_id','SELECT'),
+                has_any_column_privilege('authenticated','app_private.approval_applications','SELECT'),
+                has_any_column_privilege('anon','app_private.approval_applications','SELECT'),
+                has_any_column_privilege('service_role','app_private.approval_applications','SELECT')""")
+            _check(cur.fetchone() == (False,True,False,False,False),'MOVE_APPROVAL_APPLICATION_EFFECTIVE_ACL')
     fixture = (Path(root)/'supabase/tests/domain/fixtures/enrollment_move_approval.sql').read_text()
     run_psql(container,'BEGIN;\n'+settings_sql()+'RESET ROLE;\n'+fixture
         + f"SET ROLE authenticated; SELECT * FROM app.d1_place_student_enrollment('{STUDENT}',1,'{SOURCE_SECTION}',"
@@ -153,6 +160,11 @@ def run_enrollment_move_approval(container,run_psql,root=ROOT):
             cur.execute('SELECT state,row_version FROM app_private.approval_requests WHERE id=%s::uuid',(request,))
             _check(cur.fetchone() == ('APPROVED',4),'MOVE_APPROVAL_ROLLBACK_STATE')
     applied = _blocked_call(psycopg,_reviewer,_apply,request,commit=True)
+    with closing(_local_connect(psycopg)) as evidence:
+        with evidence.cursor() as cur:
+            cur.execute('SET ROLE schoolos_workflow_executor')
+            cur.execute('SELECT count(*) FROM app_private.approval_applications WHERE request_id=%s::uuid',(request,))
+            _check(cur.fetchone() == (1,),'MOVE_APPROVAL_APPLICATION_RLS_VISIBILITY')
     with closing(_actor_connection(psycopg)) as replay:
         _check(_submit(replay,source) == (request,3),'MOVE_APPROVAL_SUBMIT_REPLAY')
         replay.commit()

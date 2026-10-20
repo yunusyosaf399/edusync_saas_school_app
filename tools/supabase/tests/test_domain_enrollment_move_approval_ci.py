@@ -28,6 +28,14 @@ class MoveApprovalTests(unittest.TestCase):
         self.assertIn('reviewer_person=requester_person',sql)
         self.assertIn('d1_enrollment_move_authorized',sql)
 
+    def test_application_replay_read_is_operation_and_column_bound(self):
+        sql = (ROOT/'supabase/migrations/20260928000000_domain_package_01_effect39_06_enrollment_move_application_replay.sql.draft').read_text()
+        self.assertIn('FOR SELECT TO schoolos_workflow_executor',sql)
+        self.assertIn("o.code='student.enrollment.move'",sql)
+        self.assertIn('GRANT SELECT (request_id,command_receipt_id,operation_id,result_ref)',sql)
+        for forbidden in ('USING (true)','TO authenticated','TO anon','TO service_role','GRANT SELECT ON'):
+            self.assertNotIn(forbidden,sql)
+
     def test_hosted_target_fails_before_driver_import(self):
         with self.assertRaisesRegex(RuntimeError,'MOVE_APPROVAL_DISPOSABLE_ONLY'):
             trial.run_enrollment_move_approval('hosted',None)
