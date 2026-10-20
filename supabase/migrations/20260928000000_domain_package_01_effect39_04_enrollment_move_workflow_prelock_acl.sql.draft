@@ -1,0 +1,7 @@
+-- Existing MOVE SUBMIT/APPLY run as Workflow, but the destination prelock
+-- helper was granted only to Student. Repair this single internal call edge.
+-- No client EXECUTE, table grant, new definer or executor role membership.
+SET ROLE schoolos_student_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_prelock_roll(uuid,date)
+  TO schoolos_workflow_executor;
+RESET ROLE;

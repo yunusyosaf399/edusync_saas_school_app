@@ -105,6 +105,14 @@ def _blocked_call(psycopg, factory, command, value, *, commit):
 def run_enrollment_move_approval(container,run_psql,root=ROOT):
     _check(container == CONTAINER,'MOVE_APPROVAL_DISPOSABLE_ONLY')
     import psycopg
+    with closing(_local_connect(psycopg)) as probe:
+        with probe.cursor() as cur:
+            cur.execute("""SELECT
+                has_function_privilege('schoolos_workflow_executor','app_private.d1_enrollment_place_prelock_roll(uuid,date)','EXECUTE'),
+                has_function_privilege('authenticated','app_private.d1_enrollment_place_prelock_roll(uuid,date)','EXECUTE'),
+                has_function_privilege('anon','app_private.d1_enrollment_place_prelock_roll(uuid,date)','EXECUTE'),
+                has_function_privilege('service_role','app_private.d1_enrollment_place_prelock_roll(uuid,date)','EXECUTE')""")
+            _check(cur.fetchone() == (True,False,False,False),'MOVE_APPROVAL_PRELOCK_EFFECTIVE_ACL')
     fixture = (Path(root)/'supabase/tests/domain/fixtures/enrollment_move_approval.sql').read_text()
     run_psql(container,'BEGIN;\n'+settings_sql()+'RESET ROLE;\n'+fixture
         + f"SET ROLE authenticated; SELECT * FROM app.d1_place_student_enrollment('{STUDENT}',1,'{SOURCE_SECTION}',"

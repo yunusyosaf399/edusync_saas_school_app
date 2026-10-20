@@ -10,6 +10,12 @@ import domain_enrollment_move_approval_ci as trial
 
 
 class MoveApprovalTests(unittest.TestCase):
+    def test_only_named_internal_prelock_call_edge_is_added(self):
+        path = ROOT/'supabase/migrations/20260928000000_domain_package_01_effect39_04_enrollment_move_workflow_prelock_acl.sql.draft'
+        sql = path.read_text()
+        body = '\n'.join(line for line in sql.splitlines() if not line.startswith('--'))
+        self.assertEqual(body, 'SET ROLE schoolos_student_executor;\nGRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_prelock_roll(uuid,date)\n  TO schoolos_workflow_executor;\nRESET ROLE;')
+
     def test_hosted_target_fails_before_driver_import(self):
         with self.assertRaisesRegex(RuntimeError,'MOVE_APPROVAL_DISPOSABLE_ONLY'):
             trial.run_enrollment_move_approval('hosted',None)

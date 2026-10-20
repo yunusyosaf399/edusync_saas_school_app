@@ -8,7 +8,7 @@ The existing Student-owned private `d1_enrollment_move_lock_context` now discove
 
 DIRECT, approval SUBMIT and approval APPLY now call that ordered context before the existing destination prelock recheck. Authority, P1 route selection, request state transitions, stale invalidation, capacity decisions, effects and receipt/audit/outbox/replay bodies remain unchanged. Byte-for-byte source-comparison tests permit only the documented preflight reorder in those handlers.
 
-This is append-only non-executable Migration 10 draft SQL: `effect39_01` through `effect39_03`. Four existing functions are replaced; no function, table, index, RLS policy, role or client permission is added. Final inventory stays 542 functions, 524 definers, 157 app functions and 385 private functions, with zero authenticated-private/anon/service-role EXECUTE. Foundation migrations/tests remain frozen.
+This is append-only non-executable Migration 10 draft SQL: `effect39_01` through `effect39_04`. Four existing functions are replaced; no function, table, index, RLS policy, role or client permission is added. Final inventory stays 542 functions, 524 definers, 157 app functions and 385 private functions, with zero authenticated-private/anon/service-role EXECUTE. Foundation migrations/tests remain frozen.
 
 ## Acceptance design
 
@@ -24,7 +24,11 @@ The local runtime proof runs after PR #114's END proof in the disposable Supabas
 
 Blockers/probes are privileged test fixtures, not actual policy-change or correction commands. Only public authenticated protected P0 and P1 MOVE calls create or close Enrollment/Roll history. The runtime is loopback/local-container restricted and runs before final stack teardown.
 
-Twelve additional unit tests cover exact handler-body preservation, ordered source/destination selection, namespace isolation, failure of reverse-lock proof, protected fixture boundaries and local-only wiring. At submission, 336 local tooling tests pass; draft and final function guards pass. PostgreSQL validation remains pending until the PR's exact SQL head passes D1 runtime, Foundation and static workflows and logs `D1_ENROLLMENT_MOVE_ROLL_UNION_PASS`.
+Thirteen additional unit tests cover exact handler-body preservation, ordered source/destination selection, namespace isolation, failure of reverse-lock proof, protected fixture boundaries and local-only wiring. At submission, 337 local tooling tests pass; draft and final function guards pass. PostgreSQL validation remains pending until the PR's exact SQL head passes D1 runtime, Foundation and static workflows and logs `D1_ENROLLMENT_MOVE_ROLL_UNION_PASS`.
+
+## Internal workflow call-edge repair
+
+Source audit during approval acceptance found that `d1_enrollment_place_prelock_roll(uuid,date)` was executable only by Student, while existing public MOVE SUBMIT and APPLY run as Workflow and call it directly. `effect39_04` grants this one existing helper to the named Workflow executor. It grants no client EXECUTE, table access or role membership and creates no function. The approval runtime gate checks effective EXECUTE is true for Workflow and false for authenticated/anon/service_role before exercising the real calls. Independent integration/security review must include this narrow internal edge.
 
 ## Authenticated approval acceptance
 
