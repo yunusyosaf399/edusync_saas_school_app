@@ -1,0 +1,595 @@
+-- DB-02 v1.2: intentionally complete final override of ONLY the shared
+-- fixed-shape receipt lookup, owned by schoolos_evidence_writer. The prior
+-- effect35_18 body is copied verbatim except the additive Roll Policy
+-- allowlist arm; no generic operation, actor, evidence or ACL bypass.
+-- NO protected Roll Policy business command is implemented or enabled here.
+-- Migration remains SQL.draft; independent review required.
+-- D1 suite #64 genuine runtime #618 receipt-allowlist repair.
+-- Frozen Effect33 P0 emits exact 8-element canonical intent, but latest
+-- shared Effect35_04 receipt validator omits this registered operation.
+-- Append-only same-owner replacement of only the complete receipt lookup,
+-- preserving all prior fixed operation shapes, phase checks, verified actor,
+-- canonical JCS hash, advisory authorization/idempotency locks, and receipt
+-- replay. Never add generic phase or wildcard length and never widen ACL.
+-- Migration 10 remains non-executable .sql.draft. No hosted deployment.
+-- D1 Student Restricted Identity / Special P2: missing narrow receipt
+-- phase allowlist for existing protected SUBMIT, REVIEW and APPLY public RPCs.
+-- Preserve original verified actor, typed JCS digest, shared advisory lock,
+-- idempotency-key lock, enabled operation contract and prior receipt compare.
+-- Exactly two implemented P2 operation codes, with typed shape 9/4/2 and
+-- 5/4/2; do not admit arbitrary codes, direct phases, or other lengths.
+-- Existing NOLOGIN evidence-writer owner only. Never expose private EXECUTE
+-- to authenticated, anon, service_role or PUBLIC. Append-only inactive draft.
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE OR REPLACE FUNCTION app_private.d1_command_receipt_lookup(
+  p_operation_code text, p_command_kind text,
+  p_idempotency_key text, p_intent jsonb
+) RETURNS TABLE (
+  actor_id uuid, operation_id uuid, receipt_id uuid,
+  result_ref uuid, result_summary jsonb, receipt_state text,
+  intent_hash bytea
+)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+DECLARE
+  v_actor uuid;
+  v_operation uuid;
+  v_digest bytea;
+  v_resource bigint;
+  v_receipt app_private.command_receipts%ROWTYPE;
+  v_intent_hash bytea;
+BEGIN
+  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'D1 command requires READ COMMITTED';
+  END IF;
+  IF p_idempotency_key IS NULL OR pg_catalog.char_length(p_idempotency_key) NOT BETWEEN 1 AND 200
+     OR p_command_kind IS NULL OR p_command_kind !~ '^[A-Za-z][A-Za-z0-9._-]{0,63}$'
+     OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array' THEN
+    RAISE EXCEPTION 'D1 command idempotency input invalid';
+  END IF;
+  IF NOT ((p_operation_code=p_command_kind AND (
+           (p_operation_code='academic.class.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=8)
+        OR (p_operation_code='academic.subject.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=7)
+        OR (p_operation_code='academic.offering.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=9)
+        OR (p_operation_code='academic.section.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=10)
+        OR (p_operation_code='academic.section_room.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=8)
+        OR (p_operation_code='academic.capacity.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=6)
+           OR (p_operation_code='employee.department.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=6)
+           OR (p_operation_code='employee.designation.change'
+             AND pg_catalog.jsonb_array_length(p_intent)=6)
+           OR (p_operation_code='employee.create'
+             AND pg_catalog.jsonb_array_length(p_intent)=3)
+           OR (p_operation_code='employee.state.change'
+             AND p_command_kind=p_operation_code
+             AND pg_catalog.jsonb_array_length(p_intent)=4)))
+       OR (p_operation_code IN ('student.profile.update','employee.profile.update')
+           AND ((p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=4)
+             OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=5)
+             OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+             OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=5)))
+       OR (p_operation_code='employee.state.change' AND (
+            (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='employee.job_assignment.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=13)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=13)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='employee.campus_affiliation.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=11)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=11)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='teaching.capability.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='teaching.class_assignment.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=11)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=11)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='teaching.subject_assignment.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=14)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=14)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       -- Student restricted identity and special detail P2 are exact-schema,
+       -- fixed-phase workflow commands. No generic code/phase/length fallback.
+       OR (p_operation_code='student.identity.correct' AND (
+            (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       OR (p_operation_code='student.special.correct' AND (
+            (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=5)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       -- Effect 30: protected Student-Family relationship direct and
+       -- independent request phases have exact typed canonical intent shapes.
+       OR (p_operation_code='family.relationship.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=13)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=13)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       -- Effect 31: shared FAMILY Principal membership actions are fixed
+       -- commands, with the same typed receipt checks as other D1 effects.
+       OR (p_operation_code='family.principal_membership.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=8)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=8)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))
+       -- Effect 33 P0 display selection is a single DIRECT command with
+       -- exactly eight canonical intent elements (Student ID/version,
+       -- action, optional source, relationship, dates, and private reason).
+       -- No request phases and no generic operation or array-length bypass.
+       OR (p_operation_code='family.primary_context.change'
+           AND p_command_kind=p_operation_code
+           AND pg_catalog.jsonb_array_length(p_intent)=8)
+       -- Effect 32: the Family child-access public RPCs use the same fixed
+       -- receipt boundary. Never accept an arbitrary command phase or shape.
+       -- DB-02 School Roll Policy receipt integration: two fixed phases only.
+       -- The twelve fields are [School UUID, INIT|REPLACE, source UUID|null,
+       -- old revision|null, old mode|null, old start|null, old from|null,
+       -- old until=null, new mode, new start, private reason, P1 version UUID].
+       -- No request.review/request.apply; future stages require separate gate.
+       OR (p_operation_code='student.roll_policy.change'
+           AND p_command_kind IN ('student.roll_policy.change','request.submit')
+           AND pg_catalog.jsonb_array_length(p_intent)=12
+           AND p_intent->>0 ~ '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
+    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor := app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code = p_operation_code AND o.contract_version = 1
+     AND o.handler_key = p_operation_code AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 operation is not enabled'; END IF;
+  -- Fixed-key object sorting and primitive serialization happen in d1_jcs_typed,
+  -- never by serializing the complete jsonb document with PostgreSQL ::text.
+  v_intent_hash := pg_catalog.sha256(pg_catalog.convert_to(
+    app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+      'canonicalization_version',1,'operation_code',p_operation_code,
+      'operation_contract_version','1','operation_id',v_operation::text,
+      'command_kind',p_command_kind,'principal_id',v_actor::text,
+      'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+
+  -- SHA-256 of the complete tuple supplies a stable signed int32 advisory
+  -- resource. Collisions serialize unrelated keys; the full receipt tuple and
+  -- canonical intent hash are still compared after the lock.
+  v_digest := pg_catalog.sha256(pg_catalog.convert_to(
+    v_actor::text || '|' || v_operation::text || '|' || p_idempotency_key, 'UTF8'));
+  v_resource := pg_catalog.get_byte(v_digest,0)::bigint * 16777216
+              + pg_catalog.get_byte(v_digest,1)::bigint * 65536
+              + pg_catalog.get_byte(v_digest,2)::bigint * 256
+              + pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource > 2147483647 THEN v_resource := v_resource - 4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation
+     AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1
+       OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_intent_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
+      RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
+    END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,
+                        v_receipt.result_summary,v_receipt.state,v_intent_hash;
+  ELSE
+    RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,
+                        NULL::text,v_intent_hash;
+  END IF;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+           AND p_intent->>1 IN ('INIT','REPLACE')
+           AND p_intent->>8 IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
+           AND pg_catalog.jsonb_typeof(p_intent->9)='number'
+           AND p_intent->>9 ~ '^(0|[1-9][0-9]*)
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
+    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor := app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code = p_operation_code AND o.contract_version = 1
+     AND o.handler_key = p_operation_code AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 operation is not enabled'; END IF;
+  -- Fixed-key object sorting and primitive serialization happen in d1_jcs_typed,
+  -- never by serializing the complete jsonb document with PostgreSQL ::text.
+  v_intent_hash := pg_catalog.sha256(pg_catalog.convert_to(
+    app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+      'canonicalization_version',1,'operation_code',p_operation_code,
+      'operation_contract_version','1','operation_id',v_operation::text,
+      'command_kind',p_command_kind,'principal_id',v_actor::text,
+      'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+
+  -- SHA-256 of the complete tuple supplies a stable signed int32 advisory
+  -- resource. Collisions serialize unrelated keys; the full receipt tuple and
+  -- canonical intent hash are still compared after the lock.
+  v_digest := pg_catalog.sha256(pg_catalog.convert_to(
+    v_actor::text || '|' || v_operation::text || '|' || p_idempotency_key, 'UTF8'));
+  v_resource := pg_catalog.get_byte(v_digest,0)::bigint * 16777216
+              + pg_catalog.get_byte(v_digest,1)::bigint * 65536
+              + pg_catalog.get_byte(v_digest,2)::bigint * 256
+              + pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource > 2147483647 THEN v_resource := v_resource - 4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation
+     AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1
+       OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_intent_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
+      RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
+    END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,
+                        v_receipt.result_summary,v_receipt.state,v_intent_hash;
+  ELSE
+    RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,
+                        NULL::text,v_intent_hash;
+  END IF;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+           AND pg_catalog.jsonb_typeof(p_intent->10)='string'
+           AND pg_catalog.btrim(p_intent->>10)<>''
+           AND p_intent->>11 ~ '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
+    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor := app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code = p_operation_code AND o.contract_version = 1
+     AND o.handler_key = p_operation_code AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 operation is not enabled'; END IF;
+  -- Fixed-key object sorting and primitive serialization happen in d1_jcs_typed,
+  -- never by serializing the complete jsonb document with PostgreSQL ::text.
+  v_intent_hash := pg_catalog.sha256(pg_catalog.convert_to(
+    app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+      'canonicalization_version',1,'operation_code',p_operation_code,
+      'operation_contract_version','1','operation_id',v_operation::text,
+      'command_kind',p_command_kind,'principal_id',v_actor::text,
+      'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+
+  -- SHA-256 of the complete tuple supplies a stable signed int32 advisory
+  -- resource. Collisions serialize unrelated keys; the full receipt tuple and
+  -- canonical intent hash are still compared after the lock.
+  v_digest := pg_catalog.sha256(pg_catalog.convert_to(
+    v_actor::text || '|' || v_operation::text || '|' || p_idempotency_key, 'UTF8'));
+  v_resource := pg_catalog.get_byte(v_digest,0)::bigint * 16777216
+              + pg_catalog.get_byte(v_digest,1)::bigint * 65536
+              + pg_catalog.get_byte(v_digest,2)::bigint * 256
+              + pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource > 2147483647 THEN v_resource := v_resource - 4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation
+     AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1
+       OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_intent_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
+      RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
+    END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,
+                        v_receipt.result_summary,v_receipt.state,v_intent_hash;
+  ELSE
+    RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,
+                        NULL::text,v_intent_hash;
+  END IF;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+           AND pg_catalog.jsonb_typeof(p_intent->7)='null'
+           AND CASE WHEN p_intent->>1='INIT' THEN
+                  pg_catalog.jsonb_typeof(p_intent->2)='null'
+              AND pg_catalog.jsonb_typeof(p_intent->3)='null'
+              AND pg_catalog.jsonb_typeof(p_intent->4)='null'
+              AND pg_catalog.jsonb_typeof(p_intent->5)='null'
+              AND pg_catalog.jsonb_typeof(p_intent->6)='null'
+             ELSE
+                  p_intent->>2 ~ '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
+    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor := app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code = p_operation_code AND o.contract_version = 1
+     AND o.handler_key = p_operation_code AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 operation is not enabled'; END IF;
+  -- Fixed-key object sorting and primitive serialization happen in d1_jcs_typed,
+  -- never by serializing the complete jsonb document with PostgreSQL ::text.
+  v_intent_hash := pg_catalog.sha256(pg_catalog.convert_to(
+    app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+      'canonicalization_version',1,'operation_code',p_operation_code,
+      'operation_contract_version','1','operation_id',v_operation::text,
+      'command_kind',p_command_kind,'principal_id',v_actor::text,
+      'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+
+  -- SHA-256 of the complete tuple supplies a stable signed int32 advisory
+  -- resource. Collisions serialize unrelated keys; the full receipt tuple and
+  -- canonical intent hash are still compared after the lock.
+  v_digest := pg_catalog.sha256(pg_catalog.convert_to(
+    v_actor::text || '|' || v_operation::text || '|' || p_idempotency_key, 'UTF8'));
+  v_resource := pg_catalog.get_byte(v_digest,0)::bigint * 16777216
+              + pg_catalog.get_byte(v_digest,1)::bigint * 65536
+              + pg_catalog.get_byte(v_digest,2)::bigint * 256
+              + pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource > 2147483647 THEN v_resource := v_resource - 4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation
+     AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1
+       OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_intent_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
+      RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
+    END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,
+                        v_receipt.result_summary,v_receipt.state,v_intent_hash;
+  ELSE
+    RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,
+                        NULL::text,v_intent_hash;
+  END IF;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+              AND pg_catalog.jsonb_typeof(p_intent->3)='number'
+              AND p_intent->>3 ~ '^[1-9][0-9]*
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
+    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor := app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code = p_operation_code AND o.contract_version = 1
+     AND o.handler_key = p_operation_code AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 operation is not enabled'; END IF;
+  -- Fixed-key object sorting and primitive serialization happen in d1_jcs_typed,
+  -- never by serializing the complete jsonb document with PostgreSQL ::text.
+  v_intent_hash := pg_catalog.sha256(pg_catalog.convert_to(
+    app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+      'canonicalization_version',1,'operation_code',p_operation_code,
+      'operation_contract_version','1','operation_id',v_operation::text,
+      'command_kind',p_command_kind,'principal_id',v_actor::text,
+      'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+
+  -- SHA-256 of the complete tuple supplies a stable signed int32 advisory
+  -- resource. Collisions serialize unrelated keys; the full receipt tuple and
+  -- canonical intent hash are still compared after the lock.
+  v_digest := pg_catalog.sha256(pg_catalog.convert_to(
+    v_actor::text || '|' || v_operation::text || '|' || p_idempotency_key, 'UTF8'));
+  v_resource := pg_catalog.get_byte(v_digest,0)::bigint * 16777216
+              + pg_catalog.get_byte(v_digest,1)::bigint * 65536
+              + pg_catalog.get_byte(v_digest,2)::bigint * 256
+              + pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource > 2147483647 THEN v_resource := v_resource - 4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation
+     AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1
+       OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_intent_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
+      RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
+    END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,
+                        v_receipt.result_summary,v_receipt.state,v_intent_hash;
+  ELSE
+    RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,
+                        NULL::text,v_intent_hash;
+  END IF;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+              AND p_intent->>4 IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
+              AND pg_catalog.jsonb_typeof(p_intent->5)='number'
+              AND p_intent->>5 ~ '^(0|[1-9][0-9]*)
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
+    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor := app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code = p_operation_code AND o.contract_version = 1
+     AND o.handler_key = p_operation_code AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 operation is not enabled'; END IF;
+  -- Fixed-key object sorting and primitive serialization happen in d1_jcs_typed,
+  -- never by serializing the complete jsonb document with PostgreSQL ::text.
+  v_intent_hash := pg_catalog.sha256(pg_catalog.convert_to(
+    app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+      'canonicalization_version',1,'operation_code',p_operation_code,
+      'operation_contract_version','1','operation_id',v_operation::text,
+      'command_kind',p_command_kind,'principal_id',v_actor::text,
+      'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+
+  -- SHA-256 of the complete tuple supplies a stable signed int32 advisory
+  -- resource. Collisions serialize unrelated keys; the full receipt tuple and
+  -- canonical intent hash are still compared after the lock.
+  v_digest := pg_catalog.sha256(pg_catalog.convert_to(
+    v_actor::text || '|' || v_operation::text || '|' || p_idempotency_key, 'UTF8'));
+  v_resource := pg_catalog.get_byte(v_digest,0)::bigint * 16777216
+              + pg_catalog.get_byte(v_digest,1)::bigint * 65536
+              + pg_catalog.get_byte(v_digest,2)::bigint * 256
+              + pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource > 2147483647 THEN v_resource := v_resource - 4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation
+     AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1
+       OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_intent_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
+      RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
+    END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,
+                        v_receipt.result_summary,v_receipt.state,v_intent_hash;
+  ELSE
+    RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,
+                        NULL::text,v_intent_hash;
+  END IF;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+              AND pg_catalog.jsonb_typeof(p_intent->6)='string'
+              AND p_intent->>6 ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
+    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor := app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code = p_operation_code AND o.contract_version = 1
+     AND o.handler_key = p_operation_code AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 operation is not enabled'; END IF;
+  -- Fixed-key object sorting and primitive serialization happen in d1_jcs_typed,
+  -- never by serializing the complete jsonb document with PostgreSQL ::text.
+  v_intent_hash := pg_catalog.sha256(pg_catalog.convert_to(
+    app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+      'canonicalization_version',1,'operation_code',p_operation_code,
+      'operation_contract_version','1','operation_id',v_operation::text,
+      'command_kind',p_command_kind,'principal_id',v_actor::text,
+      'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+
+  -- SHA-256 of the complete tuple supplies a stable signed int32 advisory
+  -- resource. Collisions serialize unrelated keys; the full receipt tuple and
+  -- canonical intent hash are still compared after the lock.
+  v_digest := pg_catalog.sha256(pg_catalog.convert_to(
+    v_actor::text || '|' || v_operation::text || '|' || p_idempotency_key, 'UTF8'));
+  v_resource := pg_catalog.get_byte(v_digest,0)::bigint * 16777216
+              + pg_catalog.get_byte(v_digest,1)::bigint * 65536
+              + pg_catalog.get_byte(v_digest,2)::bigint * 256
+              + pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource > 2147483647 THEN v_resource := v_resource - 4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation
+     AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1
+       OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_intent_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
+      RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
+    END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,
+                        v_receipt.result_summary,v_receipt.state,v_intent_hash;
+  ELSE
+    RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,
+                        NULL::text,v_intent_hash;
+  END IF;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+             END)
+       OR (p_operation_code='family.child_access.change' AND (
+            (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
+         OR (p_command_kind='request.review' AND pg_catalog.jsonb_array_length(p_intent)=4)
+         OR (p_command_kind='request.apply' AND pg_catalog.jsonb_array_length(p_intent)=2)))) THEN
+    RAISE EXCEPTION 'D1 receipt operation phase or shape unsupported';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  v_actor := app_private.current_principal_id();
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 command requires verified actor'; END IF;
+  SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+   WHERE o.code = p_operation_code AND o.contract_version = 1
+     AND o.handler_key = p_operation_code AND o.enabled;
+  IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 operation is not enabled'; END IF;
+  -- Fixed-key object sorting and primitive serialization happen in d1_jcs_typed,
+  -- never by serializing the complete jsonb document with PostgreSQL ::text.
+  v_intent_hash := pg_catalog.sha256(pg_catalog.convert_to(
+    app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+      'canonicalization_version',1,'operation_code',p_operation_code,
+      'operation_contract_version','1','operation_id',v_operation::text,
+      'command_kind',p_command_kind,'principal_id',v_actor::text,
+      'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+
+  -- SHA-256 of the complete tuple supplies a stable signed int32 advisory
+  -- resource. Collisions serialize unrelated keys; the full receipt tuple and
+  -- canonical intent hash are still compared after the lock.
+  v_digest := pg_catalog.sha256(pg_catalog.convert_to(
+    v_actor::text || '|' || v_operation::text || '|' || p_idempotency_key, 'UTF8'));
+  v_resource := pg_catalog.get_byte(v_digest,0)::bigint * 16777216
+              + pg_catalog.get_byte(v_digest,1)::bigint * 65536
+              + pg_catalog.get_byte(v_digest,2)::bigint * 256
+              + pg_catalog.get_byte(v_digest,3)::bigint;
+  IF v_resource > 2147483647 THEN v_resource := v_resource - 4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+
+  SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+   WHERE r.principal_id=v_actor AND r.operation_id=v_operation
+     AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF v_receipt.canonicalization_version<>1
+       OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_intent_hash
+       OR v_receipt.command_kind IS DISTINCT FROM p_command_kind THEN
+      RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
+    END IF;
+    RETURN QUERY SELECT v_actor,v_operation,v_receipt.id,v_receipt.result_ref,
+                        v_receipt.result_summary,v_receipt.state,v_intent_hash;
+  ELSE
+    RETURN QUERY SELECT v_actor,v_operation,NULL::uuid,NULL::uuid,NULL::jsonb,
+                        NULL::text,v_intent_hash;
+  END IF;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
