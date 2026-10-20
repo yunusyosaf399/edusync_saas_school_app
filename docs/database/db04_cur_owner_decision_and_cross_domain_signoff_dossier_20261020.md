@@ -6,14 +6,14 @@
 
 | Evidence ID | Read-only authority | Meaning and limitation |
 |---|---|---|
-| `E-01` | `AGENTS.md`; Master Specification `19; `DECISIONS_AND_INVARIANTS.md` | Curriculum per Class/Academic Year, six listed Subject types, different Student optional choices, historical/data security requirements. The source **does not** freeze CUR-02 selection representation or category dimension. |
+| `E-01` | `AGENTS.md`; Master Specification §19; `DECISIONS_AND_INVARIANTS.md` | Curriculum per Class/Academic Year, six listed Subject types, different Student optional choices, historical/data security requirements. The source **does not** freeze CUR-02 selection representation or category dimension. |
 | `E-02` | D1 decisions D1-01, D1-07, D1-11 | D1 owns Subject catalog, accepted PRIMARY Enrollment and staffing; DB-04 owns Curriculum category/Student selections. Teacher assignment not a permission grant. |
 | `E-03` | [CUR-01 approved no-overlap record](db04_cur01_approved_applicability_decision_20261020.md) | **Owner approved exactly:** “Approve CUR-01: reject overlapping school-wide and campus-specific curricula, without implicit precedence.” CUR-01 effective-start, mid-year replacement and approval route were **not** approved. |
-| `E-04` | [CUR-02 owner decision candidate](db04_cur02_subject_category_owner_decision_gate_20261020.md) | Proposed derived COMPULSORY obligation, explicit OPTIONAL/ELECTIVE elections and independent practical/classification question; **no owner decision yet**. |
+| `E-04` | [CUR-02 candidate](db04_cur02_subject_category_owner_decision_gate_20261020.md) and [unsigned decision/physical impact matrix](db04_cur02_owner_decision_record_and_physical_approval_matrix_20261020.md) | Proposed derived COMPULSORY obligation, explicit OPTIONAL/ELECTIVE elections and independent practical/classification question; **no owner decision yet**. |
 | `E-05` | [Seven-entity schema](db04_seven_entity_schema_temporal_cur_decision_package_20261020.md) and [publication contract](db04_curriculum_publication_eligibility_gate_20261019.md) | Exactly seven **candidate** relations and version/selection history plan; not frozen DDL. |
 | `E-06` | [D1/Curriculum revised lock gate](db04_d1_curriculum_lock_fk_concurrency_gate_20261019.md) | Current D1 draft School-first END (`effect40_02`) and MOVE (`effect39_01/02/03`) supersede old Student-first source. DB-04 School-first proposal; no DB-04 PostgreSQL runtime pass. |
 | `E-07` | [Migration/test readiness gate](db04_migration_installation_and_acceptance_readiness_gate_20261020.md) | D1 guarded 34 relations, 97 permissions, 322 scope alternatives, 36 operations; new DB-04 owner migration/registrar integration must be separate and approved. Proposed 35 authentication/constraint checks + 14 actual opposing-session races; **none executed for DB-04**. |
-| `E-08` | `docs/security/09_domain_checked_reads_and_commands.md` and ``17–19, 23–27 of Master Spec | Foundation P0/P1/P2, reviewer separation and field-scoped checked reads; downstream Exams/Learning/Timetable consumer signoff required; *not* proof of activated DB-04 permissions. |
+| `E-08` | `docs/security/09_domain_checked_reads_and_commands.md` and §§17–19, 23–27 of Master Spec | Foundation P0/P1/P2, reviewer separation and field-scoped checked reads; downstream Exams/Learning/Timetable consumer signoff required; *not* proof of activated DB-04 permissions. |
 
 **Decision accounting:** CUR-01 overlap/precedence **approved in part** (owner text in E-03). CUR-01 applicability timing, future effective date, cutover/approval remain **OPEN**. CUR-02, CUR-03, CUR-04, CUR-05, CUR-06, CUR-07 and CUR-08 **OPEN**. Nothing is counted as approved merely because code, a proposal, a passing D1 test, a previous assistant recommendation, or a “Complete next task” message exists.
 
@@ -93,7 +93,7 @@ The actual PostgreSQL schema `app_private`, column list, EXECUTE target role, de
 
 ## 6. Next task queue
 
-1. **Next owner choice:** CUR-02-A/B/C decision (ask one concise combined question with recommended default). If approved, make a distinct decision record and update tables/statuses, without implementing SQL.
+1. **Next owner choice:** the three exact CUR-02 options A1/B1/C1 in [the unsigned physical approval matrix](db04_cur02_owner_decision_record_and_physical_approval_matrix_20261020.md). **Do not mark approved until explicit owner response.** If approved, create a separate approved decision record and update the physical schema/statuses, then request Exams signoff. No SQL.
 2. While CUR-02 pending, a further safe task is **DB-04-specific test fixture and API denial-code catalog (design-only)**. It can specify realistic Grade 9-A/B, two Campus and Year synthetic cases, expected canonical idempotency and negative outcomes, without writing tests/shared runners.
 3. After all choices and specialist signoffs, freeze seven-entity or owner-approved variant and request separate implementation authorization, then Schema → constraints/history → typed commands → checked reads → concurrency → downstream validation. Do not self-merge, activate Migration 10, modify other workstreams or deploy hosted Supabase.
 
