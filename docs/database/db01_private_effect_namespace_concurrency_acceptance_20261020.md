@@ -22,6 +22,12 @@ PR #118 at `9d3d09354f06f00ef3321d134800acf7af7ed309` passed three workflows on 
 
 The first #119 runtime attempted to inline the shared `fixtures/command_actor.sql` again after prior domain concurrency tests had already **committed the same Foundation Principal IDs** into the disposable stack; PostgreSQL raised `23505 duplicate key principals_pkey` during **test setup**, before any DB-01 new lock proof ran. That run is explicitly **FAIL**, not an effect/lock-order failure and not proof of a pass. The real race runner now reuses the already committed shared Principal/Role, initializes only the per-transaction JWT via `settings_sql()`, and seeds fresh DB-01 Student/Enrollment/Roll rows through the genuine authenticated P0 command. The correction is commit `53e58176886c13e26a3b647852a6969ce0e66465`. A fresh exact-head D1 runtime must prove all wait/collision assertions independently before claiming acceptance.
 
+## 2.2 Test-schema isolation correction
+
+After the preceding failure was repaired, the race setup encountered another already-committed test UUID (`role_permission_grants_pkey`). This is **not** an application collision; the D1 disposable runtime intentionally runs prior concurrent fixtures that commit shared Foundation records. The final race setup therefore reuses the existing JWT Principal and test Role **without re-inserting them**, but rewrites **all** DB-01 test fixture object IDs (Student, campus, year, class, Section, policy, pool, scoped grant and evidence fixture UUIDs) into the dedicated `db190000` namespace. It also creates a fresh test-owned School Profile `db190000-0000-4000-8000-0000000000ee`, isolating Roll policy date ranges from previous committed Enrollment race fixtures. This test-only change is commit `c9d18807ce1ee3773d282a1a0b7fdc7257e783bd`.
+
+The failed prior run is **not accepted**. The isolated setup must still prove genuine protected P0 placement before any unprotected internal Roll correction race is attempted. No source/effect SQL, Foundation grants, client permissions or D1 catalog counts were changed.
+
 ## 3. Truthful acceptance boundary
 
 **Initial SQL CI state:** the baseline PR #118 is GREEN; new #119 source/test diffs trigger fresh static, Foundation and D1 local runtime jobs on each exact HEAD. **Do not claim any #83/#84 or 7-wait result until the corresponding exact-head logs demonstrate it.** The test suite and real-race runner must be maintained together; any failure requires a code/fixture correction and a new exact-head run.
