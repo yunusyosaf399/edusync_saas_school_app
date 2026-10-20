@@ -199,6 +199,11 @@ VALUES('db190000-0000-4000-8000-000000000102',
  '11111111-1111-4111-8111-111111111111');
 RESET ROLE;
 COMMIT;"""
+    # Frozen D1 mutation guards require the verified JWT Principal even for
+    # privileged fixture insertions. Reuse the existing actor context; never
+    # bypass current-principal verification or change production guards.
+    script = script.replace("BEGIN;\\nSET ROLE schoolos_schema_owner;",
+                            "BEGIN;\\n" + settings_sql() + "\\nSET ROLE schoolos_schema_owner;")
     run_psql(container, script, "D1_DB01_COMPETING_P0_STUDENT_SEED", timeout=90)
 
 
