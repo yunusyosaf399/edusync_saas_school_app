@@ -2,6 +2,8 @@
 
 **Status: IMPLEMENTATION PREPARATION READY FOR OWNER/INTEGRATION REVIEW — NOT SQL-AUTHORIZED.** DB-04-owned, documentation-only gate prepared 2026-10-20 for draft PR #103. Verified `main` `df1c98d5c2d19424946986fc6ba7615202b0a443` and DB-04 starting branch `bcce24bc317f6832a2ac8dbbfe991c6e76167898`. No migrations, executable tests, role/permission registration, shared acceptance manifest or hosted database changes made by this task.
 
+> **Owner decision update — 2026-10-20:** [CUR-01 no-overlap/no-implicit-precedence approved in part](db04_cur01_approved_applicability_decision_20261020.md); [CUR-02 A1+B1+C1 subject semantics product-approved](db04_cur02_approved_subject_category_decision_20261020.md). The migration DAG below remains unchanged and **blocked by CUR-01 timing, CUR-03–CUR-08, exact B1 classification field/Exams signoff, permissions and D1 installation readiness**. [Synthetic fixture and denial-code plan](db04_synthetic_fixtures_and_safe_denial_codes_20261020.md) is also design-only.
+
 ## 1. Authoritative baseline and non-negotiable boundary
 
 Read first: `AGENTS.md`, `School_OS_SaaS_Master_Specification_v0.2.md`, `DECISIONS_AND_INVARIANTS.md`, `SAAS_AND_DATABASE_GUARDRAILS.md`, `SECURITY_WORKFLOW_AND_AUDIT.md`, D1 approved decisions D1-01/D1-07/D1-11, D1 exact dependency graph and concurrency specification, `09_domain_checked_reads_and_commands.md`. DB-04 predecessor artifacts are [seven-entity schema and CUR owner-decision package](db04_seven_entity_schema_temporal_cur_decision_package_20261020.md), [reconciled D1 FK/locks/races](db04_d1_curriculum_lock_fk_concurrency_gate_20261019.md), [publication gate](db04_curriculum_publication_eligibility_gate_20261019.md), [physical review](db04_final_physical_publication_readiness_review_20261019.md), and [original DB-04 physical design](db04_curriculum_electives_physical_design_20261019.md). This document stages their **unapproved** physical design and does not supersede or silently approve CUR-01…CUR-08.
@@ -126,7 +128,7 @@ The diagram shows **dependencies**, not migration file names, submitted SQL, or 
 | CUR gate | Deployment-ready question / action | Hard stop if unresolved |
 |---|---|---|
 | `CUR-01` | one unambiguous revision per Year/Class/Campus/Section date, school-wide overlap and effective cutover precedence | cannot safely implement T3/T6 overlap or replacement |
-| `CUR-02` | compulsory derived obligation vs stored election; OPTIONAL/ELECTIVE/practical/custom distinction | cannot freeze Subject rule groups or acceptance |
+| `CUR-02` | **A1+B1+C1 product-approved**: derived COMPULSORY, accepted OPTIONAL/ELECTIVE, independent Practical/Extra-curricular/Custom classification, OPTIONAL individually selected and ELECTIVE grouped | **Still cannot freeze physical B1 classification column, group counts under CUR-03, or Exams consumer contract CUR-07** |
 | `CUR-03` | group cardinality, multi-group, prerequisite/credits/quotas | cannot freeze seven-table count or selection validator |
 | `CUR-04` | Student/FAMILY proposal authority and staff permission/scope | cannot register mutating operation or checked read policy |
 | `CUR-05` | required P0/P1/P2 and separate reviewer scope/policy | cannot install protected command/workflow mapping |
@@ -136,11 +138,11 @@ The diagram shows **dependencies**, not migration file names, submitted SQL, or 
 
 **Stop immediately** if D1 effective SQL now locks Student→School on a legitimate path, a checked-read executor requires broad Principal/Family/Student private access, a new FK requires upstream schema alteration, full-history replay cannot preserve a published Exam's original accepted evidence, or a prospective elective selection would be accepted outside its exact PRIMARY Enrollment.
 
-**No invented owner approvals:** user permission to prepare this task authorizes this documentation only. Reconfirm the outstanding CUR-01…CUR-08 decisions explicitly; seek owner signoff and specialist D1/Exams/Learning/Timetable/security signoff before the irreversible schema stage. Current design can propose seven tables without claiming that the owner approved them.
+**No invented owner approvals:** CUR-01 overlap in part and CUR-02 A1+B1+C1 are explicitly owner-approved, recorded in separate DB-04 decisions. Reconfirm remaining CUR-01 timing and CUR-03–CUR-08 explicitly; seek owner signoff and specialist D1/Exams/Learning/Timetable/security signoff before the irreversible schema stage. Current design can propose seven tables without claiming that the owner approved them.
 
 ## 7. Next independent work queue and example
 
-**Next task before SQL approval:** **DB-04 integration signoff dossier and owner-decision freeze worksheet (documentation only)**: produce one traceable checklist with all CUR-01…CUR-08 owner choices, D1 current effective School-first END/MOVE prefix acceptance, exact D1 parent PK/key catalog, permission/operation registration owner, and immutable Exams/Learning/Timetable consumer snapshot requirements. Prepare a PR comment/handoff with who must approve each choice; do not mutate their source. If any owner already explicitly resolved a CUR choice, record verbatim evidence, not inference.
+**Previous independent task completed:** [DB-04 CUR owner and cross-domain signoff dossier](db04_cur_owner_decision_and_cross_domain_signoff_dossier_20261020.md) and [synthetic fixture/denial-code catalog](db04_synthetic_fixtures_and_safe_denial_codes_20261020.md). **Next product gate:** CUR-03 choice group/min-max/prerequisite decisions and remaining CUR-01 timing; installation stays blocked. Prepare a PR comment/handoff with who must approve each choice; do not mutate their source. If any owner already explicitly resolved a CUR choice, record verbatim evidence, not inference.
 
 **Only after all owners approve**: freeze exact physical field/constraint design; separate DB-04 SQL authorization; build new-domain migration; install permission/operation contracts via owning registrar; implement tested commands; enforce checked reads and immutable history; independent local concurrent acceptance; downstream adapter signoff; deployment readiness. Keep `db/db-04-curriculum-electives-design` and PR #103 as the ongoing review handoff, never merge/activate autonomously.
 
