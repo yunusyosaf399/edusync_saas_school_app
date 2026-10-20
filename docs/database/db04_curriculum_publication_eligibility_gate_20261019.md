@@ -5,6 +5,8 @@
 
 > **Lock-order supersession, 2026-10-20:** Final D1 draft END (`effect40_02`, building on `effect37_02`) and MOVE (`effect39_01/02/03`) now lock School → relevant retained/effective roll-policy and allocator rows **before** Student. The current **candidate** Curriculum command order is Foundation → School → Student/Enrollment (selection only) → sorted academic/Subject ancestors → Curriculum applicability fence. Publication never acquires a Student late. See [reconciled D1/Curriculum lock, FK and concurrency gate](db04_d1_curriculum_lock_fk_concurrency_gate_20261019.md). These are still unapproved Curriculum design and unexecuted DB-04 cross-domain races.
 
+> **Owner-decision update (2026-10-20):** [CUR-01 nonoverlap/no precedence approved in part](db04_cur01_approved_applicability_decision_20261020.md) and [CUR-02 A1+B1+C1 fully approved at product-semantic level](db04_cur02_approved_subject_category_decision_20261020.md). The category alternative matrix below is historical; exact elective group min/max, classification storage, P1/P2, transfers, consumer snapshots, and SQL still require CUR-03–CUR-08 and remaining CUR-01 timing approvals.
+
 ## 0. Audit, evidence and immutable domain boundary
 
 **Authoritative material inspected:** `AGENTS.md`; master specification ``9, 12, 19–21, 23–27; `DECISIONS_AND_INVARIANTS.md`; `SAAS_AND_DATABASE_GUARDRAILS.md`; `SECURITY_WORKFLOW_AND_AUDIT.md`; `FEATURE_CATALOG_AND_STATUS.md`; `DATABASE_COMPLETION_MATRIX.md`; `DOMAIN_PACKAGE_01_APPROVED_DECISIONS.md` (especially D1-01, D1-07, D1-11); D1 physical catalog ``01–04, 11, 15, 34; D1 dependency graph, constraint/lock matrix, checked-read/command rules and `01_domain_boundaries.md`. Existing PR documents and current D1 academic/student SQL-draft/test references were inspected as **dependencies**, not modified.
@@ -187,7 +189,7 @@ Names are **candidate interface labels**; actual `app_private` placement and exe
 
 ## 8. G — CUR-01 through CUR-08 exact owner decision register
 
-**All eight remain UNAPPROVED.** Sources listed as “supported” below are confirmed requirements; specific behavior is a recommendation, not a frozen decision. Owner approval and any dependent domain signoff are necessary *before* SQL.
+**Decision-status update 2026-10-20:** CUR-01's no-overlap/no-precedence component and CUR-02 A1+B1+C1 obligation/classification semantics are **owner-approved** (see links above). CUR-01 effective-start/cutover, CUR-03–CUR-08, specific physical storage/Exams signoff and implementation remain **UNAPPROVED**. Matrix alternative descriptions below are historical candidates, not current owner decisions.
 
 | Gate | Supported requirement | Exact recommended default; alternative(s) | Security/history implication + required structure | Approval and acceptance proof |
 |---|---|---|---|---|
