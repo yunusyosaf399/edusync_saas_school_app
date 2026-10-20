@@ -221,9 +221,11 @@ All permission names below are **candidate strings, not active registrations**. 
 
 **Shared safe evidence**: existing Foundation command receipts, typed audit and allowlisted outbox; receipt and actual row ID reference retained; no sensitive Student details/reason in broad outbox. P2 final APPROVE ≠ APPLY; apply separately rechecks requester/reviewer live authority and version. Identical retry returns retained result only after current authority; changed payload with same key conflicts; unexpected PostgreSQL failure rolls back complete transaction and evidence. Actor/grant/scope, approved workflow and event registration remain CUR-04/05 gates.
 
+> **Decision update (2026-10-20):** The owner **approved CUR-01's no-overlap/no-implicit-precedence rule** for school-wide versus Campus-specific curricula. See [CUR-01 approved applicability decision](db04_cur01_approved_applicability_decision_20261020.md). Timing/cutover and approval-level details within CUR-01 remain unresolved; CUR-02–CUR-08 are unapproved. The original proposed choices below are historical recommendations, not a declaration that all choices are pending.
+
 ## 7. CUR-01 through CUR-08 — exact proposed owner decision sheet
 
-**No selection below is a user approval; all eight decisions remain OPEN.** Source-supported basis: configurable class/year curricula and optional Student choices; D1 accepted placement/history; Foundation least-privilege and approvals; Exams published results preserved. Proposed P1/P2 routing and semantic details go beyond source and need explicit signoff.
+**The CUR-01 overlap/precedence component was approved separately on 2026-10-20; other CUR-01 timing/cutover details and CUR-02–CUR-08 remain OPEN.** Source-supported basis: configurable class/year curricula and optional Student choices; D1 accepted placement/history; Foundation least-privilege and approvals; Exams published results preserved. Proposed P1/P2 routing and semantic details go beyond source and need explicit signoff.
 
 | Gate / owner response needed | Recommended precise choice | Viable alternative | Schema / security / history impact | Acceptance evidence and necessary approver |
 |---|---|---|---|---|
