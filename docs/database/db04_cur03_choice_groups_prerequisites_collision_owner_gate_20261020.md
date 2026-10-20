@@ -1,8 +1,10 @@
 # DB-04 — CUR-03 Choice Groups, Prerequisites and Elective Collision Owner Gate
 
-**Status: CUR-03 PRODUCT DECISION REQUIRED — NOT APPROVED.** 2026-10-20, DB-04 draft PR #103. Verified `main` `df1c98d5c2d19424946986fc6ba7615202b0a443` and starting DB-04 HEAD `bfb508eb14ef3d47388d1646f26dcdffa753e065`. **This is a decision-ready design document, not executable SQL, an approval, a configured school default, an acceptance PASS or release authorization.** No D1/Foundation/Admissions/Roll/Exams/Learning/Timetable changes.
+**Status update: CUR-03 A1+B1+C1+D1+E1 PRODUCT APPROVED 2026-10-20.** (Original candidate gate and alternative options retained.) 2026-10-20, DB-04 draft PR #103. Verified `main` `df1c98d5c2d19424946986fc6ba7615202b0a443` and starting DB-04 HEAD `bfb508eb14ef3d47388d1646f26dcdffa753e065`. **This is a decision-ready design document, not executable SQL, an approval, a configured school default, an acceptance PASS or release authorization.** No D1/Foundation/Admissions/Roll/Exams/Learning/Timetable changes.
 
 > **Independent interval/lock review (2026-10-20):** [CUR-03 group-interval, finalization and concurrency audit](db04_cur03_group_interval_lock_and_decision_status_review_20261020.md) confirms **A1/B1/C1/D1/E1 are still unapproved**, identifies a missing durable *finalized-empty vs not-submitted* distinction (**B-F**) and asks whether `max_choices` must be achievable in each Section (**B-M1**) or acts only as a cap (**B-M2**). Earlier B1 strict `max≤available` remains the **original candidate**, not an approved constraint or an automatically adopted relaxation. No schema/test has been executed.
+
+> **OWNER APPROVAL UPDATE — 2026-10-20:** The owner has now explicitly approved **CUR-03 A1+B1+C1+D1+E1**. See [CUR-03 approved group policy](db04_cur03_approved_group_policy_20261020.md). This document retains the earlier unsigned alternatives for provenance. The independently identified **B-F finalized-empty evidence** remains a CUR-08 physical decision, and **B-M2 cap-only** is **not approved**; B1's original strict `max≤actual Section-offered members` constraint remains the stated baseline pending final B-M confirmation. CUR-04–CUR-08 and CUR-01 timing remain open.
 
 ## 1. Authority and existing decisions
 
@@ -120,7 +122,7 @@ Existing [synthetic aliases](db04_synthetic_fixtures_and_safe_denial_codes_20261
 
 **Further independent signoffs:** Exams owner if historical passed-Subject prerequisites are desired; Timetable/Academic if seat quotas or scheduling obligations are desired; Foundation workflow owner for who may submit/apply and exception routes (CUR-04/05); D1 Academic/Student/roll owners for FK/lock/source release; Exams/Learning/Timetable on immutable eligibility snapshots (CUR-07), and CUR-08 physical column/relation/recorded-time freeze. None is implied or received in this task.
 
-**Product decision statuses:** **CUR-01 no-overlap/no implicit precedence APPROVED IN PART; CUR-02 A1+B1+C1 APPROVED; CUR-03 A–E UNAPPROVED; CUR-01 effectivity and CUR-04–CUR-08 UNAPPROVED.** No permission codes, group limits, prerequisite edge table, capacity reservation or SQL were created.
+**Current product decisions:** **CUR-01 no-overlap/no implicit precedence APPROVED IN PART; CUR-02 A1+B1+C1 APPROVED; CUR-03 A1+B1+C1+D1+E1 APPROVED** per its owner record. **B-F/B-M final physical clarification, CUR-01 timing and CUR-04–CUR-08 remain OPEN.** No permission codes, group limits, prerequisite edge table, capacity reservation or SQL were created.
 
 **Next step:** the [group-interval and cross-domain lock audit](db04_cur03_group_interval_lock_and_decision_status_review_20261020.md) is completed as design. Obtain explicit CUR-03-A…E selection and B-F/B-M clarification before freezing the affected group constraints; then update physical/acceptance matrices and seek required Exams/integration signoffs. No SQL.
 
