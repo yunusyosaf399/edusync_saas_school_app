@@ -2,6 +2,8 @@
 
 **Status: DESIGN REVIEW COMPLETE; PRODUCT DECISION REQUIRED.** 2026-10-20. DB-04 PR #103, branch `db/db-04-curriculum-electives-design`. Verified starting DB-04 HEAD `5dff54dc990e0a7210017dbf5f54f6069d9b9328` and `main` `df1c98d5c2d19424946986fc6ba7615202b0a443` before this task. This is an independent *design review only*. No executable SQL, migrations, registered permission/approval/error code, acceptance tests, hosted Supabase changes or downstream domain edits.
 
+> **LATER OWNER DECISION (2026-10-20):** [CUR-03 A1+B1+C1+D1+E1 product-approved](db04_cur03_approved_group_policy_20261020.md). The pending rows below describe the *historical state at the time of this independent review* and are superseded for those five subchoices. **B-F finalization evidence and B-M cap-only alternative remain unresolved**; original strict B1 proposed rule stays in force as the design baseline until clarified. This review itself does not authorize a new table or SQL.
+
 ## 1. Owner decision ledger — do not infer approval
 
 User's instruction was **“Complete next task you recommended”** after the [CUR-03 proposal](db04_cur03_choice_groups_prerequisites_collision_owner_gate_20261020.md) offered the owner option `Approve CUR-03 A1+B1+C1+D1+E1`. The user's instruction **is not an explicit selection of those five choices**. Therefore none is approved, declined or frozen by this task.
