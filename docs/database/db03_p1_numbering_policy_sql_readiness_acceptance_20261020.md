@@ -219,6 +219,8 @@ This is a **plan**, not approved migration numbers; exact installation slot must
 
 **File ownership contract:** new DB-03-only `docs/database/db03_*` and future authorized additive DB-03 schema/draft/test filenames. Forbidden: Foundation migrations/tests, D1 `.sql.draft`, DB-01/02/04, Finance, `supabase/config` shared manifests, acceptance tracker, CI workflows and any hosted/production SQL. Never implement private Finance or D1 functionality to make these tests pass.
 
+> **Dependency update (20 October 2026):** [P2 application/identity SQL-readiness](db03_p2_application_identity_duplicate_intake_readiness_20261020.md) specifies the application FK parent and verified Person gate required before enabling P1 application-number issuance. This is design only; P2 identity source/SC-01 and P1 format-policy owner decisions are not signed and no runtime SQL was installed.
+
 ## 7. Decisions and sign-off required before executable P1 SQL
 
 This specification resolves **engineering precision**, not any owner-policy choice.
