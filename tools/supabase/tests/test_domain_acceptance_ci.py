@@ -3236,6 +3236,28 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertIn(marker,source)
         self.assertNotIn("app.d1_change_student_roll_policy(",source)
 
+    def test_db02_school_actor_all_authority_85_registration(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        current=["85_db02_school_actor_all_authority.sql",19]
+        previous=["84_db02_roll_policy_p1_version_selector.sql",20]
+        self.assertEqual(DOMAIN_TESTS.count(current),1)
+        self.assertGreater(DOMAIN_TESTS.index(current),DOMAIN_TESTS.index(previous))
+        source=(root/"supabase/tests/domain"/current[0]).read_text(encoding="utf-8")
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertEqual(source.count("BEGIN;"),1)
+        self.assertEqual(source.count("ROLLBACK;"),1)
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertIn("SELECT plan(19);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),19)
+        for marker in ("d1_roll_policy_actor_all_authorized(",
+                       "disabled operation returns false",
+                       "permission without scope grant",
+                       "untrusted Principal UUID",
+                       "revoked grant immediately",
+                       "revoked current role assignment"):
+            self.assertIn(marker,source)
+        self.assertNotIn("app.d1_change_student_roll_policy(",source)
+
     def test_student_profile_review_grant_real_two_session_lock_races(self):
         from domain_student_profile_reviewer_grant_race_ci import (
             CONTAINER, OLD_GRANT, NEW_GRANT, _apply, _revoke, _request_id,
