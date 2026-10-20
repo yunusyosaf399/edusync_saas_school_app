@@ -1,0 +1,131 @@
+-- DB-01 / RC-01,03,08: protected Roll CORRECT source lock and stale-intent preflight.
+-- This is an INTERNAL no-mutation building block, not a public RPC or grant.
+-- The future DIRECT/APPLY wrapper must enforce current Principal, permission,
+-- P1 route, canonical receipt replay and independently authorized APPLY before
+-- calling this helper. An invalid source never results in a Roll mutation.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_roll_correct_lock_source(
+ p_student uuid,p_expected_student_version bigint,
+ p_enrollment uuid,p_section uuid,p_enrollment_from date,
+ p_roll uuid,p_roll_from date,p_stored_policy uuid,p_old_numeric bigint
+) RETURNS TABLE(student_version bigint,school_id uuid,campus_id uuid,class_offering_id uuid,
+  policy_mode text,allocator_id uuid,business_date date,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  discovery record; recheck record;
+  policy app_private.roll_policy_revisions%ROWTYPE;
+  pool app_private.roll_allocator_states%ROWTYPE;
+  student_row app_private.students%ROWTYPE;
+  enrollment_row app_private.enrollments%ROWTYPE;
+  roll_row app_private.roll_allocations%ROWTYPE;
+  n bigint;
+BEGIN
+  IF p_student IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1
+     OR p_enrollment IS NULL OR p_section IS NULL OR p_enrollment_from IS NULL
+     OR p_roll IS NULL OR p_roll_from IS NULL OR p_stored_policy IS NULL
+     OR p_old_numeric IS NULL OR p_old_numeric<1 THEN
+    error_code:='D1_ROLL_CORRECT_INTENT_INVALID'; RETURN NEXT; RETURN;
+  END IF;
+  -- Read-only discovery cannot be treated as authority: School is acquired
+  -- FIRST, and ancestry is re-read under its lock before any mutable source.
+  SELECT * INTO discovery FROM app_private.d1_enrollment_place_destination(p_section);
+  IF NOT FOUND OR discovery.school_id IS NULL THEN
+    error_code:='D1_ROLL_CORRECT_ANCESTRY_MISSING'; RETURN NEXT; RETURN;
+  END IF;
+  IF app_private.d1_enrollment_place_lock_school(discovery.school_id) IS DISTINCT FROM true THEN
+    error_code:='D1_ROLL_CORRECT_SCHOOL_MISSING'; RETURN NEXT; RETURN;
+  END IF;
+  SELECT * INTO recheck FROM app_private.d1_enrollment_place_destination(p_section);
+  IF NOT FOUND OR recheck.school_id IS DISTINCT FROM discovery.school_id
+     OR recheck.class_offering_id IS DISTINCT FROM discovery.class_offering_id
+     OR recheck.campus_id IS DISTINCT FROM discovery.campus_id THEN
+    error_code:='D1_ROLL_CORRECT_ANCESTRY_CHANGED'; RETURN NEXT; RETURN;
+  END IF;
+  school_id:=recheck.school_id;
+  -- The source Roll retains its STORED policy; it may be older than the
+  -- policy effective today. Do not quietly switch the predecessor revision.
+  SELECT * INTO policy FROM app_private.roll_policy_revisions rp
+   WHERE rp.id=p_stored_policy AND rp.school_id=recheck.school_id FOR UPDATE;
+  IF NOT FOUND OR policy.mode NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT') THEN
+    error_code:='D1_ROLL_CORRECT_SOURCE_POLICY_INVALID'; RETURN NEXT; RETURN;
+  END IF;
+  -- Pool namespace is derived by the server. Require exactly one existing
+  -- allocator and lock it BEFORE Student in the shared School→Policy→Pool order.
+  SELECT count(*) INTO n FROM app_private.roll_allocator_states a
+   WHERE a.policy_revision_id=policy.id AND
+    ((policy.mode='PERSISTENT_STUDENT' AND a.class_offering_id IS NULL) OR
+     (policy.mode='ACADEMIC_CONTEXT' AND a.class_offering_id=recheck.class_offering_id));
+  IF n<>1 THEN
+    error_code:='D1_ROLL_CORRECT_SOURCE_ALLOCATOR_INVALID'; RETURN NEXT; RETURN;
+  END IF;
+  SELECT * INTO pool FROM app_private.roll_allocator_states a
+   WHERE a.policy_revision_id=policy.id AND
+    ((policy.mode='PERSISTENT_STUDENT' AND a.class_offering_id IS NULL) OR
+     (policy.mode='ACADEMIC_CONTEXT' AND a.class_offering_id=recheck.class_offering_id))
+   ORDER BY a.id FOR UPDATE;
+  IF NOT FOUND THEN
+    error_code:='D1_ROLL_CORRECT_SOURCE_ALLOCATOR_CHANGED'; RETURN NEXT; RETURN;
+  END IF;
+  allocator_id:=pool.id; policy_mode:=policy.mode;
+  -- Capture the agreed trusted School-local date AFTER upstream lock waits.
+  -- The resolver takes no late School row lock and has no caller date input.
+  business_date:=app_private.d1_roll_business_date(school_id);
+  SELECT * INTO student_row FROM app_private.students s WHERE s.id=p_student FOR UPDATE;
+  IF NOT FOUND OR student_row.row_version IS DISTINCT FROM p_expected_student_version
+     OR student_row.current_status IS DISTINCT FROM 'ACTIVE' THEN
+    error_code:='D1_ROLL_CORRECT_STUDENT_STALE'; RETURN NEXT; RETURN;
+  END IF;
+  student_version:=student_row.row_version;
+  -- Academics may be locked only AFTER the complete namespace prefix and Student.
+  SELECT * INTO recheck FROM app_private.d1_enrollment_place_lock_destination(p_section);
+  IF NOT FOUND OR recheck.school_id IS DISTINCT FROM school_id
+     OR recheck.class_offering_id IS DISTINCT FROM discovery.class_offering_id
+     OR recheck.campus_id IS DISTINCT FROM discovery.campus_id THEN
+    error_code:='D1_ROLL_CORRECT_ANCESTRY_STALE'; RETURN NEXT; RETURN;
+  END IF;
+  campus_id:=recheck.campus_id; class_offering_id:=recheck.class_offering_id;
+  SELECT * INTO enrollment_row FROM app_private.enrollments e WHERE e.id=p_enrollment FOR UPDATE;
+  IF NOT FOUND OR enrollment_row.student_id IS DISTINCT FROM p_student
+     OR enrollment_row.section_offering_id IS DISTINCT FROM p_section
+     OR enrollment_row.effective_from IS DISTINCT FROM p_enrollment_from
+     OR enrollment_row.placement_kind IS DISTINCT FROM 'PRIMARY'
+     OR enrollment_row.placement_state IS DISTINCT FROM 'ACTIVE'
+     OR enrollment_row.effective_until IS NOT NULL
+     OR enrollment_row.effective_from>=business_date THEN
+    error_code:='D1_ROLL_CORRECT_ENROLLMENT_STALE'; RETURN NEXT; RETURN;
+  END IF;
+  SELECT count(*) INTO n FROM app_private.enrollments e
+    WHERE e.student_id=p_student AND e.id<>p_enrollment
+      AND e.placement_kind='PRIMARY' AND e.effective_from>=enrollment_row.effective_from;
+  IF n<>0 THEN
+    error_code:='D1_ROLL_CORRECT_ENROLLMENT_NOT_HEAD'; RETURN NEXT; RETURN;
+  END IF;
+  SELECT * INTO roll_row FROM app_private.roll_allocations ra WHERE ra.id=p_roll FOR UPDATE;
+  IF NOT FOUND OR roll_row.student_id IS DISTINCT FROM p_student
+     OR roll_row.enrollment_id IS DISTINCT FROM p_enrollment
+     OR roll_row.policy_revision_id IS DISTINCT FROM p_stored_policy
+     OR roll_row.numeric_value IS DISTINCT FROM p_old_numeric
+     OR roll_row.effective_from IS DISTINCT FROM p_roll_from
+     OR roll_row.effective_until IS NOT NULL OR roll_row.ended_at IS NOT NULL
+     OR roll_row.effective_from>=business_date
+     OR policy.effective_from>business_date
+     OR (policy.effective_until IS NOT NULL AND business_date>=policy.effective_until)
+     OR EXISTS(SELECT 1 FROM app_private.roll_allocations successor
+               WHERE successor.supersedes_id=roll_row.id) THEN
+    error_code:='D1_ROLL_CORRECT_SOURCE_ROLL_STALE'; RETURN NEXT; RETURN;
+  END IF;
+  SELECT count(*) INTO n FROM app_private.roll_allocations ra
+   WHERE ra.enrollment_id=p_enrollment AND ra.student_id=p_student
+     AND ra.effective_until IS NULL;
+  IF n<>1 THEN
+    error_code:='D1_ROLL_CORRECT_OPEN_ROLL_AMBIGUOUS'; RETURN NEXT; RETURN;
+  END IF;
+  error_code:=NULL; RETURN NEXT;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_correct_lock_source(uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_lock_source(uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
