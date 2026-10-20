@@ -1,0 +1,29 @@
+-- Shared roll date: existing authoritative School timezone, server clock only.
+-- Mutators call only after acquiring School -> policy/allocator locks. This pure
+-- resolver does not introduce a late School lock into checked read paths.
+SET ROLE schoolos_schema_owner;
+GRANT SELECT (timezone) ON app_private.school_profiles TO schoolos_academic_executor;
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_academic_executor;
+SET ROLE schoolos_academic_executor;
+CREATE FUNCTION app_private.d1_roll_business_date(p_school uuid)
+RETURNS date
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE zone text; captured_at timestamptz;
+BEGIN
+  IF p_school IS NULL THEN RAISE EXCEPTION 'D1 roll business date unavailable'; END IF;
+  SELECT s.timezone INTO zone FROM app_private.school_profiles s WHERE s.id=p_school;
+  -- Reject unknown zones/POSIX strings. Never fall back to caller TimeZone/UTC.
+  IF NOT FOUND OR zone IS NULL OR NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_timezone_names z WHERE z.name=zone) THEN
+    RAISE EXCEPTION 'D1 roll business date unavailable';
+  END IF;
+  -- Capture once, after all earlier lock waits, rather than transaction start.
+  captured_at:=pg_catalog.clock_timestamp();
+  RETURN pg_catalog.timezone(zone,captured_at)::date;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_business_date(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_business_date(uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor,schoolos_read_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_academic_executor;

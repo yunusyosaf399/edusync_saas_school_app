@@ -1,0 +1,130 @@
+-- Replace only the three final roll/enrollment CURRENT_DATE consumers.
+-- Explicit placement/MOVE/END effective dates retain their existing contracts.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_place_effect(
+  p_actor uuid,p_student uuid,p_expected_version bigint,p_section uuid,p_entry_kind text,p_effective_from date,
+  p_predecessor uuid,p_reason text
+) RETURNS TABLE(enrollment_id uuid,roll_allocation_id uuid,policy_revision_id uuid,numeric_value bigint,policy_mode text,
+  student_version bigint,status_transition_id uuid,status_sequence bigint,previous_status text,resulting_status text,
+  class_offering_id uuid,campus_id uuid,academic_year_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c record; roll_row record; eid uuid:=pg_catalog.gen_random_uuid(); sid uuid; seq bigint; new_version bigint;
+  last_status app_private.student_status_transitions%ROWTYPE; status_before text; status_after text;
+BEGIN
+  IF p_actor IS DISTINCT FROM app_private.current_principal_id() OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0 THEN
+    RAISE EXCEPTION 'D1 Enrollment placement effect intent invalid'; END IF;
+  SELECT * INTO c FROM app_private.d1_enrollment_place_lock_context(p_student,p_expected_version,p_section,p_entry_kind,p_effective_from,p_predecessor);
+  IF c.error_code IS NOT NULL THEN RAISE EXCEPTION 'D1 Enrollment placement source changed: %',c.error_code; END IF;
+  IF p_entry_kind='REENROLLMENT' AND p_effective_from>app_private.d1_roll_business_date(c.school_id) THEN
+    RAISE EXCEPTION 'D1 Enrollment future re-enrollment denied'; END IF;
+  INSERT INTO app_private.enrollments(id,created_by,student_id,section_offering_id,placement_kind,entry_kind,placement_state,
+    effective_from,effective_until,predecessor_id,reason,end_reason,command_receipt_id)
+  VALUES (eid,p_actor,p_student,p_section,'PRIMARY',p_entry_kind,'ACTIVE',p_effective_from,NULL,p_predecessor,pg_catalog.btrim(p_reason),NULL,NULL);
+  SELECT * INTO roll_row FROM app_private.d1_enrollment_place_allocate_roll(p_actor,p_student,eid,c.school_id,c.class_offering_id,p_effective_from);
+  IF roll_row.allocation_id IS NULL THEN RAISE EXCEPTION 'D1 Enrollment roll allocation failed'; END IF;
+  status_before:=c.current_status; status_after:=c.current_status; new_version:=c.student_version;
+  IF p_entry_kind='REENROLLMENT' THEN
+    SELECT t.* INTO last_status FROM app_private.student_status_transitions t
+      WHERE t.student_id=p_student AND NOT EXISTS (
+        SELECT 1 FROM app_private.student_status_transitions x WHERE x.student_id=p_student AND x.supersedes_id=t.id)
+      ORDER BY t.effective_on DESC,t.sequence_number DESC LIMIT 1 FOR UPDATE;
+    IF NOT FOUND OR last_status.new_status IS DISTINCT FROM c.current_status OR last_status.new_status NOT IN ('WITHDRAWN','TRANSFERRED')
+       OR p_effective_from<last_status.effective_on THEN RAISE EXCEPTION 'D1 Enrollment re-enrollment status source changed'; END IF;
+    SELECT COALESCE(max(t.sequence_number),0)+1 INTO seq FROM app_private.student_status_transitions t WHERE t.student_id=p_student;
+    sid:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.student_status_transitions(id,created_by,student_id,previous_status,new_status,effective_on,sequence_number,reason,supersedes_id,command_receipt_id)
+    VALUES (sid,p_actor,p_student,last_status.new_status,'ACTIVE',p_effective_from,seq,pg_catalog.btrim(p_reason),NULL,NULL);
+    UPDATE app_private.students SET current_status='ACTIVE',row_version=row_version+1,updated_at=pg_catalog.statement_timestamp()
+      WHERE id=p_student AND row_version=p_expected_version AND current_status=last_status.new_status RETURNING row_version INTO new_version;
+    IF new_version IS NULL THEN RAISE EXCEPTION 'D1 Enrollment re-enrollment projection changed'; END IF;
+    status_after:='ACTIVE';
+  END IF;
+  RETURN QUERY SELECT eid,roll_row.allocation_id,roll_row.policy_revision_id,roll_row.numeric_value,roll_row.policy_mode,
+    new_version,sid,seq,status_before,status_after,c.class_offering_id,c.campus_id,c.academic_year_id;
+END $body$;
+CREATE OR REPLACE FUNCTION app_private.d1_enrollment_end_lock_context(
+  p_student uuid,p_expected_student_version bigint,p_source_enrollment uuid,p_expected_source_section uuid,
+  p_expected_source_effective_from date,p_effective_until date
+) RETURNS TABLE(student_version bigint,section_id uuid,campus_id uuid,academic_year_id uuid,class_offering_id uuid,
+  source_roll_id uuid,source_roll_effective_from date,error_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE s app_private.students%ROWTYPE; path record; src app_private.enrollments%ROWTYPE; v_roll uuid; v_roll_from date; n bigint; later_count bigint;
+BEGIN
+  IF p_student IS NULL OR p_expected_student_version IS NULL OR p_expected_student_version<1 OR p_source_enrollment IS NULL
+     OR p_expected_source_section IS NULL OR p_expected_source_effective_from IS NULL OR p_effective_until IS NULL THEN
+    RETURN QUERY SELECT NULL::bigint,p_expected_source_section,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_INTENT_INVALID'; RETURN; END IF;
+  -- The Roll history trigger takes School -> Policy -> Allocator. Acquire
+  -- that prefix before Student so END cannot invert a placement/correction.
+  -- Discover ancestry without row locks, then revalidate in the existing body.
+  SELECT * INTO path FROM app_private.d1_enrollment_place_destination(p_expected_source_section);
+  IF FOUND THEN
+    IF app_private.d1_enrollment_place_lock_school(path.school_id) IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'D1 Enrollment end School anchor missing';
+    END IF;
+    -- Lock stored source policy/allocator, not the policy effective today.
+    -- Include retained segments in deterministic order; the existing body
+    -- still requires exactly one open source and checks all caller snapshots.
+    PERFORM 1 FROM app_private.roll_policy_revisions rp
+      WHERE rp.school_id=path.school_id AND rp.id IN (
+        SELECT r.policy_revision_id FROM app_private.roll_allocations r
+        JOIN app_private.enrollments e ON e.id=r.enrollment_id
+        WHERE e.id=p_source_enrollment AND e.student_id=p_student
+          AND e.section_offering_id=p_expected_source_section)
+      ORDER BY rp.id FOR UPDATE;
+    PERFORM 1 FROM app_private.roll_allocator_states a
+      JOIN app_private.roll_policy_revisions rp ON rp.id=a.policy_revision_id
+      WHERE rp.school_id=path.school_id
+        AND ((rp.mode='PERSISTENT_STUDENT' AND a.class_offering_id IS NULL)
+          OR (rp.mode='ACADEMIC_CONTEXT' AND a.class_offering_id=path.class_offering_id))
+        AND rp.id IN (
+          SELECT r.policy_revision_id FROM app_private.roll_allocations r
+          JOIN app_private.enrollments e ON e.id=r.enrollment_id
+          WHERE e.id=p_source_enrollment AND e.student_id=p_student
+            AND e.section_offering_id=p_expected_source_section)
+      ORDER BY a.id FOR UPDATE OF a;
+  END IF;
+  SELECT * INTO s FROM app_private.students WHERE id=p_student FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT NULL::bigint,p_expected_source_section,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_STUDENT_MISSING'; RETURN; END IF;
+  IF s.row_version IS DISTINCT FROM p_expected_student_version THEN
+    RETURN QUERY SELECT s.row_version,p_expected_source_section,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_VERSION_STALE'; RETURN; END IF;
+  SELECT * INTO path FROM app_private.d1_enrollment_place_lock_destination(p_expected_source_section);
+  IF NOT FOUND THEN RETURN QUERY SELECT s.row_version,p_expected_source_section,NULL::uuid,NULL::uuid,NULL::uuid,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_SOURCE_ANCESTRY_MISSING'; RETURN; END IF;
+  SELECT * INTO src FROM app_private.enrollments e WHERE e.id=p_source_enrollment FOR UPDATE;
+  IF NOT FOUND OR src.student_id IS DISTINCT FROM p_student OR src.placement_kind<>'PRIMARY'
+     OR src.section_offering_id IS DISTINCT FROM p_expected_source_section OR src.effective_from IS DISTINCT FROM p_expected_source_effective_from
+     OR src.placement_state<>'ACTIVE' OR src.effective_until IS NOT NULL
+     OR src.effective_from>app_private.d1_roll_business_date(path.school_id) OR p_effective_until<=src.effective_from THEN
+    RETURN QUERY SELECT s.row_version,p_expected_source_section,path.campus_id,path.academic_year_id,path.class_offering_id,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_SOURCE_STALE'; RETURN; END IF;
+  SELECT count(*) INTO later_count FROM app_private.enrollments e
+    WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.id<>p_source_enrollment AND e.effective_from>=src.effective_from;
+  IF later_count<>0 THEN
+    RETURN QUERY SELECT s.row_version,src.section_offering_id,path.campus_id,path.academic_year_id,path.class_offering_id,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_SOURCE_NOT_HEAD'; RETURN; END IF;
+  SELECT count(*),min(r.id::text)::uuid,min(r.effective_from) INTO n,v_roll,v_roll_from
+    FROM app_private.roll_allocations r WHERE r.enrollment_id=p_source_enrollment AND r.student_id=p_student AND r.effective_until IS NULL;
+  IF n<>1 OR v_roll IS NULL OR v_roll_from IS NULL OR p_effective_until<=v_roll_from THEN
+    RETURN QUERY SELECT s.row_version,src.section_offering_id,path.campus_id,path.academic_year_id,path.class_offering_id,NULL::uuid,NULL::date,'D1_ENROLLMENT_END_SOURCE_ROLL_INVALID'; RETURN; END IF;
+  PERFORM 1 FROM app_private.roll_allocations r WHERE r.id=v_roll FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Enrollment end source roll disappeared'; END IF;
+  RETURN QUERY SELECT s.row_version,src.section_offering_id,path.campus_id,path.academic_year_id,path.class_offering_id,v_roll,v_roll_from,NULL::text;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+GRANT CREATE ON SCHEMA app TO schoolos_read_executor;
+SET ROLE schoolos_read_executor;
+CREATE OR REPLACE FUNCTION app.d1_read_roll_policy(p_school_id uuid)
+RETURNS TABLE (policy_id uuid, mode text, start_value bigint, effective_from date)
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+  WITH authorized AS MATERIALIZED (
+    SELECT p_school_id AS school_id
+    WHERE app_private.d1_authorized('student.roll_policy.view','SCHOOL',p_school_id)
+  ), school_day AS MATERIALIZED (
+    SELECT a.school_id,app_private.d1_roll_business_date(a.school_id) AS today
+    FROM authorized a
+  )
+  SELECT p.id,p.mode,p.start_value,p.effective_from
+  FROM school_day d JOIN app_private.roll_policy_revisions p ON p.school_id=d.school_id
+  WHERE p.effective_from<=d.today AND (p.effective_until IS NULL OR d.today<p.effective_until);
+$body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_read_executor;
