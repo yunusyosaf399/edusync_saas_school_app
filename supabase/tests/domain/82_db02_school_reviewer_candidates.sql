@@ -84,16 +84,26 @@ SELECT 'b8200000-0000-4000-8000-000000000009',o.id,1,
  '22222222-2222-4222-8222-222222222222',
  'Synthetic School policy candidate probe','{}'::jsonb,
  '{"action":"INIT","mode":"PERSISTENT_STUDENT"}'::jsonb,
- 'PENDING',statement_timestamp(),'11111111-1111-4111-8111-111111111111'
+ 'DRAFT',NULL,'11111111-1111-4111-8111-111111111111'
  FROM app_private.operation_contracts o WHERE o.code='student.roll_policy.change';
+-- Respect the frozen Foundation DRAFT -> SUBMITTED -> PENDING lifecycle.
+UPDATE app_private.approval_requests
+ SET state='SUBMITTED',submitted_at=statement_timestamp()
+ WHERE id='b8200000-0000-4000-8000-000000000009';
+UPDATE app_private.approval_requests SET state='PENDING'
+ WHERE id='b8200000-0000-4000-8000-000000000009';
 INSERT INTO app_private.approval_request_steps(
  id,request_id,policy_id,template_id,step_number,required_reviews,
  state,opened_at,created_by)
 VALUES ('b8200000-0000-4000-8000-000000000010',
  'b8200000-0000-4000-8000-000000000009',
  'b8200000-0000-4000-8000-000000000007',
- 'b8200000-0000-4000-8000-000000000008',1,1,'OPEN',
- statement_timestamp(),'11111111-1111-4111-8111-111111111111');
+ 'b8200000-0000-4000-8000-000000000008',1,1,'WAITING',
+ NULL,'11111111-1111-4111-8111-111111111111');
+-- Foundation permits a separate WAITING -> OPEN transition only.
+UPDATE app_private.approval_request_steps
+ SET state='OPEN',opened_at=statement_timestamp()
+ WHERE id='b8200000-0000-4000-8000-000000000010';
 RESET ROLE;
 -- The only exposed entry for candidate enumeration is internal Workflow.
 SET ROLE schoolos_workflow_executor;
