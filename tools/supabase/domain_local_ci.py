@@ -55,7 +55,7 @@ FINAL_FUNCTION_OWNERS = (
 # School→stored policy→allocator→Student source-prelock helper (PR review).
 # Effect41_02 adds one Student-owned private atomic corrected-Roll effect with
 # fixed Student/allocator server versions; no new client grants.
-# Do not allow public RPC/client grants or RLS/table-DML drift.
+# Effect41_03 adds two authz-reader-owned PRIVATE P1 authority/route helpers.\n# These remain inactive and uncallable by clients, including authenticated.\n# Do not allow public RPC/client grants or RLS/table-DML drift.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
     "d1_tables": 34,
@@ -66,10 +66,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 548,
-    "security_definers": 530,
+    "functions": 550,
+    "security_definers": 532,
     "app_functions": 157,
-    "private_functions": 391,
+    "private_functions": 393,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
