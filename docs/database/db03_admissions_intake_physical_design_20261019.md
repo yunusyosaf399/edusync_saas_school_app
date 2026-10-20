@@ -1,5 +1,7 @@
 # DB-03 — Admissions package and D1 Student Creation handoff: domain-owned design
 
+> **20 October owner-decision reconciliation (current overlay; earlier proposals below retained for history).** Read [DB-03 physical schema and staged SQL plan](db03_admissions_physical_schema_and_staged_sql_plan_20261020.md) for the current candidate contract. Actual owner choices in [20 October decision record](20261020_owner_choices_and_dependency_resolution.md): **Finance-confirmed clearance OR an explicitly approved waiver** is mandatory before final admission; screenshot and client paid/waived flags never qualify. The waiver issuer, Finance verifier, current proof/version and reversal fence are **not implemented**; final issuance and consumption remain blocked. DB-02 selected School-local today-only roll-policy INIT/REPLACE, historical number retention, END/RESUME deferred and independent approval; this does not implement the D1 policy command. The earlier `NOT_REQUIRED` automatic clearance or a handoff-level UNIQUE admission allocation must **not** be carried to executable DDL without reconciliation. SC-01/02/04/05/06/07 remain open; SC-03 business chosen but technical bridge open.\n
+
 **Date:** 2026-10-19
 **Status:** DESIGN READY FOR REVIEW — candidate design, NOT approved/frozen SQL or enabled behavior
 **Owner and write boundary:** DB-03 Admissions only. This file is a proposed contract for the separately owned D1 student.create implementation, Finance integration and DB-01/DB-02 roll dependencies. It authorizes no execution or migration activation.

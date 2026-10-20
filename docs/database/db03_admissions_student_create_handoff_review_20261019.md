@@ -1,5 +1,7 @@
 # DB-03 — Admissions design audit, decision register and review handoff
 
+> **20 October decision update — authoritative for current DB-03 review.** See [owner selections](20261020_owner_choices_and_dependency_resolution.md) and [physical schema / staged SQL plan](db03_admissions_physical_schema_and_staged_sql_plan_20261020.md). **SC-03 business rule SELECTED:** Finance-confirmed clearance **or an explicitly approved waiver** before final admission; uploaded screenshot and editable paid/waived flags never qualify. **SC-03 technical gate OPEN:** authoritative waiver approver/source, typed verifier, FK, revision/expiry, revocation/reversal fence and shared lock order are missing. DB-02's School-local today-only INIT/REPLACE and no historical roll-number reuse are selected decisions, not speculative alternatives. **SC-01/02/04/05/06/07 remain awaiting final owner/integration sign-off.** The older “all seven OPEN” labels in this record reflect its original 19 October inspection and are superseded on the points just named. No SQL or acceptance evidence follows from this update.\n
+
 **Status:** DESIGN READY FOR REVIEW — product decisions SC-01…SC-07 remain OPEN. This is an independent-readiness handoff, not a frozen behavior or SQL-implementation approval.
 **Repository:** yunusyosaf399/edusync_saas_school_app
 **Pinned inspected main:** e526de3fd4668483623ef52cccc34d38d893c249
