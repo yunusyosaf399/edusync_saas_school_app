@@ -16,6 +16,18 @@ class MoveApprovalTests(unittest.TestCase):
         body = '\n'.join(line for line in sql.splitlines() if not line.startswith('--'))
         self.assertEqual(body, 'SET ROLE schoolos_student_executor;\nGRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_prelock_roll(uuid,date)\n  TO schoolos_workflow_executor;\nRESET ROLE;')
 
+    def test_reviewer_reads_are_projection_and_operation_bound(self):
+        sql = (ROOT/'supabase/migrations/20260928000000_domain_package_01_effect39_05_enrollment_move_reviewer_projections.sql.draft').read_text()
+        self.assertNotIn('SELECT q.*',sql)
+        self.assertNotIn('SELECT t.*',sql)
+        self.assertNotIn('GRANT SELECT',sql)
+        self.assertNotIn('USING (true)',sql)
+        self.assertEqual(sql.count('CREATE POLICY'),2)
+        self.assertEqual(sql.count("WHERE q.id=p_request AND o.code='student.enrollment.move'"),2)
+        self.assertIn('p.id<>req.requester_id AND p.person_id<>requester_person',sql)
+        self.assertIn('reviewer_person=requester_person',sql)
+        self.assertIn('d1_enrollment_move_authorized',sql)
+
     def test_hosted_target_fails_before_driver_import(self):
         with self.assertRaisesRegex(RuntimeError,'MOVE_APPROVAL_DISPOSABLE_ONLY'):
             trial.run_enrollment_move_approval('hosted',None)

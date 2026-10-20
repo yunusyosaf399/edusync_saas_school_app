@@ -113,6 +113,8 @@ def run_enrollment_move_approval(container,run_psql,root=ROOT):
                 has_function_privilege('anon','app_private.d1_enrollment_place_prelock_roll(uuid,date)','EXECUTE'),
                 has_function_privilege('service_role','app_private.d1_enrollment_place_prelock_roll(uuid,date)','EXECUTE')""")
             _check(cur.fetchone() == (True,False,False,False),'MOVE_APPROVAL_PRELOCK_EFFECTIVE_ACL')
+            cur.execute("SELECT has_table_privilege('schoolos_authz_reader','app_private.approval_requests','SELECT')")
+            _check(cur.fetchone() == (False,),'MOVE_APPROVAL_BROAD_AUTHZ_REQUEST_GRANT')
     fixture = (Path(root)/'supabase/tests/domain/fixtures/enrollment_move_approval.sql').read_text()
     run_psql(container,'BEGIN;\n'+settings_sql()+'RESET ROLE;\n'+fixture
         + f"SET ROLE authenticated; SELECT * FROM app.d1_place_student_enrollment('{STUDENT}',1,'{SOURCE_SECTION}',"
