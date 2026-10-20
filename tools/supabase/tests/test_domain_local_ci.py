@@ -52,12 +52,13 @@ class DomainLocalCITests(unittest.TestCase):
         runtime.validate_runtime_probe(observed)
 
     def test_runtime_inventory_private_helper_delta(self):
-        # Effect35_12 and DB-01 effect38_02 each add one reviewed private
-        # Student-owned definer; public RPC, client grants and RLS remain frozen.
+        # DB-01 effects 41_01/02 add Student-owned private functions;
+        # effect 41_03 adds two authz-reader-owned private gates.
+        # Public RPCs, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 548)
-        self.assertEqual(expected["security_definers"], 530)
-        self.assertEqual(expected["private_functions"], 391)
+        self.assertEqual(expected["functions"], 550)
+        self.assertEqual(expected["security_definers"], 532)
+        self.assertEqual(expected["private_functions"], 393)
         self.assertEqual(expected["app_functions"], 157)
         self.assertEqual(expected["authenticated_app_execute"], 157)
         self.assertEqual(expected["authenticated_private_execute"], 0)
@@ -171,6 +172,27 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
         self.assertNotIn("UPDATE app_private.operation_contracts", sql)
         self.assertNotIn("CREATE FUNCTION app.d1_correct_student_roll", sql)
+
+    def test_db01_private_roll_authority_policy_gate_is_narrow_and_inactive(self):
+        helper = runtime.ROOT / "supabase/migrations" / (
+            "20260928000000_domain_package_01_effect41_03_db01_roll_correct_private_authority_p1.sql.draft"
+        )
+        sql = helper.read_text(encoding="utf-8")
+        self.assertEqual(sql.count("CREATE FUNCTION app_private.d1_roll_correct_authorized("), 1)
+        self.assertEqual(sql.count("CREATE FUNCTION app_private.d1_roll_correct_policy("), 1)
+        self.assertEqual(sql.count("SECURITY DEFINER SET search_path=pg_catalog,pg_temp"), 2)
+        self.assertEqual(sql.count("SET ROLE schoolos_authz_reader;"), 1)
+        self.assertIn("p_permission='student.roll.approve' AND p_reviewer_role IS NULL", sql)
+        self.assertIn("p.code=p_permission AND p.state='ENABLED'", sql)
+        self.assertIn("o.code='student.roll.correct' AND o.contract_version=1 AND o.enabled", sql)
+        self.assertIn("sc.scope_kind='SECTION' AND sc.section_offering_id=target.section_id", sql)
+        self.assertIn("t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'", sql)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
+        self.assertIn("TO schoolos_student_executor,schoolos_workflow_executor,schoolos_read_executor;", sql)
+        self.assertNotIn("CREATE FUNCTION app.", sql)
+        self.assertNotIn("UPDATE app_private.operation_contracts", sql)
+        self.assertNotIn("INSERT INTO app_private.roll_allocations", sql)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_authorized(uuid,text,uuid,uuid)\n TO authenticated", sql)
 
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
