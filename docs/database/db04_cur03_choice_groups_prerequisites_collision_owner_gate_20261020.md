@@ -2,6 +2,8 @@
 
 **Status: CUR-03 PRODUCT DECISION REQUIRED — NOT APPROVED.** 2026-10-20, DB-04 draft PR #103. Verified `main` `df1c98d5c2d19424946986fc6ba7615202b0a443` and starting DB-04 HEAD `bfb508eb14ef3d47388d1646f26dcdffa753e065`. **This is a decision-ready design document, not executable SQL, an approval, a configured school default, an acceptance PASS or release authorization.** No D1/Foundation/Admissions/Roll/Exams/Learning/Timetable changes.
 
+> **Independent interval/lock review (2026-10-20):** [CUR-03 group-interval, finalization and concurrency audit](db04_cur03_group_interval_lock_and_decision_status_review_20261020.md) confirms **A1/B1/C1/D1/E1 are still unapproved**, identifies a missing durable *finalized-empty vs not-submitted* distinction (**B-F**) and asks whether `max_choices` must be achievable in each Section (**B-M1**) or acts only as a cap (**B-M2**). Earlier B1 strict `max≤available` remains the **original candidate**, not an approved constraint or an automatically adopted relaxation. No schema/test has been executed.
+
 ## 1. Authority and existing decisions
 
 - `AGENTS.md` and [Master Specification Section 19](../requirements/School_OS_SaaS_Master_Specification_v0.2.md) establish configurable Class/Academic Year Curriculum, optional choices varying by Student, and optional credit hours. They **do not** decide numeric elective limits, multiple groups, prerequisites, quotas, deadlines or how previous-year results satisfy a prerequisite.
@@ -120,6 +122,6 @@ Existing [synthetic aliases](db04_synthetic_fixtures_and_safe_denial_codes_20261
 
 **Product decision statuses:** **CUR-01 no-overlap/no implicit precedence APPROVED IN PART; CUR-02 A1+B1+C1 APPROVED; CUR-03 A–E UNAPPROVED; CUR-01 effectivity and CUR-04–CUR-08 UNAPPROVED.** No permission codes, group limits, prerequisite edge table, capacity reservation or SQL were created.
 
-**Recommended next independent DB-04 task:** after CUR-03 owner response, record its *exact approved options* without extrapolation, update the seven-entity schema/acceptance matrices and request relevant Exams signoff. If owner has not yet decided, independently prepare a DB-04 **group-interval and cross-domain lock conflict audit (design-only)** covering 2026/27 rollover and dated group-count violations. No premature SQL.
+**Next step:** the [group-interval and cross-domain lock audit](db04_cur03_group_interval_lock_and_decision_status_review_20261020.md) is completed as design. Obtain explicit CUR-03-A…E selection and B-F/B-M clarification before freezing the affected group constraints; then update physical/acceptance matrices and seek required Exams/integration signoffs. No SQL.
 
 **Disposition: CUR-03 CHOICE-GROUP, PREREQUISITE AND COLLISION CONTRACT READY FOR OWNER DECISION — PRODUCT DECISION REQUIRED BEFORE IMPLEMENTATION.**
