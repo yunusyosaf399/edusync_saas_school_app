@@ -23,6 +23,8 @@
 
 **Decision accounting (updated 2026-10-20):** CUR-01 overlap/precedence **approved in part** (E-03); CUR-01 effective start/mid-year timing still **OPEN**. **CUR-02 A1+B1+C1 approved** (see [approved owner decision](db04_cur02_approved_subject_category_decision_20261020.md)); the exact B1 classification field, Group policy, downstream Exams metadata remain physical/integration dependencies. CUR-03–CUR-08 **OPEN**. Nothing is counted as approved merely because code, a proposal, a passing D1 test, a previous assistant recommendation, or a “Complete next task” message exists.
 
+> **Foundation receipt capability finding (2026-10-20):** [B-F eight-table vs receipt projection review](db04_cur03_finalization_receipt_capability_and_schema_options_20261020.md) verifies immutable command receipts do **not** contain a dedicated Student+Enrollment+Revision/interval finalization key. BF-1 additional DB-04 selection-set table, BF-2 verified domain projection, and BF-3 no queryable finalized state are **alternatives**, none authorized. Preserve original strict B-M1 semantics until owner approves cap-only B-M2. CUR-08 and Foundation registrar/security signoffs still required.
+
 ## 2. Owner choices in one freeze worksheet
 
 *For each row, owner response required: **APPROVE RECOMMENDATION / APPROVE WITH EDITS (specific replacement text) / REJECT / DEFER**. A specialist's interface/implementation signature is separate from the product owner's choice. No row below carries an inferred signature.*
