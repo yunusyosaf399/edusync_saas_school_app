@@ -109,9 +109,9 @@ Existing [G-01…G-18 and GR-01…GR-06](db04_cur03_choice_groups_prerequisites_
 
 | Candidate ID | Preconditions | Expected result / owner dependency |
 |---|---|---|
-| `GI-01` | `min=1,max=2,|M|=1` on SEC-B | **B-M1 rejects, B-M2 permits** under remaining context; settles max-cap ambiguity |
-| `GI-02` | `min=0,max=0,|M|=0`; Student has no selections | Clarify `FINALIZED_EMPTY` vs `NOT_SUBMITTED`; no invented state from zero rows |
-| `GI-03` | `min=2,max=2,|M|=1` | Both B-M1/B-M2 reject publication; does not contradict earlier G-06 |
+| `GI-01` | `min=1,max=2,available_members=1` on SEC-B | **B-M1 rejects, B-M2 permits** under remaining context; settles max-cap ambiguity |
+| `GI-02` | `min=0,max=0,available_members=0`; Student has no selections | Clarify `FINALIZED_EMPTY` vs `NOT_SUBMITTED`; no invented state from zero rows |
+| `GI-03` | `min=2,max=2,available_members=1` | Both B-M1/B-M2 reject publication; does not contradict earlier G-06 |
 | `GI-04` | `min=1,max=2`, one accepted row, two simultaneous amendments on same Student | School+Student/applicability serialization; final set valid and duplicate head prevented; only after CUR-03 approval |
 | `GI-05` | Current group passes on 2026-10-31, Section Subject CHEM ends at 2026-11-01 | Analyze future segment; reject unexpected November-invalid finalization/closure |
 | `GI-06` | A historical Exam captured before P2 correction to September choice | Current corrected read and original as-observed Exam evidence remain distinct; CUR-05/07 needed |
