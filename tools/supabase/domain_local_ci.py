@@ -53,6 +53,8 @@ FINAL_FUNCTION_OWNERS = (
 # Effect40_01 adds exactly one Academic-owned private School-date resolver.
 # Effect41_01 adds exactly one Student-owned private nonactivating DB-01
 # School→stored policy→allocator→Student source-prelock helper (PR review).
+# Effect41_02 adds one Student-owned private atomic corrected-Roll effect with
+# fixed Student/allocator server versions; no new client grants.
 # Do not allow public RPC/client grants or RLS/table-DML drift.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
@@ -64,10 +66,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 547,
-    "security_definers": 529,
+    "functions": 548,
+    "security_definers": 530,
     "app_functions": 157,
-    "private_functions": 390,
+    "private_functions": 391,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
