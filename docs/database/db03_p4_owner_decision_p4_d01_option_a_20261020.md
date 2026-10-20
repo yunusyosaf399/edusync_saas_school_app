@@ -1,0 +1,7 @@
+# DB-03 owner decision — P4-D01 (2026-10-20)
+
+**APPROVED Option A:** A currently authorized examiner determines and records an Admissions assessment outcome as **PASSED** or **FAILED**. A numeric score is **optional**; if a score is recorded, both `score` and `maximum_score` must be present and valid (`maximum_score > 0`, `0 <= score <= maximum_score`). If no score is recorded, both are NULL. **No automatic minimum passing score**, no inference from a numeric result, and no default numerical outcome rule is authorized.
+
+This selection applies to P4 Admissions tests/interviews under the existing published stage configuration. It does **not** establish examiner credentials/roles or grants, independent review, conflict-of-interest rules, retake and correction policy, late/historical assessment dating, score visibility, or external assessment verification (P4-D02…D07). It does **not** allow a client to assert a trusted outcome, permit arbitrary `stage PASSED`, waive Finance obligations, resolve a Person, create a Student or bypass Foundation authorization. Current scoped examiner permission and immutable typed revision evidence remain necessary.
+
+**Implementation gate:** DB-03 may implement this choice only through a separately approved, registered protected operation, authenticated examiner, valid P1 stage/P2 application, server-managed assessment history and relevant P3 stage outcome checks. No executable SQL, operation registration, test run or hosted deployment is authorized merely by this recorded choice.

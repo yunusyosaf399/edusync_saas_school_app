@@ -1,5 +1,8 @@
 # DB-03 P4 — Admissions test and interview outcome SQL-readiness, evidence and concurrency acceptance
 
+> **Owner decision recorded 2026-10-20 — P4-D01 APPROVED OPTION A.** A currently authorized Admissions examiner records PASSED or FAILED as an explicit decision; numerical score and maximum score are optional as a nullable pair. There is **no automatic score cutoff or score-derived pass/fail rule** in V1. This resolves **only P4-D01**; who qualifies as examiner, what approvals apply, retakes, corrections, assessment dates, privacy and evidence integrity remain open. See [decision record](db03_p4_owner_decision_p4_d01_option_a_20261020.md). Earlier alternative A/B descriptions below are historical, not current indecision.
+
+
 **2026-10-20 | DESIGN / ACCEPTANCE SPECIFICATION READY FOR OWNER REVIEW; NOT INSTALLED, RUN OR APPROVED AS SQL.** DB-03 owns Admissions interview/test decisions and their current stage result, **not** examination engines, teaching assessments, D1 Student creation, the Finance payment ledger, or Foundation approval/receipt/Person/File semantics. Draft PR [#102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102); inspected `main df1c98d5c2d19424946986fc6ba7615202b0a443` and previous branch `77ffbe7f29e0736d5147440f2fdd82b33e39019b`.
 
 ## 1. Scope, sources and signed choices
