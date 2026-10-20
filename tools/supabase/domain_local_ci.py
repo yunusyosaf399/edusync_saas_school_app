@@ -448,6 +448,8 @@ def _main() -> int:
         run_enrollment_move_approval(container, run_psql, ROOT)
         from domain_roll_business_date_ci import run_roll_business_date
         run_roll_business_date(container, run_psql, ROOT)
+        from domain_db01_roll_correct_race_ci import run_db01_roll_correct_races
+        run_db01_roll_correct_races(container, run_psql, ROOT)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
