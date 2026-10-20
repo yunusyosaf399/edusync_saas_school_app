@@ -12,7 +12,7 @@ SELECT is((SELECT pg_catalog.pg_get_userbyid(proowner)::text FROM pg_catalog.pg_
 SELECT ok((SELECT prosecdef FROM pg_catalog.pg_proc WHERE
  oid='app_private.d1_roll_policy_change_preflight(uuid,text,uuid,integer,text,bigint,date,date,text,bigint)'::regprocedure),
  'private preflight runs as SECURITY DEFINER');
-SELECT ok((SELECT proconfig @> ARRAY['search_path=pg_catalog,pg_temp'] FROM pg_catalog.pg_proc WHERE
+SELECT ok((SELECT proconfig @> ARRAY['search_path=pg_catalog, pg_temp'] FROM pg_catalog.pg_proc WHERE
  oid='app_private.d1_roll_policy_change_preflight(uuid,text,uuid,integer,text,bigint,date,date,text,bigint)'::regprocedure),
  'fixed search path is not caller controlled');
 SELECT is(has_function_privilege('authenticated','app_private.d1_roll_policy_change_preflight(uuid,text,uuid,integer,text,bigint,date,date,text,bigint)','EXECUTE'),false,'authenticated has no private preflight EXECUTE');
