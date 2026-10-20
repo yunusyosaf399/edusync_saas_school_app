@@ -22,6 +22,8 @@ Since the PR #105 freeze, `main` gained non-executable DB-01/Enrollment lock-ord
 5. Existing authorized files survive downgrade; unavailable/staged or failed uploads stay private and unavailable. No automatic deletion of retained evidence. Secrets stay in deployment/secret manager. Private downloads require live domain reauthorization and bounded temporary mechanism, never permanent private URL or unrestricted listing.
 6. `uploaded_by_principal_id` is immutable verified initiator provenance, `created_by` can be the trusted metadata executor; neither implies subject/ownership or automatic view rights. Student photo SET (#67) and live uploads remain **DENY**; Migration 10 remains nonexecutable `.sql.draft` until an independent activation decision.
 
+**PA-01 vendor evidence update (2026-10-20):** See [provider-specific official-source comparison and 12 sandbox conformance gates](224_student_photo_pa01_provider_selection_evidence_and_sandbox_gate_20261020.md). Supabase Storage, AWS S3, Cloudflare R2 and Azure Blob were compared using published API/retention documentation. A **two-provider Supabase Storage vs AWS S3 sandbox evaluation is recommended only as a candidate**; no provider, region, IAM or SDK has been selected or tested in an EduSync sandbox. PA-01 remains **OPEN** and requires product + independent security approval.
+
 ## Decision sheet — eight explicit approvals
 
 | Gate | Recommendation (candidate, not approval) | Alternatives or trade-off requiring owner/security signoff | Evidence before unlocking implementation |
