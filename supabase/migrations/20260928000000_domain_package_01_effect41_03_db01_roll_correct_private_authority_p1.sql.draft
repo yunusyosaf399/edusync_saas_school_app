@@ -125,7 +125,7 @@ BEGIN
   IF selected_route='APPROVAL' THEN
     SELECT count(*),count(*) FILTER (
       WHERE r.id IS NULL OR r.state<>'ACTIVE' OR r.family_only
-        OR t.required_reviews<>1 OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE')
+        OR t.required_reviews IS DISTINCT FROM 1 OR t.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE')
       INTO steps,invalid_steps
       FROM app_private.approval_step_templates t
       LEFT JOIN app_private.roles r ON r.id=t.reviewer_role_id
