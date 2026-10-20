@@ -1,6 +1,6 @@
 # DB-04 — CUR-02 Owner Decision Record and Physical-Design Approval Matrix
 
-**Status: CUR-02 OWNER DECISION REQUIRED / NOT APPROVED.** Prepared 2026-10-20 on PR #103, branch `db/db-04-curriculum-electives-design`; verified initial current `main` `df1c98d5c2d19424946986fc6ba7615202b0a443`. This record is **decision-ready, not an approval record**. The instruction “Complete next task you recommended” authorized preparation of this record and matrix; it supplied **no answer to CUR-02-A/B/C**, so no category semantics, schema shape or approval route is frozen. No SQL, new grants/operations, schema installation, or runtime acceptance.
+**Status update 2026-10-20: CUR-02 A1+B1+C1 APPROVED BY PRODUCT OWNER; this earlier unsigned matrix is retained as historical alternatives and physical impact planning.** Prepared 2026-10-20 on PR #103, branch `db/db-04-curriculum-electives-design`; verified initial current `main` `df1c98d5c2d19424946986fc6ba7615202b0a443`. This record is **decision-ready, not an approval record**. The instruction “Complete next task you recommended” authorized preparation of this record and matrix; it supplied **no answer to CUR-02-A/B/C**, so no category semantics, schema shape or approval route is frozen. No SQL, new grants/operations, schema installation, or runtime acceptance.
 
 ## 1. Exact decision provenance
 
@@ -12,11 +12,11 @@
 | CUR-02 proposed semantics | [CUR-02 candidate and CAT-01–CAT-16 acceptance](db04_cur02_subject_category_owner_decision_gate_20261020.md) and [seven-entity physical schema](db04_seven_entity_schema_temporal_cur_decision_package_20261020.md). | **RECOMMENDATION ONLY**; no owner decision message about A/B/C. |
 | CUR-03/04/05/06/07/08 | [DB-04 integration signoff dossier](db04_cur_owner_decision_and_cross_domain_signoff_dossier_20261020.md). | **UNAPPROVED**; approval cannot be inherited from CUR-01 or CUR-02 preparation. |
 
-**Current decision-accounting:** exactly **one approved Curriculum rule** (CUR-01 non-overlap/no precedence), **three unapproved CUR-02 subdecisions** and **six other pending CUR gates** (CUR-03–CUR-08), plus the remainder of CUR-01 timing/cutover.
+**Current decision-accounting (2026-10-20):** CUR-01 overlap/no precedence APPROVED IN PART; **CUR-02 A1+B1+C1 APPROVED** as recorded in [the owner decision](db04_cur02_approved_subject_category_decision_20261020.md). CUR-01 timing and CUR-03–CUR-08 still OPEN; exact classification column, Exams signoff and physical schema remain unfrozen.
 
 ## 2. Three exact owner choices
 
-All three choices affect the physical schema; answer all before marking CUR-02 fully approved. Recommended choices are safe candidate interpretations, not preauthorized rules.
+**All three semantic choices A1, B1 and C1 are now owner-approved** (see [the separate decision record](db04_cur02_approved_subject_category_decision_20261020.md)). Alternatives below are retained solely as preapproval comparisons; they are not active policies. Physical storage, group cardinality, actor permissions, workflows and Examiner/Exams interfaces are still unapproved.
 
 | Subdecision | Recommended proposed behavior | Alternative | Schema, history and authorization consequence | Needed signoff / test |
 |---|---|---|---|---|
@@ -40,9 +40,9 @@ Current entity count remains **7 proposed, 0 approved DDL schemas**. Column name
 | **6. `curriculum_section_subject_offerings`** | **A:** same published Subject rule offered at exact Section; does not prove Student elected it | **B:** may need minimal safe classification field only if consumer cannot use frozen Rule ID, requiring separate approval | **C:** available elective Group members must exist for each Section interval | FK D1 Section Offering, same revision of applicability/rule, interval closure with accepted/recorded evidence | Candidate; CUR-01/06/08 pending |
 | **7. `student_subject_selections`** | **A1:** record accepted optional/elective choices only; **A2:** separate compulsory generation and history to be designed | BASE for elected choices unless B2 changes effective selectable categories | **C:** Group membership derived from frozen Rule, never arbitrary user value; accepted selection prevents overflow | Exact `(enrollment_id,student_id)→D1 enrollments(id,student_id)` candidate, no invented Enrollment row_version; append/one-way close/supersedes and receipt | CUR-02-A/C, CUR-03/04/05/06/08 pending |
 
-**Physical-change impact if A1+B1+C1 later approved:** keep seven candidate tables; keep `curriculum_subject_rules.category` for obligation; **propose, do not add**, a typed independent `subject_classification` or similar field **only** after deciding whether it belongs to Curriculum or is consumer-owned. Keep D1 Subject stable. Default to **no acceptance of undefined type/combinations** until the field, vocabulary, allowed nullability, history and downstream Exam interpretations are frozen. Do not invent/activate an eighth table merely for a proposed label.
+**Physical-change impact under owner-approved A1+B1+C1:** keep seven candidate tables; keep `curriculum_subject_rules.category` for obligation; **propose, do not add**, a typed independent `subject_classification` or similar field **only** after deciding whether it belongs to Curriculum or is consumer-owned. Keep D1 Subject stable. Default to **no acceptance of undefined type/combinations** until the field, vocabulary, allowed nullability, history and downstream Exam interpretations are frozen. Do not invent/activate an eighth table merely for a proposed label.
 
-**Constraints blocked specifically by CUR-02**: (1) permitted category vocabulary and classification dimensionality; (2) whether compulsory choice rows are impossible versus generated; (3) nullable `choice_group_id` for ELECTIVE and OPTIONAL; (4) validation of selection against Rule category; (5) resulting historical data/consumer projection. **Constraints already supported independently**: unique school+Curriculum identity, immutable published content principle, exact D1 primary enrollment ancestry, CUR-01 no-overlap rule. Remaining dynamic group cardinality, P1/P2, grandfathering and historical snapshots require CUR-03/05/06/07.
+**Physical constraints still requiring reconciliation after CUR-02 semantic approval**: (1) permitted category vocabulary and classification dimensionality; (2) whether compulsory choice rows are impossible versus generated; (3) nullable `choice_group_id` for ELECTIVE and OPTIONAL; (4) validation of selection against Rule category; (5) resulting historical data/consumer projection. **Constraints already supported independently**: unique school+Curriculum identity, immutable published content principle, exact D1 primary enrollment ancestry, CUR-01 no-overlap rule. Remaining dynamic group cardinality, P1/P2, grandfathering and historical snapshots require CUR-03/05/06/07.
 
 ## 4. Commands, checked reads, events, audit/approval compatibility
 
@@ -72,25 +72,21 @@ Current entity count remains **7 proposed, 0 approved DDL schemas**. Column name
 
 **Two-session scenario obligations:** same School-first D1 END/MOVE prefix, Student+exact Enrollment eligibility fence, serialized group aggregates, competing revision publish no overlap (approved CUR-01), and immutable consumer snapshot on both winning orders. No current DB-04 test execution or CI acceptance is claimed.
 
-## 6. Explicit decision capture fields (UNSIGNED)
+## 6. Owner approval recorded — original unsigned alternatives retained
 
-- `CUR-02-A`: **[PENDING OWNER]** Choose **A1 derived compulsory** (recommended), **A2 recorded compulsory**, or state alternative A3.
-- `CUR-02-B`: **[PENDING OWNER]** Choose **B1 separate obligation and classification** (recommended), **B2 six exclusive types**, or state alternative B3.
-- `CUR-02-C`: **[PENDING OWNER]** Choose **C1 OPTIONAL individual / ELECTIVE grouped** (recommended), **C2 synonyms**, or state alternative C3.
-- Owner decision evidence: **none provided in the latest user instruction**. Approver/date/signature/decision effective time: **NOT RECORDED**.
-- Academic/Exams signoff: **NOT RECEIVED**. Foundation workflow authorization registration: **NOT RECEIVED**.
-- CUR-01 overlap-only approval: **unchanged**. CUR-01 timing and CUR-03–CUR-08: **OPEN**.
+- `CUR-02-A`: **APPROVED A1** — derived compulsory eligibility without Student selection rows; OPTIONAL/ELECTIVE explicitly accepted.
+- `CUR-02-B`: **APPROVED B1** — selection-obligation dimension separate from Practical/Extra-curricular/Custom classification; physical representation and Exams signoff remain unapproved.
+- `CUR-02-C`: **APPROVED C1** — OPTIONAL individually selectable; ELECTIVE requires choice-group membership; exact group rules remain CUR-03.
+- **Owner evidence**: the user's reply **“Yes I approve complete it”** to the immediately preceding explicit question approving **CUR-02 A1+B1+C1**, 2026-10-20. [Approved decision record](db04_cur02_approved_subject_category_decision_20261020.md). No imagined reviewer/signature, SQL or grants.
 
-### One owner question for CUR-02
+### Original owner question — resolved on 2026-10-20
 
-**Do you approve the combined A1+B1+C1 recommendation**—compulsory eligibility derived without per-Student election rows, optional/elective choices explicitly accepted, Practical/Extra-curricular/Custom as separate classification rather than mutually exclusive obligation types, and ELECTIVE grouped versus OPTIONAL individually selectable—**with CUR-03 group cardinality, CUR-04 actor permissions and CUR-05 review routing remaining separate undecided items?**
-
-Owner reply `Approve CUR-02 A1+B1+C1` or specify deviations. Record the **actual words of approval** in a separate DB-04-owned decision record only after the owner responds.
+The combined A1+B1+C1 question received explicit affirmative owner response, recorded in the separate approved CUR-02 decision. No further approval of CUR-02 semantics is needed; remaining physical representation and CUR-03–CUR-08 depend on their own decisions.
 
 ## 7. Next task queue and cross-domain gate
 
-**Next if owner approves:** Record explicit signed CUR-02-A/B/C product decision in a separate DB-04 document; update the seven-entity physical schema, CUR dossier and tests for only approved semantics; request Exams classification signoff. Continue through CUR-03/04/05/06/07/08 in order, without inventing permissions or owner choices.
+**Next:** CUR-02 owner approval is captured in its own decision document. Reconcile future physical schema classification fields and Exams metadata only after CUR-03/07/08 and specialist signoff; advance next to the independent DB-04 acceptance fixture/denial-code catalog, then CUR-03 owner choices. Do not invent permissions.
 
 **If owner has not decided:** Independently prepare a DB-04-only **synthetic acceptance fixture and safe denial-code catalog** for CUR-01 no-overlap + category alternatives, D1 Year/Class/Campus/Section/Enrollment MOVE/END and Foundation scope/replay, without tests or migration. No shared acceptance file or CI modification.
 
-**Implementation status remains: PRODUCT DECISION REQUIRED; seven entities remain candidates; SQL/permissions/CI/deployment untouched.**
+**Implementation status: CUR-02 semantic decision APPROVED; seven tables and physical classification representation remain CANDIDATES; CUR-01 timing plus CUR-03–CUR-08 and D1/Exams integrations pending; no SQL/permissions/CI/deployment authorized.**
