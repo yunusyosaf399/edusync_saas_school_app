@@ -432,6 +432,8 @@ def _main() -> int:
         run_real_postgres_photo_handoff(container, run_psql, ROOT)
         from domain_enrollment_end_lock_prefix_ci import run_enrollment_end_lock_prefix
         run_enrollment_end_lock_prefix(container, run_psql, ROOT)
+        from domain_enrollment_move_roll_union_ci import run_enrollment_move_roll_union
+        run_enrollment_move_roll_union(container, run_psql, ROOT)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
