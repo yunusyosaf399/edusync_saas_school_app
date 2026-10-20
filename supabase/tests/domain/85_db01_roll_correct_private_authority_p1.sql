@@ -1,6 +1,5 @@
 -- DB-01 private RC-06 authority/P1 route: no protected command, disposable only.
--- D1 suite #61: Student P0 INITIAL accepted PRIMARY placement + roll; transaction-rolled-back synthetic fixture.
--- Frozen Effect25 accepts INITIAL/REENROLLMENT only. No Admissions or Student.create bypass.
+-- Reuses rollback-only fixture ancestry and Principal. No protected P0 or CORRECT command is executed.
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
