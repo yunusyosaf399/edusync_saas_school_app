@@ -3462,7 +3462,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
     def test_db02_shared_receipt_86_exact_allowlist_and_rollback(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
         previous=["85_db02_school_actor_all_authority.sql",19]
-        current=["86_db02_roll_policy_receipt_allowlist.sql",26]
+        current=["86_db02_roll_policy_receipt_allowlist.sql",27]
         self.assertEqual(DOMAIN_TESTS.count(current),1)
         self.assertGreater(DOMAIN_TESTS.index(current),DOMAIN_TESTS.index(previous))
         source=(root/"supabase/tests/domain"/current[0]).read_text(encoding="utf-8")
@@ -3470,9 +3470,9 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(source.count("BEGIN;"),1)
         self.assertEqual(source.count("ROLLBACK;"),1)
         self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
-        self.assertIn("SELECT plan(26);",source)
+        self.assertIn("SELECT plan(27);",source)
         self.assertEqual(len(re.findall(
-            r"SELECT (?:is|isnt|ok|throws_ok|lives_ok)\(",source)),26)
+            r"SELECT (?:is|isnt|ok|throws_ok|lives_ok)\(",source)),27)
         for marker in ("request.submit","request.review","request.apply",
                        "D1 receipt operation phase or shape unsupported",
                        "schoolos_evidence_writer","P1 version reference",
