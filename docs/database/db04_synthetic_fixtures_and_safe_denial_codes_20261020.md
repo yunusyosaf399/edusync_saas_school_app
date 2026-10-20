@@ -9,6 +9,8 @@
 - All identifiers in this document are **symbolic aliases** (`S1`, `AY26`, `SEC-A`). Future test setup generates real UUIDs server-side and binds aliases in an in-memory fixture map. Do **not** hardcode illustrative UUIDs into production migrations. Names and group cardinalities are demonstrative, not School defaults.
 - Each scenario tests public safe denial plus private minimal audit/receipt behavior, row-version/snapshot fencing, effective business date and recorded/consumer-observed timestamp. Do not infer the latest year by wall clock. The D1 local draft chain may change; do not call an old assembled-SHA test result current evidence.
 
+> **CUR-03 suite extension (2026-10-20):** [CUR-03 decision gate](db04_cur03_choice_groups_prerequisites_collision_owner_gate_20261020.md) refines grouped tests as **G-01…G-18** and opposing-backend races **GR-01…GR-06**. The illustrative Biology-in-group variant is classified **ELECTIVE for that revision**, distinct from the original `SUB-BIO` OPTIONAL fixture. This avoids contradictory Rule categories. All CUR-03 numeric settings remain **conditional** until owner approval; existing `FX-09/FX-10` use illustrative numbers only.
+
 ## 2. Compact synthetic School graph
 
 **One School Project** (`S1`) has **two campuses** `C-A` (Main) and `C-B` (North). Academic years `AY26` (2026-01-01 through **2026-12-31 inclusive**) and `AY27` (2027-01-01 through **2027-12-31 inclusive**) are synthetic Foundation rows, not a calendar policy. Their effective interval upper endpoints for DB-04 are 2027-01-01 and 2028-01-01, respectively. Grade 9 `CLASS-9` is a single D1 School Class. Distinct D1 Class Offerings link `CLASS-9` to each (Campus, Year). No global ACTIVE-year inference.
@@ -104,6 +106,6 @@ The following identifiers are **proposed internal API-level safe codes**, not de
 
 **Approved**: CUR-01 conflict/no precedence; CUR-02 A1+B1+C1. **Still undecided**: CUR-01 applicability timing; CUR-03 group semantics/prerequisites/quotas/deadlines; CUR-04 Student/FAMILY/teacher mutation roles; CUR-05 P0/P1/P2 route/reviewer powers; CUR-06 transfer/archive grandfathering and mid-year impacts; CUR-07 immutable consumer snapshots/executor signoff; CUR-08 physical seven-entity/schema and bitemporal implementation. D1 release, Foundation permission/operation registration and cross-domain FK/lock runtime checks are also prerequisites.
 
-**Recommended next DB-04 task**: prepare the owner-decision-ready **CUR-03 choice-group/min-max/prerequisite semantics** with default-deny variants and explicit acceptance, without assuming any numeric group policy or adding an eighth table. If the owner makes an explicit choice, record it and update the DB-04 physical schema matrix without touching D1/Exams.
+**CUR-03 owner-decision package is now prepared** in [the group/prerequisite gate](db04_cur03_choice_groups_prerequisites_collision_owner_gate_20261020.md), including G-01…18 and GR-01…06. **Next:** obtain explicit CUR-03-A…E owner selections; in the meantime a safe independent DB-04-only follow-on is a date-segment/lock-conflict audit for concurrent elective changes and year rollover. No SQL.
 
 **Disposition: DB-04 SYNTHETIC FIXTURE AND SAFE DENIAL-CODE SPECIFICATION READY; CUR-02 APPROVED, ALL REMAINING IMPLEMENTATION GATES OPEN.**
