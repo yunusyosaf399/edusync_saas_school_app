@@ -55,9 +55,9 @@ class DomainLocalCITests(unittest.TestCase):
         # Effect35_12 and DB-01 effect38_02 each add one reviewed private
         # Student-owned definer; public RPC, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 547)
-        self.assertEqual(expected["security_definers"], 529)
-        self.assertEqual(expected["private_functions"], 390)
+        self.assertEqual(expected["functions"], 548)
+        self.assertEqual(expected["security_definers"], 530)
+        self.assertEqual(expected["private_functions"], 391)
         self.assertEqual(expected["app_functions"], 157)
         self.assertEqual(expected["authenticated_app_execute"], 157)
         self.assertEqual(expected["authenticated_private_execute"], 0)
@@ -152,6 +152,25 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertNotIn("CREATE FUNCTION app.d1_correct_student_roll", sql)
         self.assertNotIn("INSERT INTO app_private.roll_allocations", sql)
         self.assertNotIn("UPDATE app_private.roll_allocations", sql)
+
+    def test_db01_private_correction_effect_has_server_owned_history_guards(self):
+        helper = runtime.ROOT / "supabase/migrations" / (
+            "20260928000000_domain_package_01_effect41_02_db01_correct_effect.sql.draft"
+        )
+        sql = helper.read_text(encoding="utf-8")
+        self.assertEqual(sql.count("CREATE FUNCTION app_private.d1_roll_correct_effect("), 1)
+        self.assertIn("SET ROLE schoolos_student_executor;", sql)
+        self.assertIn("SECURITY DEFINER SET search_path=pg_catalog,pg_temp", sql)
+        self.assertIn("app_private.d1_roll_correct_lock_source(", sql)
+        self.assertIn("app_private.current_principal_id()", sql)
+        self.assertIn("r.student_id<>p_student", sql)
+        self.assertIn("so.class_offering_id=c.class_offering_id", sql)
+        self.assertIn("SET next_value=p_new_numeric+1", sql)
+        self.assertIn("source_row.origin_allocation_id,p_roll,p_reason", sql)
+        self.assertIn("UPDATE app_private.students SET current_status='ACTIVE'", sql)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
+        self.assertNotIn("UPDATE app_private.operation_contracts", sql)
+        self.assertNotIn("CREATE FUNCTION app.d1_correct_student_roll", sql)
 
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
