@@ -2,6 +2,8 @@
 
 **Status: DESIGN-ONLY TEST CONTRACT READY FOR REVIEW — NO EXECUTABLE TESTS OR DEPLOYED ERROR CODES.** Prepared 2026-10-20, DB-04 PR #103; verify source and installation baseline again at future implementation. Owner-approved product rules: [CUR-01 nonoverlap/no implicit precedence](db04_cur01_approved_applicability_decision_20261020.md) and [CUR-02 A1+B1+C1 subject semantics](db04_cur02_approved_subject_category_decision_20261020.md). CUR-01 start/cutover details and CUR-03–CUR-08 are **not** approved. This file does **not** authorize SQL, local fixture creation, grants, D1 source changes, shared CI changes or any hosted Supabase access.
 
+> **CUR-03 approval status — 2026-10-20:** The owner approved [A1+B1+C1+D1+E1 product semantics](db04_cur03_approved_group_policy_20261020.md). Numeric group bounds remain school-configurable; fixture `min=1,max=2` is illustrative, **not** a global default. The original strict B1 availability inequality is not silently relaxed; **B-F** finalization evidence and **B-M** confirmation remain open. All G/GR/GI/GIR scenarios are **planned, not executed**, and rely on approved CUR-04/05/06/08 paths.
+
 ## 1. Test authority, fixture safety and evidence provenance
 
 - D1 `app_private.academic_classes`, `subjects`, `class_offerings`, `section_offerings`, `students` and `enrollments` own Class, Subject, actual Campus/Year Offering, accepted PRIMARY Enrollment and historical transitions. **Fixtures must be established with the released D1 protected commands**, not by inventing D1 rows or disabling audit.
@@ -106,7 +108,7 @@ The following identifiers are **proposed internal API-level safe codes**, not de
 
 ## 6. Freeze/acceptance blockers and next task
 
-**Approved**: CUR-01 conflict/no precedence; CUR-02 A1+B1+C1. **Still undecided**: CUR-01 applicability timing; CUR-03 group semantics/prerequisites/quotas/deadlines; CUR-04 Student/FAMILY/teacher mutation roles; CUR-05 P0/P1/P2 route/reviewer powers; CUR-06 transfer/archive grandfathering and mid-year impacts; CUR-07 immutable consumer snapshots/executor signoff; CUR-08 physical seven-entity/schema and bitemporal implementation. D1 release, Foundation permission/operation registration and cross-domain FK/lock runtime checks are also prerequisites.
+**Approved**: CUR-01 conflict/no precedence; CUR-02 A1+B1+C1; **CUR-03 A1+B1+C1+D1+E1**. **Still undecided**: CUR-01 applicability timing; CUR-03-B finalization evidence/maximum clarification, CUR-04 Student/FAMILY/teacher mutation roles; CUR-05 P0/P1/P2 route/reviewer powers; CUR-06 transfer/archive grandfathering and mid-year impacts; CUR-07 immutable consumer snapshots/executor signoff; CUR-08 physical seven-entity/schema and bitemporal implementation. D1 release, Foundation permission/operation registration and cross-domain FK/lock runtime checks are also prerequisites.
 
 **CUR-03 owner-decision package is now prepared** in [the group/prerequisite gate](db04_cur03_choice_groups_prerequisites_collision_owner_gate_20261020.md), including G-01…18 and GR-01…06. **Next:** the [date-segment and lock-conflict review](db04_cur03_group_interval_lock_and_decision_status_review_20261020.md) is prepared; obtain CUR-03-A…E selections **and B-F/B-M** before physical finalization. No SQL.
 
