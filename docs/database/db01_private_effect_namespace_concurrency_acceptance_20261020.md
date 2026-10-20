@@ -28,6 +28,12 @@ After the preceding failure was repaired, the race setup encountered another alr
 
 The failed prior run is **not accepted**. The isolated setup must still prove genuine protected P0 placement before any unprotected internal Roll correction race is attempted. No source/effect SQL, Foundation grants, client permissions or D1 catalog counts were changed.
 
+## 2.3 Frozen singleton School and current-policy test scope
+
+The second isolated-School fixture failed correctly on the **Foundation `school_profiles_singleton_key`** constraint. This is a genuine test design mistake, **not a Roll-effect failure**, and the School singleton is NOT loosened. Commit `31aca3d796cd04dd8712a5f69b7258764724343e` repairs the disposable race setup to reuse the one existing School and **the currently effective persisted policy** after previously committed END/MOVE policy cutovers. It adds only the exact test-owned allocator for the fresh Class Offering under that current policy; no duplicate or overlapping policy revision is inserted. A protected authenticated P0 placement at `CURRENT_DATE-1` must source a genuine Roll, and the private effect test reads the actual stored policy UUID and old number rather than assuming a fixed revision. It retains a separate `db190000` UUID namespace for Student/academic entities/Role grants and the allocator.
+
+**The corrected head is under CI review**, including School/Policy/Allocator waits and one winner/loser serialization; prior failed runs cannot count as acceptance.
+
 ## 3. Truthful acceptance boundary
 
 **Initial SQL CI state:** the baseline PR #118 is GREEN; new #119 source/test diffs trigger fresh static, Foundation and D1 local runtime jobs on each exact HEAD. **Do not claim any #83/#84 or 7-wait result until the corresponding exact-head logs demonstrate it.** The test suite and real-race runner must be maintained together; any failure requires a code/fixture correction and a new exact-head run.
