@@ -43,9 +43,15 @@ FINAL_FUNCTION_OWNERS = (
     "schoolos_teaching_executor",
     "schoolos_workflow_executor",
 )
-# Effect35_12 adds one narrowly scoped, Student-executor-owned private
-# SECURITY DEFINER helper for the Status P2 exact source transition lookup.
-# Keep the public RPC count, client grants and all RLS/table-DML metrics frozen.
+# Effect35_12 adds one narrowly scoped Status P2 private helper.
+# DB-01 effect38_02 adds ONLY app_private.d1_roll_correct_result_rows_match_exact
+# (uuid,uuid,uuid,uuid,jsonb), Student-executor-owned SECURITY DEFINER.
+# Integration request #108; effect38_03 adds exactly one additional
+# Schema-owner private DIRECT receipt provenance definer (issue #110).
+# DB-01 effect38_04 adds one operation-specific schema-owner trigger on
+# Foundation approval_applications (independent review issue #112).
+# Effect40_01 adds exactly one Academic-owned private School-date resolver.
+# Do not allow public RPC/client grants or RLS/table-DML drift.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
     "d1_tables": 34,
@@ -56,10 +62,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 542,
-    "security_definers": 524,
+    "functions": 546,
+    "security_definers": 528,
     "app_functions": 157,
-    "private_functions": 385,
+    "private_functions": 389,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
@@ -430,6 +436,14 @@ def _main() -> int:
         # Run AFTER frozen suites: synthetic fixture rows commit only in this
         # disposable stack and are torn down by the existing supabase stop.
         run_real_postgres_photo_handoff(container, run_psql, ROOT)
+        from domain_enrollment_end_lock_prefix_ci import run_enrollment_end_lock_prefix
+        run_enrollment_end_lock_prefix(container, run_psql, ROOT)
+        from domain_enrollment_move_roll_union_ci import run_enrollment_move_roll_union
+        run_enrollment_move_roll_union(container, run_psql, ROOT)
+        from domain_enrollment_move_approval_ci import run_enrollment_move_approval
+        run_enrollment_move_approval(container, run_psql, ROOT)
+        from domain_roll_business_date_ci import run_roll_business_date
+        run_roll_business_date(container, run_psql, ROOT)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0

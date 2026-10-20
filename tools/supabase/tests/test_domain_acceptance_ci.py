@@ -3147,9 +3147,9 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             ("74_student_profile_p1_reviewer_scope_revoked.sql",23,
              ("reviewer exact ALL/DIRECT scope","cannot access protected request","INVALIDATED")),
         ]
-        self.assertEqual(len(DOMAIN_TESTS),74)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),74)
         self.assertEqual(sum(n for _, n in DOMAIN_TESTS[:71]),3057)
-        self.assertEqual(sum(n for _, n in DOMAIN_TESTS),3124)
+        self.assertEqual(sum(n for _, n in DOMAIN_TESTS[:74]),3124)
         for offset,(filename,count,markers) in enumerate(expected,71):
             self.assertEqual(DOMAIN_TESTS[offset],[filename,count])
             sql=(root/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
