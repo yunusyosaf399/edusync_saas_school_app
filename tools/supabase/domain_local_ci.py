@@ -51,7 +51,8 @@ FINAL_FUNCTION_OWNERS = (
 # DB-01 effect38_04 adds one operation-specific schema-owner trigger on
 # Foundation approval_applications (independent review issue #112).
 # Effect40_01 adds exactly one Academic-owned private School-date resolver.
-# Do not allow public RPC/client grants or RLS/table-DML drift.
+# DB-02 effect43_01 adds exactly one Student-owned private source preflight definer.
+# No public RPC, new grants, or RLS/table-DML drift is allowed.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
     "d1_tables": 34,
@@ -62,10 +63,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 546,
-    "security_definers": 528,
+    "functions": 547,
+    "security_definers": 529,
     "app_functions": 157,
-    "private_functions": 389,
+    "private_functions": 390,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
