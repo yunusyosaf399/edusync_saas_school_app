@@ -3196,6 +3196,26 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             self.assertIn(marker,source)
         self.assertNotIn("app.d1_change_student_roll_policy(",source)
 
+    def test_db02_roll_policy_source_preflight_83_registration(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        reviewer=["82_db02_school_reviewer_candidates.sql",10]
+        preflight=["83_db02_roll_policy_source_preflight.sql",18]
+        self.assertEqual(DOMAIN_TESTS.count(preflight),1)
+        self.assertGreater(DOMAIN_TESTS.index(preflight),DOMAIN_TESTS.index(reviewer))
+        source=(root/"supabase/tests/domain"/preflight[0]).read_text(encoding="utf-8")
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertEqual(source.count("BEGIN;"),1)
+        self.assertEqual(source.count("ROLLBACK;"),1)
+        self.assertIn("SELECT plan(18);",source)
+        self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),18)
+        for marker in ("app_private.d1_roll_policy_change_preflight(",
+                       "D1_ROLL_POLICY_REPLACE_SAME_DAY",
+                       "D1_ROLL_POLICY_REPLACE_STALE",
+                       "D1_ROLL_POLICY_INIT_HISTORY_EXISTS",
+                       "schoolos_workflow_executor"):
+            self.assertIn(marker,source)
+        self.assertNotIn("app.d1_change_student_roll_policy(",source)
+
     def test_student_profile_review_grant_real_two_session_lock_races(self):
         from domain_student_profile_reviewer_grant_race_ci import (
             CONTAINER, OLD_GRANT, NEW_GRANT, _apply, _revoke, _request_id,
