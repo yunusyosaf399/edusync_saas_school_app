@@ -52,7 +52,8 @@ FINAL_FUNCTION_OWNERS = (
 # Foundation approval_applications (independent review issue #112).
 # Effect40_01 adds exactly one Academic-owned private School-date resolver.
 # DB-02 effect43_01 adds exactly one Student-owned private source preflight definer.
-# No public RPC, new grants, or RLS/table-DML drift is allowed.
+# DB-02 effect44_01 adds one authz-reader-owned private policy version selector.
+# No public RPC or client grants; RLS/table-DML remains unchanged.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
     "d1_tables": 34,
@@ -63,10 +64,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 547,
-    "security_definers": 529,
+    "functions": 548,
+    "security_definers": 530,
     "app_functions": 157,
-    "private_functions": 390,
+    "private_functions": 391,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
