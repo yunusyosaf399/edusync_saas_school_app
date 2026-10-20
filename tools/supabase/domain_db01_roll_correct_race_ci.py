@@ -10,6 +10,7 @@ from pathlib import Path
 import time
 
 from domain_enrollment_end_lock_prefix_ci import _lock, _observe, CONTAINER
+from domain_concurrency_ci import settings_sql
 from domain_student_photo_real_pg_handoff_ci import _actor_connection, _local_connect
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,15 +70,17 @@ def _evidence(cur, roll):
 
 
 def _seed(container, run_psql, root):
-    fixture = (Path(root) / "supabase/tests/domain/fixtures/command_actor.sql").read_text()
     source = (Path(root) / "supabase/tests/domain/81_db01_roll_correct_source_prelock.sql").read_text()
     marker = "\\ir fixtures/command_actor.sql"
     cut = "SELECT is((SELECT error_code FROM app_private.d1_roll_correct_lock_source("
     _require(source.count(marker) == 1 and source.count(cut) >= 1, "FIXTURE_ANCHOR")
     setup = source.split(marker, 1)[1].split(cut, 1)[0]
-    # P0 is genuine authenticated command execution, not synthetic Enrollment.
-    run_psql(container, "BEGIN;\n" + fixture + "\n" + setup +
-             "\nCOMMIT;", "D1_DB01_CORRECT_REAL_P0_SEED", timeout=90)
+    # run_concurrency_tests has already committed the shared test Principal
+    # and test Role earlier in this SAME disposable stack. Do not re-insert
+    # command_actor.sql or its primary keys. Set this transaction's JWT only.
+    # The remaining fixture creates just a fresh DB-01 Student and real P0 Roll.
+    run_psql(container, "BEGIN;\n" + settings_sql() + "\nRESET ROLE;\n" +
+             setup + "\nCOMMIT;", "D1_DB01_CORRECT_REAL_P0_SEED", timeout=90)
 
 
 def run_db01_roll_correct_races(container, run_psql, root=ROOT):
