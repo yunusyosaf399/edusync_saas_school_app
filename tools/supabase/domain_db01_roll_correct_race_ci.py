@@ -1,8 +1,9 @@
 """Real PostgreSQL two-backend DB-01 PRIVATE effect ordering/serialization.
 
 Only the disposable Migration-10 local stack is permitted. A protected P0
-places the source; DB-01 CORRECT itself remains disabled, so privileged
-internal effect calls prove only lock/effect/rollback behavior, not ACS/P1.
+places the source; a second real authenticated P0 must serialize against the
+private effect. DB-01 CORRECT remains disabled, so privileged internal
+effect calls do not prove ACS/P1 or a public CORRECT receipt.
 """
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -174,6 +175,54 @@ INSERT INTO app_private.students(""", 1,
              setup + "\nCOMMIT;", "D1_DB01_CORRECT_REAL_P0_SEED", timeout=90)
 
 
+def _seed_competing_p0_student(container, run_psql):
+    # Independent Person/Student. Reuse the committed authenticated actor and
+    # its active P0 assignment; do NOT create any new role grants or scopes.
+    script = """BEGIN;
+SET ROLE schoolos_schema_owner;
+INSERT INTO app_private.people(id,display_name,created_by)
+VALUES('db190000-0000-4000-8000-000000000091',
+ 'DB-01 protected P0 race second Student Person',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.students(
+ id,person_id,school_student_id,admission_number,admission_serial,
+ admitted_on,current_status,created_by)
+VALUES('db190000-0000-4000-8000-000000000101',
+ 'db190000-0000-4000-8000-000000000091',
+ 'DB01-P0-COMPETITOR','DB01-P0-COMP-ADMISSION',19001,
+ CURRENT_DATE-1,'ACTIVE','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.student_status_transitions(
+ id,student_id,previous_status,new_status,effective_on,sequence_number,reason,created_by)
+VALUES('db190000-0000-4000-8000-000000000102',
+ 'db190000-0000-4000-8000-000000000101',
+ NULL,'ACTIVE',CURRENT_DATE-1,1,'DB-01 concurrent P0 initial',
+ '11111111-1111-4111-8111-111111111111');
+RESET ROLE;
+COMMIT;"""
+    # Frozen D1 mutation guards require the verified JWT Principal even for
+    # privileged fixture insertions. Reuse the existing actor context; never
+    # bypass current-principal verification or change production guards.
+    script = script.replace("BEGIN;\nSET ROLE schoolos_schema_owner;",
+                            "BEGIN;\n" + settings_sql() + "\nSET ROLE schoolos_schema_owner;")
+    run_psql(container, script, "D1_DB01_COMPETING_P0_STUDENT_SEED", timeout=90)
+
+
+def _protected_p0(conn):
+    # Unlike _effect, this is the ACTUAL app-facing protected P0 operation,
+    # authenticated with the existing fixture actor and its current grant.
+    with conn.cursor() as cur:
+        cur.execute("SET ROLE authenticated")
+        cur.execute("SET LOCAL statement_timeout='15s'")
+        cur.execute("""SELECT * FROM app.d1_place_student_enrollment(
+         %s::uuid,1,%s::uuid,'INITIAL',CURRENT_DATE-1,NULL,
+         'DB-01 genuine concurrent P0',NULL,
+         'db01-genuine-competing-p0')""",
+         ("db190000-0000-4000-8000-000000000101", SECTION))
+        row = cur.fetchone()
+        _require(row is not None, "PROTECTED_P0_NO_RESULT")
+        return row
+
+
 def run_db01_roll_correct_races(container, run_psql, root=ROOT):
     _require(container == CONTAINER, "DISPOSABLE_ONLY")
     import psycopg
@@ -240,6 +289,49 @@ def run_db01_roll_correct_races(container, run_psql, root=ROOT):
                      "REVERSE_ROLLBACK_LEAK")
         check.rollback()
 
+    # NEXT GATE: genuine authenticated protected P0 versus the private
+    # Roll correction effect. A real P0 owns the same School/Policy/Pool
+    # while uncommitted; the correction MUST actually block, then reject
+    # proposed numeric 18002 because that P0 has just assigned it to a
+    # different Student. The rejected correction must not consume 18003.
+    _seed_competing_p0_student(container, run_psql)
+    with closing(_actor_connection(psycopg)) as protected_p0, \
+         closing(_actor_connection(psycopg)) as correction, \
+         closing(_local_connect(psycopg)) as observer:
+        _protected_p0(protected_p0)  # leaves authenticated P0 transaction open
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            def conflict_after_p0():
+                try:
+                    _effect(correction, enrollment, roll, policy, old_numeric,
+                            number=18002)
+                except psycopg.errors.RaiseException:
+                    correction.rollback()
+                    return "RETAINED_NUMBER_DENIED"
+                correction.rollback()
+                return "UNEXPECTED_CORRECTION_ACCEPTED"
+
+            future = pool.submit(conflict_after_p0)
+            try:
+                with observer.cursor() as cur:
+                    _observe(cur, correction.info.backend_pid,
+                             protected_p0.info.backend_pid, future)
+            finally:
+                protected_p0.commit()
+            _require(future.result(timeout=18) == "RETAINED_NUMBER_DENIED",
+                     "PROTECTED_P0_VS_CORRECT_COLLISION_ACCEPTED")
+        with observer.cursor() as cur:
+            cur.execute("""SELECT count(*),min(numeric_value)
+              FROM app_private.roll_allocations
+              WHERE student_id='db190000-0000-4000-8000-000000000101'::uuid""")
+            _require(cur.fetchone() == (1, 18002),
+                     "PROTECTED_P0_NOT_COMMITTED_UNIQUELY")
+            _require(_evidence(cur, roll) == (1, 0, 0, 18003, 1, 0),
+                     "PROTECTED_P0_COLLISION_LEAKED_CORRECTION")
+            observer.rollback()
+    print("D1_DB01_CORRECT_VS_PROTECTED_P0_PASS observed wait, " +
+          "auth P0 assigned 18002, private correction collision rejected, " +
+          "Student/version/retained Roll unchanged, pool at 18003")
+
     # A winning transaction commits; a competing stale intent genuinely waits
     # for the same School row before observing the changed source/version.
     with closing(_actor_connection(psycopg)) as winner, \
@@ -272,6 +364,7 @@ def run_db01_roll_correct_races(container, run_psql, root=ROOT):
                 AND effective_until IS NULL""", (STUDENT,))
             _require(cur.fetchone() == (1,), "WINNER_NUMBER_NOT_UNIQUE")
             observer.rollback()
-    print("D1_DB01_CORRECT_RACE_PASS " + str(waits + 1) +
-          " observed waits, 4 reverse NOWAIT conflicts, real winner commit, " +
+    print("D1_DB01_CORRECT_RACE_PASS " + str(waits + 2) +
+          " observed waits (including protected P0), 4 reverse NOWAIT conflicts, " +
+          "real winner commit, " +
           "stale contender denial, retained history/highwater, zero CORRECT receipts")
