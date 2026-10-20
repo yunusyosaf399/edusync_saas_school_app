@@ -4,7 +4,7 @@
 
 ## 1. What the authoritative requirements do—and do not—decide
 
-- [Master specification `19](../requirements/School_OS_SaaS_Master_Specification_v0.2.md) confirms that schools define curricula, Subjects vary by Class and Academic Year, and **different students in the same grade may choose different optional Subjects where the school permits**. Its supported *Subject types* include **Compulsory, Optional, Elective, Practical, Extra-curricular and Custom**, and it also mentions theory/practical components, passing requirements and credit hours. It does **not** settle whether those six types are exclusive, how Compulsory appears in Student enrollment/subject-selection history, whether Elective always means a group, or exactly what *Optional* means versus *Elective*.
+- [Master specification §19](../requirements/School_OS_SaaS_Master_Specification_v0.2.md) confirms that schools define curricula, Subjects vary by Class and Academic Year, and **different students in the same grade may choose different optional Subjects where the school permits**. Its supported *Subject types* include **Compulsory, Optional, Elective, Practical, Extra-curricular and Custom**, and it also mentions theory/practical components, passing requirements and credit hours. It does **not** settle whether those six types are exclusive, how Compulsory appears in Student enrollment/subject-selection history, whether Elective always means a group, or exactly what *Optional* means versus *Elective*.
 - [D1-approved decision D1-01](../decisions/DOMAIN_PACKAGE_01_APPROVED_DECISIONS.md) freezes D1 `app_private.subjects` as the stable School Subject catalog and defers curriculum composition, compulsory/optional/elective rules and Student subject selections to Curriculum. **Do not add category/type/choice columns to D1 Subject.**
 - D1-07 freezes **one accepted PRIMARY Enrollment** for a Student at one time. Optional/elective choices must not create another Enrollment.
 - Existing DB-04 [seven-entity schema candidate](db04_seven_entity_schema_temporal_cur_decision_package_20261020.md) includes `curriculum_subject_rules`, `curriculum_choice_groups`, `curriculum_section_subject_offerings` and `student_subject_selections`. They are unapproved proposals. CUR-01's no-overlap/no-precedence scope is separately [approved](db04_cur01_approved_applicability_decision_20261020.md); that approval **does not** settle CUR-02.
@@ -73,6 +73,8 @@
 | `CAT-16` | A practical-component Subject's selection obligation follows the **owner-approved classification semantics**, and Exams owns theory/practical scores; no unapproved dimension reinterpretation. |
 
 **Not covered until CUR-02/03/05/06/07 choices are frozen:** exact group default, prerequisite edges, special Extra-curricular/Custom treatment, enrollment deadline, historical grandfather policy and downstream Exam lock/freeze point.
+
+**Cross-reference:** [CUR-02 unsigned owner decision record and physical approval matrix](db04_cur02_owner_decision_record_and_physical_approval_matrix_20261020.md) identifies all seven candidate entities, conditional constraints, specialist signoffs and A1/B1/C1 alternatives. This is **not** owner approval.
 
 ## 6. Decision request — no implied approval
 
