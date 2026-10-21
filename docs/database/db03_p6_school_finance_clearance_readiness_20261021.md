@@ -1,5 +1,8 @@
 # DB-03 P6 — Finance-authorized final readiness, commercial terms and post-admission changes
 
+> **21 October 2026 FINAL SKIP AUTH CHOICE:** [Independent reviewer Option B](db03_owner_decision_admin_skip_independent_review_20261021.md) is required for `ADMIN_TEST_SKIP`. A mere pending or APPROVED Foundation request does not satisfy admission test; the trusted source must prove a **single EXECUTED reviewed effect** against a pending unassessed test, with requester != reviewer. Current FAILED blocks READY. This does **not** alter Finance-authorizer clearance mandatory on every admission. [Readiness and test inventory](db03_admin_skip_independent_approval_sql_readiness_20261021.md).
+
+
 > **21 October 2026 Admin test-skip operation boundary:** [Proposed protected `admission.test.skip` contract](db03_admission_test_skip_protected_operation_contract_20261021.md) binds the only approved pending ADMISSION_TEST exception to current Foundation administration scope, a verified lack of prior verdict and true stage history. Failed test **cannot** be skipped to gain READY. Even after a genuine active skip, a **Finance-authorizer-issued current clearance** is mandatory before P7 READY and eventual D1 consumption. DIRECT versus REVIEWED exception authorization, reversal fence and SQL remain blocked.
 
 

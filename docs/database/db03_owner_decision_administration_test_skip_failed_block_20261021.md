@@ -1,5 +1,8 @@
 # DB-03 Owner decision — administration test skip; FAILED cannot be bypassed (21 October 2026)
 
+> **SUPPLEMENTAL OWNER APPROVAL — 21 October 2026:** [ADMIN-SKIP-AUTH Option B](db03_owner_decision_admin_skip_independent_review_20261021.md) requires a distinct authorized reviewer to approve a request before any `ADMIN_TEST_SKIP` may take effect. This resolves the earlier open second-reviewer question: requester != reviewer in actual Foundation workflow; DIRECT skip is not permitted. Recorded FAILED remains non-overridable, and Finance clearance mandatory. [Implementation-readiness packet](db03_admin_skip_independent_approval_sql_readiness_20261021.md).
+
+
 > **Protected operation follow-on — 21 October 2026:** [ADMIN-TEST-01 `admission.test.skip` contract](db03_admission_test_skip_protected_operation_contract_20261021.md) specifies typed canonical request/result, actual installed Foundation `ALL/CAMPUS/OWN/ASSIGNED` scope vocabulary, DIRECT-versus-REVIEWED route alternatives, common P4/P5 app/test-stage serialization, 26 future acceptance cases and 12 genuine PostgreSQL contention tests. This owner decision remains binding: no skip after a current recorded FAILED or PASSED, no Student without real Finance authorizer clearance. **Permission/approval path and SQL remain unapproved and uninstalled.**
 
 

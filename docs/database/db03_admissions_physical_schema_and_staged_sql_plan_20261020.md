@@ -1,5 +1,8 @@
 # DB-03 — Admissions physical schema reconciliation, phased SQL and verification gates
 
+> **OWNER-SELECTED SECURITY ROUTE — ADMIN-SKIP-AUTH Option B (21 October 2026):** DB-03 `admission.test.skip` requires Foundation's `operation_contracts.requires_approval=true`, one requester and a **different authorized reviewer** with current scope, and real `approval_requests` provenance. DIRECT is not permitted. For proposed #15 `ADMIN_TEST_SKIP` effects, approval_request_id becomes mandatory (real FK) and current reviewed execution/assessment-absence is required; generic exception kinds not automatically approved. [Owner decision](db03_owner_decision_admin_skip_independent_review_20261021.md), [non-activating SQL-readiness](db03_admin_skip_independent_approval_sql_readiness_20261021.md). Global lock/permission registrar, Finance adapter and D1 remain blocked.
+
+
 > **21 October 2026 next DB-03 design increment:** [ADMIN-TEST-01 protected `admission.test.skip` SQL-readiness](db03_admission_test_skip_protected_operation_contract_20261021.md) specifies the actual Foundation permission/operation/approval objects and scope-vocabulary compatibility, application/assessment/exception CAS and shared P4/P5 mutex, plus 26 future acceptance cases and 12 true two-session races. Pending decision: DIRECT or independent REVIEWED route and exact approved scope, optional #15 FK shape and SC-06 global lock integration. No SQL implementation, global permission registration, Finance interface or D1 activation performed.
 
 

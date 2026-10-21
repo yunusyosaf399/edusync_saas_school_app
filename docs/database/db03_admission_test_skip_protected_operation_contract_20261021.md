@@ -1,5 +1,8 @@
 # DB-03 ADMIN-TEST-01 — Protected `admission.test.skip` operation, authorization and SQL acceptance contract
 
+> **OWNER DECISION — ADMIN-SKIP-AUTH Option B, 21 October 2026:** **REVIEWED only** is selected; every `admission.test.skip` requires a request from an authorized administrator and a **different** authorized reviewer through Foundation, then trusted current-source execution. **DIRECT is rejected**, and previous route-alternative paragraphs below are **historical**. For applied `ADMIN_TEST_SKIP`, `approval_request_id` must be nonnull and reference real `app_private.approval_requests(id)`; independent reviewer proof, current approval and effective PENDING/unassessed test must be rechecked at execution. [Approved decision](db03_owner_decision_admin_skip_independent_review_20261021.md) and [reviewed-only readiness/28 cases/12 races](db03_admin_skip_independent_approval_sql_readiness_20261021.md). No executable SQL/permission registration.
+
+
 **2026-10-21 | DESIGN CONTRACT COMPLETE FOR OWNER/SECURITY REVIEW. NOT SQL-IMPLEMENTED, REGISTERED, EXECUTED OR TESTED.**
 
 Repo `yunusyosaf399/edusync_saas_school_app`, DB-03 branch `db/db-03-admissions-intake-design`, draft PR [#102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102). Inspected `main df1c98d5c2d19424946986fc6ba7615202b0a443` and predecessor DB-03 HEAD `0e40d0409e4b5fa81250bddc2afe19eaca80d7af`.

@@ -1,5 +1,8 @@
 # DB-03 P1–P7 reconciliation — school-led offers, non-overridable FAILED and Finance-authorized finalization
 
+> **APPROVED REVIEW PATH, 21 October 2026:** administration test skip requires a request and **one independent different authorized reviewer**; application-stage eligibility recognizes **only a truly executed reviewed `ADMIN_TEST_SKIP` effect**, never pending/approved-only workflow state. [Decision](db03_owner_decision_admin_skip_independent_review_20261021.md); [reviewed-only API and 28/12 acceptance packet](db03_admin_skip_independent_approval_sql_readiness_20261021.md). FAIL still blocks skip/READY; Finance authorizer still clears every admission. No SQL installed.
+
+
 > **ADM-TEST-01 protected operation addendum — 21 October 2026:** [Proposed `admission.test.skip` typed operation and security/lock specification](db03_admission_test_skip_protected_operation_contract_20261021.md) refines this business matrix with request/receipt/response shapes, genuine Foundation permission/operation scope contracts, shared examiner-and-administration stage mutex, 26 unexecuted positive/negative cases and 12 unexecuted two-session races. One security detail: installed Foundation scope kinds are `ALL,CAMPUS,OWN,ASSIGNED`; no raw `SECTION` literal. No new SQL/permission/catalog registration was authorized.
 
 

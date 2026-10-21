@@ -1,5 +1,8 @@
 # DB-03 P5 — Admissions offers, stage exceptions and application decisions: physical SQL-readiness and concurrency acceptance
 
+> **REVIEWED-ONLY SKIP OWNER DECISION — 21 October 2026:** The specific `ADMIN_TEST_SKIP` exception requires an **independent different authorized reviewer** through real Foundation workflow, and a genuinely EXECUTED request before applied effect may satisfy readiness. Previously proposed optional DIRECT route **is rejected** for this exception. In future #15 `admission_stage_exceptions`, `approval_request_id` is **NOT NULL when exception_kind='ADMIN_TEST_SKIP'**, FK to real `app_private.approval_requests`. Older conditional nullable-FK/DIRECT comparison is historical; mixed new exception kinds need separate product approval. [Decision](db03_owner_decision_admin_skip_independent_review_20261021.md) and [SQL-readiness](db03_admin_skip_independent_approval_sql_readiness_20261021.md).
+
+
 > **21 October 2026 protected exception implementation refinement:** [`admission.test.skip` contract](db03_admission_test_skip_protected_operation_contract_20261021.md) is the only currently owner-selected application-specific required-stage exception, and only on unassessed/pending ADMISSION_TEST. Existing proposed #15 `admission_stage_exceptions` must remain typed and immutable; its proposed unconditional NOT NULL `approval_request_id` is **not yet safe to freeze** because Foundation operation supports both DIRECT (`requires_approval=false`) and REVIEWED (`true`) paths, and the product/security owner has not selected either. Use actual `app_private.approval_requests` only for an approved workflow. No generic PASSED/SKIPPED synthesis; current FAILED denies. No schema/operation activation.
 
 
