@@ -379,7 +379,7 @@ class DomainLocalCITests(unittest.TestCase):
             "SAVEPOINT db01_disabled_history_contract;",
             "scope_kind='CAMPUS'",
             "WHERE code='student.roll_history.view'",
-            "CAMPUS_UUID",
+            "b1000000-0000-4000-8000-000000000071",
             "wrong Campus scope denies historical DIRECT receipt replay",
             "matching CAMPUS history scope replays only the original corrected R1",
             "disabled live history scope contract blocks immutable receipt replay",
