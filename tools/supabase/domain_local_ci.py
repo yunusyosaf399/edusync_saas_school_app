@@ -61,6 +61,8 @@ FINAL_FUNCTION_OWNERS = (
 # No protected command endpoint or client grant is added.
 # Effect41_05 adds Student-owned exact-reason proof and evidence-writer-owned
 # atomic DIRECT receipt + one audit + one outbox helper; still no public RPC.
+# Effect41_07 adds one dormant authenticated-only typed DIRECT Roll CORRECT RPC.
+# It leaves the frozen protected operation and permission disabled.
 # Do not allow public RPC/client grants or RLS/table-DML drift.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
@@ -72,11 +74,11 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 553,
-    "security_definers": 535,
-    "app_functions": 157,
+    "functions": 554,
+    "security_definers": 536,
+    "app_functions": 158,
     "private_functions": 396,
-    "authenticated_app_execute": 157,
+    "authenticated_app_execute": 158,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
     "service_role_execute": 0,
