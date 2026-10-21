@@ -1,6 +1,6 @@
 # DB-04 CUR-05 — Workflow Classes, Independent Reviewer and Protected APPLY Decision Gate
 
-**Status: OWNER DECISION REQUIRED; CANDIDATE ONLY.** Prepared 2026-10-21 for DB-04 draft PR #103. This document **does not** register permission/operation/event codes, configure School workflow policies, apply SQL, alter Foundation/D1 or run acceptance. User instruction to "Complete next task you recommended" authorized preparing the workflow contract; it **does not** approve CUR-04 A1+B1+C1+D1+E1+F1 or any CUR-05 choice.
+**Status: CUR-05 OWNER DECISION REQUIRED; CUR-04 PRODUCT APPROVED.** Prepared 2026-10-21 for DB-04 draft PR #103. This document **does not** register permission/operation/event codes, configure School workflow policies, apply SQL, alter Foundation/D1 or run acceptance. The later owner response **“I approved continue”** to the CUR-04 question **approved CUR-04 A1+B1+C1+D1+E1+F1**, recorded [here](db04_cur04_approved_student_family_staff_authorization_20261021.md), but supplied **no CUR-05 A–H decision**.
 
 ## 1. Exact source boundary and already approved domain policy
 
@@ -10,7 +10,9 @@
 - [CUR-01 no-overlap approval](db04_cur01_approved_applicability_decision_20261020.md) only establishes disallowed simultaneous School-wide/Campus-specific applicability; first-effective and mid-year replacement decisions are still **OPEN**.
 - [CUR-02 A1+B1+C1 approval](db04_cur02_approved_subject_category_decision_20261020.md) derives COMPULSORY obligation from published Rule/Enrollment and requires explicit accepted OPTIONAL/ELECTIVE selections.
 - [CUR-03 A1+B1+C1+D1+E1 + BF-1/B-M1 approvals](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md) require one group per ELECTIVE, per-Revision Section-feasible strict maximum, atomic finalization with durable **student_subject_selection_sets** (including FINALIZED_EMPTY) plus linked choices; no prerequisite, seat quota or deadline engine. Eight DB-04 candidate entities, **not frozen DDL**.
-- [CUR-04 Student/FAMILY/staff decision gate](db04_cur04_student_family_staff_authorization_decision_gate_20261021.md) proposes but **has not received owner approval** for staff-only accepted writes, narrow current SELF/FAMILY read, teacher assignment confers no grant, no child proposals and restricted history. CUR-05 approval **cannot** implicitly decide which actors are authorized to execute these proposed operations.
+- [CUR-04 Student/FAMILY/staff decision gate](db04_cur04_student_family_staff_authorization_decision_gate_20261021.md) has now **received product owner approval A1+B1+C1+D1+E1+F1**, see [decision](db04_cur04_approved_student_family_staff_authorization_20261021.md), for staff-only accepted writes, narrow separately granted current SELF/FAMILY reads, no automatic teacher privilege, no child proposals and separately protected history. CUR-05 approval **cannot** implicitly decide which actors are authorized to execute these proposed operations.
+
+> **Crosswalk (2026-10-21):** [CUR-04-approved actor permission surfaces mapped to CUR-05 *candidate* workflow/reviewer codes](db04_cur04_cur05_permission_reviewer_registration_crosswalk_20261021.md). No candidate code, reviewer role, P1 School policy or P2 review operation is registered. CUR-05 A–H remain pending owner approval.
 
 ## 2. Proposed CUR-05 decision codes — none approved
 
@@ -92,7 +94,7 @@
 
 ## 7. CUR-05 owner decision and cross-domain signoffs
 
-**Owner request:** **Approve CUR-05 A1+B1+C1+D1+E1+F1+G1+H1**, or specify exactly which routing/independence/exception code to change. These are recommendations only; **CUR-04 remains unapproved**, and approving CUR-05 alone would not grant any user the corresponding operation. Foundation security/registrar must confirm actual permission and review-code contract, actor Person matching, scope evaluator, P1 School policy resolution, typed hash/intents, receipt result shape and safe events. D1 Academic/Student/roll owners confirm final lock/FK; Exams/Learning/Timetable confirm snapshot/checked-read boundaries. CUR-01 effectivity, CUR-06 transitions, CUR-07 snapshots and CUR-08 eight-table final schema also remain open.
+**Owner request:** **Approve CUR-05 A1+B1+C1+D1+E1+F1+G1+H1**, or specify exactly which routing/independence/exception code to change. These are recommendations only; **CUR-04 remains unapproved**, and approved CUR-04 alone has not granted any user the corresponding operation. Foundation security/registrar must confirm actual permission and review-code contract, actor Person matching, scope evaluator, P1 School policy resolution, typed hash/intents, receipt result shape and safe events. D1 Academic/Student/roll owners confirm final lock/FK; Exams/Learning/Timetable confirm snapshot/checked-read boundaries. CUR-01 effectivity, CUR-06 transitions, CUR-07 snapshots and CUR-08 eight-table final schema also remain open.
 
 **NEXT SAFE DB-04 TASK (if user asks to continue without owner approval):** develop a **CUR-05 action/reviewer permission naming and authorization test crosswalk** as DB-04 documentation; keep permission code registration and CI owned by Foundation/deployment. If the user explicitly approves CUR-04 or CUR-05, record *only* the selected product decisions in separate decision documents and update the review matrix.
 
