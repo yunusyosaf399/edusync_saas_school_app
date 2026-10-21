@@ -1,6 +1,8 @@
 # DB-04 CUR-05 — Workflow Classes, Independent Reviewer and Protected APPLY Decision Gate
 
-**Status: CUR-05 OWNER DECISION REQUIRED; CUR-04 PRODUCT APPROVED.** Prepared 2026-10-21 for DB-04 draft PR #103. This document **does not** register permission/operation/event codes, configure School workflow policies, apply SQL, alter Foundation/D1 or run acceptance. The later owner response **“I approved continue”** to the CUR-04 question **approved CUR-04 A1+B1+C1+D1+E1+F1**, recorded [here](db04_cur04_approved_student_family_staff_authorization_20261021.md), but supplied **no CUR-05 A–H decision**.
+**Status update 2026-10-21: CUR-05 A1+B1+C1+D1+E1+F1+G1+H1 OWNER APPROVED, CUR-04 PRODUCT APPROVED.** Prepared 2026-10-21 for DB-04 draft PR #103. This document **does not** register permission/operation/event codes, configure School workflow policies, apply SQL, alter Foundation/D1 or run acceptance. The later owner response **“I approved continue”** to the CUR-04 question **approved CUR-04 A1+B1+C1+D1+E1+F1**, recorded [here](db04_cur04_approved_student_family_staff_authorization_20261021.md), but supplied **no CUR-05 A–H decision**.
+
+> **Owner decision (2026-10-21):** [CUR-05 A1+B1+C1+D1+E1+F1+G1+H1 approval](db04_cur05_approved_workflow_reviewer_policy_20261021.md) supersedes this document's original unsigned question and proposed-option status. **P0, P1 and P2 routes plus strict separate live reviewer, typed APPLY and no generic bypass are now product-approved; no code/School policy/permission has been registered.** The new [CUR-06 transfer/archive/replacement option gate](db04_cur06_transfer_archive_replacement_history_owner_gate_20261021.md) is UNAPPROVED; P2 routing does not grant mid-year replacement.
 
 ## 1. Exact source boundary and already approved domain policy
 
@@ -14,7 +16,7 @@
 
 > **Crosswalk (2026-10-21):** [CUR-04-approved actor permission surfaces mapped to CUR-05 *candidate* workflow/reviewer codes](db04_cur04_cur05_permission_reviewer_registration_crosswalk_20261021.md). No candidate code, reviewer role, P1 School policy or P2 review operation is registered. CUR-05 A–H remain pending owner approval.
 
-## 2. Proposed CUR-05 decision codes — none approved
+## 2. CUR-05 decisions — A1/B1/C1/D1/E1/F1/G1/H1 approved; original alternatives retained
 
 | Gate | Recommended choice | Alternative / change requiring explicit owner text |
 |---|---|---|
@@ -27,7 +29,7 @@
 | **CUR-05-G1 — APPLY, idempotency and stale-review failure** | APPROVE is **not APPLY**. Typed domain APPLY re-verifies requester/reviewer live authority/Person separation, complete scope, exact source Enrollment/Student version, affected academic/Subject state, revision digest, approved typed intent, School-first lock order and active policy. Stale approval fails closed with Foundation retained safe invalidation evidence; unexpected DB errors roll back. | G2 automated post-approval apply only if separate workflow policy and job authorization are explicitly approved; never retroactively rewrite source. |
 | **CUR-05-H1 — Exceptional bypasses** | **No generic Curriculum override or reviewer-less exception in v1.** A future exception needs an explicit operation, scoped grant, typed case taxonomy, expected version, reason evidence, review and audit. | H2 separately approved exception catalogue including affected data, eligibility and historic downstream freeze; no generic “admin override” flag. |
 
-**These are all open owner choices.** P1 means the *configured School policy* chooses direct or reviewed, not “always requires an approval.” P2 requires actual independent review before accepted mutation, not simply submitting an approval request. A Curriculum status enum is not a substitute for Foundation review evidence.
+**These eight recommended choices were explicitly approved by the owner on 2026-10-21; see [approval record](db04_cur05_approved_workflow_reviewer_policy_20261021.md).** P1 means the *configured School policy* chooses direct or reviewed, not “always requires an approval.” P2 requires actual independent review before accepted mutation, not simply submitting an approval request. A Curriculum status enum is not a substitute for Foundation review evidence.
 
 ## 3. Candidate fixed operation-to-workflow map (not a registration)
 
@@ -92,10 +94,10 @@
 
 **Test protocol:** separate PostgreSQL connections, observed `pg_blocking_pids`/`pg_stat_activity` real lock waits, both orderings, post-commit verification on fresh connection, exact receipt/audit/outbox cardinalities, and no cross-School or unauthorized history disclosure. All test cases are plans until an independently approved local installation and CI are available; no green runtime proof claimed.
 
-## 7. CUR-05 owner decision and cross-domain signoffs
+## 7. Historical CUR-05 decision request — RESOLVED, implementation signoffs outstanding
 
-**Owner request:** **Approve CUR-05 A1+B1+C1+D1+E1+F1+G1+H1**, or specify exactly which routing/independence/exception code to change. These are recommendations only; **CUR-04 remains unapproved**, and approved CUR-04 alone has not granted any user the corresponding operation. Foundation security/registrar must confirm actual permission and review-code contract, actor Person matching, scope evaluator, P1 School policy resolution, typed hash/intents, receipt result shape and safe events. D1 Academic/Student/roll owners confirm final lock/FK; Exams/Learning/Timetable confirm snapshot/checked-read boundaries. CUR-01 effectivity, CUR-06 transitions, CUR-07 snapshots and CUR-08 eight-table final schema also remain open.
+**Owner decision received:** **CUR-05 A1+B1+C1+D1+E1+F1+G1+H1 APPROVED** [record](db04_cur05_approved_workflow_reviewer_policy_20261021.md). CUR-04 is also approved [record](db04_cur04_approved_student_family_staff_authorization_20261021.md), but neither approval installs action/role grants. Foundation security/registrar remains responsible for reviewed implementation and all School operation-mode policies. Foundation security/registrar must confirm actual permission and review-code contract, actor Person matching, scope evaluator, P1 School policy resolution, typed hash/intents, receipt result shape and safe events. D1 Academic/Student/roll owners confirm final lock/FK; Exams/Learning/Timetable confirm snapshot/checked-read boundaries. CUR-01 effectivity, CUR-06 transitions, CUR-07 snapshots and CUR-08 eight-table final schema also remain open.
 
-**NEXT SAFE DB-04 TASK (if user asks to continue without owner approval):** develop a **CUR-05 action/reviewer permission naming and authorization test crosswalk** as DB-04 documentation; keep permission code registration and CI owned by Foundation/deployment. If the user explicitly approves CUR-04 or CUR-05, record *only* the selected product decisions in separate decision documents and update the review matrix.
+**Next safe DB-04 task completed:** The [CUR-04/CUR-05 candidate permission/reviewer crosswalk](db04_cur04_cur05_permission_reviewer_registration_crosswalk_20261021.md) is prepared. The [CUR-06 option gate](db04_cur06_transfer_archive_replacement_history_owner_gate_20261021.md) is now ready for owner choice. No permission catalog registration, SQL or CI changes.
 
-**Disposition: CUR-05 WORKFLOW AND INDEPENDENT REVIEWER CONTRACT READY FOR OWNER DECISION; ZERO SQL/GRANTS/CI/DEPLOYMENT MODIFICATIONS.**
+**Disposition: CUR-05 EIGHT CHOICES OWNER APPROVED; FOUNDATION/SCHOOL REGISTRATION AND CUR-06 PRODUCT DECISIONS REMAIN OPEN; ZERO SQL/GRANTS/CI/DEPLOYMENT MODIFICATIONS.**
