@@ -51,6 +51,8 @@ An authorized staff action derives Principal server-side, checks a **registered*
 
 **Planned tests**: AU-01…AU-12 in the historical [CUR-04 option analysis](db04_cur04_student_family_staff_authorization_decision_gate_20261021.md) remain designed only. They must be implemented with real Principal/grant fixtures and correct disclosure; no test has run, no permissions were installed and no hosted Supabase project was changed.
 
+> **Workflow decision update (2026-10-21):** [CUR-05 A1+B1+C1+D1+E1+F1+G1+H1 owner-approved](db04_cur05_approved_workflow_reviewer_policy_20261021.md), superseding any earlier ‘CUR-05 unapproved’ status below. This does **not** activate permissions, configured P1 School modes or review codes. [CUR-06](db04_cur06_transfer_archive_replacement_history_owner_gate_20261021.md) is the next open owner decision.
+
 ## 5. Decision ledger and next gate
 
 **Approved:** CUR-01 only the School-wide/Campus overlap/no-precedence portion; CUR-02 A1+B1+C1; CUR-03 A1+B1+C1+D1+E1 plus BF-1/B-M1; **CUR-04 A1+B1+C1+D1+E1+F1**.
