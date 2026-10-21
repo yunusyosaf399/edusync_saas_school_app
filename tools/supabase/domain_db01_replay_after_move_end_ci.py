@@ -188,6 +188,26 @@ WHERE p.code IN ('student.roll.correct','student.roll_history.view',
      AND (aps.valid_until IS NULL OR aps.valid_until>pg_catalog.statement_timestamp())
      AND aps.revoked_at IS NULL)
 ORDER BY g.valid_from DESC;
+-- The preceding suites have their own campus-specific P1 policies. The new
+-- test Campus must supply its OWN explicit reviewed DIRECT selection rather
+-- than inheriting one from another Campus or an ambiguous School fallback.
+INSERT INTO app_private.approval_policy_versions(
+ id,policy_key,version,operation_id,campus_id,d1_route_mode,created_by)
+SELECT CASE o.code WHEN 'student.enrollment.move'
+        THEN 'db1b0000-0000-4000-8000-000000000059'::uuid
+        ELSE 'db1b0000-0000-4000-8000-000000000060'::uuid END,
+  CASE o.code WHEN 'student.enrollment.move'
+       THEN 'db01-historic-protected-move-direct'
+       ELSE 'db01-historic-protected-end-direct' END,
+  1,o.id,'db1b0000-0000-4000-8000-000000000041'::uuid,
+  'DIRECT','11111111-1111-4111-8111-111111111111'
+FROM app_private.operation_contracts o
+WHERE o.code IN ('student.enrollment.move','student.enrollment.end');
+UPDATE app_private.approval_policy_versions SET state='ACTIVE',
+ effective_from=pg_catalog.statement_timestamp()-interval '1 hour',
+ activated_at=pg_catalog.statement_timestamp()
+WHERE id IN ('db1b0000-0000-4000-8000-000000000059'::uuid,
+             'db1b0000-0000-4000-8000-000000000060'::uuid);
 RESET ROLE;
 COMMIT;"""
     run_psql(container,script,"D1_DB01_REPLAY_AFTER_MOVE_END_SEED",timeout=100)
@@ -348,6 +368,18 @@ COMMIT;""","D1_DB01_REPLAY_ADVANCE_TEST_SCHOOL_DATE",timeout=60)
         with c.cursor() as cur:
             cur.execute("SELECT app_private.d1_roll_business_date(%s::uuid)",(SCHOOL,))
             _check(cur.fetchone()[0]==east_day,"EAST_DATE_RESOLVER")
+        c.rollback()
+
+    # Exact P1 selection must be DIRECT for the isolated source/destination,
+    # otherwise stop as an approval-policy fixture error (no P1 bypass).
+    with closing(_local_connect(psycopg)) as c:
+        with c.cursor() as cur:
+            cur.execute("SELECT route_mode FROM app_private.d1_enrollment_move_policy(%s::uuid,%s::uuid)",
+                        (SOURCE,DEST))
+            _check(cur.fetchone()==("DIRECT",),"MOVE_P1_ROUTE_NOT_DIRECT")
+            cur.execute("SELECT route_mode FROM app_private.d1_enrollment_end_policy(%s::uuid)",
+                        (SOURCE,))
+            _check(cur.fetchone()==("DIRECT",),"END_P1_ROUTE_NOT_DIRECT")
         c.rollback()
 
     with closing(_actor_connection(psycopg)) as c:
