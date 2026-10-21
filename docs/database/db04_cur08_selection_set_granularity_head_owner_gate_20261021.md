@@ -1,6 +1,8 @@
 # DB-04 — CUR-08 P01/P02 Student Finalized-Set Granularity and Canonical-Head Owner Gate
 
-**2026-10-21 | P01/P02 PRODUCT DECISIONS REQUIRED — NOT APPROVED | DOCUMENTATION ONLY**
+> **OWNER APPROVAL — 2026-10-21:** The owner replied **"I approved"** immediately to the recommendation **CUR-08 P01A + P02A**. Both options are **PRODUCT APPROVED** (whole-revision accepted T7/T8 complete sets; at most one effective accepted head for exact Student/Enrollment/Revision/Applicability/instant). [Formal owner decision](db04_cur08_p01a_p02a_approved_selection_set_head_20261021.md). The option matrix's original `NOT APPROVED` descriptions below are preserved as historical proposal text. [Remaining P03–P08 technical signoff checklist](db04_cur08_remaining_physical_signoff_checklist_20261021.md). No SQL or runtime authority.
+
+**ORIGINAL CANDIDATE STATUS (SUPERSEDED 2026-10-21): P01/P02 WERE PENDING; BOTH P01A + P02A ARE NOW PRODUCT APPROVED. DOCUMENTATION ONLY.**
 
 This focused physical decision worksheet is the next DB-04 documentation task following [all five CUR-01 timing/cutover approvals](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md). It supplements [CUR-08 eight-entity physical readiness](db04_cur08_eight_entity_physical_freeze_readiness_20261021.md). It does **not** authorize executable schema, migration, grants, tests, cross-domain edits or deployment.
 
@@ -54,11 +56,11 @@ The Master Specification §19 permits distinct optional choices within a Grade, 
 | Approval item | Status |
 |---|---|
 | CUR-01 T1+M1+S1+F1+H1 | **OWNER APPROVED**, separate recorded decision |
-| CUR-08 P01A vs P01B | **PENDING OWNER** |
-| CUR-08 P02A vs P02B | **PENDING OWNER** |
+| CUR-08 P01A vs P01B | **OWNER APPROVED P01A; P01B NOT SELECTED** |
+| CUR-08 P02A vs P02B | **OWNER APPROVED P02A; P02B NOT SELECTED** |
 | CUR-08 physical FKs/time/immutable history review | **PENDING D1/DB-04 technical signers** |
 | Foundation private grants / P1+P2 executor / receipt registration | **PENDING FOUNDATION AND DEPLOYMENT OWNER** |
 | CUR-07 A1…G1 and Exams/Learning/Timetable consumer signatures | **PENDING** |
 | DB-04 SQL and true two-backend runtime acceptance | **NOT AUTHORIZED / NOT EXECUTED** |
 
-**Recommended next step:** ask the product owner to explicitly approve or revise **CUR-08 P01A + P02A** using the simple examples above, then continue the remaining CUR-08 constraints/consumer signoff gate without implementing SQL. “Continue” alone is not approval of either option.
+**Current next step:** P01A/P02A have been explicitly owner-approved via the directly following “I approved”. Continue the [remaining CUR-08 P03–P08 technical/signoff gate](db04_cur08_remaining_physical_signoff_checklist_20261021.md) and obtain **CUR-07 A1–G1 product decision + independent consumer signatures**, without implementing SQL.

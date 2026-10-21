@@ -1,5 +1,7 @@
 # DB-04 — CUR-07 Consumer Integration Evidence and Signoff Review
 
+> **2026-10-21 P01A/P02A PRODUCT APPROVED:** [Exact accepted whole-set T7 generation and one effective head](db04_cur08_p01a_p02a_approved_selection_set_head_20261021.md) are approved provider semantics. Consumers' freeze points and data minimization remain **CUR-07 A1–G1 unapproved** and require independent domain signatures. Preserve the original T7 source at consumer capture, not just a current/latest Revision resolver.
+
 > **2026-10-21 CUR-01 UPDATE:** The owner explicitly [approved first effective date and mid-year cutover T1+M1+S1+F1+H1](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md). Earlier CUR-01 timing-pending notes below are superseded. CUR-07 A1–G1 and downstream consumer/permission signoffs **remain unapproved**; CUR-01 approval must not be read as authorization to freeze Exams/Learning/Timetable evidence contracts.
 
 **2026-10-21 | DOCUMENTATION-ONLY | CUR-07 NOT APPROVED | PR #103**

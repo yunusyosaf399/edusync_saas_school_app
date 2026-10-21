@@ -1,5 +1,7 @@
 # DB-04 — CUR-08 Eight-Entity Physical Freeze Readiness Gate
 
+> **P01/P02 OWNER UPDATE — 2026-10-21:** The owner approved **P01A whole-revision selection set** and **P02A one effective canonical accepted head**; see [formal product approval](db04_cur08_p01a_p02a_approved_selection_set_head_20261021.md). P01/P02 older pending labels below are historical. Remaining **P03–P08 physical/integration signoffs**, [checklist](db04_cur08_remaining_physical_signoff_checklist_20261021.md), CUR-07 A1–G1 and consumer signers are still open. Eight relations remain **candidate** SQL, not frozen executable DDL.
+
 > **CURRENT DECISION UPDATE — 2026-10-21:** [CUR-01 T1+M1+S1+F1+H1 are now explicitly owner-approved](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md), in addition to overlap/no-precedence. Older “CUR-01 timing pending” notes below are historical. CUR-08 **P01/P02 remain unapproved**; the focused [T7 set granularity / effective-head decision gate](db04_cur08_selection_set_granularity_head_owner_gate_20261021.md) is prepared next. CUR-07 product/consumer signoffs, released D1 and Foundation/security evidence remain pending. No SQL.
 
 **2026-10-21 | CUR-08 NOT APPROVED | DESIGN REVIEW ONLY | PR #103**
@@ -34,8 +36,8 @@ This review supersedes the historical **seven-table count** for **future decisio
 
 | Item | Candidate design and acceptance proof | Required approval |
 |---|---|---|
-| **P01 — T7 granularity** | Recommend **one immutable accepted whole-revision set per Student+Enrollment+Revision+effective segment** covering both group ELECTIVE members and OPTIONAL selections; each accepted change makes a successor, preserving original empty-set proof. Alternative: independent optional-choice generation, requiring precise link/reconciliation rules and possibly a different set key. | Owner + DB-04 schema reviewer; confirm OPTIONAL membership and cross-group atomicity |
-| **P02 — canonical head uniqueness** | Enforce at most one effective accepted set per exact Student+Enrollment+revision/applicability interval, with no overlapping current heads; closure must not rewrite as-observed evidence. Specify whether explicit School date segment breaks create new heads and whether multiple revisions can coexist in disjoint intervals. | Owner + temporal/concurrency reviewer |
+| **P01 — T7 granularity** | **OWNER-APPROVED P01A:** one immutable accepted whole-revision set per Student+Enrollment+Revision+Applicability+effective segment covers group ELECTIVE and OPTIONAL members; each accepted change creates complete successor and retains prior finalized-empty/nonempty history. P01B separate group/OPTIONAL heads not selected. | Owner **APPROVED**; DB-04 physical reviewer and runtime proof pending |
+| **P02 — canonical head uniqueness** | **OWNER-APPROVED P02A:** at most one effective accepted whole-set T7 generation per exact Student+Enrollment+Revision+Applicability instant; preserve immutable original and successor history and reject concurrent overlapping accepted heads. Exact exclusion/closure design and segment-break implementation require physical proof. | Owner **APPROVED**; temporal/concurrency reviewer and runtime proof pending |
 | **P03 — source keys** | Verify installed D1 `enrollments(id,student_id)` parent key before a composite FK; confirm School/Year/Section/Subject parents and verified receipt/Principal FK keys. Never assume `subjects(id,school_id)` or `section_offerings(id,campus_id)` unique keys. | Released D1 + Foundation schema owners |
 | **P04 — recorded time** | Store initial declared validity, one-way closure, immutable accepted receipt/actor and original revision digest; audit as-known reconstruction against source and consumer captures. `transaction_timestamp()` is not assumed to be the actual commit instant. | Temporal reviewer + downstream consumers |
 | **P05 — publication collision** | Serially reject School-wide/Campus overlapping T3 coverage for real D1 Class Offerings; do not add “Campus wins” rules. Validate/revalidate in P2 APPLY under School-first fence and actual implicit FK/trigger lock inspection. | CUR-01 timing choice + D1 integrator |
@@ -47,10 +49,10 @@ This review supersedes the historical **seven-table count** for **future decisio
 
 ## 4. Pre-implementation no-go criteria
 
-Reject the physical freeze or SQL build when any condition holds: CUR-01 approved timing/transition safeguards cannot be demonstrated; CUR-07 product decision or Exams/Learning/Timetable source/snapshot signoff missing; P01/P02 optional/link/current-head details unresolved; D1 Migration 10 not released with exact keys; D1 END/MOVE/ARCHIVE lock and implicit FK tests not executed; global registrar/grant policy not independently approved; one-way closure/as-known source behavior undocumented; authorization denials and full two-backend test harness not registered; populated install/upgrade review absent.
+Reject the physical freeze or SQL build when any condition holds: CUR-01 approved timing/transition safeguards cannot be demonstrated; CUR-07 product decision or Exams/Learning/Timetable source/snapshot signoff missing; P01A/P02A implementation constraints or as-known history not independently proved; D1 Migration 10 not released with exact keys; D1 END/MOVE/ARCHIVE lock and implicit FK tests not executed; global registrar/grant policy not independently approved; one-way closure/as-known source behavior undocumented; authorization denials and full two-backend test harness not registered; populated install/upgrade review absent.
 
 **No SQL or executable acceptance has been run for DB-04.** Draft PR #103 must not be merged as implementation approval or used as a deployment signal.
 
 ## 5. Next task
 
-CUR-01 timing is **owner-approved**. Obtain **CUR-07 A1–G1** explicit owner choices, and choose **CUR-08 P01/P02** with independent signers. Only then prepare exact SQL-ready physical contracts for separately authorized implementation. This document records no new owner approval.
+CUR-01 timing is **owner-approved**. Obtain **CUR-07 A1–G1** explicit owner choices and P01A/P02A **technical implementation signoff** alongside remaining P03–P08 gates. Only then prepare exact SQL-ready physical contracts for separately authorized implementation. This document records no new owner approval.

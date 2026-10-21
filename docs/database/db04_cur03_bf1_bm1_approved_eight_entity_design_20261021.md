@@ -1,5 +1,7 @@
 # DB-04 — CUR-03 BF-1 and B-M1 Owner Decision; Eight-Entity Design Amendment
 
+> **2026-10-21 CUR-08 P01A/P02A follow-up:** The owner explicitly approved [whole-revision finalized sets (including OPTIONAL + ELECTIVE) and a unique effective accepted T7 head](db04_cur08_p01a_p02a_approved_selection_set_head_20261021.md). Historical P01 OPTIONAL linkage/whole-set questions below are now resolved at **product semantics** level; precise physical FK/index/closure mechanisms remain subject to [independent CUR-08 review](db04_cur08_remaining_physical_signoff_checklist_20261021.md). No SQL authorization.
+
 **OWNER APPROVED — 2026-10-21.** Exact user decision: **“For DB-04 CUR-03, I approve BF-1 for finalization evidence and B-M1 for group maximum semantics. Record these decisions and continue DB-04 documentation work without implementing SQL.”** This approves **BF-1: a dedicated DB-04 Student subject selection-set/finalization history relation** and **B-M1: strict Section offered-member maximum**, in addition to [CUR-03 A1+B1+C1+D1+E1](db04_cur03_approved_group_policy_20261020.md). It is **not** authorization for SQL, migration deployment, a role/permission registration, or a blanket CUR-08 physical schema freeze.
 
 ## 1. Decided product/physical direction
