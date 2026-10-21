@@ -41,8 +41,8 @@ def _seed(container, run_psql, business_date):
     transitions=[]
     for name, student in STUDENTS.items():
         index=CASE_IDS[name]
-        person=PREFIX+f"{index:012d}"[:-2]+"90"
-        status=PREFIX+f"{index:012d}"[:-2]+"02"
+        person=PREFIX+f"{index*1000+90:012d}"
+        status=PREFIX+f"{index*1000+2:012d}"
         tuples.append(f"""('{student}'::uuid,'{person}'::uuid,
           'DB01-CROSS-STUDENT-{index}','DB01-CROSS-ADM-{index}',
           {19900+index},%s::date-21,'ACTIVE',
@@ -55,7 +55,7 @@ def _seed(container, run_psql, business_date):
     day=business_date.isoformat()
     people=[]
     for index in range(1,5):
-        person=PREFIX+f"{index:012d}"[:-2]+"90"
+        person=PREFIX+f"{index*1000+90:012d}"
         people.append(f"('{person}'::uuid,'DB-01 contested Student Person {index}',"+
                       "'11111111-1111-4111-8111-111111111111')")
     # Construct one transaction with schema-owner fixture writes only.
