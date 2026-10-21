@@ -462,6 +462,8 @@ def _main() -> int:
         run_db01_protected_direct_races(container, run_psql)
         from domain_db01_replay_after_move_end_ci import run_db01_roll_replay_after_move_end
         run_db01_roll_replay_after_move_end(container, run_psql)
+        from domain_db01_correct_vs_move_end_ci import run_db01_correct_vs_move_end_races
+        run_db01_correct_vs_move_end_races(container, run_psql)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0

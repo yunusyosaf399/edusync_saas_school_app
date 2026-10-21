@@ -332,6 +332,40 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertNotIn("GRANT EXECUTE", trial)
         self.assertNotIn("time.sleep(", trial)
 
+    def test_db01_protected_correct_move_end_four_real_pg_races(self):
+        file = runtime.ROOT / "tools/supabase/domain_db01_correct_vs_move_end_ci.py"
+        source = file.read_text(encoding="utf-8")
+        compile(source, str(file), "exec")
+        driver = (runtime.ROOT / "tools/supabase/domain_local_ci.py").read_text(encoding="utf-8")
+        self.assertLess(driver.index("run_db01_roll_replay_after_move_end(container, run_psql)"),
+                        driver.index("run_db01_correct_vs_move_end_races(container, run_psql)"))
+        for marker in (
+            "CORRECT_OVER_MOVE", "MOVE_OVER_CORRECT",
+            "CORRECT_OVER_END", "END_OVER_CORRECT",
+            "D1_DB01_CORRECT_MOVE_END_FOUR_RACES_PASS",
+            "app.d1_place_student_enrollment(",
+            "app.d1_correct_student_roll(",
+            "app.d1_move_student_enrollment(",
+            "app.d1_end_student_enrollment(",
+            "ThreadPoolExecutor(max_workers=1)",
+            "pg_catalog.pg_blocking_pids(a.pid)",
+            "D1_DB01_CORRECT_CROSS_OPERATION_WAIT_NOT_OBSERVED",
+            "R0_NOT_CLOSED_",
+            "LEDGER_OR_EVIDENCE_",
+            "PROTECTED_CORRECT_DISABLED_IN_TEST",
+            "SET ROLE authenticated",
+        ):
+            self.assertIn(marker, source)
+        for forbidden in (
+            "INSERT INTO app_private.roll_allocations",
+            "UPDATE app_private.roll_allocations",
+            "INSERT INTO app_private.enrollments",
+            "UPDATE app_private.enrollments",
+            "GRANT EXECUTE",
+            "ALTER FUNCTION app.d1_correct_student_roll",
+        ):
+            self.assertNotIn(forbidden, source)
+
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
         observed["authenticated_private_execute"] = 1
