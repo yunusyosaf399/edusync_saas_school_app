@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(32);
+SELECT plan(48);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -223,6 +223,131 @@ SELECT is(:'history_corrected_roll_allocation_id'::uuid,:'direct_corrected_roll_
 SELECT is(pg_catalog.has_function_privilege('authenticated','app.d1_correct_student_roll(uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text,text)','EXECUTE'),true,'authenticated typed RPC allowed');
 SELECT is(pg_catalog.has_function_privilege('anon','app.d1_correct_student_roll(uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text,text)','EXECUTE'),false,'anon typed RPC denied');
 SELECT is(pg_catalog.has_function_privilege('service_role','app.d1_correct_student_roll(uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text,text)','EXECUTE'),false,'service role typed RPC denied');
+
+-- DB-01 current history-disclosure security: scope identity is not a receipt.
+-- Every mutation below is inside a SAVEPOINT of this rollback-only suite.
+SAVEPOINT db01_wrong_history_campus;
+SET ROLE schoolos_schema_owner;
+INSERT INTO app.campuses(id,school_id,code,name,state,created_by)
+VALUES ('b1000000-0000-4000-8000-000000000071',
+ '22222222-2222-4222-8222-222222222222',
+ 'DB01-WRONG-HISTORY','Unrelated Campus history disclosure negative', 'ACTIVE',
+ '11111111-1111-4111-8111-111111111111');
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes
+ SET revoked_at=pg_catalog.clock_timestamp()
+ WHERE id='b1880000-0000-4000-8000-000000000011';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions
+   WHERE code='student.roll_history.view')
+ AND scope_kind='CAMPUS' AND resolver_key='DIRECT';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,campus_id,valid_from,created_by)
+SELECT 'b1880000-0000-4000-8000-000000000012',
+ 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+ g.id,g.role_id,g.permission_id,c.id,'CAMPUS','DIRECT',
+ 'b1000000-0000-4000-8000-000000000071'::uuid,
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1880000-0000-4000-8000-000000000010'
+ AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT';
+RESET ROLE;
+
+SELECT is(app_private.d1_authorized('student.roll_history.view','STUDENT','b1000000-0000-4000-8000-000000000001',NULL::uuid,CURRENT_DATE),false,
+ 'a current Roll-history CAMPUS grant for an unrelated Campus cannot read this Student');
+SELECT throws_ok(pg_catalog.format($fmt$SELECT * FROM app.d1_correct_student_roll('b1000000-0000-4000-8000-000000000001'::uuid,1,
+ %L::uuid,'b1000000-0000-4000-8000-000000000045'::uuid,CURRENT_DATE-20,
+ %L::uuid,CURRENT_DATE-20,'b1000000-0000-4000-8000-000000000049'::uuid,
+  12001,12009,'Exact typed reason ','db01-direct-protected-key')$fmt$,:'placed_enrollment_id',:'placed_roll_allocation_id'),'P0001'::char(5),NULL::text,'wrong Campus scope denies historical DIRECT receipt replay');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE idempotency_key='db01-direct-protected-key'),1::bigint,
+ 'denied wrong-Campus replay retains exactly one immutable success receipt');
+SELECT is((SELECT count(*) FROM app_private.outbox_events ev
+ JOIN app_private.command_receipts r ON r.id=ev.command_receipt_id
+ WHERE r.idempotency_key='db01-direct-protected-key'
+ AND (ev.payload ?| ARRAY['old_numeric_value','new_numeric_value','numeric_value','correction_reason','reason'])),0::bigint,
+ 'broad Roll-corrected event discloses no numeric Roll or original reason');
+SELECT is((SELECT count(*) FROM app_private.audit_events a
+ JOIN app_private.command_receipts r ON r.id=a.command_receipt_id
+ WHERE r.idempotency_key='db01-direct-protected-key'
+ AND (a.details ?| ARRAY['old_numeric_value','new_numeric_value','numeric_value','correction_reason','reason'])),0::bigint,
+ 'broad correction audit discloses no numeric Roll or original reason');
+ROLLBACK TO SAVEPOINT db01_wrong_history_campus;
+SELECT is(app_private.d1_authorized('student.roll_history.view','STUDENT','b1000000-0000-4000-8000-000000000001',NULL::uuid,CURRENT_DATE),true,'restored matching ALL history scope authorizes immutable replay');
+
+SAVEPOINT db01_matching_history_campus;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes
+ SET revoked_at=pg_catalog.clock_timestamp()
+ WHERE id='b1880000-0000-4000-8000-000000000011';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions
+   WHERE code='student.roll_history.view')
+ AND scope_kind='CAMPUS' AND resolver_key='DIRECT';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,campus_id,valid_from,created_by)
+SELECT 'b1880000-0000-4000-8000-000000000012',
+ 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+ g.id,g.role_id,g.permission_id,c.id,'CAMPUS','DIRECT',
+ 'b1000000-0000-4000-8000-000000000041'::uuid,
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1880000-0000-4000-8000-000000000010'
+ AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT';
+RESET ROLE;
+
+SELECT is(app_private.d1_authorized('student.roll_history.view','STUDENT','b1000000-0000-4000-8000-000000000001',NULL::uuid,CURRENT_DATE),true,
+ 'current matching CAMPUS-only history scope independently authorizes the Student');
+SET ROLE authenticated;
+SELECT * FROM app.d1_correct_student_roll('b1000000-0000-4000-8000-000000000001'::uuid,1,
+ :'placed_enrollment_id'::uuid,'b1000000-0000-4000-8000-000000000045'::uuid,CURRENT_DATE-20,
+ :'placed_roll_allocation_id'::uuid,CURRENT_DATE-20,'b1000000-0000-4000-8000-000000000049'::uuid,
+ 12001,12009,'Exact typed reason ','db01-direct-protected-key') \gset matched_scope_
+RESET ROLE;
+SELECT is(:'matched_scope_corrected_roll_allocation_id'::uuid,
+ :'direct_corrected_roll_allocation_id'::uuid,
+ 'matching CAMPUS history scope replays only the original corrected R1');
+ROLLBACK TO SAVEPOINT db01_matching_history_campus;
+SELECT is(app_private.d1_authorized('student.roll_history.view','STUDENT','b1000000-0000-4000-8000-000000000001',NULL::uuid,CURRENT_DATE),true,'rollback restores the original ALL history scope');
+
+SAVEPOINT db01_disabled_history_contract;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.permission_scope_contracts SET enabled=false
+ WHERE permission_id=(SELECT id FROM app_private.permissions
+   WHERE code='student.roll_history.view')
+ AND scope_kind='ALL' AND resolver_key='DIRECT';
+RESET ROLE;
+SELECT is(app_private.d1_authorized('student.roll_history.view','STUDENT','b1000000-0000-4000-8000-000000000001',NULL::uuid,CURRENT_DATE),false,
+ 'disabled live history scope contract denies even an originally authorized receipt');
+SELECT throws_ok(pg_catalog.format($fmt$SELECT * FROM app.d1_correct_student_roll('b1000000-0000-4000-8000-000000000001'::uuid,1,
+ %L::uuid,'b1000000-0000-4000-8000-000000000045'::uuid,CURRENT_DATE-20,
+ %L::uuid,CURRENT_DATE-20,'b1000000-0000-4000-8000-000000000049'::uuid,
+  12001,12009,'Exact typed reason ','db01-direct-protected-key')$fmt$,:'placed_enrollment_id',:'placed_roll_allocation_id'),'P0001'::char(5),NULL::text,'disabled live history scope contract blocks immutable receipt replay');
+ROLLBACK TO SAVEPOINT db01_disabled_history_contract;
+SELECT is(app_private.d1_authorized('student.roll_history.view','STUDENT','b1000000-0000-4000-8000-000000000001',NULL::uuid,CURRENT_DATE),true,
+ 'restored enabled scope contract reauthorizes history without receipt modification');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE idempotency_key='db01-direct-protected-key'),1::bigint,
+ 'scope switching and rejected replays preserve one receipt');
+SELECT is((SELECT count(*) FROM app_private.audit_events a
+ JOIN app_private.command_receipts r ON r.id=a.command_receipt_id
+ WHERE r.idempotency_key='db01-direct-protected-key'),1::bigint,
+ 'scope switching and rejected replays preserve one audit');
+SELECT is((SELECT count(*) FROM app_private.outbox_events ev
+ JOIN app_private.command_receipts r ON r.id=ev.command_receipt_id
+ WHERE r.idempotency_key='db01-direct-protected-key'),1::bigint,
+ 'scope switching and rejected replays preserve one outbox event');
+SELECT is((SELECT row_version FROM app_private.students
+ WHERE id='b1000000-0000-4000-8000-000000000001'),2::bigint,
+ 'all historical disclosure tests remain read-only for the corrected Student');
+
 SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
 ROLLBACK;
