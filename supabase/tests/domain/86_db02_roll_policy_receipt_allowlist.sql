@@ -4,6 +4,11 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
+-- This disposable test SET ROLE's to a private NOLOGIN evidence writer.
+-- The role has no persistent access to the extension schema, so pgTAP's
+-- throws_ok/lives_ok aren't visible after SET ROLE unless fixture-granted.
+-- Transaction-level GRANT is rolled back; never add this to a migration.
+GRANT USAGE ON SCHEMA extensions TO schoolos_evidence_writer;
 SELECT plan(27);
 \ir fixtures/command_actor.sql
 SELECT is((SELECT pg_catalog.pg_get_userbyid(proowner)::text
