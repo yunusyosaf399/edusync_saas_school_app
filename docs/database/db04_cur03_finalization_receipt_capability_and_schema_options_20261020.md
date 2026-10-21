@@ -2,6 +2,9 @@
 
 **Status: IMPLEMENTATION DESIGN OPTIONS READY; CUR-08 PHYSICAL OWNER DECISION REQUIRED.** Read-only Foundation schema/trigger/catalog inspection, 2026-10-20. Scope: DB-04 documentation only on PR #103. [Owner-approved CUR-03 policy](db04_cur03_approved_group_policy_20261020.md) commits to School-configured group limits and atomic accepted final elective sets. **It does not approve an eighth Curriculum relation or designate command receipts as the finalization-state source.** CUR-03 B-M maximum-availability clarification also remains open: original B1 strict policy remains recorded pending explicit owner confirmation.
 
+> **Owner resolution (2026-10-21):** [BF-1 and B-M1 explicitly approved](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md). Options BF-2/BF-3 and cap-only B-M2 below are superseded alternatives; this source audit remains useful for why a dedicated **eighth** table is needed. No SQL permission or schema freeze was granted.
+
+
 ## 1. Verified Foundation behavior — exact source and safe limits
 
 Read these existing, unmodified `main` artifacts:
