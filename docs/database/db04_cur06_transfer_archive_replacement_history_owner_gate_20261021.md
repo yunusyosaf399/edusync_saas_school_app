@@ -1,6 +1,8 @@
 # DB-04 — CUR-06 Enrollment Transfers, Subject Archiving, Curriculum Replacement and Historical Selection Owner Gate
 
-**Status: CUR-06 PRODUCT DECISION REQUIRED — NOT APPROVED.** Prepared 2026-10-21 on draft DB-04 PR #103. This is a read-only design/acceptance package. No new SQL, permission/operation registrations, Foundation/D1/Exams/Learning/Timetable changes, hosted deployment or executable tests are authorized. The owner approved [CUR-05 workflow classes and independent review](db04_cur05_approved_workflow_reviewer_policy_20261021.md); that approval **does not authorize the business circumstances** under which a Curriculum or elective may be transferred, grandfathered, replaced or corrected.
+**Status update 2026-10-21: CUR-06 A1+B1+C1+D1+E1+F1 PRODUCT APPROVED.** Prepared 2026-10-21 on draft DB-04 PR #103. This is a read-only design/acceptance package. No new SQL, permission/operation registrations, Foundation/D1/Exams/Learning/Timetable changes, hosted deployment or executable tests are authorized. The owner approved [CUR-05 workflow classes and independent review](db04_cur05_approved_workflow_reviewer_policy_20261021.md); that approval **does not authorize the business circumstances** under which a Curriculum or elective may be transferred, grandfathered, replaced or corrected.
+
+> **Owner approval update — 2026-10-21:** [CUR-06 A1+B1+C1+D1+E1+F1 approved product decision](db04_cur06_approved_transfer_archive_history_policy_20261021.md) supersedes the original unsigned choice status and alternatives below. The new [CUR-07 Exams/Learning/Timetable snapshot gate](db04_cur07_exams_learning_timetable_eligibility_snapshot_owner_gate_20261021.md) is **not approved**. CUR-01 timing and CUR-08 schema remain open. No SQL.
 
 ## 1. Existing authority and hard invariants
 
@@ -13,7 +15,7 @@
 - **CUR-05 owner approval:** P0 protected draft; P1 configured DIRECT/REVIEWED selection/Section availability; P2 independent reviewed Curriculum PUBLISH/REPLACE/RETIRE and historical corrections; same-Person requester cannot review; APPROVED is not APPLY. A P2-approved attempt still fails if business-policy CUR-01/CUR-06 denies it.
 - **Historical consumers:** published Exams cannot silently change after a Student moves, a Subject is archived, a choice-set is corrected, or a Curriculum revision is superseded. Exams/Learning/Timetable consumer-owned frozen `valid_at` and `observed_at` evidence and read interfaces are **CUR-07, not yet approved**.
 
-## 2. CUR-06 owner choices — six distinct proposed decisions
+## 2. Approved CUR-06 A1+B1+C1+D1+E1+F1 (historical alternatives retained)
 
 | Decision | Recommended v1 policy | Alternative requiring separate owner text | Implementation impact |
 |---|---|---|---|
@@ -24,7 +26,7 @@
 | **CUR-06-E1: retrospective correction and downstream historical truth** | P2 correction retains old accepted source and records a typed superseding BF-1 set/member version and reason/evidence, with `valid_at`/`observed_at` both retained. **Do not change a published Exam's original observed source snapshot**; request downstream reassessment only by separately authorized Exam process. | **E2:** allow explicit Exam impact workflow initiated by a Curriculum correction with signed, typed cross-domain request, never automatic mark rewrite. | E2 requires signed Exams owner API, request identity, old/new evidence, school reviewer chain and consumer-owned re-publication authorization (CUR-07). |
 | **CUR-06-F1: transfers and pending decisions** | Pending/unfinalized election submissions/reviews tied to an old Enrollment **cannot APPLY after its MOVE/END**; invalidate stale approved P1 request at APPLY, leave D1 placement intact. **NOT_SUBMITTED** is distinguished from **FINALIZED_EMPTY**; destination status is computed from destination's own BF-1 history. | **F2:** explicit transfer/restart of a pending intent into a new versioned request bound to the new Enrollment and revised digest, with School review; never auto-approve or reuse old receipt ID. | F2 requires typed request supersession, reviewer/scope/permission recheck and new idempotency receipt. |
 
-**Owner choice format:** `Approve CUR-06 A1+B1+C1+D1+E1+F1` or select alternatives with precise amendment text. **No CUR-06 product decision is approved by the current message**: the owner said only “I approved” to the preceding *CUR-05* option set.
+**Owner choice now recorded:** the subsequent explicit owner response “Yes I approved” to the CUR-06 combined question confirms **A1+B1+C1+D1+E1+F1**, with provenance in [the approved decision](db04_cur06_approved_transfer_archive_history_policy_20261021.md). Former competing alternatives are not approved.
 
 ## 3. Business-valid versus as-observed truth
 
@@ -85,6 +87,6 @@ A publication impact check may inspect accepted choice-set facts while holding a
 
 **Still OPEN:** CUR-01 initial effective date, future/mid-year cutover; **CUR-06 A1+B1+C1+D1+E1+F1**, CUR-07 consumer snapshot/Exam correction interfaces, CUR-08 exact 8-table schema and registrar/operation registration. No School default, exception, grandfather period or automatic cross-Enrollment transfer is assumed.
 
-**Owner review request:** approve **CUR-06 A1+B1+C1+D1+E1+F1** or provide alternative codes and exact transition behavior. After explicit response, record the approved decision in a separate DB-04-only document and reconcile the eight-entity physical/integration/acceptance matrices. If owner defers, a safe independent next design task is the **CUR-07 Exams/Learning/Timetable immutable eligibility/snapshot decision gate**, without implementing code.
+**CUR-06 approval was received and recorded** [here](db04_cur06_approved_transfer_archive_history_policy_20261021.md). The [CUR-07 Exams/Learning/Timetable decision package](db04_cur07_exams_learning_timetable_eligibility_snapshot_owner_gate_20261021.md) is now prepared and awaits separate product approval and consumer-owner signoffs. No SQL.
 
-**Disposition: CUR-06 D1 TRANSFER, SUBJECT ARCHIVE, REVISION REPLACEMENT AND HISTORY DESIGN READY; OWNER DECISION REQUIRED, NO SQL OR MERGE.**
+**Disposition: CUR-06 SIX CHOICES APPROVED; CUR-07 AND CUR-08 OPEN; NO SQL OR MERGE.**
