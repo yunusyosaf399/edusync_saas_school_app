@@ -78,7 +78,7 @@ EXPECTED_RUNTIME_METRICS = {
     "security_definers": 536,
     "app_functions": 158,
     "private_functions": 396,
-    "authenticated_app_execute": 157,
+    "authenticated_app_execute": 158,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
     "service_role_execute": 0,
