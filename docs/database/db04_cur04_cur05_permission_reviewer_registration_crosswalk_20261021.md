@@ -1,6 +1,8 @@
-# DB-04 — CUR-04 Approved Authorization / CUR-05 Pending Workflow Permission and Reviewer Crosswalk
+# DB-04 — CUR-04/CUR-05 Approved Product Policies; Pending Permission and Reviewer Registration Crosswalk
 
-**Status: CUR-04 PRODUCT APPROVED, CUR-05 WORKFLOW/REVIEWER POLICY UNAPPROVED; REGISTRATION PLAN ONLY.** Prepared 2026-10-21 for DB-04 PR #103. Owner explicitly approved [CUR-04 A1+B1+C1+D1+E1+F1](db04_cur04_approved_student_family_staff_authorization_20261021.md). [CUR-05 A1+B1+C1+D1+E1+F1+G1+H1](db04_cur05_workflow_reviewer_authorization_owner_decision_gate_20261021.md) and all operation/review code names below are **candidate design**, not owner-approved registrations. No SQL, migration, catalog rows, CI, School workflow policy or Supabase deployment performed.
+**Status update 2026-10-21: CUR-04 AND CUR-05 PRODUCT APPROVED; ALL PERMISSION/OPERATION/REVIEWER CODES REMAIN UNREGISTERED. REGISTRATION PLAN ONLY.** Prepared 2026-10-21 for DB-04 PR #103. Owner explicitly approved [CUR-04 A1+B1+C1+D1+E1+F1](db04_cur04_approved_student_family_staff_authorization_20261021.md). [CUR-05 A1+B1+C1+D1+E1+F1+G1+H1](db04_cur05_approved_workflow_reviewer_policy_20261021.md) is **owner-approved product policy**; every operation/review code name below remains **candidate registration**, not an active permission. No SQL, migration, catalog rows, CI, School workflow policy or Supabase deployment performed.
+
+> **2026-10-21 confirmation:** [CUR-05 P0/P1/P2 and independent reviewer choices are approved](db04_cur05_approved_workflow_reviewer_policy_20261021.md). The existing operation class rows below describe **approved workflow behavior** but **unregistered code names and unconfigured School P1 mode**. [CUR-06 transfer/archive/replacement](db04_cur06_transfer_archive_replacement_history_owner_gate_20261021.md) is not yet approved and cannot be smuggled in through a P2 APPLY grant.
 
 ## 1. Existing source constraints, not new permissions
 
@@ -16,15 +18,15 @@ Define **fixed distinct codes** owned by DB-04 domain, validated/registered only
 
 | Code proposal | family_safe (proposed) | Allowed resolved alternatives (conceptual, not a new scope engine) | Ceiling and current status |
 |---|---|---|---|
-| `curriculum.definition.manage` | false | ALL/DIRECT | Staff School-wide definition create/change only via fixed protected P0 candidate; **CUR-05 A1 pending**. |
+| `curriculum.definition.manage` | false | ALL/DIRECT | Staff School-wide definition create/change only via fixed protected P0 candidate; **CUR-05 A1 approved; code unregistered**. |
 | `curriculum.revision.draft` | false | ALL/CAMPUS/CLASS/SECTION DIRECT if coverage is complete | Staff versioned draft/edit/validate; no published APPLY or reviewer bypass. |
-| `curriculum.revision.publish` | false | ALL/CAMPUS/CLASS/SECTION DIRECT matching **all affected** Class Offerings | Staff publication REQUEST/APPLY, not reviewer grant; if applicability school-wide touches both campuses, one-campus scope insufficient; **CUR-05 B1 pending**. |
+| `curriculum.revision.publish` | false | ALL/CAMPUS/CLASS/SECTION DIRECT matching **all affected** Class Offerings | Staff publication REQUEST/APPLY, not reviewer grant; if applicability school-wide touches both campuses, one-campus scope insufficient; **CUR-05 B1 approved; code unregistered**. |
 | `curriculum.revision.approve` | false | same complete affected direct scope | Separate reviewer permission, only configured reviewer step/role plus distinct Person; no blanket inheritance from publish permission. |
-| `curriculum.offering.manage` | false | ALL/CAMPUS/CLASS/SECTION DIRECT, exact Section | Change Section Subject Offering without changing D1 Section; **CUR-05 D1 pending**. |
+| `curriculum.offering.manage` | false | ALL/CAMPUS/CLASS/SECTION DIRECT, exact Section | Change Section Subject Offering without changing D1 Section; **CUR-05 D1 approved; code unregistered**. |
 | `curriculum.offering.approve` | false | same direct scope | Separate P1 reviewed-mode permission only where required by registered School operation policy. |
 | `curriculum.selection.change` | false | ALL/CAMPUS/CLASS/SECTION DIRECT on target Student’s **accepted PRIMARY Enrollment** | Staff FINALIZE empty/nonempty, AMEND/WITHDRAW typed full batch, original BF-1 generation and canonical School-first lock. |
 | `curriculum.selection.approve` | false | same direct scope as selected Student/Section | Distinct reviewer P1 permission only if School's approved policy requires review; still requester/reviewer Person separation. |
-| `curriculum.selection.correct` | false | same direct scope across all impacted historic and current enrollment/Section contexts | Correction REQUEST/APPLY is candidate P2, must not rewrite Exam observed snapshot; **CUR-05 E1 pending**. |
+| `curriculum.selection.correct` | false | same direct scope across all impacted historic and current enrollment/Section contexts | Correction REQUEST/APPLY is candidate P2, must not rewrite Exam observed snapshot; **CUR-05 E1 approved; code unregistered**. |
 | `curriculum.selection.correct.approve` | false | full impacted direct scope | Separate P2 reviewer permission; no actor may review own correction using an alternate Principal/role. |
 | `curriculum.section_offerings.view` | false | ALL/CAMPUS/CLASS/SECTION DIRECT | Staff approved Curriculum Section Subject availability only, no Student roster. |
 | `curriculum.selection.current.view` | false | ALL/CAMPUS/CLASS/SECTION DIRECT | Staff one-Student current status/choice view, no complete history or private approval reason. |
@@ -36,7 +38,7 @@ Define **fixed distinct codes** owned by DB-04 domain, validated/registered only
 
 ## 3. Candidate operation → requester/reviewer → workflow crosswalk
 
-**P0/P1/P2 assignments below remain CUR-05 recommendations. CUR-04 actor constraints are already approved.** Each row requires an exact operation registration, fixed typed command signature, a School policy where P1, independent review policy where P2, current grant/scope and an authorized Foundation receipt/audit/outbox path.
+**P0/P1/P2 assignments are now CUR-05 owner-approved product rules; CUR-04 actor constraints also approved. The action and reviewer code strings and exact School policy registration remain proposed only.** Each row requires an exact operation registration, fixed typed command signature, a School policy where P1, independent review policy where P2, current grant/scope and an authorized Foundation receipt/audit/outbox path.
 
 | Proposed operation | Accepted requester/writer | Additional reviewer when reviewed | Proposed CUR-05 route | Key denial / evidence |
 |---|---|---|---|---|
@@ -76,7 +78,7 @@ Define **fixed distinct codes** owned by DB-04 domain, validated/registered only
 | `PM-07` | Revoked FAMILY link, or link present but grant missing | Indistinguishable denial; revoke vs read concurrency requires Foundation control. |
 | `PM-08` | Student or FAMILY sends request to propose/finalize accepted choices | No registered proposal/mutation command; denied. |
 | `PM-09` | STAFF with `curriculum.selection.change` but no `curriculum.selection.history.view` reads corrections | Denied; current write permission does not automatically permit historical read. |
-| `PM-10` | Staff requester approves same P2 publication as an alternate role or Principal for same Person | Denied self-review; independent active reviewer grants required (if CUR-05 approved). |
+| `PM-10` | Staff requester approves same P2 publication as an alternate role or Principal for same Person | Denied self-review under approved CUR-05; independent *registered* active reviewer grants required for implementation. |
 | `PM-11` | Campus A reviewer tries approving School-wide publication touching Campuses A+B | Denied insufficient full affected scope. |
 | `PM-12` | P1 policy missing/ambiguous; or DIRECT attempted under REVIEWED mode | Denied, not silently downgraded to P0. |
 | `PM-13` | Valid request approved, then requester or reviewer grant revoked before APPLY | Reject/invalidate at APPLY after revalidation; one safe receipt, no accepted DB-04 writes. |
@@ -93,12 +95,12 @@ These planned cases supplement [AU-01–12](db04_cur04_student_family_staff_auth
 | Signer / owner | Exact approval requested | Current state |
 |---|---|---|
 | **Product owner CUR-04** | Staff-only writes; Student/FAMILY bounded current checked reads; no teacher shortcut/proposals; separately permissioned history | **APPROVED A1+B1+C1+D1+E1+F1**, [verbatim decision](db04_cur04_approved_student_family_staff_authorization_20261021.md). |
-| **Product owner CUR-05** | Exact P0/P1/P2 per operation and independent reviewer routing | **PENDING**; owner has not approved eight CUR-05 options. |
+| **Product owner CUR-05** | Exact P0/P1/P2 per operation and independent reviewer routing | **APPROVED A1+B1+C1+D1+E1+F1+G1+H1** [decision](db04_cur05_approved_workflow_reviewer_policy_20261021.md); registration and School policy settings remain pending. |
 | **Foundation permission/deployment registrar** | Uniqueness/length and supported Scope-set for codes, family_safe/OWN resolver, Principal/Person distinct review, operation/policy/permission/executor registration, safe outputs | **NOT RECEIVED**; do not seed D1 counts or role templates. |
 | **D1 Academic/Student/FAMILY owners** | Exact source keys, active Enrollment lock prefix, Student SELF/FAMILY CHILD resolver and revocation semantics, no late School/Student trigger lock | **NOT RECEIVED**. |
 | **Exams/Learning/Timetable, CUR-07** | Independent narrow consumer read/snapshot and confidentiality of observed old choices | **NOT RECEIVED**. |
 | **Independent security/CUR-08 integrator** | Eight-domain-table RLS/ACL, fixed typed functions, populated local install, all race outcomes, exact-head CI | **NOT RECEIVED**. |
 
-**Next safe task after explicit CUR-05 approval:** Record approved workflow option set, reconcile this crosswalk to final registrar-approved codes and produce detailed typed review-application payload contracts. **If CUR-05 stays pending**, proceed with CUR-06 Enrollment transfer, Subject ARCHIVE and revision-replacement option gate as documentation only.
+**Next:** CUR-05 owner decision is recorded and this crosswalk is reconciled to product policy; **Foundation registrar has not approved/registered codes**. The [CUR-06 Enrollment MOVE/END, Subject ARCHIVE, replacement and history gate](db04_cur06_transfer_archive_replacement_history_owner_gate_20261021.md) is prepared but requires owner decision. No SQL.
 
-**Disposition: CUR-04 PRODUCT AUTHORIZATION APPROVED AND MAPPED TO D1/FOUNDATION PATTERNS; CUR-05 AND ALL PERMISSION REGISTRATIONS UNAPPROVED, ZERO SQL/GRANTS/CI/DEPLOYMENT.**
+**Disposition: CUR-04/CUR-05 PRODUCT CHOICES APPROVED; ALL EXACT PERMISSION/OPERATION REGISTRATIONS, SCHOOL P1 CONFIGURATION AND SPECIALIST SIGNOFFS UNAPPROVED; ZERO SQL/GRANTS/CI/DEPLOYMENT.**
