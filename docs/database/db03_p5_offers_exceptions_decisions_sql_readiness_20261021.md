@@ -1,5 +1,8 @@
 # DB-03 P5 — Admissions offers, stage exceptions and application decisions: physical SQL-readiness and concurrency acceptance
 
+> **P5 #15 SCHEMA/EXECUTION INSTALL GATE, 21 October 2026:** [ADMIN-TEST-03](db03_admin_skip_installation_dependency_handoff_20261021.md) requires exact real FK to `app_private.approval_requests(id)` for `ADMIN_TEST_SKIP`, mandatory approved independent requester/reviewer evidence and actual EXECUTED state bound to one immutable exception, app/epoch+receipt atomicity, and P4 examiner/skip lock symmetry before activation. Future optional exception kinds do not relax this selected reviewed-only kind. Finance current clearance and SC-06 global lock order still block READY/D1.
+
+
 > **REVIEWED-ONLY SKIP OWNER DECISION — 21 October 2026:** The specific `ADMIN_TEST_SKIP` exception requires an **independent different authorized reviewer** through real Foundation workflow, and a genuinely EXECUTED request before applied effect may satisfy readiness. Previously proposed optional DIRECT route **is rejected** for this exception. In future #15 `admission_stage_exceptions`, `approval_request_id` is **NOT NULL when exception_kind='ADMIN_TEST_SKIP'**, FK to real `app_private.approval_requests`. Older conditional nullable-FK/DIRECT comparison is historical; mixed new exception kinds need separate product approval. [Decision](db03_owner_decision_admin_skip_independent_review_20261021.md) and [SQL-readiness](db03_admin_skip_independent_approval_sql_readiness_20261021.md).
 
 

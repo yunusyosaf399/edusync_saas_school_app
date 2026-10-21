@@ -1,5 +1,8 @@
 # DB-03 ADMIN-TEST-01 — Protected `admission.test.skip` operation, authorization and SQL acceptance contract
 
+> **INSTALLATION ORDER (21 October 2026):** [ADMIN-TEST-03 owner dependency packet](db03_admin_skip_installation_dependency_handoff_20261021.md) gives the current reviewed-only installation DAG, default-deny staging, required P4 `admission.test.record` shared mutex, Foundation one-transaction approval EXECUTED+#15 effect and Finance/D1 stop lines. No direct-route/permission activation is permitted. Review the real integration owner deliverables before implementing the candidate requests in this document.
+
+
 > **OWNER DECISION — ADMIN-SKIP-AUTH Option B, 21 October 2026:** **REVIEWED only** is selected; every `admission.test.skip` requires a request from an authorized administrator and a **different** authorized reviewer through Foundation, then trusted current-source execution. **DIRECT is rejected**, and previous route-alternative paragraphs below are **historical**. For applied `ADMIN_TEST_SKIP`, `approval_request_id` must be nonnull and reference real `app_private.approval_requests(id)`; independent reviewer proof, current approval and effective PENDING/unassessed test must be rechecked at execution. [Approved decision](db03_owner_decision_admin_skip_independent_review_20261021.md) and [reviewed-only readiness/28 cases/12 races](db03_admin_skip_independent_approval_sql_readiness_20261021.md). No executable SQL/permission registration.
 
 

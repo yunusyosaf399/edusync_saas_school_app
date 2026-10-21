@@ -1,5 +1,8 @@
 # DB-03 P6 — Finance-authorized final readiness, commercial terms and post-admission changes
 
+> **P6 FINANCE INSTALLATION STOP-LINE, 21 October 2026:** [ADMIN-TEST-03 dependency/owner handoff packet](db03_admin_skip_installation_dependency_handoff_20261021.md) explicitly separates **reviewed test skip** execution (possible only after Foundation+P4+P5+SC-06 safe shared-lock proofs) from **final READY/D1** (additionally requires real Finance-authorizer clearance ID/revision/waiver-term mapping and reversal fence). No Finance-named migration was found in the inspected main migration-directory listing, and no source-backed typed verifier was established. Never replace clearance with an Admissions waiver/discount or an APPROVED-only skip request. This is documentation, not installed financial SQL.
+
+
 > **21 October 2026 FINAL SKIP AUTH CHOICE:** [Independent reviewer Option B](db03_owner_decision_admin_skip_independent_review_20261021.md) is required for `ADMIN_TEST_SKIP`. A mere pending or APPROVED Foundation request does not satisfy admission test; the trusted source must prove a **single EXECUTED reviewed effect** against a pending unassessed test, with requester != reviewer. Current FAILED blocks READY. This does **not** alter Finance-authorizer clearance mandatory on every admission. [Readiness and test inventory](db03_admin_skip_independent_approval_sql_readiness_20261021.md).
 
 

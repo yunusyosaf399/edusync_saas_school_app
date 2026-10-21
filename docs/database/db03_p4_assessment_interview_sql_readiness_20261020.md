@@ -1,5 +1,8 @@
 # DB-03 P4 — Admissions test and interview outcome SQL-readiness, evidence and concurrency acceptance
 
+> **P4 PRE-REQUISITE FOR TEST-SKIP INSTALLATION, 21 October 2026:** [ADMIN-TEST-03 dependency/rollout packet](db03_admin_skip_installation_dependency_handoff_20261021.md) requires P4 #09 immutable assessment relation and actual `admission.test.record` protected writer, under the **same app/ADMISSION_TEST serialization anchor** as reviewed P5 skip **before any skip executor is exposed**. FAIL-first denies SKIP; SKIP-first denies unapproved assessment. The examined repository sources did not establish this protected P4 writer as installed; this is a STOP until real implementation and true two-backend proof exist. Finance affects final READY, not truthful P4 evidence.
+
+
 > **21 October 2026 source-writer integration requirement:** [Protected `admission.test.skip` operation](db03_admission_test_skip_protected_operation_contract_20261021.md) requires the P4 `admission.test.record` executor to serialize on the **same app/stage parent anchor** as administration SKIP. FAILED-first blocks skip; skip-first blocks a later conflicting assessment until a separately approved typed rescind/retake flow. Do not activate a standalone skip writer if the examiner writer bypasses this lock or unconditionally inserts a new PASSED/FAILED revision. Current Foundation scope contract does not support a native SECTION enum. SQL and tests are NOT RUN.
 
 

@@ -1,5 +1,8 @@
 # DB-03 — Admissions physical schema reconciliation, phased SQL and verification gates
 
+> **LATEST DB-03 INSTALLATION-READINESS PACKET, 21 October 2026:** [ADMIN-TEST-03 dependency graph, cross-owner handoffs and 16 go/no-go gates](db03_admin_skip_installation_dependency_handoff_20261021.md) places actual Foundation approval workflow, P1/P2/P3 sources, P4 assessment writer and P5 `ADMIN_TEST_SKIP` exception/FK in a safe proposed additive order. Requires an **independent reviewer** and same app/stage lock for examiner and skip writer; no Finance-authorizer clearance source or SC-06 end-to-end lock proof was verified installed. **No SQL/permission/activation/hosted change authorized.** Do not turn this draft dependency graph into a deployment migration without owner/security sign-off.
+
+
 > **OWNER-SELECTED SECURITY ROUTE — ADMIN-SKIP-AUTH Option B (21 October 2026):** DB-03 `admission.test.skip` requires Foundation's `operation_contracts.requires_approval=true`, one requester and a **different authorized reviewer** with current scope, and real `approval_requests` provenance. DIRECT is not permitted. For proposed #15 `ADMIN_TEST_SKIP` effects, approval_request_id becomes mandatory (real FK) and current reviewed execution/assessment-absence is required; generic exception kinds not automatically approved. [Owner decision](db03_owner_decision_admin_skip_independent_review_20261021.md), [non-activating SQL-readiness](db03_admin_skip_independent_approval_sql_readiness_20261021.md). Global lock/permission registrar, Finance adapter and D1 remain blocked.
 
 
