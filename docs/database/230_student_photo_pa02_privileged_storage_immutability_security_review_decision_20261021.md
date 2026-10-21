@@ -155,3 +155,8 @@ An independent reviewer must explicitly decide, with a dated approval/rejection 
 **Not authorized or performed:** new bucket, RLS grants, credential, token, uploaded object, photo decoder, SQL migration, hosted changes, production integration, project billing alteration, provider switch or real security PASS.
 
 **Next action:** obtain independent security/product disposition on the final-byte immutability mechanism and R3/R4/R6. Only then allow separately authorized **synthetic-only** private bucket/policy and negative provider trials. If strict sealed-byte immutability cannot be satisfied under the selected provider, leave PA-01/02 blocked and assess an alternate provider-neutral adapter. The draft PR must not be merged as production provider approval. No DB-01..04 changes are within this task.
+
+
+## Subsequent comparison update (2026-10-21) — no Supabase security gate change
+
+[#231 immutable-final provider comparison](231_student_photo_pa02_immutable_final_provider_comparison_and_owner_security_gate_20261021.md) verifies that Cloudflare R2 has **separate native bucket-lock rules**, notwithstanding its lack of AWS **S3 Object Lock API** support. Because a duly authorized R2 lock-configuration actor can remove or replace its rules, this is **not yet an approved substitute** for administrator-resistant immutable final-byte retention; the exact attacker boundary and P01/P02 real-provider test evidence remain mandatory. AWS compliance-mode version retention (which protects **the retained version**, not necessarily the latest-key alias) and Azure locked WORM remain independent alternatives for review. The live Supabase stage lab and R3/R4/R6/R5 STOP states in this document are unchanged; no external vendor, resource or cost has been approved.
