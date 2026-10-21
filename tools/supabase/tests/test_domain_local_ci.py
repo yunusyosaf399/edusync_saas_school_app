@@ -56,9 +56,9 @@ class DomainLocalCITests(unittest.TestCase):
         # effect 41_03 adds two authz-reader-owned private gates.
         # Public RPCs, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 551)
-        self.assertEqual(expected["security_definers"], 533)
-        self.assertEqual(expected["private_functions"], 394)
+        self.assertEqual(expected["functions"], 553)
+        self.assertEqual(expected["security_definers"], 535)
+        self.assertEqual(expected["private_functions"], 396)
         self.assertEqual(expected["app_functions"], 157)
         self.assertEqual(expected["authenticated_app_execute"], 157)
         self.assertEqual(expected["authenticated_private_execute"], 0)
@@ -216,6 +216,29 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertNotIn("UPDATE app_private.operation_contracts", sql)
         self.assertNotIn("INSERT INTO app_private.command_receipts", sql)
         self.assertNotIn("INSERT INTO app_private.roll_allocations", sql)
+
+    def test_db01_direct_evidence_writer_binds_retained_reason_and_safe_evidence(self):
+        sql = (runtime.ROOT / "supabase/migrations" / (
+            "20260928000000_domain_package_01_effect41_05_db01_roll_correct_direct_success_evidence.sql.draft"
+        )).read_text(encoding="utf-8")
+        self.assertEqual(sql.count("CREATE FUNCTION app_private.d1_roll_correct_reason_matches_exact("), 1)
+        self.assertEqual(sql.count("CREATE FUNCTION app_private.d1_roll_correct_direct_success_evidence("), 1)
+        self.assertEqual(sql.count("SECURITY DEFINER SET search_path=pg_catalog,pg_temp"), 2)
+        self.assertIn("dst.correction_reason=p_expected_reason", sql)
+        self.assertIn("ctx.receipt_id IS NOT NULL", sql)
+        self.assertIn("ctx.actor_id IS DISTINCT FROM p_actor", sql)
+        self.assertIn("app_private.d1_roll_correct_result_rows_match_exact(", sql)
+        self.assertIn("app_private.d1_roll_correct_reason_matches_exact(", sql)
+        self.assertIn("'D1_STUDENT_ROLL_CORRECT'", sql)
+        self.assertIn("'enrollment.roll_corrected'", sql)
+        self.assertIn("TO schoolos_student_executor;", sql)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
+        self.assertNotIn("CREATE FUNCTION app.", sql)
+        self.assertNotIn("UPDATE app_private.operation_contracts", sql)
+        self.assertNotIn("UPDATE app_private.roll_allocations", sql)
+        self.assertNotIn("INSERT INTO app_private.roll_allocations", sql)
+        self.assertNotIn("'old_numeric_value',old_num", sql)
+        self.assertNotIn("'new_numeric_value',new_num", sql)
 
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
