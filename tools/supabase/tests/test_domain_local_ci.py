@@ -258,6 +258,8 @@ class DomainLocalCITests(unittest.TestCase):
             "app_private.d1_roll_correct_direct_success_evidence(",
             "app_private.d1_roll_correct_direct_receipt_matches_exact(",
             "app_private.d1_roll_correct_reason_matches_exact(",
+            "CROSS JOIN LATERAL app_private.d1_enrollment_place_destination(",
+            "retained_enrollments<>discovered_enrollments",
             "student.roll_history.view",
             "TO authenticated;",
             "FROM PUBLIC,anon,authenticated,service_role;",
@@ -269,6 +271,8 @@ class DomainLocalCITests(unittest.TestCase):
             "INSERT INTO app_private.roll_allocations",
             "INSERT INTO app_private.command_receipts",
             "INSERT INTO app_private.outbox_events",
+            "JOIN app_private.class_offerings",
+            "JOIN app_private.section_offerings",
         ):
             self.assertNotIn(forbidden, sql)
 
