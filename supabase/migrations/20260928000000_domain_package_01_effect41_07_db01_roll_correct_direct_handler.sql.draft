@@ -21,6 +21,7 @@ DECLARE ctx record; route record; locked record; eff record;
  historic_school uuid; source_school uuid; business_today date; pinned_p1_version uuid;
  current_section uuid; placement_count bigint; schools_count bigint;
  replay_number bigint; replay_from date; replay_version bigint;
+ discovered_enrollments bigint; retained_enrollments bigint;
 BEGIN
  IF p_student_id IS NULL OR p_expected_student_version IS NULL
     OR p_expected_student_version<1 OR p_expected_student_version>=9223372036854775807::bigint
@@ -60,22 +61,26 @@ BEGIN
    -- source head and later P1 route. Never mutate a historical success.
    -- Current staff Roll-history entitlement must be proven independently:
    -- historic participation alone does not grant number disclosure.
-   SELECT count(DISTINCT co.school_id),min(co.school_id::text)::uuid
-     INTO schools_count,historic_school
+   -- Use the already reviewed academic SECURITY DEFINER ancestry selector.
+   -- The Student executor deliberately has no direct class_offerings SELECT.
+   -- A missing ancestry must not disappear silently under the LATERAL join.
+   SELECT count(*),count(DISTINCT p.school_id),min(p.school_id::text)::uuid
+     INTO discovered_enrollments,schools_count,historic_school
      FROM app_private.enrollments e
-     JOIN app_private.section_offerings so ON so.id=e.section_offering_id
-     JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+     CROSS JOIN LATERAL app_private.d1_enrollment_place_destination(e.section_offering_id) p
     WHERE e.student_id=p_student_id AND e.placement_kind='PRIMARY';
-   SELECT co.school_id INTO source_school
+   SELECT count(*) INTO retained_enrollments
      FROM app_private.enrollments e
-     JOIN app_private.section_offerings so ON so.id=e.section_offering_id
-     JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    WHERE e.student_id=p_student_id AND e.placement_kind='PRIMARY';
+   SELECT p.school_id INTO source_school
+     FROM app_private.enrollments e
+     CROSS JOIN LATERAL app_private.d1_enrollment_place_destination(e.section_offering_id) p
     WHERE e.id=p_source_enrollment_id AND e.student_id=p_student_id
       AND e.section_offering_id=p_expected_source_section_id
       AND e.effective_from=p_expected_enrollment_effective_from
       AND e.placement_kind='PRIMARY';
    IF source_school IS NULL OR historic_school IS DISTINCT FROM source_school
-      OR schools_count<>1 THEN
+      OR schools_count<>1 OR retained_enrollments<>discovered_enrollments THEN
      RAISE EXCEPTION 'D1 Roll correction historical Student scope ambiguous';
    END IF;
    business_today:=app_private.d1_roll_business_date(source_school);
