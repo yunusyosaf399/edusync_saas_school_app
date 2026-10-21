@@ -18,7 +18,7 @@ CREATE FUNCTION app.d1_correct_student_roll(
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE ctx record; route record; locked record; eff record;
  summary jsonb; evidence_id uuid;
- historic_school uuid; source_school uuid; business_today date;
+ historic_school uuid; source_school uuid; business_today date; pinned_p1_version uuid;
  current_section uuid; placement_count bigint; schools_count bigint;
  replay_number bigint; replay_from date; replay_version bigint;
 BEGIN
@@ -124,6 +124,7 @@ BEGIN
  IF NOT FOUND OR route.policy_id IS NULL
     OR route.route_mode IS DISTINCT FROM 'DIRECT' OR route.campus_id IS NULL
  THEN RAISE EXCEPTION 'D1 Roll correction requires APPROVAL or valid P1 DIRECT'; END IF;
+ pinned_p1_version:=route.policy_id;
 
  -- The source helper serializes School -> stored revision -> allocator ->
  -- Student -> academic ancestors -> Enrollment -> exact current Roll.
@@ -144,6 +145,7 @@ BEGIN
  THEN RAISE EXCEPTION 'D1 Roll correction DIRECT authority changed'; END IF;
  SELECT * INTO route FROM app_private.d1_roll_correct_policy(p_expected_source_section_id);
  IF NOT FOUND OR route.route_mode IS DISTINCT FROM 'DIRECT'
+    OR route.policy_id IS DISTINCT FROM pinned_p1_version
     OR route.campus_id IS DISTINCT FROM locked.campus_id
  THEN RAISE EXCEPTION 'D1 Roll correction DIRECT policy changed'; END IF;
 
@@ -156,7 +158,7 @@ BEGIN
  IF NOT FOUND OR eff.source_roll_id IS DISTINCT FROM p_source_roll_allocation_id
    OR eff.corrected_roll_id IS NULL
    OR eff.student_version IS DISTINCT FROM p_expected_student_version+1
-   OR eff.correction_effective_from IS NULL
+   OR eff.correction_effective_from IS DISTINCT FROM locked.business_date
  THEN RAISE EXCEPTION 'D1 Roll correction DIRECT atomic effect mismatch'; END IF;
 
  -- The immutable 12-key result is deliberately not a broad event payload.
