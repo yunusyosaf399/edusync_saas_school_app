@@ -48,6 +48,7 @@ FINAL_FUNCTION_OWNERS = (
 # (uuid,uuid,uuid,uuid,jsonb), Student-executor-owned SECURITY DEFINER.
 # Integration request #108; effect38_03 adds exactly one additional
 # Schema-owner private DIRECT receipt provenance definer (issue #110).
+# DB-01 effect41_01 adds exactly one more private Student-owned source prelock.
 # DB-01 effect38_04 adds one operation-specific schema-owner trigger on
 # Foundation approval_applications (independent review issue #112).
 # Effect40_01 adds exactly one Academic-owned private School-date resolver.
@@ -64,10 +65,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 549,
-    "security_definers": 531,
+    "functions": 550,
+    "security_definers": 532,
     "app_functions": 157,
-    "private_functions": 392,
+    "private_functions": 393,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
