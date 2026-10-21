@@ -1,5 +1,8 @@
 # DB-03 P4 — Admissions test and interview outcome SQL-readiness, evidence and concurrency acceptance
 
+> **21 October 2026 owner clarification:** Admissions decisions may be based on a qualified examiner's PASSED/FAILED and any optional numerical score, **or** authorized administration can skip the admission test with a retained typed actor/permission/reason snapshot. This does **not** replace approved P4-D01 with an automatic score threshold and does not invent PASSED. [Decision](db03_owner_decision_school_offers_test_skip_finance_changes_20261021.md); [P6 readiness and race tests](db03_p6_school_finance_clearance_readiness_20261021.md). Exact skip-after-failed timing/second-review and permission registration remain P6-D03/security gates.
+
+
 > **Owner decision recorded 2026-10-20 — P4-D01 APPROVED OPTION A.** A currently authorized Admissions examiner records PASSED or FAILED as an explicit decision; numerical score and maximum score are optional as a nullable pair. There is **no automatic score cutoff or score-derived pass/fail rule** in V1. This resolves **only P4-D01**; who qualifies as examiner, what approvals apply, retakes, corrections, assessment dates, privacy and evidence integrity remain open. See [decision record](db03_p4_owner_decision_p4_d01_option_a_20261020.md). Earlier alternative A/B descriptions below are historical, not current indecision.
 
 

@@ -1,5 +1,8 @@
 # DB-03 owner decision — P5-D01 Option A (2026-10-21)
 
+> **21 October 2026 OWNER CLARIFICATION — school-led offer and mandatory Finance authorization:** [School-led offer/test-skip/Finance/discount decision](db03_owner_decision_school_offers_test_skip_finance_changes_20261021.md) narrows Option A. **No parent/guardian response is part of the offer workflow.** School staff confirm internal terms; the School may set ACCEPTED before final processing, but P7 READY requires **current Finance-authorizer clearance even where Admissions waived admission fee**. Admissions may decide pre-admission fee waiver/tuition discount; Finance must apply/verify and authorize the final gate. Authorized administration may skip an admission test with retained proof. After Student creation Finance-owned discount revisions can change fees without rewriting Admissions/Student. See [P6 finance gate](db03_p6_school_finance_clearance_readiness_20261021.md). Earlier parent-response/waiver-as-alternative references are **superseded**; technical permissions/Finance fence remain open.
+
+
 **PRODUCT OWNER APPROVED OPTION A:** School adjudication may set an application to `ACCEPTED` **before** final Admissions-to-D1 handoff. Requirements for an offer and an accepted offer response are **configurable by the application's immutable published Admissions policy**. A final `READY` handoff is issued only when **all applicable verified conditions** are currently satisfied.
 
 ## Exact approved separation
