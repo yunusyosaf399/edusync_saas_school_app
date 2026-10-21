@@ -391,6 +391,37 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertNotIn("UPDATE app_private.roll_allocations", suite)
         self.assertNotIn("UPDATE app_private.enrollments", suite)
 
+    def test_db01_true_cross_campus_roll_history_replay_is_current_scope_only(self):
+        path = runtime.ROOT / "tools/supabase/domain_db01_cross_campus_replay_ci.py"
+        source = path.read_text(encoding="utf-8")
+        compile(source, str(path), "exec")
+        driver = (runtime.ROOT / "tools/supabase/domain_local_ci.py").read_text(encoding="utf-8")
+        self.assertLess(driver.index("run_db01_correct_vs_move_end_races(container, run_psql)"),
+                        driver.index("run_db01_cross_campus_roll_history_replay(container, run_psql)"))
+        for required in (
+            "CAMPUS_TRANSFER", "app.d1_move_student_enrollment(",
+            "app.d1_place_student_enrollment(", "app.d1_correct_student_roll(",
+            "D1_DB01_REAL_CROSS_CAMPUS_REPLAY_PASS",
+            "D1_DB01_CROSS_CAMPUS_HISTORY_REVOKED_PASS",
+            "SOURCE_CAMPUS_BEFORE_TRANSFER",
+            "DEST_CAMPUS_BEFORE_TRANSFER",
+            "OLD_CAMPUS_SCOPE_AFTER_TRANSFER",
+            "CURRENT_CAMPUS_B_AFTER_TRANSFER",
+            "CURRENT_PRIMARY_NOT_ON_CAMPUS_B",
+            "D1_DB01_CROSS_CAMPUS_HISTORY_SETUP",
+            "student.roll_history.view", "scope_kind='CAMPUS'",
+            "Pacific/Kiritimati", "Etc/GMT+12",
+        ):
+            self.assertIn(required, source)
+        for forbidden in (
+            "INSERT INTO app_private.roll_allocations",
+            "UPDATE app_private.roll_allocations",
+            "INSERT INTO app_private.enrollments",
+            "UPDATE app_private.enrollments",
+            "GRANT EXECUTE",
+        ):
+            self.assertNotIn(forbidden, source)
+
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
         observed["authenticated_private_execute"] = 1
