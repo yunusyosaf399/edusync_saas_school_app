@@ -115,7 +115,7 @@ SELECT pg_catalog.jsonb_build_object(
   'old_numeric_value',12001,'new_numeric_value',12009,
   'source_roll_effective_from',CURRENT_DATE-20,
   'correction_effective_from',CURRENT_DATE-10,
-  'student_version',1,
+  'student_version',2,
   'section_offering_id','b1000000-0000-4000-8000-000000000045',
   'source_enrollment_effective_from',CURRENT_DATE-20
 ) AS proof_json \gset
@@ -140,7 +140,7 @@ INSERT INTO app_private.audit_events(
  id,actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
  target_kind,target_ref,command_receipt_id,source_kind,correlation_id,details,created_by)
 VALUES ('b1000000-0000-4000-8000-000000000081','55555555-5555-4555-8555-555555555555','INDIVIDUAL',
- 'SUCCEEDED','{"operation":"student.roll.correct","phase":"DIRECT"}'::jsonb,1,
+ 'SUCCEEDED','{"operation":"student.roll.correct","phase":"DIRECT"}'::jsonb,2,
  'student.roll.correct','STUDENT','b1000000-0000-4000-8000-000000000001','b1000000-0000-4000-8000-000000000080','API',
  'b1000000-0000-4000-8000-000000000083','{}'::jsonb,'55555555-5555-4555-8555-555555555555');
 RESET ROLE;
