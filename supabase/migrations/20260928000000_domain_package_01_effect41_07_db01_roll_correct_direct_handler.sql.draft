@@ -1,0 +1,202 @@
+-- DB-01 RC-01..RC-08: exact typed protected DIRECT Roll correction.
+-- Nonactivating D1 Migration 10 fragment. Operation/permission are STILL disabled.
+-- Approval route intentionally has no effect through this RPC.
+GRANT CREATE ON SCHEMA app TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app.d1_correct_student_roll(
+ p_student_id uuid,p_expected_student_version bigint,
+ p_source_enrollment_id uuid,p_expected_source_section_id uuid,
+ p_expected_enrollment_effective_from date,p_source_roll_allocation_id uuid,
+ p_expected_source_roll_effective_from date,p_expected_source_policy_revision_id uuid,
+ p_expected_old_numeric_value bigint,p_requested_numeric_value bigint,
+ p_reason text,p_idempotency_key text
+) RETURNS TABLE (
+ student_id uuid,enrollment_id uuid,source_roll_allocation_id uuid,
+ corrected_roll_allocation_id uuid,corrected_numeric_value bigint,
+ correction_effective_from date,student_version bigint
+)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; route record; locked record; eff record;
+ summary jsonb; evidence_id uuid;
+ historic_school uuid; source_school uuid; business_today date;
+ current_section uuid; placement_count bigint; schools_count bigint;
+ replay_number bigint; replay_from date; replay_version bigint;
+BEGIN
+ IF p_student_id IS NULL OR p_expected_student_version IS NULL
+    OR p_expected_student_version<1 OR p_expected_student_version>=9223372036854775807::bigint
+    OR p_source_enrollment_id IS NULL OR p_expected_source_section_id IS NULL
+    OR p_expected_enrollment_effective_from IS NULL
+    OR p_source_roll_allocation_id IS NULL
+    OR p_expected_source_roll_effective_from IS NULL
+    OR p_expected_source_policy_revision_id IS NULL
+    OR p_expected_old_numeric_value IS NULL OR p_expected_old_numeric_value<1
+    OR p_requested_numeric_value IS NULL OR p_requested_numeric_value<1
+    OR p_requested_numeric_value>9223372036854775806::bigint
+    OR p_requested_numeric_value=p_expected_old_numeric_value
+    OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+    OR pg_catalog.octet_length(p_reason)>2048
+    OR p_idempotency_key IS NULL
+    OR pg_catalog.length(p_idempotency_key) NOT BETWEEN 1 AND 200
+    OR pg_catalog.length(pg_catalog.btrim(p_idempotency_key))=0
+ THEN RAISE EXCEPTION 'D1 Roll correction DIRECT intent invalid'; END IF;
+
+ -- Bind an 11-element fixed typed caller intent; source School, effective
+ -- date, policy route, actor and receipt identity are NEVER client-provided.
+ SELECT * INTO ctx FROM app_private.d1_roll_correct_command_context(
+   'student.roll.correct',p_idempotency_key,
+   pg_catalog.jsonb_build_array(
+     p_student_id,p_expected_student_version::text,p_source_enrollment_id,
+     p_expected_source_section_id,p_expected_enrollment_effective_from,
+     p_source_roll_allocation_id,p_expected_source_roll_effective_from,
+     p_expected_source_policy_revision_id,p_expected_old_numeric_value::text,
+     p_requested_numeric_value::text,p_reason));
+ IF NOT FOUND OR ctx.actor_id IS NULL THEN
+   RAISE EXCEPTION 'D1 Roll correction DIRECT actor or command context invalid';
+ END IF;
+ PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+
+ IF ctx.receipt_id IS NOT NULL THEN
+   -- Replay is independent of today, Student optimistic version, current
+   -- source head and later P1 route. Never mutate a historical success.
+   -- Current staff Roll-history entitlement must be proven independently:
+   -- historic participation alone does not grant number disclosure.
+   SELECT count(DISTINCT co.school_id),min(co.school_id::text)::uuid
+     INTO schools_count,historic_school
+     FROM app_private.enrollments e
+     JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+     JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    WHERE e.student_id=p_student_id AND e.placement_kind='PRIMARY';
+   SELECT co.school_id INTO source_school
+     FROM app_private.enrollments e
+     JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+     JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    WHERE e.id=p_source_enrollment_id AND e.student_id=p_student_id
+      AND e.section_offering_id=p_expected_source_section_id
+      AND e.effective_from=p_expected_enrollment_effective_from
+      AND e.placement_kind='PRIMARY';
+   IF source_school IS NULL OR historic_school IS DISTINCT FROM source_school
+      OR schools_count<>1 THEN
+     RAISE EXCEPTION 'D1 Roll correction historical Student scope ambiguous';
+   END IF;
+   business_today:=app_private.d1_roll_business_date(source_school);
+   SELECT count(*),min(e.section_offering_id::text)::uuid
+     INTO placement_count,current_section
+     FROM app_private.enrollments e
+     WHERE e.student_id=p_student_id AND e.placement_kind='PRIMARY'
+       AND e.effective_from<=business_today
+       AND (e.effective_until IS NULL OR business_today<e.effective_until);
+   IF placement_count>1 THEN
+     RAISE EXCEPTION 'D1 Roll correction current history scope ambiguous';
+   END IF;
+   IF (CASE WHEN placement_count=1 THEN
+        app_private.d1_authorized('student.roll_history.view','STUDENT',
+            p_student_id,NULL::uuid,business_today)
+       ELSE
+        -- The ended Student has no live PRIMARY Section. Permission is still
+        -- checked NOW using the exact retained source ancestry. Revoked
+        -- historic grants never suffice merely through prior participation.
+        app_private.d1_authorized('student.roll_history.view','STUDENT',
+            p_student_id,NULL::uuid,p_expected_enrollment_effective_from)
+       END) IS DISTINCT FROM true
+   THEN RAISE EXCEPTION 'D1 Roll correction historic number disclosure denied'; END IF;
+   IF ctx.receipt_state IS DISTINCT FROM 'SUCCEEDED'
+      OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
+      OR app_private.d1_roll_correct_direct_receipt_matches_exact(
+         ctx.receipt_id,ctx.actor_id,p_idempotency_key,ctx.intent_hash,
+         p_student_id,p_source_enrollment_id,p_source_roll_allocation_id,
+         ctx.result_ref) IS DISTINCT FROM true
+      OR app_private.d1_roll_correct_reason_matches_exact(
+         p_source_roll_allocation_id,ctx.result_ref,p_reason) IS DISTINCT FROM true
+   THEN RAISE EXCEPTION 'D1 Roll correction DIRECT receipt not replayable'; END IF;
+   replay_number:=(ctx.result_summary->>'new_numeric_value')::bigint;
+   replay_from:=(ctx.result_summary->>'correction_effective_from')::date;
+   replay_version:=(ctx.result_summary->>'student_version')::bigint;
+   RETURN QUERY SELECT p_student_id,p_source_enrollment_id,p_source_roll_allocation_id,
+     ctx.result_ref,replay_number,replay_from,replay_version;
+   RETURN;
+ END IF;
+
+ IF app_private.d1_roll_correct_authorized(ctx.actor_id,
+     'student.roll.correct',p_expected_source_section_id,NULL::uuid)
+     IS DISTINCT FROM true
+ THEN RAISE EXCEPTION 'D1 Roll correction DIRECT current authority denied'; END IF;
+ SELECT * INTO route FROM app_private.d1_roll_correct_policy(p_expected_source_section_id);
+ IF NOT FOUND OR route.policy_id IS NULL
+    OR route.route_mode IS DISTINCT FROM 'DIRECT' OR route.campus_id IS NULL
+ THEN RAISE EXCEPTION 'D1 Roll correction requires APPROVAL or valid P1 DIRECT'; END IF;
+
+ -- The source helper serializes School -> stored revision -> allocator ->
+ -- Student -> academic ancestors -> Enrollment -> exact current Roll.
+ SELECT * INTO locked FROM app_private.d1_roll_correct_lock_source(
+    p_student_id,p_expected_student_version,p_source_enrollment_id,
+    p_expected_source_section_id,p_expected_enrollment_effective_from,
+    p_source_roll_allocation_id,p_expected_source_roll_effective_from,
+    p_expected_source_policy_revision_id,p_expected_old_numeric_value);
+ IF NOT FOUND OR locked.error_code IS NOT NULL OR locked.business_date IS NULL
+    OR locked.campus_id IS DISTINCT FROM route.campus_id
+ THEN RAISE EXCEPTION 'D1 Roll correction DIRECT source stale or invalid'; END IF;
+
+ -- Re-read authority and P1 policy AFTER contested row-lock waits.
+ IF app_private.current_principal_id() IS DISTINCT FROM ctx.actor_id
+    OR app_private.d1_roll_correct_authorized(ctx.actor_id,
+       'student.roll.correct',p_expected_source_section_id,NULL::uuid)
+       IS DISTINCT FROM true
+ THEN RAISE EXCEPTION 'D1 Roll correction DIRECT authority changed'; END IF;
+ SELECT * INTO route FROM app_private.d1_roll_correct_policy(p_expected_source_section_id);
+ IF NOT FOUND OR route.route_mode IS DISTINCT FROM 'DIRECT'
+    OR route.campus_id IS DISTINCT FROM locked.campus_id
+ THEN RAISE EXCEPTION 'D1 Roll correction DIRECT policy changed'; END IF;
+
+ SELECT * INTO eff FROM app_private.d1_roll_correct_effect(
+   ctx.actor_id,p_student_id,p_expected_student_version,
+   p_source_enrollment_id,p_expected_source_section_id,
+   p_expected_enrollment_effective_from,p_source_roll_allocation_id,
+   p_expected_source_roll_effective_from,p_expected_source_policy_revision_id,
+   p_expected_old_numeric_value,p_requested_numeric_value,p_reason);
+ IF NOT FOUND OR eff.source_roll_id IS DISTINCT FROM p_source_roll_allocation_id
+   OR eff.corrected_roll_id IS NULL
+   OR eff.student_version IS DISTINCT FROM p_expected_student_version+1
+   OR eff.correction_effective_from IS NULL
+ THEN RAISE EXCEPTION 'D1 Roll correction DIRECT atomic effect mismatch'; END IF;
+
+ -- The immutable 12-key result is deliberately not a broad event payload.
+ -- Historic source row numbers are retained in restricted command receipts.
+ summary:=pg_catalog.jsonb_build_object(
+   'student_id',p_student_id,'enrollment_id',p_source_enrollment_id,
+   'source_roll_allocation_id',p_source_roll_allocation_id,
+   'corrected_roll_allocation_id',eff.corrected_roll_id,
+   'source_policy_revision_id',p_expected_source_policy_revision_id,
+   'old_numeric_value',p_expected_old_numeric_value,
+   'new_numeric_value',p_requested_numeric_value,
+   'source_roll_effective_from',p_expected_source_roll_effective_from,
+   'correction_effective_from',eff.correction_effective_from,
+   'student_version',eff.student_version,
+   'section_offering_id',p_expected_source_section_id,
+   'source_enrollment_effective_from',p_expected_enrollment_effective_from);
+ evidence_id:=app_private.d1_roll_correct_direct_success_evidence(
+   ctx.actor_id,p_idempotency_key,
+   pg_catalog.jsonb_build_array(
+     p_student_id,p_expected_student_version::text,p_source_enrollment_id,
+     p_expected_source_section_id,p_expected_enrollment_effective_from,
+     p_source_roll_allocation_id,p_expected_source_roll_effective_from,
+     p_expected_source_policy_revision_id,p_expected_old_numeric_value::text,
+     p_requested_numeric_value::text,p_reason),
+   summary,pg_catalog.gen_random_uuid());
+ IF evidence_id IS NULL
+    OR app_private.d1_roll_correct_direct_receipt_matches_exact(
+         evidence_id,ctx.actor_id,p_idempotency_key,ctx.intent_hash,
+         p_student_id,p_source_enrollment_id,p_source_roll_allocation_id,
+         eff.corrected_roll_id) IS DISTINCT FROM true
+ THEN RAISE EXCEPTION 'D1 Roll correction DIRECT receipt/effect mismatch'; END IF;
+ RETURN QUERY SELECT p_student_id,p_source_enrollment_id,p_source_roll_allocation_id,
+    eff.corrected_roll_id,p_requested_numeric_value,
+    eff.correction_effective_from,eff.student_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_correct_student_roll(
+ uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_correct_student_roll(
+ uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text,text)
+ TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_student_executor;
