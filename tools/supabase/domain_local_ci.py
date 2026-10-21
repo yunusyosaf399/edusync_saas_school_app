@@ -57,6 +57,8 @@ FINAL_FUNCTION_OWNERS = (
 # fixed Student/allocator server versions; no new client grants.
 # Effect41_03 adds two authz-reader-owned PRIVATE P1 authority/route helpers.
 # These remain inactive and uncallable by clients, including authenticated.
+# Effect41_04 adds one evidence-writer-owned private canonical context prelock.
+# No protected command endpoint or client grant is added.
 # Do not allow public RPC/client grants or RLS/table-DML drift.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
@@ -68,10 +70,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 550,
-    "security_definers": 532,
+    "functions": 551,
+    "security_definers": 533,
     "app_functions": 157,
-    "private_functions": 393,
+    "private_functions": 394,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,

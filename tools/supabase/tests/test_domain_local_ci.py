@@ -56,9 +56,9 @@ class DomainLocalCITests(unittest.TestCase):
         # effect 41_03 adds two authz-reader-owned private gates.
         # Public RPCs, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 550)
-        self.assertEqual(expected["security_definers"], 532)
-        self.assertEqual(expected["private_functions"], 393)
+        self.assertEqual(expected["functions"], 551)
+        self.assertEqual(expected["security_definers"], 533)
+        self.assertEqual(expected["private_functions"], 394)
         self.assertEqual(expected["app_functions"], 157)
         self.assertEqual(expected["authenticated_app_execute"], 157)
         self.assertEqual(expected["authenticated_private_execute"], 0)
@@ -193,6 +193,29 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertNotIn("UPDATE app_private.operation_contracts", sql)
         self.assertNotIn("INSERT INTO app_private.roll_allocations", sql)
         self.assertNotIn("GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_authorized(uuid,text,uuid,uuid)\n TO authenticated", sql)
+
+    def test_db01_canonical_command_context_is_private_typed_and_not_a_command(self):
+        sql = (runtime.ROOT / "supabase/migrations" / (
+            "20260928000000_domain_package_01_effect41_04_db01_roll_correct_canonical_command_context.sql.draft"
+        )).read_text(encoding="utf-8")
+        self.assertEqual(sql.count("CREATE FUNCTION app_private.d1_roll_correct_command_context("), 1)
+        self.assertEqual(sql.count("SET ROLE schoolos_evidence_writer;"), 1)
+        self.assertIn("SECURITY DEFINER SET search_path=pg_catalog,pg_temp", sql)
+        self.assertIn("WHEN 'student.roll.correct' THEN 11", sql)
+        self.assertIn("WHEN 'request.submit' THEN 11", sql)
+        self.assertIn("WHEN 'request.review' THEN 4", sql)
+        self.assertIn("WHEN 'request.apply' THEN 2", sql)
+        self.assertIn("app_private.d1_jcs_typed(", sql)
+        self.assertIn("p_intent->>10", sql)
+        self.assertIn("pg_catalog.pg_advisory_xact_lock_shared(71001,1)", sql)
+        self.assertIn("pg_catalog.pg_advisory_xact_lock(71002,resource::integer)", sql)
+        self.assertIn("rec.canonical_payload_hash IS DISTINCT FROM h", sql)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
+        self.assertIn("TO schoolos_student_executor,schoolos_workflow_executor;", sql)
+        self.assertNotIn("CREATE FUNCTION app.", sql)
+        self.assertNotIn("UPDATE app_private.operation_contracts", sql)
+        self.assertNotIn("INSERT INTO app_private.command_receipts", sql)
+        self.assertNotIn("INSERT INTO app_private.roll_allocations", sql)
 
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
