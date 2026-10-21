@@ -12,12 +12,12 @@
 |---|---|---|
 | Owner's provider and country preference | Supabase Storage first; any supported hosting country acceptable, **United States preferred** | **RECORDED OWNER PREFERENCE** (not production signoff) |
 | First specific-region candidate | `us-east-1` (Northern Virginia, United States); `us-east-2` (Ohio) backup | **ENGINEERING RECOMMENDATION**, confirm project-creation selector/availability before provisioning |
-| Supabase account inventory | One visible project **“YouPro School”**, status **INACTIVE**, primary region `ap-southeast-2` (Sydney); organization displayed as “YouPro School” | **DO NOT REUSE**, modify, resume or transfer existing project; it is not the approved U.S. disposable PA-02 lab |
+| Supabase account inventory | One visible preexisting project, status **INACTIVE**, primary region `ap-southeast-2` (Sydney); project/org identifiers intentionally withheld | **DO NOT REUSE**, modify, resume or transfer existing project; it is not the approved U.S. disposable PA-02 lab |
 | Distinct U.S. PA-02 project | No dedicated U.S. synthetic-only project was visible in this read-only inventory | **NOT PROVISIONED**; no project ID or credentials assumed |
 | GitHub branch/head at preflight | PR #120, `b21ded62e84f84d03803970cf67335df6afebd43`; base `main` `df1c98d5c2d19424946986fc6ba7615202b0a443` | Draft and mergeable as of inspection; recheck exact heads before later execution |
 | Existing acceptance evidence | #104/#105 mock provider and DB receipts; #223/#225 test specifications | **NOT real Supabase Storage bytes, private IAM or immutable seal proof** |
 
-The existing project name is included for identification in this *nonsecret* operational decision record, **not** an instruction to use that project for the lab. No project reference, organization ID, endpoint, access key, private URL or file path is published. The account inventory is a point-in-time read; a fresh nonmutating inventory is required before any further step.
+The preexisting project's **name, organization and identifying references are intentionally withheld** from this public operational decision record. No project reference, organization ID, endpoint, access key, private URL or file path is published. The account inventory is a point-in-time read; a fresh nonmutating inventory is required before any further step.
 
 The initial PA-02 sandbox must be a **different, disposable project** for exactly one simulated School, with generated **nonpersonal** fixtures and no connection to production systems. The existing School project and databases remain out of scope.
 
