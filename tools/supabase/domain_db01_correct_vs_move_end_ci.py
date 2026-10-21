@@ -194,7 +194,7 @@ def run_db01_correct_vs_move_end_races(container, run_psql):
         with observer.cursor() as cur:
             cur.execute("SELECT app_private.d1_roll_business_date(%s::uuid)",(SCHOOL,))
             today=cur.fetchone()[0]
-            p0_date=today-timedelta(days=20)
+            p0_date=today-timedelta(days=1)
             cur.execute("""SELECT app_private.d1_enrollment_move_policy(
                     %s::uuid,%s::uuid)""",(SOURCE,DEST))
             route=cur.fetchone()
