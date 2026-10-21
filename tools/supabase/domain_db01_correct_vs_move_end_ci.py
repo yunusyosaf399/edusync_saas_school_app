@@ -58,18 +58,22 @@ def _seed(container, run_psql, business_date):
         person=PREFIX+f"{index:012d}"[:-2]+"90"
         people.append(f"('{person}'::uuid,'DB-01 contested Student Person {index}',"+
                       "'11111111-1111-4111-8111-111111111111')")
-    script="BEGIN;\n"+settings_sql()+"""SET ROLE schoolos_schema_owner;
-INSERT INTO app_private.people(id,display_name,created_by) VALUES
-"""+",\n".join(people)+";
-INSERT INTO app_private.students(id,person_id,school_student_id,admission_number,
- admission_serial,admitted_on,current_status,created_by) VALUES
-"+",\n".join(t.replace("%s::date",f"'{day}'::date") for t in tuples)+";
-INSERT INTO app_private.student_status_transitions(
- id,student_id,previous_status,new_status,effective_on,
- sequence_number,reason,created_by) VALUES
-"+",\n".join(t.replace("%s::date",f"'{day}'::date") for t in transitions)+";
-RESET ROLE;
-COMMIT;"
+    # Construct one transaction with schema-owner fixture writes only.
+    student_rows=",\n".join(t.replace("%s::date",f"'{day}'::date") for t in tuples)
+    transition_rows=",\n".join(t.replace("%s::date",f"'{day}'::date") for t in transitions)
+    script=(
+        "BEGIN;\n" + settings_sql() +
+        "SET ROLE schoolos_schema_owner;\n" +
+        "INSERT INTO app_private.people(id,display_name,created_by) VALUES\n" +
+        ",\n".join(people) + ";\n" +
+        "INSERT INTO app_private.students(id,person_id,school_student_id,admission_number,\n"
+        " admission_serial,admitted_on,current_status,created_by) VALUES\n" +
+        student_rows + ";\n" +
+        "INSERT INTO app_private.student_status_transitions(\n"
+        " id,student_id,previous_status,new_status,effective_on,\n"
+        " sequence_number,reason,created_by) VALUES\n" +
+        transition_rows + ";\nRESET ROLE;\nCOMMIT;"
+    )
     run_psql(container,script,"D1_DB01_CORRECT_CROSS_OPERATION_SEED",timeout=60)
 
 
