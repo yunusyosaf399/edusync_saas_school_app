@@ -1,0 +1,132 @@
+-- DB-01 RC-07/08: fixed, private canonical command intent and receipt preflight.
+-- No public RPC, mutation, receipt insertion, P1 activation or hosted migration.
+-- This helper *must* run before taking School/Student/academic locks.  The
+-- SHARED Foundation lock and per-Principal+operation+key advisory lock are
+-- transaction-scoped and must remain held through the protected handler.
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+
+CREATE FUNCTION app_private.d1_roll_correct_command_context(
+ p_command_kind text,p_idempotency_key text,p_intent jsonb
+) RETURNS TABLE(actor_id uuid,operation_id uuid,receipt_id uuid,
+  result_ref uuid,result_summary jsonb,receipt_state text,intent_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE expected_len integer; i integer; v text; actor uuid; op uuid;
+  h bytea; digest bytea; resource bigint;
+  rec app_private.command_receipts%ROWTYPE;
+BEGIN
+  expected_len:=CASE p_command_kind
+    WHEN 'student.roll.correct' THEN 11
+    WHEN 'request.submit' THEN 11
+    WHEN 'request.review' THEN 4
+    WHEN 'request.apply' THEN 2
+    ELSE NULL END;
+  IF expected_len IS NULL OR p_idempotency_key IS NULL
+     OR pg_catalog.length(pg_catalog.btrim(p_idempotency_key))=0
+     OR p_intent IS NULL OR pg_catalog.jsonb_typeof(p_intent)<>'array'
+     OR pg_catalog.jsonb_array_length(p_intent)<>expected_len
+  THEN RAISE EXCEPTION 'D1 Roll correction command intent malformed'; END IF;
+
+  -- Typed wrappers supply only canonical JSON strings (including decimal
+  -- BIGINT-as-text). Reject JSON numeric/double representations, NULL,
+  -- alternate UUID/date spellings and noncanonical number encodings.
+  FOR i IN 0..(expected_len-1) LOOP
+    IF pg_catalog.jsonb_typeof(p_intent->i) IS DISTINCT FROM 'string'
+       OR p_intent->>i IS NULL THEN
+      RAISE EXCEPTION 'D1 Roll correction command intent position malformed';
+    END IF;
+  END LOOP;
+  BEGIN
+    IF p_command_kind IN ('student.roll.correct','request.submit') THEN
+      FOREACH i IN ARRAY ARRAY[0,2,3,5,7] LOOP
+        v:=p_intent->>i;
+        IF v IS DISTINCT FROM (v::uuid)::text THEN
+          RAISE EXCEPTION 'D1 Roll correction typed UUID not canonical';
+        END IF;
+      END LOOP;
+      FOREACH i IN ARRAY ARRAY[4,6] LOOP
+        v:=p_intent->>i;
+        IF v IS DISTINCT FROM (v::date)::text THEN
+          RAISE EXCEPTION 'D1 Roll correction typed DATE not canonical';
+        END IF;
+      END LOOP;
+      FOREACH i IN ARRAY ARRAY[1,8,9] LOOP
+        v:=p_intent->>i;
+        IF v IS DISTINCT FROM (v::bigint)::text THEN
+          RAISE EXCEPTION 'D1 Roll correction typed BIGINT not canonical';
+        END IF;
+      END LOOP;
+      IF (p_intent->>1)::bigint<1 OR (p_intent->>8)::bigint<1
+         OR (p_intent->>9)::bigint<1
+         OR (p_intent->>9)::bigint>9223372036854775806::bigint
+         OR (p_intent->>9)::bigint=(p_intent->>8)::bigint
+      THEN RAISE EXCEPTION 'D1 Roll correction source/proposal numbers invalid'; END IF;
+      v:=p_intent->>10;
+    ELSIF p_command_kind='request.review' THEN
+      v:=p_intent->>0;
+      IF v IS DISTINCT FROM (v::uuid)::text
+         OR p_intent->>1 NOT IN ('APPROVE','REJECT')
+      THEN RAISE EXCEPTION 'D1 Roll correction review intent malformed'; END IF;
+      v:=p_intent->>2;
+      IF v IS DISTINCT FROM (v::bigint)::text OR v::bigint<1
+      THEN RAISE EXCEPTION 'D1 Roll correction review version invalid'; END IF;
+      v:=p_intent->>3;
+    ELSE
+      v:=p_intent->>0;
+      IF v IS DISTINCT FROM (v::uuid)::text
+      THEN RAISE EXCEPTION 'D1 Roll correction apply request invalid'; END IF;
+      v:=p_intent->>1;
+      IF v IS DISTINCT FROM (v::bigint)::text OR v::bigint<1
+      THEN RAISE EXCEPTION 'D1 Roll correction apply version invalid'; END IF;
+      v:=NULL;
+    END IF;
+  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow OR numeric_value_out_of_range THEN
+    RAISE EXCEPTION 'D1 Roll correction typed intent invalid';
+  END;
+  IF p_command_kind<>'request.apply' AND
+     (v IS NULL OR pg_catalog.length(pg_catalog.btrim(v))=0
+        OR pg_catalog.octet_length(v)>2048)
+  THEN RAISE EXCEPTION 'D1 Roll correction reason invalid'; END IF;
+
+  -- Same transaction serialization and hash envelope as D1 Enrollment END;
+  -- never include a volatile server-local DATE in the caller-intent hash.
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  actor:=app_private.current_principal_id();
+  IF actor IS NULL THEN RAISE EXCEPTION 'D1 Roll correction verified actor required'; END IF;
+  SELECT o.id INTO op FROM app_private.operation_contracts o
+   WHERE o.code='student.roll.correct' AND o.contract_version=1
+     AND o.handler_key='student.roll.correct' AND o.enabled;
+  IF op IS NULL THEN RAISE EXCEPTION 'D1 Roll correction operation disabled'; END IF;
+
+  h:=pg_catalog.sha256(pg_catalog.convert_to(app_private.d1_jcs_typed(
+    pg_catalog.jsonb_build_object(
+     'canonicalization_version',1,'operation_code','student.roll.correct',
+     'operation_contract_version','1','operation_id',op::text,
+     'command_kind',p_command_kind,'principal_id',actor::text,
+     'intent',p_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+  digest:=pg_catalog.sha256(pg_catalog.convert_to(
+    actor::text||'|'||op::text||'|'||p_idempotency_key,'UTF8'));
+  resource:=pg_catalog.get_byte(digest,0)::bigint*16777216
+    +pg_catalog.get_byte(digest,1)::bigint*65536
+    +pg_catalog.get_byte(digest,2)::bigint*256
+    +pg_catalog.get_byte(digest,3)::bigint;
+  IF resource>2147483647 THEN resource:=resource-4294967296; END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(71002,resource::integer);
+  SELECT r.* INTO rec FROM app_private.command_receipts r
+   WHERE r.principal_id=actor AND r.operation_id=op
+     AND r.idempotency_key=p_idempotency_key;
+  IF FOUND THEN
+    IF rec.canonicalization_version<>1 OR rec.canonical_payload_hash IS DISTINCT FROM h
+       OR rec.command_kind IS DISTINCT FROM p_command_kind
+    THEN RAISE EXCEPTION 'D1 Roll correction idempotency key conflicts with prior intent'; END IF;
+    RETURN QUERY SELECT actor,op,rec.id,rec.result_ref,rec.result_summary,rec.state,h;
+    RETURN;
+  END IF;
+  RETURN QUERY SELECT actor,op,NULL::uuid,NULL::uuid,NULL::jsonb,NULL::text,h;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_correct_command_context(text,text,jsonb)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_command_context(text,text,jsonb)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
