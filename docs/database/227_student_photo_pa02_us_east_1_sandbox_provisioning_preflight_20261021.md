@@ -6,6 +6,17 @@
 **PR:** #120 (draft, documentation only).  
 **Inputs:** [owner's US-first choice and regional review](226_student_photo_pa02_region_sandbox_approval_and_residency_review_20261021.md), [private location and negative checks](225_student_photo_supabase_storage_sandbox_isolation_contract_20261021.md), [PA gates](222_student_photo_pa01_pa08_owner_security_decision_packet_20261020.md), [test matrix](223_student_photo_provider_activation_dependency_and_test_matrix_20261020.md), [provider selection](224_student_photo_pa01_provider_selection_evidence_and_sandbox_gate_20261020.md), [ADR-003](../decisions/ADR-003-provider-neutral-object-storage.md).
 
+
+## 0A. Superseding connected-account verification — 2026-10-21
+
+**Current designated account/organization:** the user connected a separate **SchoolAgent** Supabase account, confirmed that its organization was formerly named **Ilmora**, and renamed that organization to **SchoolAgent**. A subsequent authorized read-only check verifies the organization displays **SchoolAgent** and is on the **Free** plan. The provider's **actual organization-scoped project price quote is $0/month** for the proposed new project, subject to the account's eligibility and no paid add-ons, plan upgrades, or quota changes. A quote is not a deployed project.
+
+One pre-existing **inactive** project is visible in this SchoolAgent organization, with its primary region **`ap-northeast-2` (Seoul, South Korea)**. Its name and identifiers are intentionally excluded from public operational evidence. This pre-existing project is **not** the dedicated U.S. lab and **must not be reused, resumed, transferred or modified** under this PA-02 task.
+
+**Supersession:** Section 1's `ap-southeast-2` inventory and Section 1A's unknown-organization/unknown-quote observations describe the *earlier* Supabase connection and must **not** be used as current target selection or cost evidence. The SchoolAgent organization identity and $0/month quote are now verified. The owner has not yet explicitly authorized **creation** of the new disposable project, and independent security approval for any bucket, credential, policy or real-provider tests remains open. **No create_project call, purchase, migration, Storage policy change, image upload or production endpoint activation has occurred.**
+
+**Next controlled action:** request confirmation to create **one new** `edusync-pa02-photo-synthetic-lab` project in SchoolAgent, **`us-east-1`**, conditioned on the quote remaining **$0/month** and without any paid options. The provider could still reject creation due to quota or account policy. Once provisioned, keep Storage buckets and IAM unconfigured until separately reviewed and authorized; the project itself is not evidence of PA-01/02 PASS.
+
 ## 1. Verified account and repository preflight — READ ONLY
 
 | Observation | Evidence on 2026-10-21 | Disposition |
