@@ -9,7 +9,7 @@ This independent handoff review supplements [CUR-07 A1–G1 candidate gate](db04
 ## Decision baseline and scope
 
 - **Approved:** CUR-01 rejects overlapping School-wide/Campus applicability without implicit precedence and explicitly approves T1/M1/S1/F1/H1 effective-date/cutover safeguards; CUR-02 derived COMPULSORY and explicitly accepted OPTIONAL/ELECTIVE; CUR-03 atomic group election, BF-1 T7 finalized set and T8 members, B-M1 strict maximum; CUR-04 staff-only accepted write and scoped checked SELF/FAMILY reads; CUR-05 P0/P1/P2 and independent review; CUR-06 no transfer carry-forward, archived new-use denial, immutable old published consumer basis and stale APPLY rejection.
-- **Unapproved:** CUR-07 A1–G1; CUR-08 eight-entity physical fields, SQL, registrations and test plan approval .
+- **Unapproved:** CUR-07 A1–G1; CUR-08 eight-entity physical fields, SQL, registrations and test plan approval.
 - **Authority boundary:** DB-04 decides effective Curriculum/Subject/selection eligibility; D1 owns accepted Enrollment and Subject/Offering lifecycle; Exams owns assessment/result publication and revisions; Learning owns assignment/audience/submission history; Timetable owns schedules and collisions; Foundation owns authentication, permissions, scoped executors, receipts, approval integration and auditing. A proposed DB-04 read is never a grant.
 
 ## Required owner decision and independent signatures
