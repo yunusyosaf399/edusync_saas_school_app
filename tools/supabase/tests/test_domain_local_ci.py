@@ -300,6 +300,34 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertNotIn("UPDATE app_private.roll_allocations", sql)
         self.assertNotIn("UPDATE app_private.students", sql)
 
+    def test_db01_historic_replay_after_protected_move_end_is_real_pg_and_fail_closed(self):
+        file = runtime.ROOT / "tools/supabase/domain_db01_replay_after_move_end_ci.py"
+        trial = file.read_text(encoding="utf-8")
+        compile(trial, str(file), "exec")
+        driver = (runtime.ROOT / "tools/supabase/domain_local_ci.py").read_text(encoding="utf-8")
+        self.assertLess(driver.index("run_db01_protected_direct_races(container, run_psql)"),
+                        driver.index("run_db01_roll_replay_after_move_end(container, run_psql)"))
+        for expected in (
+            "app.d1_place_student_enrollment(",
+            "app.d1_correct_student_roll(",
+            "app.d1_move_student_enrollment(",
+            "app.d1_end_student_enrollment(",
+            "app_private.d1_roll_business_date(",
+            "D1_DB01_REPLAY_AFTER_PROTECTED_MOVE_PASS",
+            "D1_DB01_REPLAY_AFTER_PROTECTED_END_PASS",
+            "D1_DB01_REPLAY_AFTER_MOVE_END_REVOKED_PASS",
+            "schoolos_schema_owner",
+            "Pacific/Kiritimati",
+            "Etc/GMT+12",
+            "student.roll_history.view",
+        ):
+            self.assertIn(expected, trial)
+        self.assertNotIn("INSERT INTO app_private.roll_allocations", trial)
+        self.assertNotIn("UPDATE app_private.roll_allocations", trial)
+        self.assertNotIn("UPDATE app_private.enrollments", trial)
+        self.assertNotIn("GRANT EXECUTE", trial)
+        self.assertNotIn("time.sleep(", trial)
+
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
         observed["authenticated_private_execute"] = 1
