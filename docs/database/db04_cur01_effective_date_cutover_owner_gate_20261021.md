@@ -1,10 +1,12 @@
 # DB-04 — CUR-01 Remaining Effective-Date and Mid-Year Cutover Decision Gate
 
+> **OWNER APPROVAL UPDATE — 2026-10-21 (supersedes historical pending status below):** The product owner explicitly approved **T1+M1+S1+F1+H1** in DB04v1.1. See the [approved CUR-01 effective-date/cutover decision record](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md). All CUR-01 **product decisions are now complete**, including the previously approved no-overlap/no-precedence rule. The original choice matrix remains as decision provenance; no SQL/test/permission/consumer or deployment approval is implied.
+
 **2026-10-21 | PRODUCT CHOICES PENDING — NOT APPROVED | DOCUMENTATION ONLY**
 
 The [2026-10-20 CUR-01 owner decision](db04_cur01_approved_applicability_decision_20261020.md) **already approved** no overlapping School-wide and Campus-specific published applicability for the same actual D1 Class Offering/date, **without implicit precedence**. This document does not reopen or relax that decision. It isolates still-unsigned first-effective-date and mid-year replacement semantics needed before CUR-08 freeze.
 
-## Candidate choices for explicit owner selection
+## Originally proposed choices — all five recommendations approved 2026-10-21
 
 | Gate | Recommended proposal — NOT YET APPROVED | Alternative / impact |
 |---|---|---|
@@ -29,8 +31,8 @@ All examples are **candidate assertions**, not SQL test results. The dates illus
 
 ## Owner answer and dependent signatures
 
-Product owner must explicitly select each gate **T1/T2, M1/M2, S1/S2, F1/F2, H1/H2**, or provide revised text. **No gate is auto-approved by “Complete next task.”** If the owner approves M1 but denies any migration of accepted sets, P2 APPLY must fail closed for incompatible live selections rather than inventing grandfathering.
+**Owner selection received 2026-10-21: T1 + M1 + S1 + F1 + H1.** All five are now approved; alternatives T2/M2/S2/F2/H2 were not selected. Previous statements requesting an owner answer are superseded. No gate is auto-approved by an unqualified “Complete next task.” If the owner approves M1 but denies any migration of accepted sets, P2 APPLY must fail closed for incompatible live selections rather than inventing grandfathering.
 
 After product answers, require D1 Academic Year/Enrollment locks and Subject archive compatibility, Foundation P2 independent reviewer/permissions, DB-04 bitemporal/School-wide overlap validation, plus Exams/Learning/Timetable signature for frozen historical publication sources. See [CUR-08 physical freeze readiness](db04_cur08_eight_entity_physical_freeze_readiness_20261021.md).
 
-**Status: CUR-01 overlap/no-precedence approved; timing and cutover options remain pending. No SQL, permission, test, deployment, merge, or cross-domain write.**
+**Current status: CUR-01 all product rules approved (non-overlap/no-precedence plus T1/M1/S1/F1/H1). Implementation, CUR-07/08 and independent integration signoffs pending. No SQL, permission, test, deployment, merge or cross-domain write.**

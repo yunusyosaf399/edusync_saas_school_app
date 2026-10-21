@@ -1,5 +1,7 @@
 # DB-04 CUR-01 — Approved Applicability Conflict Policy
 
+> **FOLLOW-UP OWNER DECISION — 2026-10-21:** The previously unapproved initial-effectivity and cutover questions are now explicitly **approved T1+M1+S1+F1+H1**. See [CUR-01 approved effective-date/mid-year decision](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md). The original 2026-10-20 scope limitation and pending list below are retained as historical evidence only. **CUR-01 product decisions are complete; physical SQL and cross-domain signoffs remain pending.**
+
 **Decision status: PRODUCT OWNER APPROVED, 2026-10-20.** Owner's exact selection:
 
 > Approve CUR-01: reject overlapping school-wide and campus-specific curricula, without implicit precedence.
@@ -21,7 +23,7 @@ The same rule rejects overlapping two school-wide rows, overlapping two matching
 - Preserve original published revision/rule/digest, effective intervals, receipt/audit lineage and consumer-owned historical snapshots. Do not retroactively change a previously published Exam.
 - A checked Student/Family/Exams/Learning/Timetable read must fail closed for any unexpectedly ambiguous historical/live context rather than picking a winner.
 
-## CUR-01 scope still awaiting owner decisions
+## Original CUR-01 remaining scope (resolved by 2026-10-21 follow-up)
 
 This approval does **not** independently settle: whether first publication must start at the exact Academic Year start, the permitted future-effective start rules, whether a mid-year replacement is permitted and with which P1/P2 reviewer policy, or the transfer/active-selection impact during such cutover. These remain pending alongside CUR-05/06/07/08; choose no default as if it were approved.
 

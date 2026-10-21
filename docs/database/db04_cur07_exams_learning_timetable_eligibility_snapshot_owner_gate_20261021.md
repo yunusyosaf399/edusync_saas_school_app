@@ -1,5 +1,7 @@
 # DB-04 — CUR-07 Exams, Learning and Timetable Eligibility / Immutable Observation Owner Gate
 
+> **2026-10-21 CUR-01 FOLLOW-UP:** [T1+M1+S1+F1+H1 approved](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md) for explicit start dates, P2 prospective mid-year cutover, fail-closed current/future selections, APPLY revalidation and historical evidence. Earlier “CUR-01 timing pending” text below is historical. **CUR-07 A1–G1 are still unapproved**, and Exams/Learning/Timetable/Foundation signoffs remain independent requirements. No SQL.
+
 **STATUS: CUR-07 PRODUCT DECISION REQUIRED — NOT APPROVED.** Prepared 2026-10-21 on DB-04 draft PR #103. Design and signer handoff only: no Exams/Learning/Timetable SQL, migration, permission/operation registration, shared CI change, runtime execution or hosted Supabase access. [CUR-06 Enrollment MOVE/Subject ARCHIVE/Revision/history policy](db04_cur06_approved_transfer_archive_history_policy_20261021.md) **was approved**; this document's consumer freeze points, projection shapes and new release interfaces are **recommendations, not automatically approved by CUR-06**.
 
 ## 1. Authoritative scope and original requirements

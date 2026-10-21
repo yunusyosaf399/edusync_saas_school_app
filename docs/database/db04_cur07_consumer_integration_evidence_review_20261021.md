@@ -1,13 +1,15 @@
 # DB-04 — CUR-07 Consumer Integration Evidence and Signoff Review
 
+> **2026-10-21 CUR-01 UPDATE:** The owner explicitly [approved first effective date and mid-year cutover T1+M1+S1+F1+H1](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md). Earlier CUR-01 timing-pending notes below are superseded. CUR-07 A1–G1 and downstream consumer/permission signoffs **remain unapproved**; CUR-01 approval must not be read as authorization to freeze Exams/Learning/Timetable evidence contracts.
+
 **2026-10-21 | DOCUMENTATION-ONLY | CUR-07 NOT APPROVED | PR #103**
 
 This independent handoff review supplements [CUR-07 A1–G1 candidate gate](db04_cur07_exams_learning_timetable_eligibility_snapshot_owner_gate_20261021.md). It does **not** approve CUR-07, freeze physical SQL, represent Exams/Learning/Timetable consent, record a runtime PASS, install permissions, or authorize hosted deployment.
 
 ## Decision baseline and scope
 
-- **Approved:** CUR-01 rejects overlapping School-wide/Campus applicability without implicit precedence (**timing still open**); CUR-02 derived COMPULSORY and explicitly accepted OPTIONAL/ELECTIVE; CUR-03 atomic group election, BF-1 T7 finalized set and T8 members, B-M1 strict maximum; CUR-04 staff-only accepted write and scoped checked SELF/FAMILY reads; CUR-05 P0/P1/P2 and independent review; CUR-06 no transfer carry-forward, archived new-use denial, immutable old published consumer basis and stale APPLY rejection.
-- **Unapproved:** CUR-07 A1–G1; CUR-08 eight-entity physical fields, SQL, registrations and test plan approval; CUR-01 first-effective-date/mid-year cutover policy.
+- **Approved:** CUR-01 rejects overlapping School-wide/Campus applicability without implicit precedence and explicitly approves T1/M1/S1/F1/H1 effective-date/cutover safeguards; CUR-02 derived COMPULSORY and explicitly accepted OPTIONAL/ELECTIVE; CUR-03 atomic group election, BF-1 T7 finalized set and T8 members, B-M1 strict maximum; CUR-04 staff-only accepted write and scoped checked SELF/FAMILY reads; CUR-05 P0/P1/P2 and independent review; CUR-06 no transfer carry-forward, archived new-use denial, immutable old published consumer basis and stale APPLY rejection.
+- **Unapproved:** CUR-07 A1–G1; CUR-08 eight-entity physical fields, SQL, registrations and test plan approval .
 - **Authority boundary:** DB-04 decides effective Curriculum/Subject/selection eligibility; D1 owns accepted Enrollment and Subject/Offering lifecycle; Exams owns assessment/result publication and revisions; Learning owns assignment/audience/submission history; Timetable owns schedules and collisions; Foundation owns authentication, permissions, scoped executors, receipts, approval integration and auditing. A proposed DB-04 read is never a grant.
 
 ## Required owner decision and independent signatures
@@ -58,6 +60,6 @@ The two-connection race harness must test both arrival orders for: D1 MOVE/END v
 
 ## Freeze rule and recommended next task
 
-**DO NOT IMPLEMENT:** no DB-04 SQL, global permission catalogue, action registration, D1 Migration 10 patch, upstream-owner files, workflow/CI changes or hosted Supabase writes based on this review. Keep PR #103 a draft. After explicit CUR-07 product approval, collect the independent consumer signatures and resolve CUR-01 timing before any CUR-08 physical/installation freeze. If signatures disagree with a candidate field or freeze checkpoint, document that incompatibility and request a narrow owner decision rather than implementing an inferred behavior.
+**DO NOT IMPLEMENT:** no DB-04 SQL, global permission catalogue, action registration, D1 Migration 10 patch, upstream-owner files, workflow/CI changes or hosted Supabase writes based on this review. Keep PR #103 a draft. After explicit CUR-07 product approval, collect the independent consumer signatures and verify the now-approved CUR-01 cutover constraints before any CUR-08 physical/installation freeze. If signatures disagree with a candidate field or freeze checkpoint, document that incompatibility and request a narrow owner decision rather than implementing an inferred behavior.
 
 **Next DB-04 task:** prepare CUR-08 eight-entity physical freeze checklist and the still-pending CUR-01 timing decision alternatives, without implementing SQL or changing other domains.

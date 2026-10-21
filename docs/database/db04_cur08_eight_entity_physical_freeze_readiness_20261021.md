@@ -1,12 +1,14 @@
 # DB-04 — CUR-08 Eight-Entity Physical Freeze Readiness Gate
 
+> **CURRENT DECISION UPDATE — 2026-10-21:** [CUR-01 T1+M1+S1+F1+H1 are now explicitly owner-approved](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md), in addition to overlap/no-precedence. Older “CUR-01 timing pending” notes below are historical. CUR-08 **P01/P02 remain unapproved**; the focused [T7 set granularity / effective-head decision gate](db04_cur08_selection_set_granularity_head_owner_gate_20261021.md) is prepared next. CUR-07 product/consumer signoffs, released D1 and Foundation/security evidence remain pending. No SQL.
+
 **2026-10-21 | CUR-08 NOT APPROVED | DESIGN REVIEW ONLY | PR #103**
 
 This review supersedes the historical **seven-table count** for **future decisions only**; it does not rewrite the original seven-entity proposals. The owner-approved [CUR-03 BF-1/B-M1 direction](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md) requires eight DB-04-owned candidate relations with durable finalized-empty evidence. No physical DDL, SQL draft, migration, test, global catalogue, CI, permission, workflow, other workstream, or hosted Supabase changes are authorized by this document.
 
 ## 1. Decision and dependency baseline
 
-- **CUR-01 approved only in part:** reject School-wide/Campus overlap and implicit precedence. The first-effective date and mid-year cutover policy remain pending; see [timing decision gate](db04_cur01_effective_date_cutover_owner_gate_20261021.md).
+- **CUR-01 PRODUCT APPROVED IN FULL:** reject overlapping School-wide/Campus applicability and implicit precedence; explicit first-effective date and future start (**T1**); P2 independently reviewed prospective mid-year cutover (**M1**); no stranded selected subjects (**S1**); fresh APPLY revalidation (**F1**); immutable original history (**H1**). See [approved decision](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md).
 - **CUR-02 approved:** COMPULSORY derived; OPTIONAL individually selectable; ELECTIVE group-governed; independent Practical/Extra-curricular/Custom classification.
 - **CUR-03 approved:** one group per ELECTIVE Rule, per-revision atomic school-defined bounds, no prerequisite/capacity/deadline engine in v1, **BF-1** independent finalized-selection-set history and **B-M1** strict `max <= effective distinct Section-offered members`.
 - **CUR-04/05/06 approved:** staff-only accepted changes, scoped separate Student/FAMILY checked reads, P0/P1/P2 explicit independently reviewed workflow, no D1 Enrollment MOVE carry-forward, no new use of ARCHIVED Subjects, immutable consumer original publication basis and fail-closed stale APPLY.
@@ -45,10 +47,10 @@ This review supersedes the historical **seven-table count** for **future decisio
 
 ## 4. Pre-implementation no-go criteria
 
-Reject the physical freeze or SQL build when any condition holds: CUR-01 initial/mid-year timing undecided; CUR-07 product decision or Exams/Learning/Timetable source/snapshot signoff missing; P01/P02 optional/link/current-head details unresolved; D1 Migration 10 not released with exact keys; D1 END/MOVE/ARCHIVE lock and implicit FK tests not executed; global registrar/grant policy not independently approved; one-way closure/as-known source behavior undocumented; authorization denials and full two-backend test harness not registered; populated install/upgrade review absent.
+Reject the physical freeze or SQL build when any condition holds: CUR-01 approved timing/transition safeguards cannot be demonstrated; CUR-07 product decision or Exams/Learning/Timetable source/snapshot signoff missing; P01/P02 optional/link/current-head details unresolved; D1 Migration 10 not released with exact keys; D1 END/MOVE/ARCHIVE lock and implicit FK tests not executed; global registrar/grant policy not independently approved; one-way closure/as-known source behavior undocumented; authorization denials and full two-backend test harness not registered; populated install/upgrade review absent.
 
 **No SQL or executable acceptance has been run for DB-04.** Draft PR #103 must not be merged as implementation approval or used as a deployment signal.
 
 ## 5. Next task
 
-Obtain **CUR-01 timing** and **CUR-07 A1–G1** explicit owner choices, and choose **CUR-08 P01/P02** with independent signers. Only then prepare exact SQL-ready physical contracts for separately authorized implementation. This document records no new owner approval.
+CUR-01 timing is **owner-approved**. Obtain **CUR-07 A1–G1** explicit owner choices, and choose **CUR-08 P01/P02** with independent signers. Only then prepare exact SQL-ready physical contracts for separately authorized implementation. This document records no new owner approval.
