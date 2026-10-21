@@ -320,6 +320,10 @@ class DomainLocalCITests(unittest.TestCase):
             "Pacific/Kiritimati",
             "Etc/GMT+12",
             "student.roll_history.view",
+            "MOVE_P1_ROUTE_NOT_DIRECT",
+            "END_P1_ROUTE_NOT_DIRECT",
+            "db01-historic-protected-move-direct",
+            "db01-historic-protected-end-direct",
         ):
             self.assertIn(expected, trial)
         self.assertNotIn("INSERT INTO app_private.roll_allocations", trial)
