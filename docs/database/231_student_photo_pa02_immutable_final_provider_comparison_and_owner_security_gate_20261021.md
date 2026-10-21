@@ -101,3 +101,9 @@ These are engineering rankings according to the **specific hard-immutability req
 Completed here: official source comparison and R2 native-bucket-lock correction; pricing/location caveats; detailed provider-specific adversarial test packet; clean no-write Supabase lab check and concrete owner/security selection gate.
 
 Not performed or authorized: any AWS/Cloudflare/Azure resource, credential, billed operation, bucket, policy, vendor migration, Student Photo upload, PA-03 parser, F23 AVAILABLE, Photo SET, D1 migration, Flutter or DB-01..04 changes. PR #120 stays draft. This document is documentation, not independent security approval.
+
+
+## Subsequent owner choice — 2026-10-21 (supersedes provider rankings)
+
+**Owner explicitly chose “Option A only” (Supabase Storage only) with minimal application-level protection rather than AWS/Azure/Cloudflare or a hybrid final-file service.** This supersedes section 7's earlier *engineering ranking and provider-trial recommendation*, **not** the verified comparative vendor facts. The new implementation direction is the private Supabase bucket plus verified server-only Photo API/new unique keys described in [#232](232_student_photo_owner_choice_supabase_only_minimum_backend_photo_api_20261021.md). Its limits are explicit: ordinary API and accidental overwrite protection, **no native WORM** and no guarantee against a fully privileged Supabase account/server key. Independent PA-01..08 gates and ADR-003/F23 integrity requirements remain unapproved for runtime activation. This comparison is historical evidence only, not authority to continue a different-provider procurement.
+
