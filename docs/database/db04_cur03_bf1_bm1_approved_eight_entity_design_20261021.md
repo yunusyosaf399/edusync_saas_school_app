@@ -56,6 +56,8 @@ These are **not run**. The chosen BF-1/B-M1 options update expected cases in exi
 
 > **Owner workflow follow-up (2026-10-21):** [CUR-05 P0/P1/P2 independent reviewer model approved](db04_cur05_approved_workflow_reviewer_policy_20261021.md); historical CUR-05 pending text below is superseded. Actual Foundation reviewer/operation grants remain unregistered; [CUR-06 change impact semantics](db04_cur06_transfer_archive_replacement_history_owner_gate_20261021.md) remain product-unapproved. Eight DB-04 SQL tables not installed.
 
+> **Decision status update — 2026-10-21:** [CUR-06 transfer/archive/fail-closed history policy approved](db04_cur06_approved_transfer_archive_history_policy_20261021.md). [CUR-07 consumer immutable observation/snapshot options](db04_cur07_exams_learning_timetable_eligibility_snapshot_owner_gate_20261021.md) are pending; existing earlier pending-list details are retained for provenance. No eight-table SQL was created.
+
 ## 4. Owner and dependency status
 
 **Approved:** CUR-01 school-wide/Campus conflict denial without precedence (partial), CUR-02 A1+B1+C1, CUR-03 A1+B1+C1+D1+E1, and CUR-03 **BF-1 + B-M1**. **Pending:** CUR-01 first effectivity/cutover, CUR-04 Student/FAMILY/staff authority and checked reads, CUR-05 P0/P1/P2 workflow, CUR-06 transfer/archive/replacement policy, CUR-07 Exams/Learning/Timetable frozen eligibility, CUR-08 exact eight-table physical columns/FKs/indexes/installation and any T7/T8 granularity decisions. D1/Fnd source release, registrar owner and 2-session runtime proofs are external prerequisites.
