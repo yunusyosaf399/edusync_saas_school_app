@@ -8,6 +8,9 @@
 
 > **CUR-03 OWNER APPROVAL — 2026-10-20:** [Approved CUR-03 A1+B1+C1+D1+E1 record](db04_cur03_approved_group_policy_20261020.md) supersedes earlier **pending** labels for those five choices only. The independent [B-F/B-M clarification review](db04_cur03_group_interval_lock_and_decision_status_review_20261020.md) remains open for physical finalization/maximum interpretation. CUR-01 timing and CUR-04–CUR-08 plus specialist signoffs are still unapproved. No SQL.
 
+> **Approved decision update (2026-10-21):** [CUR-03 BF-1 finalized selection-set history and B-M1 strict maximum policy](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md) are now owner-approved. The old **seven-table** recommendation and **B-F/B-M pending** labels below are historical. **Eight candidate DB-04 entities**, with T7 selection-set and T8 selections. [CUR-04 Staff/Student/FAMILY/Teacher authority](db04_cur04_student_family_staff_authorization_decision_gate_20261021.md) remains open; CUR-01 timing and CUR-05–08 still open. No SQL.
+
+
 ## 1. Evidence register and decision provenance
 
 | Evidence ID | Read-only authority | Meaning and limitation |
