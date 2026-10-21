@@ -1,5 +1,8 @@
 # DB-03 P6 — Finance-authorized final readiness, commercial terms and post-admission changes
 
+> **21 October 2026 Admin test-skip operation boundary:** [Proposed protected `admission.test.skip` contract](db03_admission_test_skip_protected_operation_contract_20261021.md) binds the only approved pending ADMISSION_TEST exception to current Foundation administration scope, a verified lack of prior verdict and true stage history. Failed test **cannot** be skipped to gain READY. Even after a genuine active skip, a **Finance-authorizer-issued current clearance** is mandatory before P7 READY and eventual D1 consumption. DIRECT versus REVIEWED exception authorization, reversal fence and SQL remain blocked.
+
+
 > **LATEST OWNER SELECTION — FAILED IS NON-BYPASSABLE (21 October 2026):** A school administrator may skip the **pending, unassessed ADMISSION_TEST** with a retained, authorized typed effect, but cannot use SKIP to override any currently recorded FAILED result. A FAILED assessment **blocks READY and D1 Student Creation** irrespective of school ACCEPTED or Finance CLEARANCE. Ordinary PASSED and policy-configured SKIPPED remain distinct; admin SKIP never fabricates PASSED. Independent retake/correction policy is unapproved. Regardless of test route, actual **Finance-authorizer clearance remains mandatory**. [Selected rule](db03_owner_decision_administration_test_skip_failed_block_20261021.md) and [20 cases / 8 races](db03_p1_p7_school_workflow_reconciliation_and_test_skip_acceptance_20261021.md) supersede broad alternative outcomes below.
 
 

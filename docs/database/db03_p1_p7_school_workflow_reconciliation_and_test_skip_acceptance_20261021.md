@@ -1,5 +1,8 @@
 # DB-03 P1–P7 reconciliation — school-led offers, non-overridable FAILED and Finance-authorized finalization
 
+> **ADM-TEST-01 protected operation addendum — 21 October 2026:** [Proposed `admission.test.skip` typed operation and security/lock specification](db03_admission_test_skip_protected_operation_contract_20261021.md) refines this business matrix with request/receipt/response shapes, genuine Foundation permission/operation scope contracts, shared examiner-and-administration stage mutex, 26 unexecuted positive/negative cases and 12 unexecuted two-session races. One security detail: installed Foundation scope kinds are `ALL,CAMPUS,OWN,ASSIGNED`; no raw `SECTION` literal. No new SQL/permission/catalog registration was authorized.
+
+
 **21 October 2026. Status: OWNER-RULE RECONCILIATION AND ACCEPTANCE DESIGN; NOT EXECUTABLE SQL, NOT INSTALLED OR TESTED.** DB-03 domain-owned document in PR #102. This document consolidates **selected business rules** without replacing frozen Foundation, D1 or Finance contracts. Read [administration test-skip decision](db03_owner_decision_administration_test_skip_failed_block_20261021.md) and [school-led financial/offer decision](db03_owner_decision_school_offers_test_skip_finance_changes_20261021.md) before interpreting historical DB-03 proposals.
 
 ## 1. Current owner-approved Admissions facts (distinguish from pending implementation)

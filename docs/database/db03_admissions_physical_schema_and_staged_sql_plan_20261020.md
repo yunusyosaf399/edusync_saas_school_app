@@ -1,5 +1,8 @@
 # DB-03 — Admissions physical schema reconciliation, phased SQL and verification gates
 
+> **21 October 2026 next DB-03 design increment:** [ADMIN-TEST-01 protected `admission.test.skip` SQL-readiness](db03_admission_test_skip_protected_operation_contract_20261021.md) specifies the actual Foundation permission/operation/approval objects and scope-vocabulary compatibility, application/assessment/exception CAS and shared P4/P5 mutex, plus 26 future acceptance cases and 12 true two-session races. Pending decision: DIRECT or independent REVIEWED route and exact approved scope, optional #15 FK shape and SC-06 global lock integration. No SQL implementation, global permission registration, Finance interface or D1 activation performed.
+
+
 > **Latest 21 October 2026 test-skip gate:** [Owner decision](db03_owner_decision_administration_test_skip_failed_block_20261021.md) permits a typed authorized `ADMIN_TEST_SKIP` only on a pending/unassessed ADMISSION_TEST; a committed current FAILED assessment **blocks final readiness** and cannot be overwritten with SKIP. This narrows the conditional #15 `admission_stage_exceptions` proposal without authorizing broad exception types or a new table. See [P1–P7 reconciliation](db03_p1_p7_school_workflow_reconciliation_and_test_skip_acceptance_20261021.md). P3-D01 still makes **16 owner-directed proposed entities**; P6 proposed #17 commercial history is unapproved. Finance-authorizer clearance in **every case** remains mandatory before READY/D1. Prior “Finance OR waiver”, parent-offer and generic exception text is historical.
 
 

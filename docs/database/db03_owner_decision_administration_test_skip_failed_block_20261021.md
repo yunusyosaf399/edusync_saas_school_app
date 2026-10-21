@@ -1,5 +1,8 @@
 # DB-03 Owner decision — administration test skip; FAILED cannot be bypassed (21 October 2026)
 
+> **Protected operation follow-on — 21 October 2026:** [ADMIN-TEST-01 `admission.test.skip` contract](db03_admission_test_skip_protected_operation_contract_20261021.md) specifies typed canonical request/result, actual installed Foundation `ALL/CAMPUS/OWN/ASSIGNED` scope vocabulary, DIRECT-versus-REVIEWED route alternatives, common P4/P5 app/test-stage serialization, 26 future acceptance cases and 12 genuine PostgreSQL contention tests. This owner decision remains binding: no skip after a current recorded FAILED or PASSED, no Student without real Finance authorizer clearance. **Permission/approval path and SQL remain unapproved and uninstalled.**
+
+
 **Status: OWNER-SELECTED BUSINESS CONTRACT. SQL and runtime acceptance NOT IMPLEMENTED.**
 
 ## Owner instruction (meaning preserved)

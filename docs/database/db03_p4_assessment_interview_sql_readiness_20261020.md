@@ -1,5 +1,8 @@
 # DB-03 P4 — Admissions test and interview outcome SQL-readiness, evidence and concurrency acceptance
 
+> **21 October 2026 source-writer integration requirement:** [Protected `admission.test.skip` operation](db03_admission_test_skip_protected_operation_contract_20261021.md) requires the P4 `admission.test.record` executor to serialize on the **same app/stage parent anchor** as administration SKIP. FAILED-first blocks skip; skip-first blocks a later conflicting assessment until a separately approved typed rescind/retake flow. Do not activate a standalone skip writer if the examiner writer bypasses this lock or unconditionally inserts a new PASSED/FAILED revision. Current Foundation scope contract does not support a native SECTION enum. SQL and tests are NOT RUN.
+
+
 > **LATEST 21 October 2026 OWNER RULE:** For the ADMISSION_TEST stage, examiner's recorded `FAILED` prevents final admission; administration cannot subsequently `SKIP` to override that failed result. A currently authorized administration actor may skip the test only **while it remains pending/unassessed** with a specific retained `ADMIN_TEST_SKIP` decision and reason. No accepted automatic score threshold; P4-D01 examiner PASSED/FAILED, optional score, remains selected. A legitimate future retake/correction is **not** authorized by this choice; P4-D02/D03 implementation remains open. [Decision](db03_owner_decision_administration_test_skip_failed_block_20261021.md); [concurrency and gate cases](db03_p1_p7_school_workflow_reconciliation_and_test_skip_acceptance_20261021.md).
 
 
