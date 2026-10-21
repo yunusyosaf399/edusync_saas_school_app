@@ -1,8 +1,10 @@
 # DB-04 — CUR-04 Student, FAMILY, Teacher and Staff Authorization Decision Gate
 
-**Status: OWNER DECISION REQUIRED; NO PERMISSIONS REGISTERED.** Prepared 2026-10-21 as DB-04 documentation for draft PR #103. Existing approvals: [CUR-01 overlapping coverage prohibited](db04_cur01_approved_applicability_decision_20261020.md) (partial), [CUR-02 A1+B1+C1](db04_cur02_approved_subject_category_decision_20261020.md), [CUR-03 A1+B1+C1+D1+E1](db04_cur03_approved_group_policy_20261020.md), and [BF-1/B-M1](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md). **Eight candidate DB-04 relations**, not executable or frozen DDL. Student selection sets include deliberate finalized-empty evidence and accepted member histories.
+**Status update 2026-10-21: CUR-04 A1+B1+C1+D1+E1+F1 PRODUCT APPROVED; PERMISSIONS NOT REGISTERED.** [Actual owner approval record](db04_cur04_approved_student_family_staff_authorization_20261021.md) supersedes this historical, initially unsigned option sheet. Original alternatives remain for reference. Prepared 2026-10-21 as DB-04 documentation for draft PR #103. Existing approvals: [CUR-01 overlapping coverage prohibited](db04_cur01_approved_applicability_decision_20261020.md) (partial), [CUR-02 A1+B1+C1](db04_cur02_approved_subject_category_decision_20261020.md), [CUR-03 A1+B1+C1+D1+E1](db04_cur03_approved_group_policy_20261020.md), and [BF-1/B-M1](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md). **Eight candidate DB-04 relations**, not executable or frozen DDL. Student selection sets include deliberate finalized-empty evidence and accepted member histories.
 
 > **Decision status review — 2026-10-21:** The instruction to complete the next task did **not** select CUR-04 A1+B1+C1+D1+E1+F1. All six recommended authorization choices remain **UNAPPROVED**, with no permission registration. A separate [CUR-05 P0/P1/P2 and independent reviewer decision gate](db04_cur05_workflow_reviewer_authorization_owner_decision_gate_20261021.md) is prepared conditionally; it **does not** grant staff, Student, FAMILY or teacher authority. [CUR-03 BF-1/B-M1](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md) is approved; eight DB-04 tables remain candidate DDL.
+
+> **Owner approval received, 2026-10-21:** The user explicitly replied “I approved continue” to the six-option CUR-04 question. [Approved CUR-04 A1/B1/C1/D1/E1/F1 policy](db04_cur04_approved_student_family_staff_authorization_20261021.md) now governs current staff action and Student/FAMILY checked-read scope. The [CUR-05 permission/reviewer crosswalk](db04_cur04_cur05_permission_reviewer_registration_crosswalk_20261021.md) is **registration planning only**, and all eight CUR-05 workflow choices remain **UNAPPROVED**. The older pending statements below are historical evidence, not current status.
 
 ## 1. Source-constrained authority
 
@@ -21,7 +23,7 @@ The School OS master specification and `DECISIONS_AND_INVARIANTS.md` demand live
 | **CUR-04-E1 — proposal workflow** | **No Student/FAMILY proposal endpoint in v1** until separate explicit consent, school policy, distinct submission operation codes and CUR-05 approval routing are designed. Authorized staff may apply directly or use an approved reviewed workflow as configured. | E2 Student/FAMILY propose-only with staff reviewed APPLY, without automatic acceptance; adds pending proposals, ownership, duplicate, retraction, deadline and rejection semantics. |
 | **CUR-04-F1 — private history** | Accepted/withdrawn/corrected choice-set history accessible only to separately authorized staff with a **history-specific** grant; Student/FAMILY current checked reads expose the minimum current state, not confidential old reasons, reviewer identities or other Students’ records. | F2 offer Student/guardian bounded own/child history, with explicit safe projections, retention and revocation handling; still no approval reason leakage. |
 
-**No approval inferred:** user said to continue documentation after approving BF-1/B-M1, not to approve CUR-04 A1/B1/C1/D1/E1/F1. Every CUR-04 row remains **OPEN**.
+**Decision provenance:** this row originally remained unsigned after BF-1/B-M1; it is now **owner-approved as A1+B1+C1+D1+E1+F1** by the subsequent explicit response, documented in [the approval record](db04_cur04_approved_student_family_staff_authorization_20261021.md). Registration and CUR-05 routing remain open.
 
 ## 3. Proposed fixed authorization decision function contract — NOT SQL
 
@@ -68,10 +70,10 @@ Candidate operation names and denial codes are **NOT** Foundation catalog regist
 
 All concurrency cases need two genuine PostgreSQL backends, observed lock wait, both arrival orders and fresh post-commit history/receipt/outbox inspection after an authorized future local install. Not a CI PASS.
 
-## 6. Owner decision questions and forward task
+## 6. Historical owner decision request — RESOLVED at product-policy level
 
 **Do you approve CUR-04 A1+B1+C1+D1+E1+F1** as the v1 restricted policy (staff-only accepted writes; Student and currently linked FAMILY checked-read current state with distinct grants; teacher assignment no automatic permission; no self/family proposals; separately permissioned confidential history)? Alternatively identify the specific A–F choice to change. This question is **not** approval; the current user requested drafting only.
 
-**If approved:** create an explicit CUR-04 approval record, update the DB-04 physical/authz signoff matrices, and seek Foundation permission catalog/PRINCIPAL/role/executor specialist approval; after that prepare CUR-05 P0/P1/P2 workflow owner-choice gate. **If not yet approved**, CUR-05 planning can proceed as a conditional, design-only task; do not register any operation.
+**CUR-04 has been approved** in [the independent decision record](db04_cur04_approved_student_family_staff_authorization_20261021.md). [CUR-05 workflow](db04_cur05_workflow_reviewer_authorization_owner_decision_gate_20261021.md) and [the registration crosswalk](db04_cur04_cur05_permission_reviewer_registration_crosswalk_20261021.md) have now been drafted. Foundation permission/PRINCIPAL/role/executor signoff remains outstanding; do not register any operation.
 
-**Status: CUR-04 OWNER REVIEW READY; NO SQL/GRANTS/WORKFLOW/PR MERGE.**
+**Status: CUR-04 PRODUCT APPROVED; CUR-05 PENDING; NO SQL/GRANTS/ACTIVE WORKFLOW/PR MERGE.**
