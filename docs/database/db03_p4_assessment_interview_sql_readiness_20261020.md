@@ -206,6 +206,8 @@ All cases require real authenticated normal-actor entry points and third-session
 
 **Race harness:** separate backend PIDs, deterministic barriers, observed waiting via `pg_locks`/`pg_stat_activity`, both A-first/B-first, rollback case, `SET CONSTRAINTS ALL IMMEDIATE` and third-session rows/receipt/outbox inspection. No sleep-only proof, simulated role or forced SQL OWNER inserts count as positive authorization acceptance. **All above tests NOT RUN.**
 
+> **21 October 2026 next-phase document:** [P5 Offers, Exceptions and Application Decisions](db03_p5_offers_exceptions_decisions_sql_readiness_20261021.md) uses P4's stage outcomes but does **not** alter the approved P4-D01 examiner-recorded PASSED/FAILED choice. P5 offer acceptance, mandatory offer sequencing and required-stage exception policy remain unapproved; do not infer these choices from a PASSED test.
+
 ## 9. Future installation dependency DAG, owner choices and work queue
 
 | Stage | Prerequisite and owner | DB-03 additive work candidate, not yet done |
