@@ -90,6 +90,8 @@ Define **fixed distinct codes** owned by DB-04 domain, validated/registered only
 
 These planned cases supplement [AU-01–12](db04_cur04_student_family_staff_authorization_decision_gate_20261021.md), [WF-01–12/WFR-01–06](db04_cur05_workflow_reviewer_authorization_owner_decision_gate_20261021.md) and [BF1/BM1 specs](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md). **No tests have been run.** Runtime concurrency requires two real PostgreSQL backends, observed `pg_stat_activity`/`pg_blocking_pids` and both arrival orders, with fresh post-commit DB-04 source, audit/receipt/outbox and permission checks. Never conflate a drafted test with an actual green CI run.
 
+> **Source/consumer decision update — 2026-10-21:** [CUR-06 A1+B1+C1+D1+E1+F1 approved](db04_cur06_approved_transfer_archive_history_policy_20261021.md) limits stale Enrollment APPLY and prevents unsafe historical reassignment; [CUR-07 consumer snapshot/checked-read proposal](db04_cur07_exams_learning_timetable_eligibility_snapshot_owner_gate_20261021.md) is pending. No consumer resolver, permission or workflow code registered.
+
 ## 6. Review/handoff ledger
 
 | Signer / owner | Exact approval requested | Current state |
