@@ -4,6 +4,9 @@
 
 This decision supplements [CUR-01 coverage/no precedence (partially approved)](db04_cur01_approved_applicability_decision_20261020.md) and [CUR-02 A1+B1+C1 (approved)](db04_cur02_approved_subject_category_decision_20261020.md). The earlier [CUR-03 proposal](db04_cur03_choice_groups_prerequisites_collision_owner_gate_20261020.md) and [interval/lock independent review](db04_cur03_group_interval_lock_and_decision_status_review_20261020.md) are retained as proposal/evidence, not silently rewritten history.
 
+> **New owner decision (2026-10-21):** [BF-1 finalization table and strict B-M1 confirmed](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md). The original open-option paragraphs below are retained as historical context; the approved physical direction now contains **eight candidate tables**, not seven. SQL remains unauthorized.
+
+
 ## 1. Approved product behavior
 
 | Decision | Approved behavior | Deliberate exclusions |
