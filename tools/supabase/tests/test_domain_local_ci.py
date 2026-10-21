@@ -276,6 +276,30 @@ class DomainLocalCITests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, sql)
 
+    def test_db01_two_backend_protected_direct_races_run_last(self):
+        race = runtime.ROOT / "tools/supabase/domain_db01_protected_direct_race_ci.py"
+        sql = race.read_text(encoding="utf-8")
+        compile(sql, str(race), "exec")
+        driver = (runtime.ROOT / "tools/supabase/domain_local_ci.py").read_text(encoding="utf-8")
+        self.assertLess(driver.index("run_db01_roll_correct_races(container, run_psql, ROOT)"),
+                        driver.index("run_db01_protected_direct_races(container, run_psql)"))
+        self.assertIn("D1_DB01_PROTECTED_DIRECT_DIFFERENT_KEYS_RACE_PASS", sql)
+        self.assertIn("D1_DB01_PROTECTED_DIRECT_LOST_ACK_PASS", sql)
+        self.assertIn("D1_DB01_PROTECTED_DIRECT_HISTORY_REVOCATION_PASS", sql)
+        self.assertIn("D1_DB01_PROTECTED_DIRECT_AUTH_REVOCATION_RACE_PASS", sql)
+        for marker in (
+            "ThreadPoolExecutor(max_workers=1)", "_wait_for_block(",
+            "pg_catalog.pg_blocking_pids", "pg_catalog.pg_advisory_xact_lock(71001,1)",
+            "app.d1_correct_student_roll(", "app.d1_place_student_enrollment(",
+            "D1_DB01_PROTECTED_DIRECT_LOCK_WAIT_NOT_OBSERVED",
+            "schoolos_schema_owner", "SET ROLE authenticated",
+        ):
+            self.assertIn(marker, sql)
+        self.assertNotIn("ALTER ROLE", sql)
+        self.assertNotIn("GRANT EXECUTE", sql)
+        self.assertNotIn("UPDATE app_private.roll_allocations", sql)
+        self.assertNotIn("UPDATE app_private.students", sql)
+
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
         observed["authenticated_private_execute"] = 1
