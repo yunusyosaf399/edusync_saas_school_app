@@ -1,5 +1,7 @@
 # DB-03 P5 — Admissions offers, stage exceptions and application decisions: physical SQL-readiness and concurrency acceptance
 
+> **OWNER APPROVAL — P5-D01 Option A, 2026-10-21:** School adjudication may set `ACCEPTED` before final handoff. A published policy determines whether an offer and accepted response are required; all applicable current verified stage, Person, approval, offer, placement and Finance-clearance-or-approved-waiver conditions must hold before server-issued `READY`. [Signed decision record](db03_p5_owner_decision_p5_d01_option_a_20261021.md). This supersedes older #79 coupling of ACCEPTED with READY issuance. Alternative B and “P5-D01 open” statements below are retained **historical proposals**, not current owner indecision. All other P5-D02…D08 and SC integration/Finance technical gates remain open; no SQL enabled.
+
 **2026-10-21. STATUS: DESIGN / ACCEPTANCE SPECIFICATION READY FOR OWNER REVIEW. SQL NOT IMPLEMENTED, TESTED OR ACTIVATED.** Admissions-owned addition to [draft PR #102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102). Inspected `main df1c98d5c2d19424946986fc6ba7615202b0a443` and DB-03 prior HEAD `e56322bf341e19cfaf3b804bb45d8596fafa7e5b`. No admissions command, offer, exception, Finance verifier or Student Creation RPC is installed through these documents.
 
 ## 1. Authority, prior decisions and non-negotiable separation
