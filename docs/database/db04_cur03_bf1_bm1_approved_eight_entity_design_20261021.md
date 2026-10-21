@@ -52,6 +52,8 @@ The prior seven-entity proposal remains an historical design baseline; BF-1 adds
 
 These are **not run**. The chosen BF-1/B-M1 options update expected cases in existing G/GR/GI/GIR/FX catalogs but do not turn the catalogs into executable acceptance suites.
 
+> **Downstream owner decision update (2026-10-21):** [CUR-04 Student/FAMILY/staff authority A1+B1+C1+D1+E1+F1 approved](db04_cur04_approved_student_family_staff_authorization_20261021.md). The original pending CUR-04 status below is historical. Current grants/checked read executors and all CUR-05 operation routing remain pending Foundation/CUR-05 approvals; BF-1 eight-entity physical SQL remains unauthorized.
+
 ## 4. Owner and dependency status
 
 **Approved:** CUR-01 school-wide/Campus conflict denial without precedence (partial), CUR-02 A1+B1+C1, CUR-03 A1+B1+C1+D1+E1, and CUR-03 **BF-1 + B-M1**. **Pending:** CUR-01 first effectivity/cutover, CUR-04 Student/FAMILY/staff authority and checked reads, CUR-05 P0/P1/P2 workflow, CUR-06 transfer/archive/replacement policy, CUR-07 Exams/Learning/Timetable frozen eligibility, CUR-08 exact eight-table physical columns/FKs/indexes/installation and any T7/T8 granularity decisions. D1/Fnd source release, registrar owner and 2-session runtime proofs are external prerequisites.
