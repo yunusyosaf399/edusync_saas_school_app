@@ -366,6 +366,31 @@ class DomainLocalCITests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
+    def test_db01_replay_disclosure_scope_security_regressions(self):
+        path = (runtime.ROOT / "supabase/tests/domain" /
+                "88_db01_roll_correct_direct_authenticated.sql")
+        suite = path.read_text(encoding="utf-8")
+        self.assertIn("SELECT plan(48);", suite)
+        self.assertEqual(sum(suite.count("SELECT " + name + "(") for name in
+                             ("is", "ok", "throws_ok")), 48)
+        for marker in (
+            "SAVEPOINT db01_wrong_history_campus;",
+            "SAVEPOINT db01_matching_history_campus;",
+            "SAVEPOINT db01_disabled_history_contract;",
+            "scope_kind='CAMPUS'",
+            "WHERE code='student.roll_history.view'",
+            "b1000000-0000-4000-8000-000000000071",
+            "wrong Campus scope denies historical DIRECT receipt replay",
+            "matching CAMPUS history scope replays only the original corrected R1",
+            "disabled live history scope contract blocks immutable receipt replay",
+            "broad Roll-corrected event discloses no numeric Roll or original reason",
+            "broad correction audit discloses no numeric Roll or original reason",
+            "all historical disclosure tests remain read-only for the corrected Student",
+        ):
+            self.assertIn(marker, suite)
+        self.assertNotIn("UPDATE app_private.roll_allocations", suite)
+        self.assertNotIn("UPDATE app_private.enrollments", suite)
+
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
         observed["authenticated_private_execute"] = 1
