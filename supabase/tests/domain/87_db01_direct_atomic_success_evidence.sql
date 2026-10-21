@@ -143,8 +143,10 @@ SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
  :'placed_enrollment_id'::uuid,:'placed_roll_allocation_id'::uuid,
  :'effect_corrected_roll_id'::uuid,(SELECT value FROM db01_direct_summary WHERE id='success')),
  true,'exact R0 and R1 retained pair is valid');
-SET ROLE schoolos_student_executor;
-SELECT throws_ok($q$SELECT app_private.d1_roll_correct_direct_success_evidence(
+-- Assertions use the test owner for pgTAP schema USAGE, while the
+-- positive success call below is verified as student executor.
+SELECT throws_ok($q$SET ROLE schoolos_student_executor;
+SELECT app_private.d1_roll_correct_direct_success_evidence(
  '55555555-5555-4555-8555-555555555555'::uuid,'db01-evidence-single',
  (SELECT pg_catalog.jsonb_set(value,'{10}','"wrong reason"'::jsonb)
  FROM db01_direct_intent WHERE id='original'),
@@ -193,14 +195,13 @@ SELECT is(app_private.d1_roll_correct_direct_receipt_matches_exact(
  'b1000000-0000-4000-8000-000000000001'::uuid,
  :'placed_enrollment_id'::uuid,:'placed_roll_allocation_id'::uuid,
  :'effect_corrected_roll_id'::uuid),false,'incorrect key cannot replay provenance');
-SET ROLE schoolos_student_executor;
+-- Rollback-only duplicate denial asserted under pgTAP test owner.
 SELECT throws_ok($q$SELECT app_private.d1_roll_correct_direct_success_evidence(
  '55555555-5555-4555-8555-555555555555'::uuid,'db01-evidence-single',
  (SELECT value FROM db01_direct_intent WHERE id='original'),
  (SELECT value FROM db01_direct_summary WHERE id='success'),
  'b1870000-0000-4000-8000-000000000030'::uuid)$q$,
  'P0001'::char(5),NULL::text,'duplicate writer call cannot create a second success');
-RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE idempotency_key='db01-evidence-single'),
  1::bigint,'exactly one immutable receipt survives duplicate attempt');
 SELECT is(pg_catalog.has_function_privilege('authenticated',
