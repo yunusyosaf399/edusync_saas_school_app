@@ -41,6 +41,8 @@ See the [DB-04 candidate permission/reviewer crosswalk](db04_cur04_cur05_permiss
 - Concurrent D1 MOVE/END vs Student FINALIZE; group publication vs Student election; staff grant revocation vs APPLY; competing BF-1 finalization heads; historical correction vs Exams capture must be tested with **two distinct PostgreSQL backends and observed lock waits** and both orderings, then verified after commit with a third read.
 - No active SQL, grants, D1/Foundation changes or completed runtime proofs are implied by this design decision.
 
+> **Next decision update — 2026-10-21:** [CUR-06 A1+B1+C1+D1+E1+F1 has been explicitly owner-approved](db04_cur06_approved_transfer_archive_history_policy_20261021.md), superseding historical “CUR-06 pending” wording below. The newly prepared [CUR-07 consumer snapshot gate](db04_cur07_exams_learning_timetable_eligibility_snapshot_owner_gate_20261021.md) remains unapproved, and none of the approved P1/P2 routes has been registered in Foundation.
+
 ## 5. Status and handoff
 
 **Approved:** CUR-01 school-wide/campus-specific **nonoverlap/no precedence only**; CUR-02 A1+B1+C1; CUR-03 A1+B1+C1+D1+E1 plus BF-1/B-M1; CUR-04 A1+B1+C1+D1+E1+F1; **CUR-05 A1+B1+C1+D1+E1+F1+G1+H1**.
