@@ -45,7 +45,7 @@ This review supersedes the historical **seven-table count** for **future decisio
 | **P07 — lifecycle & authority** | Default-deny FORCE RLS; private typed checked reads/commands; distinct staff, SELF/FAMILY `family_safe`, P1/P2 reviewer grants; no teacher inference or raw client DML. No catalog codes installed here. | Foundation registrar/security |
 | **P08 — install/release** | Separate migration strictly *after released D1*, domain-owned installer, explicit permission registration by deployment owner, local multi-session tests, populated upgrade, consumer snapshot signoffs. No modification of D1 Migration 10's fixed inventory. | D1/Foundation/deployment/security owners |
 
-**Critical P01 worked example:** With one ELECTIVE group `min=0,max=2` and one independently selectable OPTIONAL Subject, a Student with no selected Subject can still produce a genuine T7 `FINALIZED_EMPTY`. Adding the OPTIONAL later must not erase that original evidence; under proposed P01 a new T7 successor links its accepted T8 member, while the earlier finalized-empty T7 remains as historical evidence. This is a **proposal for CUR-08**, not an approved format for OPTIONAL set linkage.
+**Critical P01 worked example:** With one ELECTIVE group `min=0,max=2` and one independently selectable OPTIONAL Subject, a Student with no selected Subject can still produce a genuine T7 `FINALIZED_EMPTY`. Adding the OPTIONAL later must not erase that original evidence; under proposed P01 a new T7 successor links its accepted T8 member, while the earlier finalized-empty T7 remains as historical evidence. This **P01A whole-set/OPTIONAL linkage behavior is now owner-approved**; exact physical keys, interval closures, indexes and concurrency proof remain CUR-08 technical review items.
 
 ## 4. Pre-implementation no-go criteria
 
@@ -55,4 +55,4 @@ Reject the physical freeze or SQL build when any condition holds: CUR-01 approve
 
 ## 5. Next task
 
-CUR-01 timing is **owner-approved**. Obtain **CUR-07 A1–G1** explicit owner choices and P01A/P02A **technical implementation signoff** alongside remaining P03–P08 gates. Only then prepare exact SQL-ready physical contracts for separately authorized implementation. This document records no new owner approval.
+CUR-01 timing is **owner-approved**. Obtain **CUR-07 A1–G1** explicit owner choices and P01A/P02A **technical implementation signoff** alongside remaining P03–P08 gates. Only after all other physical and integration gates are satisfied should exact SQL-ready physical contracts be prepared for separately authorized implementation. This original readiness document now cross-references subsequent product approvals but does not grant SQL authority.
