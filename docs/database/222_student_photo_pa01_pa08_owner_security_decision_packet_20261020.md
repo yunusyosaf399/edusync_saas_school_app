@@ -65,3 +65,17 @@ This package requests no change to admissions handoff, Roll Policy, Curriculum o
 This is a **decision-packet milestone**, not live implementation readiness, CI acceptance of a real adapter, provider selection, SDK installation, entitlement enablement, hosted migration, real media processing or approval of `student.photo.set`. If merged, freeze as **DOCUMENTATION-ONLY / PA-01–08 PENDING**. Real Student Photo upload and Photo SET remain disabled.
 
 **School example:** A Campus A clerk is allowed to submit a Student picture only if verified staff authority *and* the School's current Student-photo entitlement both permit it. A valid staged upload remains private if the student transfers to Campus B before finalization. No snapshot, upload confirmation or prior URL can bypass the new Campus check.
+
+
+## Owner decision update — 2026-10-21: Supabase-only, minimal API protection
+
+The Product Owner explicitly selected **“Option A only”** and said **“No need alot of security, if we can write an API or something else that can give protection then its okay otherwise no need.”**
+
+**This supersedes the earlier engineering recommendation to evaluate AWS S3, Azure Blob or Cloudflare R2 for final student-photo storage.** Supabase Storage is the owner-selected single provider for the Student Photo implementation direction (not just preferred as a comparison). Do not buy, connect, provision or implement another vendor without a new approval.
+
+The owner favors a **simple authenticated backend API, private Supabase bucket, unique server-generated object keys and new file/version identity for every updated picture**. The owner does **not** want a separate WORM/compliance-style guarantee against malicious full Supabase project administrators or breached broad provider credentials. That capability remains **not provided** by RLS/no-upsert/API restrictions; disclose the residual risk and do not claim that the underlying bytes are provider-immutable.
+
+This **does not waive baseline safeguards** for minors' private images: Student/School/PRIMARY Campus and current Principal authorization, effective School capability, verified final sanitized bytes/size/SHA-256, no client secrets or public bucket, protected history and F23 lifecycles, or the existing deny-on-unknown behavior. Existing ADR-003 “prevent post-validation overwrite” remains implemented as an **application API rule** unless/ until authorized owners expressly revise a frozen contract; provider-superadmin overrides are an acknowledged residual risk, not silently certified as impossible. Independent security signoff and live conformance remain **OPEN** under PA-01/02/08.
+
+[Detailed Owner Choice and API Design (#232)](232_student_photo_owner_choice_supabase_only_minimum_backend_photo_api_20261021.md) records the full boundary, one-bucket technical recommendation, preliminary API operations, test matrix and remaining approvals. **No Storage buckets/keys/permissions/SQL/API implementation or production activation are authorized solely by this preference.**
+
