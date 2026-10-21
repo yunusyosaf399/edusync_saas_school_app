@@ -1,5 +1,8 @@
 # DB-03 P4 — Admissions test and interview outcome SQL-readiness, evidence and concurrency acceptance
 
+> **LATEST 21 October 2026 OWNER RULE:** For the ADMISSION_TEST stage, examiner's recorded `FAILED` prevents final admission; administration cannot subsequently `SKIP` to override that failed result. A currently authorized administration actor may skip the test only **while it remains pending/unassessed** with a specific retained `ADMIN_TEST_SKIP` decision and reason. No accepted automatic score threshold; P4-D01 examiner PASSED/FAILED, optional score, remains selected. A legitimate future retake/correction is **not** authorized by this choice; P4-D02/D03 implementation remains open. [Decision](db03_owner_decision_administration_test_skip_failed_block_20261021.md); [concurrency and gate cases](db03_p1_p7_school_workflow_reconciliation_and_test_skip_acceptance_20261021.md).
+
+
 > **21 October 2026 owner clarification:** Admissions decisions may be based on a qualified examiner's PASSED/FAILED and any optional numerical score, **or** authorized administration can skip the admission test with a retained typed actor/permission/reason snapshot. This does **not** replace approved P4-D01 with an automatic score threshold and does not invent PASSED. [Decision](db03_owner_decision_school_offers_test_skip_finance_changes_20261021.md); [P6 readiness and race tests](db03_p6_school_finance_clearance_readiness_20261021.md). Exact skip-after-failed timing/second-review and permission registration remain P6-D03/security gates.
 
 

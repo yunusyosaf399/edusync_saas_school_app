@@ -1,5 +1,8 @@
 # DB-03 P3 — Admissions document verification, private evidence and stage-outcome SQL readiness
 
+> **21 October 2026 typed stage semantics:** The owner selected an administration-only pending ADMISSION_TEST exemption without an assessment `PASSED`; if an effective FAILED assessment exists, later SKIP must deny final admission. The P3 #10 raw outcomes remain honest. Derive test satisfaction from genuine PASSED, true published-policy SKIPPED, or a verified current #15 `ADMIN_TEST_SKIP` against an **unassessed pending stage**; never write fabricated PASSED/SKIPPED for failed test. [Decision](db03_owner_decision_administration_test_skip_failed_block_20261021.md), [reconciliation](db03_p1_p7_school_workflow_reconciliation_and_test_skip_acceptance_20261021.md). Finance clearance, documents and Person are unaffected.
+
+
 > **PRODUCT OWNER SELECTION — P3-D01 Option B, 20 October 2026: APPROVED.** Schools configure document requirements **per immutable published Admissions policy**. Add proposed relation **#16 `admission_policy_document_requirements`** linked to the DOCUMENT_VERIFICATION stage, with `document_kind`/required-or-optional rule; see [decision record](db03_p3_owner_decision_p3_d01_option_b_20261020.md). Earlier Option A/B comparisons below are historical and **P3-D01 is no longer undecided**. Exact document-kind codes, verifier, draft-upload, storage purpose activation, retention and the temporal/invalidation lock are **NOT** approved by this choice. No SQL installed. [P4 assessment/interview readiness](db03_p4_assessment_interview_sql_readiness_20261020.md) is a separate workstream follow-on.
 
 

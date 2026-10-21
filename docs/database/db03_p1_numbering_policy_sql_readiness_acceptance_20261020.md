@@ -1,5 +1,8 @@
 # DB-03 P1 — Admissions numbering and policy: SQL-readiness and acceptance specification
 
+> **21 October 2026 stage policy distinction:** An immutable published ADMISSION_TEST stage may be `SKIPPED` by policy; separately, owner allows authorized administration to skip a specific **pending/unassessed** required ADMISSION_TEST via a retained typed exception. A recorded FAILED cannot be bypassed with later SKIP; the policy itself must **not** be retroactively edited. This applies only to admission test, not identity, documents, fee clearance or D1. [Selected decision](db03_owner_decision_administration_test_skip_failed_block_20261021.md); [P1–P7 reconciliation](db03_p1_p7_school_workflow_reconciliation_and_test_skip_acceptance_20261021.md).
+
+
 **2026-10-20. STATUS: DESIGN / TEST SPECIFICATION READY FOR OWNER REVIEW; P1 SQL NOT AUTHORIZED, NOT RUN, NOT INSTALLED.** This is an Admissions-owned specification, not a migration. PR [#102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102), base for this increment `b7a5bbb2f4f62fe0b583af3f1fbc309146fc2d2c`; inspected `main df1c98d5c2d19424946986fc6ba7615202b0a443`. No registered Admissions operations or permission catalog exists yet. Do not activate `student.create`.
 
 ## 1. Authority, scope and exact dependency boundary

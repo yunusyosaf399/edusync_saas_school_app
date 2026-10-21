@@ -1,5 +1,8 @@
 # DB-03 P6 — Finance-authorized final readiness, commercial terms and post-admission changes
 
+> **LATEST OWNER SELECTION — FAILED IS NON-BYPASSABLE (21 October 2026):** A school administrator may skip the **pending, unassessed ADMISSION_TEST** with a retained, authorized typed effect, but cannot use SKIP to override any currently recorded FAILED result. A FAILED assessment **blocks READY and D1 Student Creation** irrespective of school ACCEPTED or Finance CLEARANCE. Ordinary PASSED and policy-configured SKIPPED remain distinct; admin SKIP never fabricates PASSED. Independent retake/correction policy is unapproved. Regardless of test route, actual **Finance-authorizer clearance remains mandatory**. [Selected rule](db03_owner_decision_administration_test_skip_failed_block_20261021.md) and [20 cases / 8 races](db03_p1_p7_school_workflow_reconciliation_and_test_skip_acceptance_20261021.md) supersede broad alternative outcomes below.
+
+
 **2026-10-21 | P6 IMPLEMENTATION-READINESS SPECIFICATION; DESIGN ONLY. NOT SQL-IMPLEMENTED OR TESTED.** Existing [DB-03 draft PR #102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102), inspected main `df1c98d5c2d19424946986fc6ba7615202b0a443`. Read [school-led owner clarification](db03_owner_decision_school_offers_test_skip_finance_changes_20261021.md) first; its approved business requirements supersede historically conflicting candidate prose in older documents. Finance payment processing, ledger, authorizer/waiver workflow and post-admission tuition adjustments remain **outside DB-03 SQL ownership**.
 
 ## 1. Scope, source facts and actual owner choices

@@ -1,5 +1,8 @@
 # DB-03 — Owner clarification: school-managed offers, test skip, Finance-authorized clearance and post-admission fee changes
 
+> **LATEST OWNER SKIP RULE (21 October 2026):** [ADM-TEST-FAIL approval](db03_owner_decision_administration_test_skip_failed_block_20261021.md) fixes the formerly open ADM-SKIP timing: an authorized administrator may exempt an applicant **before any effective recorded test decision**, but **cannot turn a recorded FAILED into an admitted case by later skipping the test**. FAILED blocks final READY/Student Creation; a distinct correction/retake route is **not yet approved**. This clarification supersedes the previously open “after failure?” question below. See [P1–P7 reconciliation and test cases](db03_p1_p7_school_workflow_reconciliation_and_test_skip_acceptance_20261021.md).
+
+
 **Owner statement received 2026-10-21; recorded for DB-03 PR #102. BUSINESS RULES SELECTED; technical source interfaces and SQL NOT IMPLEMENTED.**
 
 ## Selected business rules, with existing approvals retained
