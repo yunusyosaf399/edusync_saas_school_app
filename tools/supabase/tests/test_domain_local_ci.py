@@ -398,9 +398,13 @@ class DomainLocalCITests(unittest.TestCase):
         driver = (runtime.ROOT / "tools/supabase/domain_local_ci.py").read_text(encoding="utf-8")
         self.assertLess(driver.index("run_db01_correct_vs_move_end_races(container, run_psql)"),
                         driver.index("run_db01_cross_campus_roll_history_replay(container, run_psql)"))
+        parent = (runtime.ROOT / "tools/supabase/domain_db01_replay_after_move_end_ci.py").read_text(encoding="utf-8")
+        self.assertIn("app.d1_place_student_enrollment(", parent)
+        self.assertIn("app.d1_correct_student_roll(", parent)
         for required in (
             "CAMPUS_TRANSFER", "app.d1_move_student_enrollment(",
-            "app.d1_place_student_enrollment(", "app.d1_correct_student_roll(",
+            "SCHOOL, SOURCE, CLASS, _p0, _correct, _ledger",
+            "_p0(actor,STUDENT,", "_correct(actor,STUDENT,",
             "D1_DB01_REAL_CROSS_CAMPUS_REPLAY_PASS",
             "D1_DB01_CROSS_CAMPUS_HISTORY_REVOKED_PASS",
             "SOURCE_CAMPUS_BEFORE_TRANSFER",
