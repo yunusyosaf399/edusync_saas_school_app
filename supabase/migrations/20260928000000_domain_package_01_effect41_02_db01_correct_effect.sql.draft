@@ -1,0 +1,102 @@
+-- DB-01 RC-02/04/05: private nonactivating correction write effect.
+-- A future protected DIRECT/APPLY handler MUST first check current ACS/P1
+-- route, approval/replay and durable receipt; do not expose this as client SQL.
+-- The source helper acquires School, retained policy and allocator before Student.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_roll_correct_effect(
+ p_actor uuid,p_student uuid,p_expected_student_version bigint,
+ p_enrollment uuid,p_section uuid,p_enrollment_from date,
+ p_roll uuid,p_roll_from date,p_stored_policy uuid,p_old_numeric bigint,
+ p_new_numeric bigint,p_reason text
+) RETURNS TABLE(source_roll_id uuid,corrected_roll_id uuid,student_version bigint,
+  correction_effective_from date,policy_mode text,allocator_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c record; pol app_private.roll_policy_revisions%ROWTYPE;
+  source_row app_private.roll_allocations%ROWTYPE;
+  new_id uuid:=pg_catalog.gen_random_uuid(); new_version bigint; claimed boolean;
+BEGIN
+ IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+    OR p_new_numeric IS NULL OR p_new_numeric<1
+    OR p_new_numeric>9223372036854775806::bigint
+    OR p_reason IS NULL OR pg_catalog.length(pg_catalog.btrim(p_reason))=0
+    OR pg_catalog.octet_length(p_reason)>2048 THEN
+   RAISE EXCEPTION 'D1 Roll correction effect intent denied';
+ END IF;
+ SELECT * INTO c FROM app_private.d1_roll_correct_lock_source(
+   p_student,p_expected_student_version,p_enrollment,p_section,p_enrollment_from,
+   p_roll,p_roll_from,p_stored_policy,p_old_numeric);
+ IF NOT FOUND OR c.error_code IS NOT NULL THEN
+   RAISE EXCEPTION 'D1 Roll correction source changed';
+ END IF;
+ SELECT * INTO pol FROM app_private.roll_policy_revisions rp
+  WHERE rp.id=p_stored_policy AND rp.school_id=c.school_id;
+ SELECT * INTO source_row FROM app_private.roll_allocations r WHERE r.id=p_roll;
+ IF NOT FOUND OR pol.id IS NULL OR c.policy_mode IS DISTINCT FROM pol.mode
+    OR source_row.numeric_value IS DISTINCT FROM p_old_numeric
+    OR p_new_numeric=p_old_numeric OR p_new_numeric<pol.start_value
+    OR c.business_date IS NULL THEN
+   RAISE EXCEPTION 'D1 Roll correction number or policy invalid';
+ END IF;
+ -- School/policy/allocator are locked by d1_roll_correct_lock_source.
+ -- Persistent mode reserves a number for its original Student across every
+ -- retained persistent policy revision, even expired/superseded allocations.
+ IF c.policy_mode='PERSISTENT_STUDENT' THEN
+   SELECT EXISTS (
+     SELECT 1 FROM app_private.roll_allocations r
+       JOIN app_private.roll_policy_revisions rp ON rp.id=r.policy_revision_id
+     WHERE rp.school_id=c.school_id AND rp.mode='PERSISTENT_STUDENT'
+       AND r.numeric_value=p_new_numeric AND r.student_id<>p_student
+   ) INTO claimed;
+ ELSIF c.policy_mode='ACADEMIC_CONTEXT' THEN
+   -- The new Roll has an unbounded end. Any same-policy/class segment
+   -- that extends beyond today (including future accepted rows) overlaps.
+   SELECT EXISTS (
+     SELECT 1 FROM app_private.roll_allocations r
+       JOIN app_private.enrollments e ON e.id=r.enrollment_id
+       JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+     WHERE r.policy_revision_id=p_stored_policy AND r.id<>p_roll
+       AND so.class_offering_id=c.class_offering_id
+       AND r.numeric_value=p_new_numeric
+       AND (r.effective_until IS NULL OR c.business_date<r.effective_until)
+   ) INTO claimed;
+ ELSE
+   RAISE EXCEPTION 'D1 Roll correction namespace invalid';
+ END IF;
+ IF claimed THEN RAISE EXCEPTION 'D1 Roll correction numeric collision'; END IF;
+ -- Reserve the selected high number before closing/inserting a Roll, using
+ -- the same already locked namespace as normal P0 issuance. Server-owned M
+ -- version columns are updated by the frozen zz_d1_version trigger.
+ UPDATE app_private.roll_allocator_states
+    SET next_value=p_new_numeric+1
+  WHERE id=c.allocator_id AND next_value<=p_new_numeric;
+ UPDATE app_private.roll_allocations
+    SET effective_until=c.business_date,
+        ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+  WHERE id=p_roll AND student_id=p_student AND enrollment_id=p_enrollment
+    AND effective_until IS NULL AND ended_at IS NULL;
+ IF NOT FOUND THEN RAISE EXCEPTION 'D1 Roll correction source close failed'; END IF;
+ INSERT INTO app_private.roll_allocations(
+   id,created_by,enrollment_id,student_id,policy_revision_id,numeric_value,
+   effective_from,effective_until,origin_allocation_id,supersedes_id,correction_reason)
+ VALUES (new_id,p_actor,p_enrollment,p_student,p_stored_policy,p_new_numeric,
+         c.business_date,NULL,source_row.origin_allocation_id,p_roll,p_reason);
+ -- A correction changes the Student aggregate's optimistic token. Do not
+ -- write server-owned row_version/updated_at directly; M trigger owns both.
+ UPDATE app_private.students SET current_status='ACTIVE'
+  WHERE id=p_student AND row_version=p_expected_student_version
+    AND current_status='ACTIVE'
+  RETURNING row_version INTO new_version;
+ IF NOT FOUND OR new_version IS NULL OR new_version<=p_expected_student_version THEN
+   RAISE EXCEPTION 'D1 Roll correction Student version update failed';
+ END IF;
+ RETURN QUERY SELECT p_roll,new_id,new_version,c.business_date,c.policy_mode,c.allocator_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_correct_effect(
+ uuid,uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_effect(
+ uuid,uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
