@@ -215,8 +215,8 @@ def run_db01_protected_direct_races(container,run_psql):
             policy=str(cur.fetchone()[0])
         check.rollback()
 
-    with closing(_actor_connection(psycopg)) as winner, \\
-         closing(_actor_connection(psycopg)) as loser, \\
+    with closing(_actor_connection(psycopg)) as winner, \
+         closing(_actor_connection(psycopg)) as loser, \
          closing(_local_connect(psycopg)) as observer:
         winning=_direct(winner,STUDENT_A,enrollment_a,roll_a,policy,old_a,KEY_A)
         _check(winning[1:3]==(NUM_A,2),"WINNER_PROTECTED_RESULT")
@@ -290,8 +290,8 @@ COMMIT;""","D1_DB01_PROTECTED_DIRECT_REPLAY_HISTORY_REVOKED",timeout=60)
     # Hold the Foundation exclusive auth lock as the new request starts,
     # revoke CORRECT under the same transaction, then release. The worker
     # must observe the committed revocation after its shared lock wait.
-    with closing(_local_connect(psycopg)) as blocker, \\
-         closing(_actor_connection(psycopg)) as worker, \\
+    with closing(_local_connect(psycopg)) as blocker, \
+         closing(_actor_connection(psycopg)) as worker, \
          closing(_local_connect(psycopg)) as observer:
         with blocker.cursor() as cur:
             cur.execute("SELECT pg_catalog.pg_advisory_xact_lock(71001,1)")
