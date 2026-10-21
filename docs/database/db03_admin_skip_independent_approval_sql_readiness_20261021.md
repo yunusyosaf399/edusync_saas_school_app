@@ -1,5 +1,8 @@
 # DB-03 ADMIN-TEST-02 — Independently reviewed `admission.test.skip` finalization and non-activating SQL-readiness packet
 
+> **2026-10-21 FK-LOCK-01 refinement:** [P3 stage #10 / P4 assessment #09 / P5 independent skip #15 foreign-key and lock audit](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md) specifies actual `approval_requests` source, composite same-app/stage P3→P4 reference, immutable exception/approval lineage and the shared P2 app aggregate mutex. Foundation request APPROVED is not DB-03 effect EXECUTED. Proposed lock subgraph is **NOT** SC-06 approved, and no protected operation/SQL has been installed or tested.
+
+
 > **INSTALLATION DEPENDENCIES / CROSS-OWNER HANDOFF, 21 October 2026:** [ADMIN-TEST-03 installation graph](db03_admin_skip_installation_dependency_handoff_20261021.md) spells out exact Foundation permission/policy/EXECUTED contract, P1/P2/P3 parents, symmetric P4 assessment writer, typed P5 #15 exception history, 16 go/no-go installation gates and 12 acceptance evidence deliverables. **Option B is already selected: REVIEWED only**, not DIRECT. Finance source and SC-06 lock proof block READY/D1 and may block safe skip activation; no executable SQL, operation registration or tests were performed. Older discussions of optional DIRECT review are historical.
 
 

@@ -1,5 +1,8 @@
 # DB-03 P4 — Admissions test and interview outcome SQL-readiness, evidence and concurrency acceptance
 
+> **2026-10-21 FK/lock integrity review:** [FK-LOCK-01](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md) requires a declared composite unique key on P4 #09 `(id,application_id,policy_stage_id)` before P3 #10 can install its `(assessment_id,application_id,policy_stage_id)` composite FK; a simple assessment UUID FK cannot prove same application and stage. Both P4 `admission.test.record` and reviewed P5 skip execute must lock P2 application aggregate FIRST, recheck the entire opposite evidence stream after waiting, and deny a post-SKIP assessment or post-FAILED SKIP. No install/real two-backend tests performed; Finance reversal/D1 lock rank remains open.
+
+
 > **P4 PRE-REQUISITE FOR TEST-SKIP INSTALLATION, 21 October 2026:** [ADMIN-TEST-03 dependency/rollout packet](db03_admin_skip_installation_dependency_handoff_20261021.md) requires P4 #09 immutable assessment relation and actual `admission.test.record` protected writer, under the **same app/ADMISSION_TEST serialization anchor** as reviewed P5 skip **before any skip executor is exposed**. FAIL-first denies SKIP; SKIP-first denies unapproved assessment. The examined repository sources did not establish this protected P4 writer as installed; this is a STOP until real implementation and true two-backend proof exist. Finance affects final READY, not truthful P4 evidence.
 
 

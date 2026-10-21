@@ -1,5 +1,8 @@
 # DB-03 ADMIN-TEST-03 — Installation dependency graph, owner handoffs and safe rollout gates
 
+> **FK-LOCK-01 static review (2026-10-21):** [P3 #10 / P4 #09 / P5 #15 FK and lock-order audit](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md) refines this installation graph: the live Foundation source is `app_private.approval_requests`, not older `approval_applications`; stage outcome → assessment can use a **same-application+same-policy-stage composite FK** only after #09 exists; finance references stay deferred; every examiner result writer and reviewed skip executor must hold the SAME application aggregate mutex before testing the opposite stream. The proposed child lock graph and Finance/D1 total order are **NOT approved or runtime proven**. The 26 acceptance cases and 12 races are unexecuted.
+
+
 **21 October 2026 | IMPLEMENTATION DEPENDENCY/INSTALLATION-ORDER PACKET COMPLETE; EXECUTABLE MIGRATIONS, PERMISSIONS, WORKFLOW REGISTRATIONS, ACCEPTANCE RUNS AND DEPLOYMENT NOT PERFORMED.** Existing [DB-03 draft PR #102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102). Verified `main df1c98d5c2d19424946986fc6ba7615202b0a443`; DB-03 baseline `9b925e08f7fea6cb8f8449d87b4ffbd8a8b940a8`. This packet is an **integration planning artifact** and makes no changes to Foundation, P4 implementation, D1 or Finance.
 
 ## 1. Evidence inspected and what is actually installed in source

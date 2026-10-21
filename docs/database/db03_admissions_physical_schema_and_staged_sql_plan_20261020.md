@@ -1,5 +1,8 @@
 # DB-03 — Admissions physical schema reconciliation, phased SQL and verification gates
 
+> **2026-10-21 scoped FK/lock review:** [FK-LOCK-01 P3/P4/P5 source and lock audit](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md) identifies 12 FK/integrity blockers and 26 future cases/12 races. Historical #10/#12/#15 `approval_application_id→approval_applications` is **not an installed Foundation FK**; actual source is `app_private.approval_requests(id)`. Assessment reference must preserve same app+stage with a composite FK after P4 #09 exists, and Finance FK must wait for actual P6 parent and Finance authorizer source. Same app row `FOR UPDATE` for P4 examiner and P5 reviewed skip is a candidate shared serialization anchor, still SC-06 cross-owner unapproved. All older alternative names stay historical; **no SQL or runtime verification**.
+
+
 > **LATEST DB-03 INSTALLATION-READINESS PACKET, 21 October 2026:** [ADMIN-TEST-03 dependency graph, cross-owner handoffs and 16 go/no-go gates](db03_admin_skip_installation_dependency_handoff_20261021.md) places actual Foundation approval workflow, P1/P2/P3 sources, P4 assessment writer and P5 `ADMIN_TEST_SKIP` exception/FK in a safe proposed additive order. Requires an **independent reviewer** and same app/stage lock for examiner and skip writer; no Finance-authorizer clearance source or SC-06 end-to-end lock proof was verified installed. **No SQL/permission/activation/hosted change authorized.** Do not turn this draft dependency graph into a deployment migration without owner/security sign-off.
 
 

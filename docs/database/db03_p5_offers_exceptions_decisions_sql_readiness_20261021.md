@@ -1,5 +1,8 @@
 # DB-03 P5 — Admissions offers, stage exceptions and application decisions: physical SQL-readiness and concurrency acceptance
 
+> **2026-10-21 exception/FK review:** [FK-LOCK-01](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md) confirms that `ADMIN_TEST_SKIP` #15 needs a NOT NULL real `approval_request_id` FK to `app_private.approval_requests(id)`, exact operation/target/policy stage/actor checks, different authorized requester and reviewer, and **atomic EXECUTED state plus immutable effect/receipt**. A bare FK to an APPROVED-only request does **not** permit readiness. Conditional one-effect-per-request uniqueness and same-app/stage predecessor validation must be reviewed before migration; all other exception kinds unapproved. The shared P4/P5 application mutex and global Finance/D1 lock rank remain unproven.
+
+
 > **P5 #15 SCHEMA/EXECUTION INSTALL GATE, 21 October 2026:** [ADMIN-TEST-03](db03_admin_skip_installation_dependency_handoff_20261021.md) requires exact real FK to `app_private.approval_requests(id)` for `ADMIN_TEST_SKIP`, mandatory approved independent requester/reviewer evidence and actual EXECUTED state bound to one immutable exception, app/epoch+receipt atomicity, and P4 examiner/skip lock symmetry before activation. Future optional exception kinds do not relax this selected reviewed-only kind. Finance current clearance and SC-06 global lock order still block READY/D1.
 
 

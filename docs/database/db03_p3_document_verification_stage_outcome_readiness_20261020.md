@@ -1,5 +1,8 @@
 # DB-03 P3 — Admissions document verification, private evidence and stage-outcome SQL readiness
 
+> **FK correction and phase-order addendum, 2026-10-21:** The real installed Foundation approval relation is `app_private.approval_requests`, NOT `approval_applications`. Earlier proposed `approval_application_id` field, FK and statement suggesting P3 could install against `approval_applications` are **historical/invalid executable targets**; use typed `approval_request_id` and exact operation/route proof only after integration approval. P3 stage outcomes #10 cannot add P4 `assessment_id` or P6 fee evidence FK until those physical parent tables exist; for P4 use real composite FK `(assessment_id,application_id,policy_stage_id)` to `#09(id,application_id,policy_stage_id)` plus typed outcome/head validation. [FK-LOCK-01 review](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md). No SQL installed.
+
+
 > **21 October 2026 typed stage semantics:** The owner selected an administration-only pending ADMISSION_TEST exemption without an assessment `PASSED`; if an effective FAILED assessment exists, later SKIP must deny final admission. The P3 #10 raw outcomes remain honest. Derive test satisfaction from genuine PASSED, true published-policy SKIPPED, or a verified current #15 `ADMIN_TEST_SKIP` against an **unassessed pending stage**; never write fabricated PASSED/SKIPPED for failed test. [Decision](db03_owner_decision_administration_test_skip_failed_block_20261021.md), [reconciliation](db03_p1_p7_school_workflow_reconciliation_and_test_skip_acceptance_20261021.md). Finance clearance, documents and Person are unaffected.
 
 
