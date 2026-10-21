@@ -1,5 +1,8 @@
 # DB-03 — Admissions physical schema reconciliation, phased SQL and verification gates
 
+> **SCHEMA-01 addendum, 21 October 2026:** [P3 #10 / P4 #09 / P5 #15 SQL-constraint and protected operation handoff](db03_p4_p5_sql_constraint_protected_handoff_20261021.md) supplies proposed numeric score pair CHECK, typed stage/history keys, same-app/stage assessment composite FK, actual Foundation approval_requests reference for independently reviewed test skip and explicit no-FAILED-override mutex. Historical `approval_applications` references and Finance-waiver-as-final-clearance are not valid executable contract; no SQL installed. All owner/security/Finance/D1 activation gates remain open.
+
+
 > **2026-10-21 scoped FK/lock review:** [FK-LOCK-01 P3/P4/P5 source and lock audit](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md) identifies 12 FK/integrity blockers and 26 future cases/12 races. Historical #10/#12/#15 `approval_application_id→approval_applications` is **not an installed Foundation FK**; actual source is `app_private.approval_requests(id)`. Assessment reference must preserve same app+stage with a composite FK after P4 #09 exists, and Finance FK must wait for actual P6 parent and Finance authorizer source. Same app row `FOR UPDATE` for P4 examiner and P5 reviewed skip is a candidate shared serialization anchor, still SC-06 cross-owner unapproved. All older alternative names stay historical; **no SQL or runtime verification**.
 
 

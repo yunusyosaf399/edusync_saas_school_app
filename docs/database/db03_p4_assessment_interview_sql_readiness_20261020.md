@@ -1,5 +1,8 @@
 # DB-03 P4 — Admissions test and interview outcome SQL-readiness, evidence and concurrency acceptance
 
+> **21 October 2026 exact DDL-design follow-on:** [SCHEMA-01](db03_p4_p5_sql_constraint_protected_handoff_20261021.md) proposes #09 `UNIQUE(id,application_id,policy_stage_id)` as real P3 #10 composite FK target, optional-score pair CHECK, same-app/stage immutable head validation and P4 executor shared app mutex with independently reviewed P5 ADMIN_TEST_SKIP. No approved retake/after-FAILED bypass, SQL install or true PostgreSQL race test.
+
+
 > **2026-10-21 FK/lock integrity review:** [FK-LOCK-01](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md) requires a declared composite unique key on P4 #09 `(id,application_id,policy_stage_id)` before P3 #10 can install its `(assessment_id,application_id,policy_stage_id)` composite FK; a simple assessment UUID FK cannot prove same application and stage. Both P4 `admission.test.record` and reviewed P5 skip execute must lock P2 application aggregate FIRST, recheck the entire opposite evidence stream after waiting, and deny a post-SKIP assessment or post-FAILED SKIP. No install/real two-backend tests performed; Finance reversal/D1 lock rank remains open.
 
 

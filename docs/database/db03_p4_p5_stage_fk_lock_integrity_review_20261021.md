@@ -1,5 +1,8 @@
 # DB-03 — P4/P5/P3 typed evidence foreign-key and lock-order integrity review (FK-LOCK-01)
 
+> **21 October 2026 schema implementation handoff:** [SCHEMA-01 P3/P4/P5 constraint and protected-operation packet](db03_p4_p5_sql_constraint_protected_handoff_20261021.md) translates FK-LOCK-01 into exact PostgreSQL CHECK/UQ/composite FK proposals, staged #10→#09 bridge, real approval_requests FK for #15, independent-review EXECUTED and P4/P5 shared app mutex requirements, plus 12 installer gates and 22 future acceptance scenarios. **NOT an executable migration, test pass or SC-06 approval.**
+
+
 **Date 2026-10-21 | STATIC DESIGN AND SOURCE RECONCILIATION COMPLETE; EXECUTABLE SQL/DEPLOYMENT/ACCEPTANCE NOT PERFORMED.** Scope: DB-03-owned `admission_assessments` (#09), `admission_stage_outcomes` (#10), `admission_stage_exceptions` (#15) and their P1/P2, real Foundation approval, P6 Finance and D1 integration edges. Existing [DB-03 draft PR #102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102), inspected branch `ea638732f0860592c6230f68dbed74ecb2785a59` and main `df1c98d5c2d19424946986fc6ba7615202b0a443`.
 
 ## 1. Evidence, hierarchy and what is not an installed source

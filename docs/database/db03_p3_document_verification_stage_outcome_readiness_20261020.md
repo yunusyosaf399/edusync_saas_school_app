@@ -1,5 +1,8 @@
 # DB-03 P3 — Admissions document verification, private evidence and stage-outcome SQL readiness
 
+> **SCHEMA-01 stage evidence implementation handoff, 21 October 2026:** [P3/P4/P5 exact constraint and FK packet](db03_p4_p5_sql_constraint_protected_handoff_20261021.md) defines two-phase #10 base stage outcomes then real #09 composite FK for `assessment_id` plus typed evidence validation; P6 Finance FK still deferred. The old `approval_application_id→approval_applications` target is not installed Foundation SQL—use the real `app_private.approval_requests` *only after* approving the matching workflow evidence contract. Independent approved-but-not-EXECUTED test-skip requests must never satisfy required test stage; no SQL installed.
+
+
 > **FK correction and phase-order addendum, 2026-10-21:** The real installed Foundation approval relation is `app_private.approval_requests`, NOT `approval_applications`. Earlier proposed `approval_application_id` field, FK and statement suggesting P3 could install against `approval_applications` are **historical/invalid executable targets**; use typed `approval_request_id` and exact operation/route proof only after integration approval. P3 stage outcomes #10 cannot add P4 `assessment_id` or P6 fee evidence FK until those physical parent tables exist; for P4 use real composite FK `(assessment_id,application_id,policy_stage_id)` to `#09(id,application_id,policy_stage_id)` plus typed outcome/head validation. [FK-LOCK-01 review](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md). No SQL installed.
 
 

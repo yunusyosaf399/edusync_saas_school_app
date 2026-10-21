@@ -1,5 +1,8 @@
 # DB-03 P5 — Admissions offers, stage exceptions and application decisions: physical SQL-readiness and concurrency acceptance
 
+> **21 October 2026 #15 exact constraint follow-on:** [SCHEMA-01 P4/P5/P3 SQL handoff](db03_p4_p5_sql_constraint_protected_handoff_20261021.md) narrows the only approved exception to independently reviewed `ADMIN_TEST_SKIP`; proposed #15 applied effect needs NOT NULL real `app_private.approval_requests(id)` FK, one-effect-per-request review, requester≠reviewer and atomic Foundation EXECUTED+effect+receipt. An APPROVED-only request, client boolean or recorded FAILED cannot be bypassed by #15. Child app mutex/Finance/D1 lock rank remain cross-owner blocked; no migration.
+
+
 > **2026-10-21 exception/FK review:** [FK-LOCK-01](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md) confirms that `ADMIN_TEST_SKIP` #15 needs a NOT NULL real `approval_request_id` FK to `app_private.approval_requests(id)`, exact operation/target/policy stage/actor checks, different authorized requester and reviewer, and **atomic EXECUTED state plus immutable effect/receipt**. A bare FK to an APPROVED-only request does **not** permit readiness. Conditional one-effect-per-request uniqueness and same-app/stage predecessor validation must be reviewed before migration; all other exception kinds unapproved. The shared P4/P5 application mutex and global Finance/D1 lock rank remain unproven.
 
 

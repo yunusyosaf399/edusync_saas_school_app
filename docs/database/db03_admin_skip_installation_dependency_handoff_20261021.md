@@ -1,5 +1,8 @@
 # DB-03 ADMIN-TEST-03 — Installation dependency graph, owner handoffs and safe rollout gates
 
+> **Implementation-shape follow-on, 21 October 2026:** [SCHEMA-01 constraint/operation handoff](db03_p4_p5_sql_constraint_protected_handoff_20261021.md) extends the installed-source dependency matrix with field-level #09/#10/#15 CHECK/UQ and composite FK designs, reviewed-only Foundation execution invariants, candidate child lock order and 12 installer gates/22 future cases. It does **not** resolve Finance/D1 source, register permissions, write runnable migrations or run acceptance tests.
+
+
 > **FK-LOCK-01 static review (2026-10-21):** [P3 #10 / P4 #09 / P5 #15 FK and lock-order audit](db03_p4_p5_stage_fk_lock_integrity_review_20261021.md) refines this installation graph: the live Foundation source is `app_private.approval_requests`, not older `approval_applications`; stage outcome → assessment can use a **same-application+same-policy-stage composite FK** only after #09 exists; finance references stay deferred; every examiner result writer and reviewed skip executor must hold the SAME application aggregate mutex before testing the opposite stream. The proposed child lock graph and Finance/D1 total order are **NOT approved or runtime proven**. The 26 acceptance cases and 12 races are unexecuted.
 
 
