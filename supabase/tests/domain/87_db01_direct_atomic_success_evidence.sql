@@ -104,6 +104,8 @@ INSERT INTO db01_direct_intent VALUES ('original',pg_catalog.jsonb_build_array(
  'b1000000-0000-4000-8000-000000000045'::uuid,CURRENT_DATE-20,
  :'placed_roll_allocation_id'::uuid,CURRENT_DATE-20,
  'b1000000-0000-4000-8000-000000000049'::uuid,'12001','12009','Exact retained reason '));
+-- Temporary fixture-only SELECT for SET ROLE student executor; rollback reverses it.
+GRANT SELECT ON db01_direct_intent TO schoolos_student_executor;
 SET ROLE schoolos_student_executor;
 SELECT * FROM app_private.d1_roll_correct_command_context('student.roll.correct','db01-evidence-single',
  (SELECT value FROM db01_direct_intent WHERE id='original')) \gset pre_
@@ -135,6 +137,7 @@ INSERT INTO db01_direct_summary VALUES ('success',pg_catalog.jsonb_build_object(
  'student_version',:'effect_student_version'::bigint,
  'section_offering_id','b1000000-0000-4000-8000-000000000045'::uuid,
  'source_enrollment_effective_from',CURRENT_DATE-20));
+GRANT SELECT ON db01_direct_summary TO schoolos_student_executor;
 SELECT is(app_private.d1_roll_correct_result_rows_match_exact(
  'b1000000-0000-4000-8000-000000000001'::uuid,
  :'placed_enrollment_id'::uuid,:'placed_roll_allocation_id'::uuid,
