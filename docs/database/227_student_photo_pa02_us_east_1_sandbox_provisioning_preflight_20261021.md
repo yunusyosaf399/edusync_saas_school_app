@@ -21,6 +21,27 @@ The preexisting project's **name, organization and identifying references are in
 
 The initial PA-02 sandbox must be a **different, disposable project** for exactly one simulated School, with generated **nonpersonal** fixtures and no connection to production systems. The existing School project and databases remain out of scope.
 
+## 1A. Confirmed Free-plan eligibility and billing boundary — 2026-10-21 (read-only)
+
+The connected Supabase organization currently reports **plan = `free`**. The project inventory still exposes **one preexisting inactive project**, and no dedicated U.S. sandbox project. This is a point-in-time *read-only* inventory, not confirmation of the organization's available project slot or permission to use a particular org for this lab.
+
+According to Supabase's current [billing guide](https://supabase.com/docs/guides/platform/billing-on-supabase#free-plan) and [billing FAQ](https://supabase.com/docs/guides/platform/billing-faq), Free accounts are permitted **two active Free projects** subject to account-wide Owner/Admin membership quota; *paused* projects do not count. The provider's project inventory state **INACTIVE** is not enough by itself to establish whether the existing project counts as *paused* for quota purposes. Check the provider's real project creation decision/quoted price instead of assuming an open slot. `Free` does not establish a contractual forever-zero-cost commitment and is not permission to upgrade to Pro or enable billed add-ons.
+
+Cost caveat: [Supabase cost controls](https://supabase.com/docs/guides/platform/cost-control) says its spend-cap feature applies to **Pro**, only protects certain usage items, and [compute billing](https://supabase.com/docs/guides/platform/manage-your-usage/compute) says compute hours are **not** covered by the Spend Cap on paid plans. A no-charge sandbox therefore requires an actual project price of **$0** as quoted for the chosen organization, no paid add-ons, no implicit plan upgrade, and no purchases. A nonzero quote or capacity limitation triggers **STOP / user approval required**; the owner must see and explicitly accept the amount/recurrence, with no assistant-selected budget.
+
+**Unresolved organization/creation authorization:** Although one organization is visible, the owner has **not explicitly designated which organization should own the disposable sandbox**. The Supabase project-creation workflow requires this designation separately from general U.S.-hosting preference. Consequently **DO NOT call create_project** until the owner chooses the organization and the provider's cost-confirmation conditions are satisfied. An independent security approver must separately sign off on R3/R4/R6 private Storage, credentials, retention, and test-lab isolation before any bucket or secret is provisioned. `us-east-1` remains recommended, not an account-verified completed action.
+
+### Deterministic account and cost decision
+
+| Condition in selected account | Allowed response | Disallowed shortcut |
+|---|---|---|
+| Named organization explicitly selected by owner, price quoted **$0**, free project capacity confirmed | May *separately* request authorization for a disposable **synthetic-only** project in a specific U.S. region; provider may still require interactive confirmation | Reuse preexisting School project; assume INACTIVE = paused |
+| Provider requires a plan upgrade or quotes **more than $0** | **STOP**; report amount and billing recurrence and obtain explicit user acceptance | Guess a spending cap or silently upgrade plan |
+| Owner's exact organization / project jurisdiction or independent reviewer unspecified | Remain at nonmutating PA-02 preflight | Treat “complete next task” as automatic payer/security approval |
+| Project created after required authorizations | Track creation status and exact chosen region in restricted evidence; private Storage remains gated on separate IAM review | Claim PA-02 security acceptance or activate Student Photo uploads |
+
+No live project price was obtained during this review, since the organization-choice gate has not been met. Published pricing/quotas are *not* a per-organization quote.
+
 ## 2. Provisioning target — NOT YET AN APPROVED LIVE CHANGE
 
 | Parameter | Proposed value | Pre-write gate |
