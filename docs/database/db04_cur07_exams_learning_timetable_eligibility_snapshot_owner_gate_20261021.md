@@ -1,0 +1,120 @@
+# DB-04 — CUR-07 Exams, Learning and Timetable Eligibility / Immutable Observation Owner Gate
+
+**STATUS: CUR-07 PRODUCT DECISION REQUIRED — NOT APPROVED.** Prepared 2026-10-21 on DB-04 draft PR #103. Design and signer handoff only: no Exams/Learning/Timetable SQL, migration, permission/operation registration, shared CI change, runtime execution or hosted Supabase access. [CUR-06 Enrollment MOVE/Subject ARCHIVE/Revision/history policy](db04_cur06_approved_transfer_archive_history_policy_20261021.md) **was approved**; this document's consumer freeze points, projection shapes and new release interfaces are **recommendations, not automatically approved by CUR-06**.
+
+## 1. Authoritative scope and original requirements
+
+The [Master Specification `23](../requirements/School_OS_SaaS_Master_Specification_v0.2.md) requires Timetable Campus/Class/Section/Subject/Teacher/Room/time data, conflict detection and automatic timetable generation with authorized adjustment. **It does not define any DB-04-to-Timetable SQL resolver or whether every timetable cell is Student-elective-specific.**
+
+[`24](../requirements/School_OS_SaaS_Master_Specification_v0.2.md) requires Homework/Assignment records associated with Class/Section/Subject, Student submissions and teacher feedback, and visibility to applicable Students and authorized linked parents. It **does not define** when an assignment's recipient set must be frozen or how later electives changes affect an old submission.
+
+[``26–29](../requirements/School_OS_SaaS_Master_Specification_v0.2.md) require configurable Exams/components and a reviewed **publish→lock** marks/results workflow. Published result revisions require an approved correction with old/new/reason/reviewer history; report cards generate on demand from stored versioned data. [Historical invariants](../decisions/DECISIONS_AND_INVARIANTS.md) explicitly forbid destructive edits to published results. **Exams owns theory/practical component marks, grades, GPA, Exam Controller approval and published-result revisions; DB-04 does not define those values.**
+
+Already owner-approved DB-04 contracts:
+
+- [CUR-01 applicability](db04_cur01_approved_applicability_decision_20261020.md): no School-wide/Campus overlap and **no implicit precedence** for same Class Offering and date; initial/future/mid-year cutover timing still open.
+- [CUR-02](db04_cur02_approved_subject_category_decision_20261020.md): enrolled Student COMPULSORY entitlement from published Rule + effective Section, OPTIONAL/ELECTIVE require accepted election; Practical/Extra-curricular/Custom classification is separate from selection obligation, and *assessment components are Exams-owned*.
+- [CUR-03 incl. BF-1/B-M1](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md): exact accepted Student elective finalization even if zero Subjects with immutable T7 `student_subject_selection_sets` and linked T8 `student_subject_selections`, strict Section group max feasibility, no prerequisites, seat allocator or default deadline.
+- [CUR-04](db04_cur04_approved_student_family_staff_authorization_20261021.md): staff-only accepted writes; Student SELF and current FAMILY CHILD may receive only live-granted minimal current checked reads; teacher assignment alone grants no mutation or private selection read.
+- [CUR-05](db04_cur05_approved_workflow_reviewer_policy_20261021.md): P0 draft, P1 School-policy-reviewed Subject Offering and election changes, P2 independent reviewed publication and correction; APPROVE is not APPLY, no generic bypass.
+- [CUR-06](db04_cur06_approved_transfer_archive_history_policy_20261021.md): no old Enrollment→new Enrollment election carry-forward, deny new use of archived Subject, fail closed if offering close/replacement strands accepted selections, preserve originally published Exam as-observed basis after P2 correction.
+
+**Date model:** Business date `valid_at` and observation/capture point `observed_at` are distinct. D1 Year is the actual Class Offering's Year with inclusive `ends_on` converted to exclusive upper endpoint for DB-04; Section Subject Offering, applicable Revision/Group and Student Enrollment must match exact identifiers and relevant intervals. Generic “current grade/section” or mutable latest-Revision replay is never historical truth.
+
+## 2. Seven CUR-07 product-owner decisions
+
+No row below has an owner approval. The proposed fixed interfaces and freeze points require independent Exams, Learning, Timetable and Foundation privacy/executor signer approval **even after a future CUR-07 product answer**.
+
+| Gate | Recommended choice | Alternative and consequence |
+|---|---|---|
+| **CUR-07-A1 — shared eligibility and observation identity** | Consumers use an internally authorized **fixed-purpose, typed DB-04 eligibility resolver** for the exact D1 Student+accepted PRIMARY Enrollment+Section Subject Offering+business-valid date; output contains **revision, applicability, Subject Rule/category, group where applicable, Section Offering, BF-1 T7 set and selected T8 member IDs where relevant**, publication digest, bounded business-valid interval, `observed_at` and a minimal safe decision. For COMPULSORY, no synthetic T8 member; for OPTIONAL/ELECTIVE, accepted individual choice required. | A2 consumer independently joins DB-04 base tables; unacceptable without explicitly reviewed snapshot/reconciliation and strict authorization. A3 no cross-domain student eligibility; prevents reliable protected Exams/Learning interactions. |
+| **CUR-07-B1 — Exams snapshot freeze point** | **Exams owner** takes and persists an immutable Student/Subject eligibility *basis* at an explicit assessment/marks-lock checkpoint **before result publication**, and retains the exact basis on publish. Exams may revalidate at publish against current authorized context and must reject/route discrepancies through its own review; once result published, old as-observed basis **never silently recomputed**. The exact first captured checkpoint is an **Exams-owner signoff**, not predetermined by DB-04. | B2 snapshot only at result publication (earlier mark entry visibility computed live); may be viable if Exams proves no mutable in-flight eligibility harm. B3 DB-04 owns result snapshot/grade ledger (not recommended; violates Exams ownership). |
+| **CUR-07-C1 — Learning recipients and assignment history** | At **assignment publication**, Learning persists an immutable **recipient/subject eligibility cohort basis** for each Student actually targeted, referencing DB-04 exact `valid_at`, `observed_at` and source IDs; on future Student submission or update, Learning rechecks its approved current access and frozen original publication basis according to its separately approved policy. Later elective changes/Enrollment MOVE never erase old assignment/submission/feedback history. | C2 purely live dynamic recipients; a newly elected Student may suddenly see old assignments, and an unselected Student may lose old work unless Learning defines explicit bounded backfill/historical rules. |
+| **CUR-07-D1 — Timetable boundary and immutable Section availability** | Timetable consumes **Section-level published Subject Offering** and effective revision/date through a fixed restricted resolver. It must not request a Student-choice roster or treat an available elective as chosen by every Student. Timetable owns teacher/room/period conflicts and persists its own published schedule basis; no marks/Student private choice data. | D2 per-Student elective timetable requires explicit additional authorized recipient scheduling interface and privacy/overlap rules; not implied by Section offering alone. |
+| **CUR-07-E1 — historical observation and corrected source** | Capture original **`valid_at` + `observed_at` + immutable Revision content digest + D1 Enrollment+Section offering + T7/T8 IDs and original accepted head**. Later P2 corrective successor creates new *as-known* DB-04 projection without modifying already published Exams or previously published Learning/Timetable basis; any consumer restatement uses its **own typed reviewed revision** and retains original. | E2 provider-centralized snapshot ledger adds a new provider-owned fact/retention design; requires separate interface and possibly extra entity ownership; cannot hide as generic mutable JSON. |
+| **CUR-07-F1 — disclosure/privacy and independent grants** | Separate private resolver families for Exams Student/Subject, Learning Section audience/per-Student, and Timetable Section availability. Only service principals/executors with **registered exact consumer permission and School/Campus/Section scope** can call each; no user-supplied `purpose`, arbitrary Student list, dynamic table join or raw T7/T8 DML. Current Student SELF/FAMILY safe reads remain CUR-04 owned. | F2 general-purpose shared consumer resolver with caller-selected purpose; high risk of cross-consumer scope expansion and Student elective leakage—requires privacy/security rejection or exceptional explicit owner/signer approval. |
+| **CUR-07-G1 — missing or ambiguous curriculum and consumer error behavior** | Missing published applicable Revision, ambiguous overlap, wrong D1 Year/Section, revoked consumer grant, absent accepted election, archived new-use Subject or stale source hash **fail closed** for new sensitive Exam/Learning eligibility actions. Return minimal non-enumerating denial; any previously published consumer's original snapshot remains accessible only through its already authorized historical-read path. | G2 implicit fallback to school-wide/previous revision/latest accepted Student selection; contradicts CUR-01 no precedence and CUR-06 history and is not recommended. |
+
+**Caution on A1:** D1 Student Enrollment placement **does not require** a finalized elective set, and an empty BF-1 finalized set may be valid when School's chosen groups allow zero. Missing T7 source is `NOT_SUBMITTED`, not a fake accepted elective. COMPULSORY eligibility still derives independent of an election row; no fake T8 is stored. A Student's accepted T7 set may be tied to an earlier Enrollment: it must never authorize Exams/Learning for the destination Enrollment after MOVE.
+
+## 3. Candidate consumer contracts — READ-ONLY interface proposals
+
+These are names/descriptions, **not** installed RPCs; actual parameter types/executor grants, payload and final freeze times require CUR-07 and CUR-08 approval plus consumer owner signoff.
+
+| Proposed bounded service contract | Server-validated input context | Minimal output and consumer-owned evidence |
+|---|---|---|
+| `curriculum.exams.subject_eligibility` | registered Exams service Principal, exact Student+Enrollment+Section Subject Offering, assessment `valid_at` and content/version expected by consumer; verified School/Exam author context | eligible bool/safe reason, immutable Revision+Applicability+Rule+Subject category/Group, Section offering, BF-1 set/T8 selected member **if required by OPTIONAL/ELECTIVE**, digest, interval, observation stamp; **Exams** stores controlled published/locked basis |
+| `curriculum.learning.section_subject_audience` | Learning executor, exact Section Subject Offering, publication business date and caller School/Section scope | allowed Section/Subject publication basis and separately authorized per-Student eligibility; **Learning** persists recipient IDs and fixed enrollment/choice source references at publication if C1 approved; no unbounded roster in Timetable |
+| `curriculum.learning.student_assignment_eligibility` | Learning executor, exact Student/Enrollment/Assignment+Section Subject Offering, business date | current safe applicable/elected subject decision and old published assignment basis reference, never arbitrary Family/peer election |
+| `curriculum.timetable.section_subject_availability` | Timetable executor, exact D1 Section Offering, Subject Rule/availability and planned schedule `valid_at` | published Section-level availability/revision/digest and valid interval only; **no Student T7/T8, Student ID or class roster** |
+| `curriculum.historical_eligibility_evidence` | separately authorized consumer owning the original frozen Exam/Assignment/Schedule source IDs and observed timestamp | original immutable source reference validation at permitted historical context, with exact privacy-protected evidence only; never reconstruct history from mutable current default |
+
+**Required snapshot identity candidate (Exams and Learning when A1 approved):**
+`consumer_record_id` (consumer-owned), `source_capture_version`, `school_id` and `campus_id` server-derived, `student_id` only for student-specific consumers, `enrollment_id`, `section_offering_id`, `class_offering_id`, `academic_year_id`, `curriculum_revision_id`, `curriculum_applicability_id`, `published_content_digest`, `curriculum_subject_rule_id`, `subject_id`, `section_subject_offering_id`, `obligation_category`, `choice_group_id?`, `finalized_selection_set_id?`, `accepted_selected_member_id?`, `eligibility_valid_from`/`eligibility_valid_until`, `valid_at`, `observed_at`, `decision`, `provenance_receipt_id?`, and exact consumer freeze/revision timestamp. **Neither every field nor all nullability is approved for physical storage; consumer owners must sign off on minimal sufficient evidence.** For COMPULSORY, `accepted_selected_member_id` is absent by design. For Timetable, exclude all Student-specific fields.
+
+**Raw data restrictions:** never return full Foundation request payload, reviewer personal identity, private Family membership, unrelated Student subject selection, unbounded subject history or marks. Do not grant Exams generic DB-04 table SELECT; use fixed least-privilege application executors and narrow checked responses, with audit and purpose determined by **registered fixed function**, never caller.
+
+## 4. Freeze and correction cases to resolve with consumer owners
+
+### Exams
+
+The master specification requires a controlled mark/Exam Controller review → publish → lock sequence, with reviewed result correction. It **does not mandate** a concrete DB-04 eligibility snapshot checkpoint. Under **candidate B1**, Exams records immutable eligibility evidence when the Student/Subject is admitted into assessment/marks-lock context and preserves it through publication, with recheck at final publish; a later CUR-06 P2 Student elective correction is **not** an Exam Controller marks correction. **B2** might be acceptable if Exams can prove safe behavior between mark capture and publication. This remains **Exams-owner decision**, not an implicit DB-04 choice.
+
+**Example:** A Student takes Mathematics (COMPULSORY) and elected Computer Science (ELECTIVE) during First Term. Exams stores the exact original accepted Curriculum revision and Computer Science T7/T8 set/member reference at its approved lock point. In a later academic year the Student transfers and Computer Science is archived. The previously published result still has its original as-observed source. A subsequent correction must use Exams' published-result revision workflow, not the current Student's new Enrollment.
+
+### Learning
+
+The master specification confirms Homework/Assignments linked to Class/Section/Subject and visible to applicable Students. It **does not** specify whether recipient targeting is snapshotted on publication. Candidate C1 anchors the original intended recipients and source IDs at Learning publication; a Student who later elects the Subject may see *new* assignments as authorized, not automatically receive the previous cohort's assignments without a separately approved backfill policy. A Student whose Enrollment ends retains their own submission/feedback history (subject to current safe read grants). **Learning owner must determine** submission-after-transfer, late assignment access, teacher feedback revocation and cohort backfill; DB-04 cannot invent these consequences.
+
+### Timetable
+
+A Section can offer Biology even when an individual Student did not select it; therefore **Section availability ≠ Student elective eligibility**. Candidate D1 gives Timetable only Section Subject Offering dates/revision/group availability and avoids exposing individuals’ choice sets. Timetable independently enforces same-time Teacher/Room/Section conflicts. A future per-Student elective timetable requires a new reviewed student-specific contract, not a silent expansion of the general timetable executor.
+
+## 5. Interaction with existing approved CUR-01…06 decisions
+
+- **CUR-01**: never infer latest Revision or School-wide precedence for missing/ambiguous Campus applicability; publication interval ambiguity denies new use.
+- **CUR-02**: COMPULSORY eligibility is derived; OPTIONAL/ELECTIVE require accepted Student selected member; Practical classification metadata is not a grade/practical score.
+- **CUR-03 BF-1/B-M1**: `FINALIZED_EMPTY` is an accepted finalization set (T7) with zero T8 members; it cannot make an unselected elective eligible. Strict B-M1 protects the Section's available group members, not physical seat capacity.
+- **CUR-04**: service consumers are separate fixed grants and may not ride on teacher assignment or family_safe current Student reads; Student/FAMILY current checked reads do not expose consumer-owned old Exam source.
+- **CUR-05**: P2 review of correction does not by itself restate published Exams; P1 selection change cannot bypass publication review; requester/reviewer Person separation and live APPLY revalidation.
+- **CUR-06**: on Enrollment MOVE/END, old T7/T8 remain history but cannot authorize destination; Subject ARCHIVE denies new use and preserves old sources; replacement cannot strand accepted sets; corrected as-known election does not overwrite old Exams/assignment/timetable observation.
+
+## 6. Acceptance matrix and independent signatures (not executed)
+
+| ID | Proposed test | Product gate / required owner |
+|---|---|---|
+| `SN-01` | COMPULSORY Mathematics for valid accepted Enrollment/Section is eligible without T8 selection | CUR-02 approved, Exams/DB04 A1 resolver owner |
+| `SN-02` | Section offers OPTIONAL Biology but Student has no accepted selection ⇒ Student-specific eligibility **false** | CUR-02 approved, Exams/Learning signed |
+| `SN-03` | BF-1 finalized-empty Student does not automatically satisfy elective selection; no fake T8 | CUR-03 approved, Exams/Learning |
+| `SN-04` | Student elected CS, Exams freezes exact T7/T8/Revision digest and publishes; later MOVE/correction does not alter original result snapshot | CUR-06 approved; Exams B1/B2 freeze choice open |
+| `SN-05` | Historical `valid_at` September eligibility differs between old `observed_at` October and a later corrected replay; originally locked Exam unchanged | CUR-06 approved, Exams historical signature |
+| `SN-06` | Learning assignment publication captures allowed recipient cohort; later Student subject choice does not silently modify existing publication | C1 proposal, Learning owner |
+| `SN-07` | Learning historical submission remains linked to its original Enrollment/Subject after Student transfer; current access uses live grant | C1 proposal, Learning owner |
+| `SN-08` | Timetable Section availability lists CS without any Student-specific choice data; no T7/T8 or roster in response | D1 proposal, Timetable security owner |
+| `SN-09` | Teacher assignment, FAMILY relationship or Student current read grant alone does not authorize Exams/Timetable private resolver or peer choice | CUR-04 approved, Foundation registrar |
+| `SN-10` | School-wide+Campus curriculum overlap or no published applicable Revision returns fail-closed, no fallback to default | CUR-01 approved-in-part, G1 proposal |
+| `SN-11` | Archived Subject new use denied; older published Exam's original Subject/revision/choice preserved | CUR-06 approved, Exams |
+| `SN-12` | Locked Exam correction requires consumer-owned controlled result revision; CUR-05 P2 DB-04 history change alone cannot modify marks | CUR-05/06 approved, Exams |
+| `SN-13` | Learning/Exams Student audience query wrong Campus/Year/Enrollment denies without Student existence leak | F1/G1 proposal, Foundation |
+| `SN-14` | Current unauthorized FAMILY or revoked consumer cannot retrieve historical snapshots via generic client-purpose argument | CUR-04 approved, F1 proposal |
+| `SN-15` | Timetable Publication/School P2 replacement between eligibility READ and consumer freeze revalidates expected digest and effective dates | A1/D1 proposal, Timetable + DB04 |
+| `SN-16` | Two consumer capture attempts for same Exam/Assignment record produce deterministic immutable original source or explicit source-version conflict | B1/C1 proposals, consumer owners |
+
+**Real two-backend races to implement after approved DB-04 SQL and consumer integration**: `SNR-01` P2 Curriculum correction vs Exam snapshot capture; `SNR-02` D1 Enrollment MOVE vs Exam eligibility capture; `SNR-03` published Revision replacement vs Learning recipient publication; `SNR-04` Section Subject Offering close vs Timetable schedule freeze; `SNR-05` consumer permission revocation vs resolver invocation; `SNR-06` concurrent old/new accepted BF-1 selection sets vs Exams marks-lock snapshot. Record exact PostgreSQL wait evidence (`pg_blocking_pids` / `pg_stat_activity`), both orders, fresh as-published and as-known reads, safe receipt/audit cardinality and absence of cross-Student leaks. **None executed.**
+
+**Signoffs requested but not obtained:**
+1. **Exams owner**: identity of original assessment/marks-lock checkpoint versus publish checkpoint, immutable eligibility snapshot format, published mark/result revision API, retention/replay under P2 Curriculum corrections, practical component ownership.
+2. **Learning owner**: assignment recipient snapshot time and storage, later elective changes/backfill, submission-after-transfer, teacher feedback, safe linked-parent visibility.
+3. **Timetable owner**: Section-only effective Subject Offering interface, no individual Student scope, conflicts and schedule publication freeze.
+4. **Foundation security/registrar**: fixed executor permission codes with complete Campus/Section/Student scope, no generic `purpose`, service Principal proof, bounded safe outputs, logging and revocation.
+5. **D1 Academic/Enrollment and DB-04 CUR-08 integrator**: final released D1 identities and lock order, eight-entity physical FKs/valid-time coverage and purpose-bound resolvers; populated local install and actual concurrency tests.
+
+## 7. Owner response needed; no implied approval
+
+**Recommended CUR-07 package:** **A1+B1+C1+D1+E1+F1+G1**, subject to independent Exams/Learning/Timetable freeze-point signatures and final CUR-08 physical schema. If the owner prefers *Exam snapshot only on result publication*, choose B2; if Learning recipients should remain dynamic, choose C2; if Timetable must schedule individual elective groups, choose D2 and require separately scoped Student privacy contract.
+
+**CUR-07 approval must be explicit:** “Approve CUR-07 A1+B1+C1+D1+E1+F1+G1,” or give replacement option codes. Today's “Yes I approved” was **approval of CUR-06 only**, not of CUR-07. No one has signed the proposed consumer interface.
+
+**Current approved product gates:** CUR-01 overlap/nonprecedence **in part**; CUR-02, CUR-03+BF-1/B-M1, CUR-04, CUR-05, **CUR-06**. **Remaining:** CUR-01 timing/mid-year cutover, CUR-07 consumer policy, CUR-08 eight-table executable physical schema and all independent integration signoffs.
+
+**Disposition: CUR-07 CONSUMER ELIGIBILITY AND IMMUTABLE SNAPSHOT OPTIONS READY FOR OWNER DECISION; NO SQL, ACTIVE RESOLVERS, RUNTIME TESTS OR PR MERGE.**
