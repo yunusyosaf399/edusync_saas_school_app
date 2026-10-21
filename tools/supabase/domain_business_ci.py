@@ -16,6 +16,10 @@ DOMAIN_TESTS.extend([["75_db01_allocator_retained_history.sql",12],
                      ["79_db01_approval_application_receipt_guard.sql",14],
                      ["80_school_local_roll_business_date.sql",24]])
 
+# Cross-domain preview ONLY: exact unchanged DB-01 PR #117 suite #81.
+# Do not merge this integration-only branch into either workstream by default.
+DOMAIN_TESTS.append(["81_db01_roll_correct_source_prelock.sql",20])
+
 # DB-02 isolated non-activating reviewer acceptance. Preserve #1-80 and
 # DB-01 owner-managed #81 when its separate PR is integrated.
 DOMAIN_TESTS.append(["82_db02_school_reviewer_candidates.sql",10])
