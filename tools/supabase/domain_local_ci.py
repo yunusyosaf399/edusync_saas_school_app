@@ -48,13 +48,22 @@ FINAL_FUNCTION_OWNERS = (
 # (uuid,uuid,uuid,uuid,jsonb), Student-executor-owned SECURITY DEFINER.
 # Integration request #108; effect38_03 adds exactly one additional
 # Schema-owner private DIRECT receipt provenance definer (issue #110).
-# DB-01 effect41_01 adds exactly one more private Student-owned source prelock.
 # DB-01 effect38_04 adds one operation-specific schema-owner trigger on
 # Foundation approval_applications (independent review issue #112).
 # Effect40_01 adds exactly one Academic-owned private School-date resolver.
-# DB-02 effect43_01 adds exactly one Student-owned private source preflight definer.
-# DB-02 effect44_01 adds one authz-reader-owned private policy version selector.
-# No public RPC or client grants; RLS/table-DML remains unchanged.
+# Effect41_01 adds exactly one Student-owned private nonactivating DB-01
+# School→stored policy→allocator→Student source-prelock helper (PR review).
+# Effect41_02 adds one Student-owned private atomic corrected-Roll effect with
+# fixed Student/allocator server versions; no new client grants.
+# Effect41_03 adds two authz-reader-owned PRIVATE P1 authority/route helpers.
+# These remain inactive and uncallable by clients, including authenticated.
+# Effect41_04 adds one evidence-writer-owned private canonical context prelock.
+# No protected command endpoint or client grant is added.
+# Effect41_05 adds Student-owned exact-reason proof and evidence-writer-owned
+# atomic DIRECT receipt + one audit + one outbox helper; still no public RPC.
+# Effect41_07 adds one dormant authenticated-only typed DIRECT Roll CORRECT RPC.
+# It leaves the frozen protected operation and permission disabled.
+# Do not allow public RPC/client grants or RLS/table-DML drift.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
     "d1_tables": 34,
@@ -65,11 +74,11 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 550,
-    "security_definers": 532,
-    "app_functions": 157,
-    "private_functions": 393,
-    "authenticated_app_execute": 157,
+    "functions": 557,
+    "security_definers": 539,
+    "app_functions": 158,
+    "private_functions": 399,
+    "authenticated_app_execute": 158,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
     "service_role_execute": 0,
@@ -447,6 +456,14 @@ def _main() -> int:
         run_enrollment_move_approval(container, run_psql, ROOT)
         from domain_roll_business_date_ci import run_roll_business_date
         run_roll_business_date(container, run_psql, ROOT)
+        from domain_db01_roll_correct_race_ci import run_db01_roll_correct_races
+        run_db01_roll_correct_races(container, run_psql, ROOT)
+        from domain_db01_protected_direct_race_ci import run_db01_protected_direct_races
+        run_db01_protected_direct_races(container, run_psql)
+        from domain_db01_replay_after_move_end_ci import run_db01_roll_replay_after_move_end
+        run_db01_roll_replay_after_move_end(container, run_psql)
+        from domain_db01_correct_vs_move_end_ci import run_db01_correct_vs_move_end_races
+        run_db01_correct_vs_move_end_races(container, run_psql)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0

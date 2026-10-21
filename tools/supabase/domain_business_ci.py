@@ -14,20 +14,22 @@ DOMAIN_TESTS.extend([["75_db01_allocator_retained_history.sql",12],
                      ["77_db01_retained_result_pair_private_acl.sql",30],
                      ["78_db01_direct_receipt_provenance_private_acl.sql",24],
                      ["79_db01_approval_application_receipt_guard.sql",14],
-                     ["80_school_local_roll_business_date.sql",24]])
+                     ["80_school_local_roll_business_date.sql",24],
+                     ["81_db01_roll_correct_source_prelock.sql",20],
+                     ["82_db01_private_correct_effect.sql",21],
+                     ["83_db01_academic_cross_section_correct_effect.sql",22],
+                     ["84_db01_persistent_cross_revision_roll_correction.sql",12],
+                     ["85_db01_roll_correct_private_authority_p1.sql",22],
+                     ["86_db01_roll_correct_canonical_command_context.sql",30],
+                     ["87_db01_direct_atomic_success_evidence.sql",23],
+                     ["88_db01_roll_correct_direct_authenticated.sql",48]])
 
-# Cross-domain preview ONLY: exact unchanged DB-01 PR #117 suite #81.
-# Do not merge this integration-only branch into either workstream by default.
-DOMAIN_TESTS.append(["81_db01_roll_correct_source_prelock.sql",20])
-
-# DB-02 isolated non-activating reviewer acceptance. Preserve #1-80 and
-# DB-01 owner-managed #81 when its separate PR is integrated.
-DOMAIN_TESTS.append(["82_db02_school_reviewer_candidates.sql",10])
-DOMAIN_TESTS.append(["83_db02_roll_policy_source_preflight.sql",18])
-DOMAIN_TESTS.append(["84_db02_roll_policy_p1_version_selector.sql",20])
-DOMAIN_TESTS.append(["85_db02_school_actor_all_authority.sql",19])
-# Dedicated stacked shared-receipt integration suite (not DB-01 #81).
-DOMAIN_TESTS.append(["86_db02_roll_policy_receipt_allowlist.sql",27])
+# COMPOSITION TRIAL ONLY: retain all DB-02 numbered suites by exact filename.
+DOMAIN_TESTS.extend([["82_db02_school_reviewer_candidates.sql",10],
+                     ["83_db02_roll_policy_source_preflight.sql",18],
+                     ["84_db02_roll_policy_p1_version_selector.sql",20],
+                     ["85_db02_school_actor_all_authority.sql",19],
+                     ["86_db02_roll_policy_receipt_allowlist.sql",27]])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
