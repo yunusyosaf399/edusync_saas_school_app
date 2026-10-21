@@ -147,6 +147,8 @@ UPDATE app_private.approval_policy_versions SET state='ACTIVE',
  effective_from=pg_catalog.statement_timestamp()-interval '1 hour',
  activated_at=pg_catalog.statement_timestamp()
  WHERE id='b1880000-0000-4000-8000-000000000059';
+-- Previous reused negative test revoked the permission: restore only inside ROLLBACK.
+UPDATE app_private.permissions SET state='ENABLED' WHERE code='student.roll.correct';
 RESET ROLE;
 SELECT is(app_private.d1_roll_correct_authorized('55555555-5555-4555-8555-555555555555','student.roll.correct','b1000000-0000-4000-8000-000000000045',NULL::uuid),true,'current Section grant authorizes requester');
 SELECT is((SELECT route_mode FROM app_private.d1_roll_correct_policy('b1000000-0000-4000-8000-000000000045')),'DIRECT'::text,'P1 explicitly selects DIRECT');
