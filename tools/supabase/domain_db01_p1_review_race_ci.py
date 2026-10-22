@@ -111,8 +111,9 @@ def _snapshot(cur, request: str):
      (SELECT a.next_value FROM app_private.roll_allocator_states a
        JOIN app_private.roll_allocations ra ON ra.policy_revision_id=a.policy_revision_id
        JOIN app_private.enrollments en ON en.id=ra.enrollment_id
+       JOIN app_private.section_offerings so ON so.id=en.section_offering_id
        WHERE ra.student_id=q.target_ref AND
-         (a.class_offering_id IS NULL OR a.class_offering_id=en.class_offering_id)
+         (a.class_offering_id IS NULL OR a.class_offering_id=so.class_offering_id)
        LIMIT 1)
     FROM app_private.approval_requests q WHERE q.id=%s::uuid""", (request,))
     rows = cur.fetchall()
