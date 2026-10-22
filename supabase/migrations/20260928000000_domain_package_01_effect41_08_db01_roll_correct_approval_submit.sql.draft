@@ -89,29 +89,17 @@ CREATE FUNCTION app_private.d1_roll_correct_submit_evidence(
  p_expected_version bigint,p_request uuid,p_request_version bigint
 ) RETURNS uuid
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE rid uuid:=pg_catalog.gen_random_uuid(); q record; n bigint;
+DECLARE rid uuid:=pg_catalog.gen_random_uuid();
 BEGIN
- SELECT * INTO q FROM app_private.approval_requests WHERE id=p_request;
  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
     OR p_operation IS NULL OR p_key IS NULL OR length(btrim(p_key))=0
     OR p_hash IS NULL OR p_student IS NULL OR p_source_enrollment IS NULL
     OR p_source_section IS NULL OR p_expected_version IS NULL OR p_expected_version<1
     OR p_request IS NULL OR p_request_version IS NULL OR p_request_version<1
-    OR q.id IS NULL OR q.operation_id IS DISTINCT FROM p_operation
-    OR q.requester_id IS DISTINCT FROM p_actor OR q.target_ref IS DISTINCT FROM p_student
-    OR q.expected_target_version IS DISTINCT FROM p_expected_version
-    OR q.row_version IS DISTINCT FROM p_request_version OR q.state IS DISTINCT FROM 'PENDING'
-    OR q.old_snapshot->>'source_enrollment_id' IS DISTINCT FROM p_source_enrollment::text
-    OR q.old_snapshot->>'source_section_offering_id' IS DISTINCT FROM p_source_section::text
  THEN RAISE EXCEPTION 'D1 Roll correction SUBMIT evidence invalid'; END IF;
- SELECT count(*) INTO n FROM app_private.approval_request_steps s
- WHERE s.request_id=p_request AND s.policy_id=q.policy_id AND s.state='OPEN';
- IF n<>1 OR NOT EXISTS (
-   SELECT 1 FROM app_private.approval_step_reviewers x
-    JOIN app_private.approval_request_steps s ON s.id=x.step_id
-   WHERE s.request_id=p_request AND s.state='OPEN' AND x.withdrawn_at IS NULL
-     AND x.assignment_reason='D1_REVIEWER_ROLE_SCOPE')
- THEN RAISE EXCEPTION 'D1 Roll correction SUBMIT lacks independent reviewer'; END IF;
+ -- The protected workflow executor just created and checked PENDING,
+ -- exact source and independent OPEN reviewer in this SAME transaction.
+ -- Evidence writer has intentionally no direct approval-table SELECT.
  INSERT INTO app_private.command_receipts(
    id,principal_id,operation_id,command_kind,idempotency_key,
    canonical_payload_hash,canonicalization_version,expected_target_version,
@@ -145,7 +133,7 @@ CREATE FUNCTION app_private.d1_roll_correct_submit_receipt_matches_exact(
  p_policy uuid,p_old bigint,p_new bigint,p_reason text
 ) RETURNS boolean
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE rec record; q record; origin uuid;
+DECLARE rec record;
 BEGIN
  SELECT * INTO rec FROM app_private.command_receipts r WHERE r.id=p_receipt;
  IF rec.id IS NULL OR rec.principal_id IS DISTINCT FROM p_actor
@@ -161,24 +149,8 @@ BEGIN
     OR NOT(rec.result_summary ?& ARRAY['request_version','state'])
     OR rec.result_summary->>'state' IS DISTINCT FROM 'PENDING'
  THEN RETURN false; END IF;
- SELECT * INTO q FROM app_private.approval_requests a WHERE a.id=rec.request_id;
- SELECT r.origin_allocation_id INTO origin FROM app_private.roll_allocations r WHERE r.id=p_roll;
- IF q.id IS NULL OR q.requester_id IS DISTINCT FROM p_actor
-    OR q.operation_id IS DISTINCT FROM rec.operation_id
-    OR q.target_ref IS DISTINCT FROM p_student
-    OR q.expected_target_version IS DISTINCT FROM p_version
-    OR q.reason IS DISTINCT FROM p_reason
-    OR q.old_snapshot IS DISTINCT FROM pg_catalog.jsonb_build_object(
-       'student_id',p_student,'source_enrollment_id',p_enrollment,
-       'source_section_offering_id',p_section,'source_enrollment_effective_from',p_enrollment_from,
-       'source_roll_allocation_id',p_roll,'source_roll_effective_from',p_roll_from,
-       'source_policy_revision_id',p_policy,'source_old_numeric_value',p_old::text,
-       'source_roll_origin_allocation_id',origin)
-    OR q.requested_payload IS DISTINCT FROM pg_catalog.jsonb_build_object(
-       'proposed_numeric_value',p_new::text)
-    OR (rec.result_summary->>'request_version')::bigint<1
-    OR NOT EXISTS(SELECT 1 FROM app_private.audit_events a
-       WHERE a.command_receipt_id=rec.id AND a.approval_request_id=q.id
+ IF NOT EXISTS(SELECT 1 FROM app_private.audit_events a
+       WHERE a.command_receipt_id=rec.id AND a.approval_request_id=rec.request_id
          AND a.event_type='student.roll.correct' AND a.outcome='SUCCEEDED')
  THEN RETURN false; END IF;
  RETURN true;
@@ -202,7 +174,7 @@ CREATE FUNCTION app.d1_submit_student_roll_correction(
  p_reason text,p_idempotency_key text
 ) RETURNS TABLE(request_id uuid,request_version bigint)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE ctx record; route record; locked record; proposal record; req uuid:=pg_catalog.gen_random_uuid();
+DECLARE ctx record; route record; locked record; proposal record; prior_request record; req uuid:=pg_catalog.gen_random_uuid();
   template_row record; step_id uuid; final_version bigint; n bigint;
   prior_policy uuid; origin uuid; receipt uuid;
 BEGIN
@@ -233,6 +205,28 @@ BEGIN
         p_expected_source_section_id,NULL::uuid) IS DISTINCT FROM true
  THEN RAISE EXCEPTION 'D1 Roll correction SUBMIT current authority denied'; END IF;
  IF ctx.receipt_id IS NOT NULL THEN
+   -- Historical request is checked by workflow role (narrow approval table
+   -- SELECT), while the private evidence writer verifies receipt and audit.
+   -- No PENDING requirement: REVIEW/APPLY can have legally advanced state.
+   SELECT * INTO prior_request FROM app_private.approval_requests q
+     WHERE q.id=ctx.result_ref;
+   IF NOT FOUND OR prior_request.requester_id IS DISTINCT FROM ctx.actor_id
+     OR prior_request.operation_id IS DISTINCT FROM ctx.operation_id
+     OR prior_request.target_ref IS DISTINCT FROM p_student_id
+     OR prior_request.expected_target_version IS DISTINCT FROM p_expected_student_version
+     OR prior_request.reason IS DISTINCT FROM p_reason
+     OR prior_request.old_snapshot->>'student_id' IS DISTINCT FROM p_student_id::text
+     OR prior_request.old_snapshot->>'source_enrollment_id' IS DISTINCT FROM p_source_enrollment_id::text
+     OR prior_request.old_snapshot->>'source_section_offering_id' IS DISTINCT FROM p_expected_source_section_id::text
+     OR prior_request.old_snapshot->>'source_enrollment_effective_from' IS DISTINCT FROM p_expected_enrollment_effective_from::text
+     OR prior_request.old_snapshot->>'source_roll_allocation_id' IS DISTINCT FROM p_source_roll_allocation_id::text
+     OR prior_request.old_snapshot->>'source_roll_effective_from' IS DISTINCT FROM p_expected_source_roll_effective_from::text
+     OR prior_request.old_snapshot->>'source_policy_revision_id' IS DISTINCT FROM p_expected_source_policy_revision_id::text
+     OR prior_request.old_snapshot->>'source_old_numeric_value' IS DISTINCT FROM p_expected_old_numeric_value::text
+     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(prior_request.old_snapshot))<>9
+     OR prior_request.requested_payload IS DISTINCT FROM pg_catalog.jsonb_build_object(
+       'proposed_numeric_value',p_requested_numeric_value::text)
+   THEN RAISE EXCEPTION 'D1 Roll correction SUBMIT immutable request mismatch'; END IF;
    IF ctx.receipt_state IS DISTINCT FROM 'SUCCEEDED'
      OR ctx.result_ref IS NULL OR ctx.result_summary IS NULL
      OR app_private.d1_roll_correct_submit_receipt_matches_exact(
