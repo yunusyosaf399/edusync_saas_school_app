@@ -1,5 +1,7 @@
 # DB-04 — CUR-07 Exams, Learning and Timetable Eligibility / Immutable Observation Owner Gate
 
+> **2026-10-22 DOCUMENTATION REVIEW — CUR-07 STILL UNAPPROVED:** The [short owner A1–G1 choice brief](db04_cur07_owner_decision_brief_20261022.md) and [consumer capture/privacy/denial signoff matrix](db04_cur07_consumer_capture_and_denial_signoff_matrix_20261022.md) now consolidate the existing candidate proposal, unchanged approved P01A/P02A source semantics and outstanding specialist signoffs. **This is documentation preparation, not an owner choice or any consumer signature.** Historical CUR-01 timing-pending wording below is superseded by its explicit approval. No SQL.
+
 > **2026-10-21 CUR-08 P01A/P02A UPDATE:** The product owner approved [complete per-Revision/Enrollment T7 accepted set generations and one canonical effective T7 head](db04_cur08_p01a_p02a_approved_selection_set_head_20261021.md). A CUR-07 candidate provider resolver must identify the exact accepted whole-set generation at the requested `valid_at` and captured `observed_at`, never infer from today's latest head. This update **does not** approve CUR-07 A1–G1, the first Exams capture checkpoint, Learning backfill, Timetable per-Student access, consumer registration, or SQL.
 
 > **2026-10-21 CUR-01 FOLLOW-UP:** [T1+M1+S1+F1+H1 approved](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md) for explicit start dates, P2 prospective mid-year cutover, fail-closed current/future selections, APPLY revalidation and historical evidence. Earlier “CUR-01 timing pending” text below is historical. **CUR-07 A1–G1 are still unapproved**, and Exams/Learning/Timetable/Foundation signoffs remain independent requirements. No SQL.
@@ -16,7 +18,7 @@ The [Master Specification `23](../requirements/School_OS_SaaS_Master_Specificati
 
 Already owner-approved DB-04 contracts:
 
-- [CUR-01 applicability](db04_cur01_approved_applicability_decision_20261020.md): no School-wide/Campus overlap and **no implicit precedence** for same Class Offering and date; initial/future/mid-year cutover timing still open.
+- [CUR-01 applicability + dates](db04_cur01_approved_effective_dates_midyear_cutover_20261021.md): no School-wide/Campus overlap or implicit precedence for the same Class Offering/date; **T1/M1/S1/F1/H1 approved** for explicit/future start, prospective P2 mid-year cutover, stranded-choice denial, APPLY revalidation and immutable history.
 - [CUR-02](db04_cur02_approved_subject_category_decision_20261020.md): enrolled Student COMPULSORY entitlement from published Rule + effective Section, OPTIONAL/ELECTIVE require accepted election; Practical/Extra-curricular/Custom classification is separate from selection obligation, and *assessment components are Exams-owned*.
 - [CUR-03 incl. BF-1/B-M1](db04_cur03_bf1_bm1_approved_eight_entity_design_20261021.md): exact accepted Student elective finalization even if zero Subjects with immutable T7 `student_subject_selection_sets` and linked T8 `student_subject_selections`, strict Section group max feasibility, no prerequisites, seat allocator or default deadline.
 - [CUR-04](db04_cur04_approved_student_family_staff_authorization_20261021.md): staff-only accepted writes; Student SELF and current FAMILY CHILD may receive only live-granted minimal current checked reads; teacher assignment alone grants no mutation or private selection read.
@@ -119,6 +121,6 @@ A Section can offer Biology even when an individual Student did not select it; t
 
 **CUR-07 approval must be explicit:** “Approve CUR-07 A1+B1+C1+D1+E1+F1+G1,” or give replacement option codes. Today's “Yes I approved” was **approval of CUR-06 only**, not of CUR-07. No one has signed the proposed consumer interface.
 
-**Current approved product gates:** CUR-01 overlap/nonprecedence **in part**; CUR-02, CUR-03+BF-1/B-M1, CUR-04, CUR-05, **CUR-06**. **Remaining:** CUR-01 timing/mid-year cutover, CUR-07 consumer policy, CUR-08 eight-table executable physical schema and all independent integration signoffs.
+**Current approved product gates (2026-10-22):** CUR-01 (including T1/M1/S1/F1/H1), CUR-02, CUR-03+BF-1/B-M1, CUR-04, CUR-05, CUR-06 and CUR-08 **P01A/P02A**. **Remaining:** CUR-07 A1–G1 consumer policy, CUR-08 P03–P08 executable physical/technical signoffs and all independent integration approvals.
 
 **Disposition: CUR-07 CONSUMER ELIGIBILITY AND IMMUTABLE SNAPSHOT OPTIONS READY FOR OWNER DECISION; NO SQL, ACTIVE RESOLVERS, RUNTIME TESTS OR PR MERGE.**

@@ -29,6 +29,9 @@ For each task capture pinned dependency and tested commit SHA, distinct PostgreS
 
 ## Immediate decision handoff — CUR-07, not implied approved
 
+> **2026-10-22 handoff packet:** [owner-friendly A1–G1 approval options](db04_cur07_owner_decision_brief_20261022.md) and [consumer evidence/signoff detail](db04_cur07_consumer_capture_and_denial_signoff_matrix_20261022.md) are prepared; all seven product options and independent specialist signoffs remain pending. This note is not CUR-07 approval.
+
+
 The next **product** decision package is [CUR-07 A1+B1+C1+D1+E1+F1+G1](db04_cur07_exams_learning_timetable_eligibility_snapshot_owner_gate_20261021.md) with [independent consumer evidence review](db04_cur07_consumer_integration_evidence_review_20261021.md). Each option is proposed and unapproved until the School owner explicitly selects it. Subsequent Exams, Learning, Timetable and Foundation signoff is independent of School owner product approval. In particular, the *exact* first Exams snapshot capture checkpoint, Learning access after Student MOVE and backfill rules cannot be invented by DB-04.
 
 The accepted P01A/P02A **does not** imply CUR-07 historical consumer permission, SQL activation, GRANT, automatic Student/Family proposal workflow, ability to make an archived Subject newly selectable, arbitrary Student roster visibility, or Exams grades/marks correction.
