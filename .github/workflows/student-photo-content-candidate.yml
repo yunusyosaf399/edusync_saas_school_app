@@ -66,6 +66,23 @@ jobs:
               assert forbidden not in s, forbidden
           print('STUDENT_PHOTO_SUPABASE_STORAGE_INERT_WIRE_PASS')
           PY
+      - name: Offline private Supabase bucket and credential preflight regressions
+        run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_supabase_bucket_preflight_candidate.py' -v
+      - name: Guard offline photo preflight against secret loading and deployment
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('tools/photo_validation/student_photo_supabase_bucket_preflight_candidate.py').read_text()
+          assert 'def inspect_offline_private_photo_setup(' in s
+          assert 'def approve_live_setup(' in s and '_deny()' in s
+          assert 'runtime_photo_upload: str = "DENY"' in s
+          for forbidden in ('import requests','import urllib','from supabase',
+                            'os.environ', 'service_role_key=', 'load_dotenv',
+                            'create_bucket(', 'Deno.serve(', 'httpx.',
+                            'storage.from_(', 'subprocess.'):
+              assert forbidden not in s, forbidden
+          print('STUDENT_PHOTO_SUPABASE_BUCKET_PREFLIGHT_OFFLINE_PASS')
+          PY
       - name: Synthetic Student photo intent and entitlement policy regressions
         run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_intent_entitlement_candidate.py' -v
       - name: Real signed entitlement and monotonic local revision tests
