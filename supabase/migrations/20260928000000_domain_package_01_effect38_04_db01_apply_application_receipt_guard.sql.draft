@@ -47,7 +47,7 @@ BEGIN
    old_num:=NULLIF(req.old_snapshot->>'source_old_numeric_value','')::bigint;
    new_num:=NULLIF(req.requested_payload->>'proposed_numeric_value','')::bigint;
  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
-   RAISE EXCEPTION 'D1 roll correction application evidence invalid';
+   RAISE;
  END;
  IF req.operation_id IS DISTINCT FROM NEW.operation_id
     OR req.target_ref IS NULL OR req.target_ref IS DISTINCT FROM
@@ -117,7 +117,7 @@ BEGIN
  THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid: review'; END IF;
  RETURN NEW;
 EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
- RAISE EXCEPTION 'D1 roll correction application evidence invalid';
+ RAISE;
 END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_roll_correct_application_receipt_guard()
  FROM PUBLIC,anon,authenticated,service_role;
