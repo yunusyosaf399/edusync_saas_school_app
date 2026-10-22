@@ -162,7 +162,12 @@ def _safe_tail(text: str, lines: int = 60) -> str:
 
 
 def _start_disposable_stack() -> None:
-    start_disposable_stack(ROOT, EXPECTED_PROJECT_ID, "D1C2A")
+    try:
+        start_disposable_stack(ROOT, EXPECTED_PROJECT_ID, "D1C2A")
+    except RuntimeError as exc:
+        # Preserve the D1 acceptance harness's established error contract.
+        # Shared registry diagnostics contain no raw CLI output.
+        raise DomainLocalCIError(str(exc)) from None
 
 
 def run_psql(container: str, sql: str, label: str, *, tuples: bool = False, timeout: int = 900) -> str:
