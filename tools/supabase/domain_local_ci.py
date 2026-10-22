@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 import re
 import subprocess
@@ -10,6 +11,7 @@ import sys
 from pathlib import Path
 
 from _process import CommandFailure, run
+from local_stack_registry import start_disposable_stack
 from domain_business_ci import run_business_tests
 from domain_profile_history_candidate_ci import run_history_candidate
 from domain_student_photo_real_pg_handoff_ci import run_real_postgres_photo_handoff
@@ -159,70 +161,8 @@ def _safe_tail(text: str, lines: int = 60) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
 
-# A failed Supabase CLI start may contain API tokens, connection URLs or passwords.
-# Never print its raw output. Report only fixed, allowlisted diagnostic codes.
-_START_FAILURE_HINTS = (
-    ("DOCKER_UNAVAILABLE", ("cannot connect to the docker daemon", "docker daemon is not running", "error during connect")),
-    ("PORT_CONFLICT", ("port is already allocated", "address already in use", "ports are not available", "bind: address already in use")),
-    ("DISK_EXHAUSTED", ("no space left on device",)),
-    ("IMAGE_PULL_FAILURE", ("manifest unknown", "pull access denied", "failed to pull image", "toomanyrequests", "rate limit exceeded")),
-    ("CONTAINER_UNHEALTHY", ("unhealthy", "is not healthy", "dependency failed to start")),
-    ("DATABASE_CRASH", ("database failed to start", "postgres exited", "postgresql exited", "segmentation fault")),
-    ("START_TIMEOUT", ("context deadline exceeded", "timed out", "timeout exceeded")),
-    ("DOCKER_ERROR", ("error response from daemon",)),
-)
-
-
-def _start_failure_code(output: str) -> str:
-    """Use fixed categories only; never expose Supabase's arbitrary output."""
-    lower = output.lower()
-    for code, markers in _START_FAILURE_HINTS:
-        if any(marker in lower for marker in markers):
-            return code
-    return "UNCLASSIFIED"
-
-
-def _local_pg_start_state() -> str:
-    """Inspect only local pinned DB status, exit code and OOM bit (no logs)."""
-    try:
-        result = subprocess.run(
-            ["docker", "inspect", "--format",
-             "{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}",
-             "supabase_db_" + EXPECTED_PROJECT_ID],
-            cwd=ROOT, text=True, capture_output=True, timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return "UNAVAILABLE"
-    if result.returncode:
-        return "ABSENT"
-    detail = result.stdout.strip().split("|")
-    if len(detail) != 3:
-        return "UNAVAILABLE"
-    status, exit_code, oom = detail
-    if (status not in {"created", "running", "restarting", "removing",
-                       "paused", "exited", "dead"}
-            or not re.fullmatch(r"[0-9]{1,3}", exit_code)
-            or oom not in {"true", "false"}):
-        return "UNAVAILABLE"
-    return f"{status},exit={exit_code},oom={oom}"
-
-
 def _start_disposable_stack() -> None:
-    try:
-        result = subprocess.run(
-            ["supabase", "start"], cwd=ROOT,
-            text=True, encoding="utf-8", errors="replace",
-            capture_output=True, timeout=900,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print("D1C2A_START_DIAGNOSTIC code=START_COMMAND_UNAVAILABLE_OR_TIMEOUT "
-              + "pg_state=" + _local_pg_start_state(), file=sys.stderr)
-        raise DomainLocalCIError("supabase start unavailable or timed out") from exc
-    if result.returncode:
-        category = _start_failure_code((result.stderr or "") + "\n" + (result.stdout or ""))
-        print("D1C2A_START_DIAGNOSTIC code=" + category
-              + " pg_state=" + _local_pg_start_state(), file=sys.stderr)
-        raise DomainLocalCIError("supabase start (exit nonzero)")
+    start_disposable_stack(ROOT, EXPECTED_PROJECT_ID, "D1C2A")
 
 
 def run_psql(container: str, sql: str, label: str, *, tuples: bool = False, timeout: int = 900) -> str:

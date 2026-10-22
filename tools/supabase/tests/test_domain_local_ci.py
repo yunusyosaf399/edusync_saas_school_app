@@ -31,6 +31,8 @@ class DomainLocalCITests(unittest.TestCase):
             if args[:2] == ["supabase", "start"]:
                 return CompletedProcess(args, 1, "untrusted " + secret,
                                         "port is already allocated; " + secret)
+            if args[:2] == ["supabase", "stop"]:
+                return CompletedProcess(args, 0, "", "")
             if args[:2] == ["docker", "inspect"]:
                 self.assertIn("supabase_db_" + runtime.EXPECTED_PROJECT_ID, args)
                 return CompletedProcess(args, 0, "exited|137|true", "")
@@ -62,6 +64,36 @@ class DomainLocalCITests(unittest.TestCase):
         output = captured.getvalue()
         self.assertIn("code=UNCLASSIFIED pg_state=ABSENT", output)
         self.assertNotIn(secret, output)
+
+    def test_image_pull_failure_retries_an_official_registry_without_changing_tag(self):
+        calls = []
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            if args[:2] == ["supabase", "start"]:
+                if kwargs["env"]["SUPABASE_INTERNAL_IMAGE_REGISTRY"] == "ghcr.io":
+                    return CompletedProcess(args, 1, "failed to pull image", "")
+                if kwargs["env"]["SUPABASE_INTERNAL_IMAGE_REGISTRY"] == "docker.io":
+                    return CompletedProcess(args, 0, "", "")
+                self.fail("Unexpected image registry")
+            if args[:2] == ["supabase", "stop"]:
+                self.assertEqual(args[3], runtime.EXPECTED_PROJECT_ID)
+                return CompletedProcess(args, 0, "", "")
+            if args[:2] == ["docker", "inspect"]:
+                return CompletedProcess(args, 1, "", "")
+            self.fail("Unexpected command")
+        with patch.dict(runtime.os.environ, {"SUPABASE_INTERNAL_IMAGE_REGISTRY": "ghcr.io"}):
+            with patch.object(runtime.subprocess, "run", side_effect=fake_run):
+                with redirect_stderr(io.StringIO()) as captured:
+                    runtime._start_disposable_stack()
+        registries = [kwargs["env"]["SUPABASE_INTERNAL_IMAGE_REGISTRY"]
+                      for args, kwargs in calls if args[:2] == ["supabase", "start"]]
+        self.assertEqual(registries, ["ghcr.io", "docker.io"])
+        self.assertNotIn("failed to pull image", captured.getvalue())
+
+    def test_startup_fallback_denies_invalid_project(self):
+        from local_stack_registry import start_disposable_stack
+        with self.assertRaisesRegex(RuntimeError, "LOCAL_STACK_TARGET_INVALID"):
+            start_disposable_stack(runtime.ROOT, "some-other-project", "D1C2A")
 
     def test_project_id_is_fail_closed_and_pinned(self):
         root = self.make_root()
