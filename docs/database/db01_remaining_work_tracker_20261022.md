@@ -1,5 +1,7 @@
 # DB-01 — Remaining Work Register (as of 2026-10-22)
 
+**Last progress update:** 2026-10-22. **DB01-01 passed; DB01-02 in progress.**
+
 **Scope:** Student Roll Correction `student.roll.correct`, DB-01 only. Owner-approved RC-01...RC-08 in the DB-01 contract of [draft PR #100](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/100); implementation is a **stacked chain of draft PRs**, not installed in production. Checked base: [green PR #136](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/136), `04164b015e516b7a497c0dd9ae0b22a2dfb10071`. Never assume passing a disposable D1 stack permits a merge or operation activation.
 
 ## Already passed in disposable PostgreSQL
@@ -14,8 +16,8 @@
 
 | Task ID | Deliverable and acceptance gate | Initial status |
 | --- | --- | --- |
-| DB01-01 | Authenticated independent P1 APPROVE and REJECT; configured step review, distinct Person, current reviewer grant, exact review receipt/audit; no Roll mutation | **IN PROGRESS**: stacked draft candidate effect41_09 and isolated pgTAP #90; exact-head runtime not accepted |
-| DB01-02 | Revoked/withdrawn reviewer, policy alteration, step/expected version/idempotent terminal replay and multi-step revalidation; real lock-wait security | PENDING |
+| DB01-01 | Authenticated independent P1 APPROVE and REJECT; configured step review, distinct Person, current reviewer grant, exact review receipt/audit; no Roll mutation | **PASSED**: [draft PR #137](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/137), `cdb4e18831736edbef8ce3c8d7e9a81e6dfc29bb`, [D1 #39732287003](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39732287003): 41/41 review, 3,530 domain assertions; no production activation |
+| DB01-02 | Revoked/withdrawn reviewer, policy alteration, step/expected version/idempotent terminal replay and multi-step revalidation; real lock-wait security | **IN PROGRESS**: separate rollback-only two-stage reviewer, withdrawal, policy/scope change, intermediate replay candidate; true two-backend race separately pending |
 | DB01-03 | Separately authenticated APPROVED→APPLY; fresh requester/reviewer/policy/source locks, school-local date and number collision checks, one R0→R1, Student N+1 | PENDING |
 | DB01-04 | APPLY stale/rejected/invalidated/duplicate/no-op/grant-revoked terminal integrity, canonical receipt/applications and audit/outbox proof | PENDING |
 | DB01-05 | Checked requester/reviewer/administrator P1 request read with minimal typed data; current history-number permission independent | PENDING |
