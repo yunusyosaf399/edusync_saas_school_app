@@ -48,6 +48,24 @@ jobs:
               assert forbidden not in source, forbidden
           print('STUDENT_PHOTO_PRIVATE_API_CANDIDATE_LOCAL_ONLY_PASS')
           PY
+      - name: Supabase private Storage REST adapter dry-run tests (no network)
+        run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_supabase_storage_adapter_candidate.py' -v
+      - name: Guard Supabase Storage adapter against live mutation or credentials
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s = Path('tools/photo_validation/student_photo_supabase_storage_adapter_candidate.py').read_text()
+          assert '_NETWORK_ENABLED = False' in s
+          assert 'def send(' in s and 'def delete(' in s
+          assert 'def upsert(' in s and 'def list_objects(' in s
+          assert 'x-upsert' in s and 'false' in s
+          assert 'authenticated/' in s
+          for forbidden in ('import requests','import urllib','from supabase',
+                            'service_role_key=', 'os.environ', 'HTTPConnection(',
+                            'Deno.serve(', 'PUBLIC_BUCKET = True'):
+              assert forbidden not in s, forbidden
+          print('STUDENT_PHOTO_SUPABASE_STORAGE_INERT_WIRE_PASS')
+          PY
       - name: Synthetic Student photo intent and entitlement policy regressions
         run: python -m unittest discover -s tools/photo_validation/tests -p 'test_student_photo_intent_entitlement_candidate.py' -v
       - name: Real signed entitlement and monotonic local revision tests
