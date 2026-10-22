@@ -32,6 +32,7 @@ BEGIN
       AND r.expected_target_version=p_expected_target_version
       AND r.expected_request_version=p_expected_request_version
       AND r.result_ref IS NULL AND r.result_kind IS NULL
+      AND r.error_code='D1_ROLL_CORRECT_SOURCE_STALE'
       AND r.result_summary=jsonb_build_object(
           'state','INVALIDATED','request_version',p_final_version::text)
       AND r.created_by=p_actor;
@@ -51,12 +52,12 @@ BEGIN
   id,principal_id,operation_id,command_kind,idempotency_key,
   canonical_payload_hash,canonicalization_version,expected_target_version,
   request_id,expected_request_version,state,result_kind,result_ref,
-  result_summary,completed_at,created_by)
+  result_summary,error_code,completed_at,created_by)
  VALUES(rid,p_actor,p_operation,'request.apply',p_key,p_hash,1,
    p_expected_target_version,p_request,p_expected_request_version,'REJECTED',
    NULL,NULL,jsonb_build_object('state','INVALIDATED',
          'request_version',p_final_version::text),
-   statement_timestamp(),p_actor);
+   'D1_ROLL_CORRECT_SOURCE_STALE',statement_timestamp(),p_actor);
  INSERT INTO app_private.audit_events(
    actor_id,actor_kind,outcome,authority_evidence,target_version,
    event_type,target_kind,target_ref,command_receipt_id,approval_request_id,
