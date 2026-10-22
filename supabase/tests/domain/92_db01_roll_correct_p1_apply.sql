@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(30);
+SELECT plan(40);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -311,14 +311,59 @@ SELECT is((SELECT count(*) FROM app_private.outbox_events o
  WHERE rc.request_id=:'submitted_request_id'::uuid AND o.event_type='enrollment.roll_corrected'
    AND NOT(o.payload ? 'new_numeric_value')),1::bigint,
  'one minimized correction outbox event without Roll number disclosure');
+-- DB01-04: exact same-key, same request-version replay MUST return the
+-- original immutable result, never invoke the Roll effect for a second time.
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_roll_correction(
+ :'submitted_request_id'::uuid,:'r2_request_version'::bigint,
+ 'db01-first-exact-p1-apply') \gset replay_
+RESET ROLE;
+SELECT is(:'replay_request_state'::text,'EXECUTED'::text,
+ 'exact replay returns the terminal executed state');
+SELECT is(:'replay_request_version'::bigint,:'applied_request_version'::bigint,
+ 'exact replay returns the original terminal version');
+SELECT is(:'replay_corrected_roll_allocation_id'::uuid,
+ :'applied_corrected_roll_allocation_id'::uuid,
+ 'exact replay returns the same R1 UUID');
+SELECT is(:'replay_student_version'::bigint,:'applied_student_version'::bigint,
+ 'exact replay returns the same achieved Student version');
+SELECT is(:'replay_correction_effective_from'::date,
+ :'applied_correction_effective_from'::date,
+ 'exact replay returns the original School-local correction date');
 SET ROLE authenticated;
 SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-first-exact-p1-apply')$f$,
+ :'submitted_request_id',:'r2_request_version'::bigint+1),'P0001'::char(5),NULL::text,
+ 'changed expected version cannot reuse historical APPLY key');
+SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-second-apply-key')$f$,
  :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
- 'APPLY retry fails closed until DB01-04 replay gate is implemented');
+ 'new key cannot run APPLY against already EXECUTED request');
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.approval_applications
  WHERE request_id=:'submitted_request_id'::uuid),1::bigint,
- 'failed APPLY retry cannot duplicate application evidence');
+ 'duplicate replay and a distinct-key attempt create no second application');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'),2::bigint,
+ 'duplicate/rejected APPLY attempts never append another retained Roll');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'),1::bigint,
+ 'exact replay returns original command receipt without duplicates');
+
+-- Current reviewer authority must still be valid even on exact historical
+-- replay: revoke the previously approved reviewer grant transactionally.
+SAVEPOINT db01_apply_replay_revoked_reviewer;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.role_permission_grants SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000094';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-first-exact-p1-apply')$f$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'historical receipt cannot bypass revoked independent reviewer grant');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_replay_revoked_reviewer;
+SELECT is((SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id=:'submitted_request_id'::uuid),1::bigint,
+ 'revoked historical replay leaves original application immutable');
 SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
 ROLLBACK;
