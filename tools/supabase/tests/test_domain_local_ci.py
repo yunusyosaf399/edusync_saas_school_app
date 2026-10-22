@@ -33,7 +33,7 @@ class DomainLocalCITests(unittest.TestCase):
                                         "port is already allocated; " + secret)
             if args[:2] == ["docker", "inspect"]:
                 self.assertIn("supabase_db_" + runtime.EXPECTED_PROJECT_ID, args)
-                return CompletedProcess(args, 0, "exited|137|true\\n", "")
+                return CompletedProcess(args, 0, "exited|137|true", "")
             self.fail("Unexpected diagnostic command")
         captured = io.StringIO()
         with patch.object(runtime.subprocess, "run", side_effect=fake_run):
