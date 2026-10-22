@@ -1,6 +1,34 @@
 -- DB-01 RC-06/07: authenticated P1 APPROVAL SUBMIT (no Roll mutation).
 -- Candidate-only Migration 10 draft, no activation, reviewed source locks,
 -- immutable exact approved-source snapshot and independent Person reviewer.
+-- Narrow schema-owner receipt/audit witness; Evidence writer must never
+-- receive generic read access to historical audit rows.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_roll_correct_submit_audit_witness(
+ p_receipt uuid,p_request uuid,p_actor uuid
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE n bigint;
+BEGIN
+ IF p_receipt IS NULL OR p_request IS NULL OR p_actor IS NULL THEN RETURN false; END IF;
+ SELECT count(*) INTO n
+ FROM app_private.audit_events a
+ JOIN app_private.command_receipts r ON r.id=a.command_receipt_id
+ WHERE a.command_receipt_id=p_receipt AND a.approval_request_id=p_request
+   AND a.actor_id=p_actor AND a.actor_kind='INDIVIDUAL'
+   AND a.event_type='student.roll.correct' AND a.target_kind='STUDENT'
+   AND a.outcome='SUCCEEDED'
+   AND r.id=p_receipt AND r.request_id=p_request AND r.principal_id=p_actor
+   AND r.command_kind='request.submit' AND r.state='SUCCEEDED'
+   AND r.result_kind='D1_STUDENT_ROLL_CORRECT_REQUEST';
+ RETURN n=1;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_correct_submit_audit_witness(uuid,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_submit_audit_witness(uuid,uuid,uuid)
+ TO schoolos_evidence_writer;
+RESET ROLE;
+
 GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
 SET ROLE schoolos_authz_reader;
 CREATE FUNCTION app_private.d1_roll_correct_reviewer_candidates(
@@ -151,9 +179,8 @@ BEGIN
     OR NOT(rec.result_summary ?& ARRAY['request_version','state'])
     OR rec.result_summary->>'state' IS DISTINCT FROM 'PENDING'
  THEN RETURN false; END IF;
- IF NOT EXISTS(SELECT 1 FROM app_private.audit_events a
-       WHERE a.command_receipt_id=rec.id AND a.approval_request_id=rec.request_id
-         AND a.event_type='student.roll.correct' AND a.outcome='SUCCEEDED')
+ IF app_private.d1_roll_correct_submit_audit_witness(
+     rec.id,rec.request_id,p_actor) IS DISTINCT FROM true
  THEN RETURN false; END IF;
  RETURN true;
 EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN RETURN false;
