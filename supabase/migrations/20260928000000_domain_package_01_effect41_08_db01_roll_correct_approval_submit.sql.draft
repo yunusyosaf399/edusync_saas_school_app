@@ -320,7 +320,7 @@ BEGIN
 END $body$;
 REVOKE ALL ON FUNCTION app.d1_submit_student_roll_correction(uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text,text)
  FROM PUBLIC,anon,authenticated,service_role;
-GRANT EXECUTE ON FUNCTION app.d1_submit_student_roll_correction(uuid,bigint,uuid,uuid,date,uuid,bigint,bigint,text,text)
+GRANT EXECUTE ON FUNCTION app.d1_submit_student_roll_correction(uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text,text)
  TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
