@@ -1,0 +1,29 @@
+# DB-01 — Authenticated P1 APPROVAL SUBMIT, independent reviewer and restricted receipt
+
+**Date:** 2026-10-22. **Status:** draft, non-activating, exact-head CI and independent security review required. Parent: [PR #134](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/134), verified-green `38c74b4fbc528e13e6785a8b45ce9f9064f30a3e`. This increment is DB-01 only; no Foundation, DB-02/03/04, hosted Supabase, runtime migration, merge or production operation enablement.
+
+## Approved product contract and scope
+
+DB-01 RC-01…RC-08 and the exact API signature are approved in [owner record on PR #100](https://github.com/yunusyosaf399/edusync_saas_school_app/blob/db/db-01-student-roll-correction-design/docs/database/db01_student_roll_correct_owner_approved_contract_20261019.md). P1 APPROVAL means **submit pending intent without changing a Roll**, then a *different real Person* with independently current reviewer role+permission/Section scope reviews, and separately authorized APPLY is responsible for any future R0→R1 effect. An operation in DIRECT route must not submit. No administrator-title shortcut, requester self-review, source-by-displayed-number shortcut or family authority is allowed.
+
+### Draft-only SQL
+
+`supabase/migrations/20260928000000_domain_package_01_effect41_08_db01_roll_correct_approval_submit.sql.draft` adds exactly five reviewed executor-owned SECURITY DEFINER functions:
+
+1. `app.d1_submit_student_roll_correction` (the approved **12 typed source/value/reason/key arguments**; returns `request_id,request_version`): binds authenticated Principal, canonical exact 11-value request intent through the existing immutable context, holds Foundation SHARED plus idempotency-key lock, checks live `student.roll.correct` Section-scope authorization, and selects one **APPROVAL** P1 policy.
+2. `app_private.d1_roll_correct_reviewer_candidates`: requires configured `D1_REVIEWER_ROLE_SCOPE` template, one required reviewer per step, active currently granted `student.roll.approve` with exact source Section and configured role, and a **distinct Person** from the verified requester's Person. No permitted reviewer means the statement aborts atomically.
+3. `app_private.d1_roll_correct_submit_number_available`: read-only, post-source-lock recheck of policy start/interval and retained **PERSISTENT_STUDENT** cross-student numeric ownership or **ACADEMIC_CONTEXT** same revision/Class overlapping interval. It does **not** reserve allocator numbers; APPLY must recheck again later.
+4. `app_private.d1_roll_correct_submit_evidence`: writes exactly one `request.submit` SUCCEEDED command receipt with `D1_STUDENT_ROLL_CORRECT_REQUEST` result kind, immutable request UUID, original decimal-string request version and PENDING state, plus one *restricted* audit with no Roll number or reason. No `enrollment.roll_corrected` outbox event at submission.
+5. `app_private.d1_roll_correct_submit_receipt_matches_exact`: validates authorized same-key prior submit against retained requester, Student/version, exact nine-key approved source JSON, one-key proposed number, original reason, canonical receipt hash and linked audit, regardless of later request terminal state. Does not rerun source locks, change the Roll, or reassign a reviewer.
+
+The wrapper uses existing ordered School→stored policy→allocator→Student→academic ancestors→Enrollment→Roll source lock, revalidates actor/ACS/pinned policy after waits, stores exact immutable `approval_requests.old_snapshot` nine keys and `requested_payload.proposed_numeric_value` decimal string, moves DRAFT→SUBMITTED→PENDING, opens first configured step and assigns independent live candidates. Approval reviewer, APPLY, request participant read, any UPDATE to a corrected Roll, source Student version and allocator remain separate, **unimplemented** paths.
+
+### CI candidate and expected catalog
+
+Rollback-only `supabase/tests/domain/89_db01_roll_correct_p1_approval_submit.sql` includes **33 pgTAP checks**, starting from an authenticated genuine protected P0 Enrollment/R0 fixture. It tests frozen operation rejection, missing policy/no reviewer rollback, explicitly selected APPROVAL route, distinct authenticated reviewer with exact role/permission/scope and different Person, pending reviewed source snapshot and candidate selection, one receipt and one restricted audit with **zero outbox and zero Roll/counter/Student mutation**, matching submit key replay, changed-number/reason collision, current grant revocation and public/private ACL. It does not call REVIEW or APPLY and never silently allow automatic mutation.
+
+Expected catalog after this change: **559 functions, 541 SECURITY DEFINER, 159 app, 400 private, 159 authenticated app EXECUTE, 34 FORCE RLS, zero authenticated/anon/service-role private execute**.
+
+**Acceptance boundary:** Exact-head D1 static, Foundation and disposable PostgreSQL acceptance must pass before this is considered successful. Independent security/integration review is outstanding. No production activation is permitted. The prior autonomous Roll CORRECT DIRECT path and its fully green race/disclosure tests remain intact; this adds only the separate P1 submission path. These submitted requests cannot yet progress through a reviewed APPROVE/REJECT/APPLY workflow until subsequent independently tested DB-01 increments are implemented.
+
+**Limit:** The live submit replay requires current `student.roll.correct` source-Section authority and does not expose historic numeric values in the return. Read-only CHECKED request view and historical number access remain separate reviewed gates. Stored data is private; any long-term replay requirements after a source MOVE/END will require actor/scope review alongside that separate checked read.
