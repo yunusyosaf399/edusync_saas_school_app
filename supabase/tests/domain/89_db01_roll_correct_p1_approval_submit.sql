@@ -169,7 +169,7 @@ VALUES('b1890000-0000-4000-8000-000000000092',
  'b1890000-0000-4000-8000-000000000091','INDIVIDUAL',
  (SELECT id FROM auth.users WHERE email='foundation-own-001@example.invalid'),
  pg_catalog.clock_timestamp(),
- pg_catalog.to_timestamp(pg_catalog.floor(pg_catalog.extract(epoch FROM pg_catalog.clock_timestamp()))),
+ pg_catalog.to_timestamp(pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp()))),
  '11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.principal_role_assignments(
  id,principal_id,principal_kind,role_id,role_family_only,context_kind,valid_from,created_by)
