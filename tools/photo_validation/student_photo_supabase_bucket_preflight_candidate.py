@@ -121,8 +121,8 @@ def inspect_offline_private_photo_setup(
                 or b.file_size_limit != LIMIT_BYTES
                 or type(b.allowed_mime_types) is not tuple
                 or len(b.allowed_mime_types) != 2
-                or set(b.allowed_mime_types) != set(proposal.allowed_mime_types)
-                or any(type(mime) is not str for mime in b.allowed_mime_types)):
+                or any(type(mime) is not str for mime in b.allowed_mime_types)
+                or set(b.allowed_mime_types) != set(proposal.allowed_mime_types)):
             _deny()
         state = "CONFIG_MATCH_ONLY_NOT_AUTHORIZED"
     else:
