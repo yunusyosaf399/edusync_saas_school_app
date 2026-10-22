@@ -146,10 +146,11 @@ BEGIN
    OR NOT EXISTS (SELECT 1 FROM app_private.d1_roll_correct_reviewer_candidates(
      p_request_id,step_row.id) c WHERE c.candidate_principal_id=ctx.actor_id)
  THEN RAISE EXCEPTION 'D1 Roll correction REVIEW independent authority denied'; END IF;
- -- Lock the assignment too: withdrawn/changed reviewer is not accepted mid-review.
+ -- Recheck the live assignment and permission under Foundation shared and
+ -- request/step transaction locks; direct assignment FOR UPDATE is not granted.
  PERFORM 1 FROM app_private.approval_step_reviewers a
    WHERE a.id=assigned.id AND a.step_id=step_row.id AND a.reviewer_id=ctx.actor_id
-     AND a.withdrawn_at IS NULL FOR UPDATE;
+     AND a.withdrawn_at IS NULL;
  IF NOT FOUND OR app_private.d1_roll_correct_authorized(
      ctx.actor_id,'student.roll.approve',src,assigned.reviewer_role_id)
       IS DISTINCT FROM true
