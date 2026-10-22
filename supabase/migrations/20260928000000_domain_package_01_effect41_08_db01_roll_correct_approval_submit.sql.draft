@@ -9,8 +9,10 @@ CREATE FUNCTION app_private.d1_roll_correct_reviewer_candidates(
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE req record; step_info record; requester_person uuid; source_section uuid;
 BEGIN
- SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=p_request;
- SELECT t.* INTO step_info FROM app_private.approval_request_steps s
+ SELECT q.id,q.requester_id,q.policy_id,q.old_snapshot INTO req
+  FROM app_private.approval_requests q WHERE q.id=p_request;
+ SELECT t.id,t.policy_id,t.selection_resolver_key,t.required_reviews,t.reviewer_role_id
+  INTO step_info FROM app_private.approval_request_steps s
  JOIN app_private.approval_step_templates t ON t.id=s.template_id
  WHERE s.id=p_step AND s.request_id=p_request AND s.policy_id=t.policy_id;
  IF req.id IS NULL OR step_info.id IS NULL OR req.policy_id IS DISTINCT FROM step_info.policy_id
