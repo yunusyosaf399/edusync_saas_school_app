@@ -102,6 +102,10 @@ VALUES ('b1000000-0000-4000-8000-000000000060','55555555-5555-4555-8555-55555555
  :'placed_enrollment_id'::uuid,'b1000000-0000-4000-8000-000000000001',
  'b1000000-0000-4000-8000-000000000049',12009,CURRENT_DATE-10,
  :'placed_roll_allocation_id'::uuid,'Synthetic retained correction history');
+-- This trusted synthetic result must model Student N->N+1 exactly as the
+-- protected Roll effect does; the application record still names OLD N.
+UPDATE app_private.students SET current_status='ACTIVE'
+ WHERE id='b1000000-0000-4000-8000-000000000001' AND row_version=1;
 RESET ROLE;
 SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
@@ -115,7 +119,7 @@ SELECT pg_catalog.jsonb_build_object(
   'old_numeric_value',12001,'new_numeric_value',12009,
   'source_roll_effective_from',CURRENT_DATE-20,
   'correction_effective_from',CURRENT_DATE-10,
-  'student_version',1,
+  'student_version',2,
   'section_offering_id','b1000000-0000-4000-8000-000000000045',
   'source_enrollment_effective_from',CURRENT_DATE-20
 ) AS proof_json \gset
@@ -261,7 +265,7 @@ SELECT throws_ok($q$INSERT INTO app_private.approval_applications(
  'b1000000-0000-4000-8000-000000000060','55555555-5555-4555-8555-555555555555'
  FROM app_private.operation_contracts op WHERE op.code='student.roll.correct'$q$,
  'P0001','D1 roll correction application evidence invalid',
- 'result Student version 999 cannot claim approved target version 1');
+ 'result Student version 999 cannot claim actual corrected version N+1');
 ROLLBACK TO SAVEPOINT mismatched_result_student_version;
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.command_receipts(
