@@ -1,7 +1,5 @@
 # DB-01 — Remaining Work Register (as of 2026-10-22)
 
-**Last progress update:** 2026-10-22. **DB01-01 passed; DB01-02 in progress.**
-
 **Scope:** Student Roll Correction `student.roll.correct`, DB-01 only. Owner-approved RC-01...RC-08 in the DB-01 contract of [draft PR #100](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/100); implementation is a **stacked chain of draft PRs**, not installed in production. Checked base: [green PR #136](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/136), `04164b015e516b7a497c0dd9ae0b22a2dfb10071`. Never assume passing a disposable D1 stack permits a merge or operation activation.
 
 ## Already passed in disposable PostgreSQL
@@ -16,8 +14,8 @@
 
 | Task ID | Deliverable and acceptance gate | Initial status |
 | --- | --- | --- |
-| DB01-01 | Authenticated independent P1 APPROVE and REJECT; configured step review, distinct Person, current reviewer grant, exact review receipt/audit; no Roll mutation | **PASSED**: [draft PR #137](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/137), `cdb4e18831736edbef8ce3c8d7e9a81e6dfc29bb`, [D1 #39732287003](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39732287003): 41/41 review, 3,530 domain assertions; no production activation |
-| DB01-02 | Revoked/withdrawn reviewer, policy alteration, step/expected version/idempotent terminal replay and multi-step revalidation; real lock-wait security | **IN PROGRESS**: separate rollback-only two-stage reviewer, withdrawal, policy/scope change, intermediate replay candidate; true two-backend race separately pending |
+| DB01-01 | Authenticated independent P1 APPROVE and REJECT; configured step review, distinct Person, current reviewer grant, exact review receipt/audit; no Roll mutation | **PASSED (draft local engineering)** — PR #137 at code HEAD `4a0c268ce58151822261f600102206d6e5d45894`; 41/41 authenticated review tests and all 3 CI workflows passed. Not a production deployment or independent security approval |
+| DB01-02 | Revoked/withdrawn reviewer, policy alteration, step/expected version/idempotent terminal replay and multi-step revalidation; real lock-wait security | **IN PROGRESS — sequential security PASS**: [draft PR #139](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/139), code HEAD `dfac126f418edcbf9aa263ec5dbba0bedabae50b`, 40/40, aggregate D1 3,570; true two-backend lock-wait races remain open |
 | DB01-03 | Separately authenticated APPROVED→APPLY; fresh requester/reviewer/policy/source locks, school-local date and number collision checks, one R0→R1, Student N+1 | PENDING |
 | DB01-04 | APPLY stale/rejected/invalidated/duplicate/no-op/grant-revoked terminal integrity, canonical receipt/applications and audit/outbox proof | PENDING |
 | DB01-05 | Checked requester/reviewer/administrator P1 request read with minimal typed data; current history-number permission independent | PENDING |
@@ -34,3 +32,28 @@
 **No cross-workstream changes:** Only DB-01 SQL draft, its acceptance fixture and DB-01 documentation/test runner manifests. Do not modify DB-02, DB-03 or DB-04 contracts or enabling flags.
 
 **High-risk release blockers:** Cross-domain synchronization of server School-local date/policy revision and DB-02 retained numeric namespace, stack merge readiness, independently authorized review/APPLY, and security signoff remain separate decisions.
+
+
+## DB01-01 exact-code-head acceptance record — 2026-10-22
+
+- **State:** PASSED for isolated draft local engineering; the wider DB-01 feature remains disabled, draft, unmerged, and not independently released.
+- **PR:** [#137](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/137), verified code HEAD `4a0c268ce58151822261f600102206d6e5d45894`.
+- **Exact-code-head runs:** [Static #39734398774](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39734398774) **SUCCESS**; [Foundation #39734398641](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39734398641) **SUCCESS**; [D1 PostgreSQL #39734398694](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39734398694) **SUCCESS**.
+- **Proof:** `D1_BUSINESS_TEST_PASS 90_db01_roll_correct_p1_review.sql 41/41`, `89_db01_roll_correct_p1_approval_submit.sql 33/33`, `D1_BUSINESS_PASS 3530 assertions`, `D1C2A_PASS`. Strict inventory: 562 functions, 544 SECURITY DEFINER, 160 app, 402 private, 34 FORCE RLS, zero private EXECUTE for client roles.
+- **Behavior:** live distinct-Person reviewer APPROVE/REJECT, denial of requester self-review, independent current `student.roll.approve` scope, revoked permission rejection, stale-version and changed-intent denial, exact-key terminal replay, one restricted receipt/audit, no Roll/Student/allocator/outbox effect. The final code also uses Foundation's authorized `PENDING→PENDING` trigger for version advancement across additional review steps, rather than direct row_version modification.
+- **Remaining:** Task DB01-02 expands coverage to multi-stage reviewer revocation and policy/step changes. It has a separate [draft PR #139](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/139); its independent result must not be inferred from DB01-01. After that, DB01-03 APPLY, checked reads and remaining release gates continue.
+
+## DB01-02 sequential two-stage review evidence — 2026-10-22
+
+- **Status:** SEQUENTIAL LIVE REVIEW SUBGATE PASSED; task DB01-02 overall IN PROGRESS. Neither real two-backend lock-wait proof nor independent non-author security review is claimed.
+- **PR:** [#139](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/139); verified isolated SQL/test HEAD `dfac126f418edcbf9aa263ec5dbba0bedabae50b`.
+- **Exact-head CI:** [Static #39734411462](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39734411462) SUCCESS; [Foundation #39734411411](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39734411411) SUCCESS; [D1 PostgreSQL #39734411463](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39734411463) SUCCESS.
+- **Proof:** `D1_BUSINESS_TEST_PASS 91_db01_roll_correct_p1_live_multistep.sql 40/40`, `90_db01_roll_correct_p1_review.sql 41/41`, `D1_BUSINESS_PASS 3570 assertions`, `D1C2A_PASS`, strict catalog 562 functions / 544 SECURITY DEFINER / 160 app / 402 private / 34 FORCE RLS / zero client private EXECUTE.
+- **Verified:** independent two-stage different-Person reviewers, withdrawn live candidate, current P1 policy and reviewer scope denial, explicit stage2 APPROVE or REJECT, immutable intermediate state receipts with exact-key replay and current grant revalidation, zero Student/Roll/allocator/outbox mutation.
+- **Next:** true PostgreSQL two-session REVIEW/REVIEW and review-vs-permission-revocation wait races with observed locks, immutable evidence, fail-closed stale attempts; track broader REVIEW/APPLY under DB01-07 after APPLY is implemented.
+
+## PR stack reconciliation record — 2026-10-22
+
+- PR #139 forked before PR #137 gained its later exact-code-head acceptance notes. Both final branches have the same review SQL blob `8d5d3221179f76f5ea566758bf5e4fc52fb39cee`; do not rewrite SQL or tests to fix the conflict.
+- Combine PR #137's complete DB01-01 acceptance record with #139's DB01-02 sequential evidence as documentation only using a two-parent reconciliation commit. Both prior commit histories must remain intact.
+- Combined exact-head static/Foundation/D1 local runtime must pass again; Migration 10 remains `.sql.draft` and `student.roll.correct`/review permission remain disabled; no main/DB02/DB03/DB04 changes.
