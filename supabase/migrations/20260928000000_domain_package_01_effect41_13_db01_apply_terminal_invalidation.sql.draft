@@ -5,6 +5,40 @@
 -- School-owned receipt writer records a rejected request.apply, minimal
 -- audit and zero Roll/outbox/application effects. For exact-key replay it
 -- verifies the retained receipt and returns its original UUID unchanged.
+-- Minimal schema-owner witness: evidence_writer can INSERT audit/outbox but
+-- must never gain table-wide SELECT. Check only this immutable rejection's
+-- own audit and absence of corresponding delivery/application effects.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_roll_correct_apply_invalidated_witness(
+ p_receipt uuid,p_request uuid,p_actor uuid
+) RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $witness$
+BEGIN
+ IF p_receipt IS NULL OR p_request IS NULL OR p_actor IS NULL
+    OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+ THEN RETURN false; END IF;
+ RETURN (
+    SELECT count(*)=1 FROM app_private.audit_events a
+    WHERE a.command_receipt_id=p_receipt
+      AND a.approval_request_id=p_request
+      AND a.actor_id=p_actor AND a.outcome='REJECTED'
+      AND a.authority_evidence->>'phase'='APPLY'
+      AND a.event_type='student.roll.correct'
+      AND a.details->>'code'='D1_ROLL_CORRECT_SOURCE_STALE'
+ ) AND NOT EXISTS (
+    SELECT 1 FROM app_private.outbox_events ev
+    WHERE ev.command_receipt_id=p_receipt
+ ) AND NOT EXISTS (
+    SELECT 1 FROM app_private.approval_applications ap
+    WHERE ap.request_id=p_request AND ap.command_receipt_id=p_receipt
+ );
+END $witness$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_correct_apply_invalidated_witness(uuid,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_apply_invalidated_witness(uuid,uuid,uuid)
+ TO schoolos_evidence_writer;
+RESET ROLE;
+
 GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
 SET ROLE schoolos_evidence_writer;
 CREATE FUNCTION app_private.d1_roll_correct_apply_invalidated_receipt(
@@ -37,14 +71,8 @@ BEGIN
           'state','INVALIDATED','request_version',p_final_version::text)
       AND r.created_by=p_actor;
    IF NOT FOUND OR
-     (SELECT count(*) FROM app_private.audit_events a
-       WHERE a.command_receipt_id=p_existing_receipt
-         AND a.approval_request_id=p_request
-         AND a.actor_id=p_actor AND a.outcome='REJECTED'
-         AND a.authority_evidence->>'phase'='APPLY'
-         AND a.details->>'code'='D1_ROLL_CORRECT_SOURCE_STALE')<>1
-     OR EXISTS (SELECT 1 FROM app_private.outbox_events ev
-         WHERE ev.command_receipt_id=p_existing_receipt)
+      app_private.d1_roll_correct_apply_invalidated_witness(
+        p_existing_receipt,p_request,p_actor) IS DISTINCT FROM true
    THEN RAISE EXCEPTION 'D1 Roll correction invalidation evidence invalid'; END IF;
    RETURN p_existing_receipt;
  END IF;

@@ -133,9 +133,9 @@ class DomainLocalCITests(unittest.TestCase):
         # effect 41_03 adds two authz-reader-owned private gates.
         # Public RPCs, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 566)
-        self.assertEqual(expected["security_definers"], 548)
-        self.assertEqual(expected["private_functions"], 405)
+        self.assertEqual(expected["functions"], 567)
+        self.assertEqual(expected["security_definers"], 549)
+        self.assertEqual(expected["private_functions"], 406)
         self.assertEqual(expected["app_functions"], 161)
         self.assertEqual(expected["authenticated_app_execute"], 161)
         self.assertEqual(expected["authenticated_private_execute"], 0)
@@ -209,6 +209,21 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertIn("app_private.d1_roll_correct_result_rows_match_exact(", sql)
         self.assertNotIn("GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_application_receipt_guard", sql)
         self.assertNotIn("UPDATE app_private.operation_contracts", sql)
+
+    def test_db01_invalidated_replay_audit_witness_is_schema_owned_and_acl_scoped(self):
+        sql = (runtime.ROOT / "supabase/migrations" / (
+            "20260928000000_domain_package_01_effect41_13_db01_apply_terminal_invalidation.sql.draft"
+        )).read_text(encoding="utf-8")
+        self.assertEqual(sql.count("CREATE FUNCTION app_private.d1_roll_correct_apply_invalidated_witness("), 1)
+        self.assertIn("SET ROLE schoolos_schema_owner;", sql)
+        self.assertIn("SECURITY DEFINER", sql)
+        self.assertIn("TO schoolos_evidence_writer;", sql)
+        self.assertIn("app_private.d1_roll_correct_apply_invalidated_witness(", sql)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
+        self.assertNotIn("GRANT SELECT ON app_private.audit_events", sql)
+        self.assertNotIn("GRANT SELECT ON app_private.outbox_events", sql)
+        self.assertNotIn("TO authenticated;", sql)
+        self.assertIn("IS DISTINCT FROM true", sql)
 
     def test_db01_source_prelock_exact_identity_private_acl(self):
         helper = runtime.ROOT / "supabase/migrations" / (
