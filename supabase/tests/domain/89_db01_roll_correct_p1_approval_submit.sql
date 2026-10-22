@@ -261,7 +261,7 @@ SELECT throws_ok(pg_catalog.format($fmt$SELECT * FROM app.d1_submit_student_roll
 SELECT is((SELECT count(*) FROM app_private.approval_requests WHERE id=:'submitted_request_id'::uuid),1::bigint,'revoked read attempt cannot mutate approved request');
 SELECT is(pg_catalog.has_function_privilege('authenticated','app.d1_submit_student_roll_correction(uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text,text)','EXECUTE'),true,'authenticated may call typed submit RPC');
 SELECT is(pg_catalog.has_function_privilege('anon','app.d1_submit_student_roll_correction(uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text,text)','EXECUTE'),false,'anon cannot call typed submit');
-SELECT is(pg_catalog.has_function_privilege('service_role','app.d1_submit_student_roll_correction(uuid,bigint,uuid,uuid,date,uuid,bigint,bigint,text,text)','EXECUTE'),false,'service_role cannot call typed submit');
+SELECT is(pg_catalog.has_function_privilege('service_role','app.d1_submit_student_roll_correction(uuid,bigint,uuid,uuid,date,uuid,date,uuid,bigint,bigint,text,text)','EXECUTE'),false,'service_role cannot call typed submit');
 SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
 ROLLBACK;
