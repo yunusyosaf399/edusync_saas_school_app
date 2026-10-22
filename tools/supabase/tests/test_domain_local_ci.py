@@ -1,3 +1,5 @@
+import io
+from contextlib import redirect_stderr
 import sys
 import tempfile
 import unittest
@@ -22,6 +24,44 @@ class DomainLocalCITests(unittest.TestCase):
             f'project_id = "{project_id}"\n', encoding="utf-8", newline="\n"
         )
         return root
+
+    def test_failed_start_reports_only_safe_diagnostic_code_and_container_state(self):
+        secret = "postgresql://admin:private-password@internal-host/private"
+        def fake_run(args, **kwargs):
+            if args[:2] == ["supabase", "start"]:
+                return CompletedProcess(args, 1, "untrusted " + secret,
+                                        "port is already allocated; " + secret)
+            if args[:2] == ["docker", "inspect"]:
+                self.assertIn("supabase_db_" + runtime.EXPECTED_PROJECT_ID, args)
+                return CompletedProcess(args, 0, "exited|137|true\\n", "")
+            self.fail("Unexpected diagnostic command")
+        captured = io.StringIO()
+        with patch.object(runtime.subprocess, "run", side_effect=fake_run):
+            with redirect_stderr(captured):
+                with self.assertRaisesRegex(runtime.DomainLocalCIError, "supabase start"):
+                    runtime._start_disposable_stack()
+        output = captured.getvalue()
+        self.assertIn("D1C2A_START_DIAGNOSTIC code=PORT_CONFLICT", output)
+        self.assertIn("pg_state=exited,exit=137,oom=true", output)
+        self.assertNotIn(secret, output)
+        self.assertNotIn("private-password", output)
+
+    def test_failed_start_does_not_echo_unclassified_cli_output(self):
+        secret = "eyJprivate.secret.jwt"
+        def fake_run(args, **kwargs):
+            if args[:2] == ["supabase", "start"]:
+                return CompletedProcess(args, 1, secret, secret)
+            if args[:2] == ["docker", "inspect"]:
+                return CompletedProcess(args, 1, "", secret)
+            self.fail("Unexpected diagnostic command")
+        captured = io.StringIO()
+        with patch.object(runtime.subprocess, "run", side_effect=fake_run):
+            with redirect_stderr(captured):
+                with self.assertRaises(runtime.DomainLocalCIError):
+                    runtime._start_disposable_stack()
+        output = captured.getvalue()
+        self.assertIn("code=UNCLASSIFIED pg_state=ABSENT", output)
+        self.assertNotIn(secret, output)
 
     def test_project_id_is_fail_closed_and_pinned(self):
         root = self.make_root()
