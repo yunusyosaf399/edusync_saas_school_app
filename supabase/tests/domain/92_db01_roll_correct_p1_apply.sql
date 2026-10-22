@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(50);
+SELECT plan(59);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -322,10 +322,44 @@ UPDATE app_private.students SET current_status='ACTIVE'
  WHERE id='b1000000-0000-4000-8000-000000000001';
 RESET ROLE;
 SET ROLE authenticated;
-SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-source-stale-apply')$q$,
- :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
- 'changed Student source version cannot apply approved stale proposal');
+SELECT * FROM app.d1_apply_student_roll_correction(
+ :'submitted_request_id'::uuid,:'r2_request_version'::bigint,
+ 'db01-source-stale-apply') \gset invalidated_
 RESET ROLE;
+SELECT is(:'invalidated_request_state'::text,'INVALIDATED'::text,
+ 'source-stale APPROVED APPLY records terminal INVALIDATED instead of Roll effect');
+SELECT is(:'invalidated_request_version'::bigint,:'r2_request_version'::bigint+1,
+ 'terminal invalidation advances request exactly one version');
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'submitted_request_id'::uuid),'INVALIDATED'::text,
+ 'source-stale request persists terminal INVALIDATED state');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'
+   AND state='REJECTED'),1::bigint,
+ 'one typed rejected APPLY receipt records source-stale invalidation');
+SELECT is((SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id=:'submitted_request_id'::uuid),0::bigint,
+ 'terminal invalidation writes no approval application');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'),1::bigint,
+ 'invalidation preserves original R0 and creates no successor');
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_roll_correction(
+ :'submitted_request_id'::uuid,:'r2_request_version'::bigint,
+ 'db01-source-stale-apply') \gset invalidated_replay_
+RESET ROLE;
+SELECT is(:'invalidated_replay_request_state'::text,'INVALIDATED'::text,
+ 'same-key replay returns the original terminal invalidation');
+SELECT is(:'invalidated_replay_request_version'::bigint,
+ :'invalidated_request_version'::bigint,
+ 'terminal invalidation replay preserves the version');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'),1::bigint,
+ 'invalidation replay cannot create a second rejected receipt');
+SELECT is((SELECT count(*) FROM app_private.audit_events
+ WHERE approval_request_id=:'submitted_request_id'::uuid AND outcome='REJECTED'
+   AND authority_evidence->>'phase'='APPLY'),1::bigint,
+ 'invalidation and replay retain precisely one REJECTED audit witness');
 ROLLBACK TO SAVEPOINT db01_apply_source_student_stale;
 
 SELECT is((SELECT count(*) FROM app_private.command_receipts
