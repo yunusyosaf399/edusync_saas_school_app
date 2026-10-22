@@ -133,7 +133,7 @@ BEGIN
    OR enroll_from IS NULL OR roll_from IS NULL OR old_num IS NULL
    OR proposed_num IS NULL OR proposed_num<1
    OR proposed_num>9223372036854775806::bigint OR proposed_num=old_num
-   OR original_origin IS NULL OR req.expected_target_version<1
+   OR req.expected_target_version<1
    OR length(btrim(req.reason))=0 OR octet_length(req.reason)>2048
  THEN RAISE EXCEPTION 'D1 Roll correction APPLY source invalid'; END IF;
 
