@@ -80,7 +80,7 @@ CREATE FUNCTION app.d1_apply_student_roll_correction(
 ) RETURNS TABLE(request_id uuid,request_version bigint,request_state text,
  corrected_roll_allocation_id uuid,student_version bigint,correction_effective_from date)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE ctx record; req record; route record; locked record; eff record;
+DECLARE ctx record; req record; route record; locked record; eff record; available record;
  src uuid; enr uuid; sec uuid; policy uuid; original_origin uuid;
  enroll_from date; roll_from date; old_num bigint; proposed_num bigint;
  live_reviews bigint; total_steps bigint; approved_steps bigint;
@@ -227,10 +227,13 @@ BEGIN
     v.reviewer_id,'student.roll.approve',sec,t.reviewer_role_id) IS TRUE;
  IF live_reviews<>total_steps
  THEN RAISE EXCEPTION 'D1 Roll correction APPLY reviewer revoked after wait'; END IF;
- IF NOT EXISTS (SELECT 1 FROM app_private.roll_allocations r
-      WHERE r.id=src AND r.student_id=req.target_ref
-        AND r.origin_allocation_id IS NOT DISTINCT FROM original_origin)
- THEN RAISE EXCEPTION 'D1 Roll correction APPLY source origin changed'; END IF;
+ -- Workflow executor may only use the privileged typed availability helper;
+ -- it is never granted direct Roll-history SELECT for source inspection.
+ SELECT * INTO available FROM app_private.d1_roll_correct_submit_number_available(
+    req.target_ref,sec,src,policy,proposed_num,locked.business_date);
+ IF NOT FOUND OR available.number_available IS DISTINCT FROM true
+   OR available.source_origin IS DISTINCT FROM original_origin
+ THEN RAISE EXCEPTION 'D1 Roll correction APPLY origin or numeric namespace stale'; END IF;
 
  -- Private effect re-acquires the same ordered locks, performs collision
  -- prevention in the retained Roll namespace, and increments Student once.
