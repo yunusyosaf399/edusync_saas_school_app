@@ -13,7 +13,7 @@ INSERT INTO app_private.people(id,display_name,created_by)
 VALUES ('d1020000-0000-4000-8000-000000000090','DB01 two-backend reviewed Student Person','11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.students(id,person_id,school_student_id,admission_number,admission_serial,admitted_on,current_status,created_by)
 VALUES ('d1020000-0000-4000-8000-000000000001','d1020000-0000-4000-8000-000000000090',
- 'DB01-P1-RACE-STUDENT','DB01-P1-RACE-ADMISSION',100,CURRENT_DATE-1,'ACTIVE','11111111-1111-4111-8111-111111111111');
+ 'DB01-P1-RACE-STUDENT','DB01-P1-RACE-ADMISSION',27101,CURRENT_DATE-1,'ACTIVE','11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.student_status_transitions(
  id,student_id,previous_status,new_status,effective_on,sequence_number,reason,created_by)
 VALUES ('d1020000-0000-4000-8000-000000000002','d1020000-0000-4000-8000-000000000001',
