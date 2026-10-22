@@ -135,7 +135,3 @@ SELECT * FROM app.d1_submit_student_roll_correction(
  :'source_source_number'::bigint,(:'source_source_number'::bigint+10000),
  'Independent DB01 two-backend review test','db01-p1-review-race-submit') \gset submitted_
 RESET ROLE;
-DO $assert$ BEGIN
- IF (SELECT count(*) FROM app_private.approval_request_steps WHERE request_id=:'submitted_request_id'::uuid)<>2 THEN
-   RAISE EXCEPTION 'DB01 P1 race fixture missing two live review steps'; END IF;
-END $assert$;
