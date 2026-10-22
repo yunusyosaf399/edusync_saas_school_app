@@ -215,7 +215,7 @@ SELECT * FROM app.d1_submit_student_roll_correction('b1000000-0000-4000-8000-000
 RESET ROLE;
 SELECT is((SELECT state FROM app_private.approval_requests WHERE id=:'submitted_request_id'::uuid),'PENDING'::text,'source request remains PENDING before review');
 SET ROLE authenticated;
-SELECT throws_ok($stmt$SELECT * FROM app.d1_review_student_roll_correction(:'submitted_request_id'::uuid,'APPROVE',:'submitted_request_version'::bigint,'Self review prohibited','db01-self-review')$stmt$,'P0001'::char(5),NULL::text,'requester cannot self-approve');
+SELECT throws_ok(pg_catalog.format($stmt$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'Self review prohibited','db01-self-review')$stmt$, :'submitted_request_id', :'submitted_request_version'),'P0001'::char(5),NULL::text,'requester cannot self-approve');
 RESET ROLE;
 -- Save the real submitter JWT and switch to a separately bound Person.
 SELECT pg_catalog.set_config('schoolos_test.db01_actor_claims',current_setting('request.jwt.claims'),true);
@@ -234,7 +234,7 @@ SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='DISABLED' WHERE code='student.roll.approve';
 RESET ROLE;
 SET ROLE authenticated;
-SELECT throws_ok($stmt$SELECT * FROM app.d1_review_student_roll_correction(:'submitted_request_id'::uuid,'APPROVE',:'submitted_request_version'::bigint,'Denied reviewer permission','db01-revoked-review')$stmt$,'P0001'::char(5),NULL::text,'reviewer live permission revoked fails closed');
+SELECT throws_ok(pg_catalog.format($stmt$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'Denied reviewer permission','db01-revoked-review')$stmt$, :'submitted_request_id', :'submitted_request_version'),'P0001'::char(5),NULL::text,'reviewer live permission revoked fails closed');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT db01_review_revoked;
 SELECT is((SELECT state FROM app_private.approval_requests WHERE id=:'submitted_request_id'::uuid),'PENDING'::text,'revoked review left request PENDING');
@@ -253,7 +253,7 @@ SELECT * FROM app.d1_review_student_roll_correction(:'submitted_request_id'::uui
 RESET ROLE;
 SELECT is(:'rejected_replay_request_version'::bigint,:'rejected_request_version'::bigint,'REJECT identical idempotent replay returns original terminal result');
 SET ROLE authenticated;
-SELECT throws_ok($stmt$SELECT * FROM app.d1_review_student_roll_correction(:'submitted_request_id'::uuid,'REJECT',:'submitted_request_version'::bigint,'Different reason','db01-review-reject')$stmt$,'P0001'::char(5),NULL::text,'changed same-key review reason denied');
+SELECT throws_ok(pg_catalog.format($stmt$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'REJECT',%s::bigint,'Different reason','db01-review-reject')$stmt$, :'submitted_request_id', :'submitted_request_version'),'P0001'::char(5),NULL::text,'changed same-key review reason denied');
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.command_receipts r WHERE r.request_id=:'submitted_request_id'::uuid AND r.command_kind='request.review'),1::bigint,'replay and conflict create no duplicate review evidence');
 ROLLBACK TO SAVEPOINT db01_review_reject;
@@ -277,8 +277,8 @@ SELECT * FROM app.d1_review_student_roll_correction(:'submitted_request_id'::uui
 RESET ROLE;
 SELECT is(:'approve_replay_request_version'::bigint,:'approved_request_version'::bigint,'APPROVE idempotent retry returns original approved version');
 SET ROLE authenticated;
-SELECT throws_ok($stmt$SELECT * FROM app.d1_review_student_roll_correction(:'submitted_request_id'::uuid,'REJECT',:'submitted_request_version'::bigint,'Too late to reject','db01-review-conflict')$stmt$,'P0001'::char(5),NULL::text,'terminal APPROVED cannot be independently REJECTED');
-SELECT throws_ok($stmt$SELECT * FROM app.d1_review_student_roll_correction(:'submitted_request_id'::uuid,'APPROVE',:'submitted_request_version'::bigint,'New command with stale version','db01-review-stale')$stmt$,'P0001'::char(5),NULL::text,'second APPROVE with stale version is denied');
+SELECT throws_ok(pg_catalog.format($stmt$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'REJECT',%s::bigint,'Too late to reject','db01-review-conflict')$stmt$, :'submitted_request_id', :'submitted_request_version'),'P0001'::char(5),NULL::text,'terminal APPROVED cannot be independently REJECTED');
+SELECT throws_ok(pg_catalog.format($stmt$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'New command with stale version','db01-review-stale')$stmt$, :'submitted_request_id', :'submitted_request_version'),'P0001'::char(5),NULL::text,'second APPROVE with stale version is denied');
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.approval_reviews v JOIN app_private.approval_request_steps s ON s.id=v.step_id WHERE s.request_id=:'submitted_request_id'::uuid),1::bigint,'terminal replay and stale review create no extra review');
 SELECT is(pg_catalog.has_function_privilege('authenticated','app.d1_review_student_roll_correction(uuid,text,bigint,text,text)','EXECUTE'),true,'authenticated can invoke protected typed review');
