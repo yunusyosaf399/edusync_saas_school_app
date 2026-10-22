@@ -87,6 +87,10 @@ def start_disposable_stack(root, project_id, label):
                   + " pg_state=" + postgres_state(root, project_id), file=sys.stderr)
             raise RuntimeError("supabase start unavailable or timed out") from exc
         if result.returncode == 0:
+            # setup-cli exports GHCR globally. Keep the working registry for
+            # all subsequent subprocesses (db reset, pgTAP test db, lint).
+            # Process-local only: no repository, workflow or hosted setting.
+            os.environ["SUPABASE_INTERNAL_IMAGE_REGISTRY"] = registry
             print(label + "_START_REGISTRY_PASS registry=" + registry
                   + " attempt=" + str(number))
             return

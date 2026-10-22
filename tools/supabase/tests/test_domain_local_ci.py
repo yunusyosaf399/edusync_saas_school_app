@@ -85,6 +85,11 @@ class DomainLocalCITests(unittest.TestCase):
             with patch.object(runtime.subprocess, "run", side_effect=fake_run):
                 with redirect_stderr(io.StringIO()) as captured:
                     runtime._start_disposable_stack()
+                    self.assertEqual(
+                        runtime.os.environ["SUPABASE_INTERNAL_IMAGE_REGISTRY"],
+                        "docker.io",
+                        "Later local pgTAP commands must use the working image registry",
+                    )
         registries = [kwargs["env"]["SUPABASE_INTERNAL_IMAGE_REGISTRY"]
                       for args, kwargs in calls if args[:2] == ["supabase", "start"]]
         self.assertEqual(registries, ["ghcr.io", "docker.io"])
