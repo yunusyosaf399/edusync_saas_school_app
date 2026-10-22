@@ -272,6 +272,17 @@ SELECT is((SELECT count(*) FROM app_private.approval_reviews rv
  JOIN app_private.approval_request_steps st ON st.id=rv.step_id
  WHERE st.request_id=:'submitted_request_id'::uuid AND rv.decision='APPROVE'),
  2::bigint,'both independent reviewer decisions are immutable');
+SET ROLE authenticated;
+SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-reviewer-cannot-apply')$f$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'reviewer cannot APPLY without the requesters current Roll authority');
+RESET ROLE;
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.roll_apply_origin_sub'),true);
+SELECT set_config('request.jwt.claims',current_setting('schoolos_test.roll_apply_origin_claims'),true);
+SELECT is(app_private.current_principal_id(),
+ '55555555-5555-4555-8555-555555555555'::uuid,
+ 'APPLY is a separate command by the genuine authorized requester');
+
 -- DB01-04 terminal/authority/current-source denial. Each case uses a
 -- savepoint and genuine authenticated APPLY; no security guard bypass.
 SET ROLE authenticated;
@@ -372,16 +383,6 @@ SELECT is((SELECT state FROM app_private.approval_requests
  WHERE id=:'submitted_request_id'::uuid),'APPROVED'::text,
  'savepoint-isolated invalidation candidates do not alter approved source');
 
-SET ROLE authenticated;
-SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-reviewer-cannot-apply')$f$,
- :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
- 'reviewer cannot APPLY without the requesters current Roll authority');
-RESET ROLE;
-SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.roll_apply_origin_sub'),true);
-SELECT set_config('request.jwt.claims',current_setting('schoolos_test.roll_apply_origin_claims'),true);
-SELECT is(app_private.current_principal_id(),
- '55555555-5555-4555-8555-555555555555'::uuid,
- 'APPLY is a separate command by the genuine authorized requester');
 SET ROLE authenticated;
 SELECT * FROM app.d1_apply_student_roll_correction(
  :'submitted_request_id'::uuid,:'r2_request_version'::bigint,
