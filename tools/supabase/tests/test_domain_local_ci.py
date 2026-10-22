@@ -425,6 +425,32 @@ class DomainLocalCITests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
+    def test_db01_p1_review_two_backend_race_only_after_prior_protected_races(self):
+        source_path = runtime.ROOT / "tools/supabase/domain_db01_p1_review_race_ci.py"
+        source = source_path.read_text(encoding="utf-8")
+        compile(source, str(source_path), "exec")
+        driver = (runtime.ROOT / "tools/supabase/domain_local_ci.py").read_text(encoding="utf-8")
+        self.assertLess(driver.index("run_db01_cross_campus_roll_history_replay(container, run_psql)"),
+                        driver.index("run_db01_p1_review_live_races(container, run_psql, ROOT)"))
+        fixture = (runtime.ROOT /
+                   "supabase/tests/domain/fixtures/db01_p1_review_two_backend_setup.sql").read_text(encoding="utf-8")
+        for marker in ("SET ROLE authenticated;", "app.d1_place_student_enrollment(",
+                       "app.d1_submit_student_roll_correction(", "D1_REVIEWER_ROLE_SCOPE",
+                       "foundation-own-001@example.invalid", "\\gset submitted_"):
+            self.assertIn(marker, fixture)
+        for marker in ("_wait_for_block", "pg_advisory_xact_lock(71001,1)",
+                       "app.d1_review_student_roll_correction(",
+                       "D1_DB01_P1_REVIEW_REVIEW_REAL_PG_RACE_PASS",
+                       "D1_DB01_P1_REVIEW_AUTH_REVOCATION_REAL_PG_RACE_PASS",
+                       "D1_DB01_P1_REVIEW_RACES_PASS"):
+            self.assertIn(marker, source)
+        for forbidden in ("UPDATE app_private.roll_allocations", 
+                          "INSERT INTO app_private.roll_allocations", "DROP TABLE",
+                          "GRANT EXECUTE"):
+            self.assertNotIn(forbidden, fixture)
+        self.assertNotIn("pg_sleep", source)
+        self.assertNotIn("SET ROLE service_role", source)
+
     def test_runtime_probe_drift_fails(self):
         observed = dict(runtime.EXPECTED_RUNTIME_METRICS)
         observed["authenticated_private_execute"] = 1
