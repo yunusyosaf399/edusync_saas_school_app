@@ -155,6 +155,10 @@ SELECT throws_ok(pg_catalog.format($fmt$SELECT * FROM app.d1_submit_student_roll
  :'placed_enrollment_id',:'placed_roll_allocation_id'),
  'P0001'::char(5),NULL::text,'request with no independent reviewer cannot commit');
 SELECT is((SELECT count(*) FROM app_private.approval_requests WHERE operation_id=(SELECT id FROM app_private.operation_contracts WHERE code='student.roll.correct')),0::bigint,'no-reviewer submission rolls back request');
+-- Resolve a seeded Auth fixture as the trusted local test runner (postgres)
+-- BEFORE changing to the narrowly scoped application schema owner.
+SELECT id AS reviewer_auth_id FROM auth.users
+ WHERE email='foundation-own-001@example.invalid' \gset db01review_
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.people(id,display_name,created_by) VALUES
 ('b1890000-0000-4000-8000-000000000090','DB01 independent reviewer Person',
@@ -167,7 +171,7 @@ INSERT INTO app_private.principal_auth_bindings(
  id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
 VALUES('b1890000-0000-4000-8000-000000000092',
  'b1890000-0000-4000-8000-000000000091','INDIVIDUAL',
- (SELECT id FROM auth.users WHERE email='foundation-own-001@example.invalid'),
+ :'db01review_reviewer_auth_id'::uuid,
  pg_catalog.clock_timestamp(),
  pg_catalog.to_timestamp(pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp()))),
  '11111111-1111-4111-8111-111111111111');
