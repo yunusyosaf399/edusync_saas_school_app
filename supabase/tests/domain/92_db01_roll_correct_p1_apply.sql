@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(40);
+SELECT plan(50);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -223,6 +223,23 @@ SELECT * FROM app.d1_submit_student_roll_correction('b1000000-0000-4000-8000-000
  12001,12009,'Requested exact reason ','db01-approved-submit') \gset submitted_
 RESET ROLE;
 SELECT is((SELECT state FROM app_private.approval_requests WHERE id=:'submitted_request_id'::uuid),'PENDING'::text,'source request remains PENDING before review');
+-- A terminal REJECTED request cannot be applied, even by the original
+-- authenticated requester. Preserve the PENDING original using savepoint.
+SAVEPOINT db01_apply_rejected_request;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.approval_requests SET state='REJECTED'
+ WHERE id=:'submitted_request_id'::uuid;
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-rejected-no-apply')$q$,
+ :'submitted_request_id',:'submitted_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'genuine request in terminal REJECTED state cannot APPLY');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_rejected_request;
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'submitted_request_id'::uuid),'PENDING'::text,
+ 'rejected APPLY attempt has no durable request or Roll effect');
+
 
 -- Snapshot requester identity before reviewer uses a truly different bound Person.
 SELECT pg_catalog.set_config('schoolos_test.roll_apply_origin_sub',current_setting('request.jwt.claim.sub'),true);
@@ -255,6 +272,72 @@ SELECT is((SELECT count(*) FROM app_private.approval_reviews rv
  JOIN app_private.approval_request_steps st ON st.id=rv.step_id
  WHERE st.request_id=:'submitted_request_id'::uuid AND rv.decision='APPROVE'),
  2::bigint,'both independent reviewer decisions are immutable');
+-- DB01-04 terminal/authority/current-source denial. Each case uses a
+-- savepoint and genuine authenticated APPLY; no security guard bypass.
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-stale-approved-version')$q$,
+ :'submitted_request_id',:'r2_request_version'::bigint-1),'P0001'::char(5),NULL::text,
+ 'stale prior approved version cannot APPLY');
+RESET ROLE;
+
+SAVEPOINT db01_apply_previously_invalidated;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.approval_requests SET state='INVALIDATED'
+ WHERE id=:'submitted_request_id'::uuid;
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-terminal-invalidated-apply')$q$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'terminal INVALIDATED request cannot APPLY or mutate Roll');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_previously_invalidated;
+
+SAVEPOINT db01_apply_policy_retired;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.approval_policy_versions SET state='RETIRED'
+ WHERE id='b1890000-0000-4000-8000-000000000059';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-policy-retired-apply')$q$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'retired original P1 APPROVAL policy cannot authorize APPLY');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_policy_retired;
+
+SAVEPOINT db01_apply_reviewer_grant_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.role_permission_grants SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000094';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-reviewer-revoked-apply')$q$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'revoked independent reviewer cannot authorize APPLY');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_reviewer_grant_revoked;
+
+SAVEPOINT db01_apply_source_student_stale;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.students SET current_status='ACTIVE'
+ WHERE id='b1000000-0000-4000-8000-000000000001';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-source-stale-apply')$q$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'changed Student source version cannot apply approved stale proposal');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_source_student_stale;
+
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'),
+ 0::bigint,'rejected/invalidated/stale/revoked APPLY attempts create no apply receipts');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'),1::bigint,
+ 'terminal and authority denial leave source Roll unchanged');
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'submitted_request_id'::uuid),'APPROVED'::text,
+ 'savepoint-isolated invalidation candidates do not alter approved source');
+
 SET ROLE authenticated;
 SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-reviewer-cannot-apply')$f$,
  :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
