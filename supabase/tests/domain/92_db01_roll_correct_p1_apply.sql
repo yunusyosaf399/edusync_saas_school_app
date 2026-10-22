@@ -1,7 +1,5 @@
 -- DB-01 P1 genuine authenticated SUBMIT -> two independent REVIEWs -> APPLY; rollback only.
 -- Creates a real authenticated P0 source; no Roll correction effect is allowed.
-\set VERBOSITY verbose
-\set SHOW_CONTEXT always
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;

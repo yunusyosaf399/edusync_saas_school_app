@@ -19,7 +19,7 @@ BEGIN
  SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=NEW.request_id;
  SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.id=NEW.command_receipt_id;
  IF req.id IS NULL OR rec.id IS NULL OR req.old_snapshot IS NULL OR req.requested_payload IS NULL
-   THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid: missing'; END IF;
+   THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid'; END IF;
  IF pg_catalog.jsonb_typeof(req.old_snapshot)<>'object'
     OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.old_snapshot))<>9
     OR NOT (req.old_snapshot ?& ARRAY[
@@ -35,7 +35,7 @@ BEGIN
     OR NOT (rec.result_summary ?& ARRAY['state','request_version'])
     OR pg_catalog.jsonb_typeof(rec.result_summary->'state') IS DISTINCT FROM 'string'
     OR pg_catalog.jsonb_typeof(rec.result_summary->'request_version') IS DISTINCT FROM 'string'
- THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid: shape'; END IF;
+ THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid'; END IF;
  BEGIN
    enr:=NULLIF(req.old_snapshot->>'source_enrollment_id','')::uuid;
    sec:=NULLIF(req.old_snapshot->>'source_section_offering_id','')::uuid;
@@ -47,7 +47,7 @@ BEGIN
    old_num:=NULLIF(req.old_snapshot->>'source_old_numeric_value','')::bigint;
    new_num:=NULLIF(req.requested_payload->>'proposed_numeric_value','')::bigint;
  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
-   RAISE;
+   RAISE EXCEPTION 'D1 roll correction application evidence invalid';
  END;
  IF req.operation_id IS DISTINCT FROM NEW.operation_id
     OR req.target_ref IS NULL OR req.target_ref IS DISTINCT FROM
@@ -72,7 +72,7 @@ BEGIN
     OR req.created_by IS DISTINCT FROM req.requester_id
     OR rec.principal_id IS DISTINCT FROM NEW.created_by
     OR rec.created_by IS DISTINCT FROM NEW.created_by
- THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid: binding'; END IF;
+ THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid'; END IF;
 
  base_summary:=rec.result_summary-'request_version'-'state';
  IF base_summary->>'student_id' IS DISTINCT FROM req.target_ref::text
@@ -93,7 +93,7 @@ BEGIN
     OR (SELECT count(*) FROM app_private.command_receipts other
         WHERE other.operation_id=NEW.operation_id AND other.state='SUCCEEDED'
           AND other.result_kind='D1_STUDENT_ROLL_CORRECT' AND other.result_ref=NEW.result_ref)<>1
- THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid: result'; END IF;
+ THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid'; END IF;
 
  -- All configured request steps must have one approved committed review from
  -- an assigned distinct Person. Current grants/policy freshness remain APPLY RPC work.
@@ -114,10 +114,10 @@ BEGIN
               AND reviewer.person_id IS DISTINCT FROM requester.person_id
               AND requester.person_id IS NOT NULL AND reviewer.person_id IS NOT NULL
          )))
- THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid: review'; END IF;
+ THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid'; END IF;
  RETURN NEW;
 EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
- RAISE;
+ RAISE EXCEPTION 'D1 roll correction application evidence invalid';
 END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_roll_correct_application_receipt_guard()
  FROM PUBLIC,anon,authenticated,service_role;
