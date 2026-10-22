@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(40);
+SELECT plan(43);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -260,6 +260,41 @@ SET ROLE authenticated;
 SELECT throws_ok(pg_catalog.format($stmt$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'Disabled policy route','db01-policy-disabled')$stmt$, :'submitted_request_id',:'submitted_request_version'::bigint),'P0001'::char(5),NULL::text,'disabled P1 operation route blocks review');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT db01_live_policy_disabled;
+-- Retiring or replacing the P1 policy after request submission must deny
+-- REVIEW even though the original reviewer is still assigned and authorized.
+SAVEPOINT db01_live_policy_retired;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.approval_policy_versions SET state='RETIRED'
+ WHERE id='b1890000-0000-4000-8000-000000000059';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($stmt$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'Retired approval policy','db01-retired-policy-review')$stmt$, :'submitted_request_id',:'submitted_request_version'::bigint),'P0001'::char(5),NULL::text,'retired original P1 policy blocks independent REVIEW');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_live_policy_retired;
+
+SAVEPOINT db01_live_policy_replaced;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.approval_policy_versions SET state='RETIRED'
+ WHERE id='b1890000-0000-4000-8000-000000000059';
+INSERT INTO app_private.approval_policy_versions(
+ id,policy_key,version,operation_id,campus_id,d1_route_mode,created_by)
+SELECT 'b1910000-0000-4000-8000-000000000062',
+ 'db01-p1-replacement-review-test',1,id,
+ 'b1000000-0000-4000-8000-000000000041','DIRECT',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.operation_contracts WHERE code='student.roll.correct';
+UPDATE app_private.approval_policy_versions
+ SET state='ACTIVE',effective_from=pg_catalog.statement_timestamp()-interval '1 hour',
+ activated_at=pg_catalog.statement_timestamp()
+ WHERE id='b1910000-0000-4000-8000-000000000062';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($stmt$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'Changed to DIRECT policy','db01-replaced-policy-review')$stmt$, :'submitted_request_id',:'submitted_request_version'::bigint),'P0001'::char(5),NULL::text,'replacement DIRECT policy cannot approve stale APPROVAL request');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_live_policy_replaced;
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'submitted_request_id'::uuid),'PENDING'::text,
+ 'retired and replaced policies left request and review ledger unmodified');
 SELECT is((SELECT state FROM app_private.approval_requests WHERE id=:'submitted_request_id'::uuid),'PENDING'::text,'disabled route leaves request PENDING');
 SET ROLE authenticated;
 SELECT * FROM app.d1_review_student_roll_correction(:'submitted_request_id'::uuid,'APPROVE',:'submitted_request_version'::bigint,'First stage reviewed','db01-review-step-one') \gset stage1_
