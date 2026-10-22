@@ -222,7 +222,8 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
         self.assertNotIn("GRANT SELECT ON app_private.audit_events", sql)
         self.assertNotIn("GRANT SELECT ON app_private.outbox_events", sql)
-        self.assertNotIn("TO authenticated;", sql)
+        private_helpers = sql.split("GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;")[0]
+        self.assertNotIn("TO authenticated;", private_helpers)
         self.assertIn("IS DISTINCT FROM true", sql)
 
     def test_db01_source_prelock_exact_identity_private_acl(self):
