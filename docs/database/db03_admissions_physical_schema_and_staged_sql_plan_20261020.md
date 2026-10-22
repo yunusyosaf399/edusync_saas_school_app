@@ -1,5 +1,8 @@
 # DB-03 — Admissions physical schema reconciliation, phased SQL and verification gates
 
+> **SCHEMA-02 integration audit — 22 October 2026:** [Upstream source check, supersession map and P1–P7 readiness matrix](db03_schema02_upstream_contract_readiness_20261022.md) reconciles current DB-03 draft against newer cross-workstream PRs. The reviewed main source has generic Foundation approval DDL, but no verified deployed Admissions tables or Finance-authorizer clearance API. Approved P2-D01 DRAFT nullable Person, P3-D01 published-policy document roster #16, P4 examiner verdict, P5 school ACCEPTED/offer rules, independently reviewed pending-test-only ADMIN_TEST_SKIP, and **mandatory Finance clearance** remain unchanged. SQL and Student Create activation are blocked.
+
+
 > **SCHEMA-01 addendum, 21 October 2026:** [P3 #10 / P4 #09 / P5 #15 SQL-constraint and protected operation handoff](db03_p4_p5_sql_constraint_protected_handoff_20261021.md) supplies proposed numeric score pair CHECK, typed stage/history keys, same-app/stage assessment composite FK, actual Foundation approval_requests reference for independently reviewed test skip and explicit no-FAILED-override mutex. Historical `approval_applications` references and Finance-waiver-as-final-clearance are not valid executable contract; no SQL installed. All owner/security/Finance/D1 activation gates remain open.
 
 

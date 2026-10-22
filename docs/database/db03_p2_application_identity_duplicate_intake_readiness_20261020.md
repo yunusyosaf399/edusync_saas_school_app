@@ -1,5 +1,8 @@
 # DB-03 P2 — Admissions application, identity-resolution and duplicate-intake SQL-readiness
 
+> **22 October 2026 current integration stop-line:** [SCHEMA-02 upstream contract review](db03_schema02_upstream_contract_readiness_20261022.md) preserves the already approved P2-D01 rule (**DRAFT Person NULL allowed; verified canonical Person required before SUBMITTED**) but finds no concrete installed P2-D02 Foundation Person matching/creation/verification adapter in the inspected sources. Next DB-03 SCHEMA-03 can refine P1/P2 parent-FK and document roster shapes as documentation only; do not invent a Person source or enable student.create.
+
+
 > **Owner decision recorded — 20 October 2026, P2-D01 / SC-01 (draft Person timing only): APPROVED OPTION A.** The owner explicitly approved permitting `admission_applications` in `DRAFT` without a verified Person; **before transition to `SUBMITTED` the application must have a verified canonical Foundation Person binding**. Accordingly `person_id` is nullable for DRAFT only and mandatory with valid authoritative `admission_identity_resolutions` head for SUBMITTED and every subsequent pre-consumption state. Duplicate delivery of the same approval does not count as a second decision. **Not approved by this selection:** Person-create/matching mechanism or evidence source (P2-D02), sensitive draft identity storage/retention (P2-D07), subsequent Person correction/waiver rules, numbering, publication, global authorization, Finance or D1 consumer. Do not treat this approval as permission to install identity-resolution SQL or enable `student.create`.
 
 

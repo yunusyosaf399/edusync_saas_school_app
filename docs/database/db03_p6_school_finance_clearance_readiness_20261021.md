@@ -1,5 +1,8 @@
 # DB-03 P6 — Finance-authorized final readiness, commercial terms and post-admission changes
 
+> **22 October 2026 SCHEMA-02 contract audit:** [Current Finance, Foundation and D1 upstream implementation gap matrix](db03_schema02_upstream_contract_readiness_20261022.md) confirms that no typed Finance-authorizer clearance interface or reversal fence was established by the inspected main migration directory and recent relevant PR file lists. A waived fee or school-approved discount remains only a business decision; **Finance-authorizer clearance is mandatory before every READY/D1 creation**. Do not mark this P6 proposal installed or invent Finance tables/verification UUIDs.
+
+
 > **P6 FINANCE INSTALLATION STOP-LINE, 21 October 2026:** [ADMIN-TEST-03 dependency/owner handoff packet](db03_admin_skip_installation_dependency_handoff_20261021.md) explicitly separates **reviewed test skip** execution (possible only after Foundation+P4+P5+SC-06 safe shared-lock proofs) from **final READY/D1** (additionally requires real Finance-authorizer clearance ID/revision/waiver-term mapping and reversal fence). No Finance-named migration was found in the inspected main migration-directory listing, and no source-backed typed verifier was established. Never replace clearance with an Admissions waiver/discount or an APPROVED-only skip request. This is documentation, not installed financial SQL.
 
 
