@@ -38,13 +38,14 @@ SET ROLE schoolos_student_executor;
 CREATE FUNCTION app_private.d1_roll_correct_submit_number_available(
  p_student uuid,p_source_section uuid,p_source_roll uuid,p_policy uuid,
  p_requested bigint,p_business_date date
-) RETURNS boolean
+) RETURNS TABLE(number_available boolean,source_origin uuid)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE ancestry record; policy_row record; claimed boolean;
 BEGIN
  IF p_student IS NULL OR p_source_section IS NULL OR p_source_roll IS NULL
     OR p_policy IS NULL OR p_requested IS NULL OR p_requested<1
-    OR p_requested>9223372036854775806::bigint OR p_business_date IS NULL THEN RETURN false; END IF;
+    OR p_requested>9223372036854775806::bigint OR p_business_date IS NULL THEN
+   RETURN QUERY SELECT false,NULL::uuid; RETURN; END IF;
  SELECT * INTO ancestry FROM app_private.d1_enrollment_place_destination(p_source_section);
  SELECT rp.* INTO policy_row FROM app_private.roll_policy_revisions rp
  WHERE rp.id=p_policy AND rp.school_id=ancestry.school_id;
@@ -53,7 +54,10 @@ BEGIN
     OR policy_row.mode NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
     OR policy_row.effective_from>p_business_date
     OR (policy_row.effective_until IS NOT NULL AND p_business_date>=policy_row.effective_until)
- THEN RETURN false; END IF;
+ THEN RETURN QUERY SELECT false,NULL::uuid; RETURN; END IF;
+ SELECT r.origin_allocation_id INTO source_origin FROM app_private.roll_allocations r
+  WHERE r.id=p_source_roll AND r.student_id=p_student AND r.policy_revision_id=p_policy;
+ IF NOT FOUND THEN RETURN QUERY SELECT false,NULL::uuid; RETURN; END IF;
  IF policy_row.mode='PERSISTENT_STUDENT' THEN
    SELECT EXISTS(SELECT 1 FROM app_private.roll_allocations r
      JOIN app_private.roll_policy_revisions rp ON rp.id=r.policy_revision_id
@@ -68,7 +72,7 @@ BEGIN
        AND r.numeric_value=p_requested AND
        (r.effective_until IS NULL OR p_business_date<r.effective_until)) INTO claimed;
  END IF;
- RETURN claimed IS FALSE;
+ RETURN QUERY SELECT claimed IS FALSE,source_origin;
 END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_roll_correct_submit_number_available(uuid,uuid,uuid,uuid,bigint,date)
  FROM PUBLIC,anon,authenticated,service_role;
@@ -198,10 +202,9 @@ CREATE FUNCTION app.d1_submit_student_roll_correction(
  p_reason text,p_idempotency_key text
 ) RETURNS TABLE(request_id uuid,request_version bigint)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE ctx record; route record; locked record; req uuid:=pg_catalog.gen_random_uuid();
+DECLARE ctx record; route record; locked record; proposal record; req uuid:=pg_catalog.gen_random_uuid();
   template_row record; step_id uuid; final_version bigint; n bigint;
-  prior_policy uuid; first_policy uuid; origin uuid; receipt uuid;
-  prior_student_version bigint;
+  prior_policy uuid; origin uuid; receipt uuid;
 BEGIN
  IF p_student_id IS NULL OR p_expected_student_version IS NULL
     OR p_expected_student_version<1 OR p_expected_student_version>=9223372036854775807::bigint
@@ -265,15 +268,13 @@ BEGIN
     OR route.route_mode IS DISTINCT FROM 'APPROVAL'
     OR route.campus_id IS DISTINCT FROM locked.campus_id
  THEN RAISE EXCEPTION 'D1 Roll correction SUBMIT P1 policy changed'; END IF;
- IF app_private.d1_roll_correct_submit_number_available(
+ SELECT * INTO proposal FROM app_private.d1_roll_correct_submit_number_available(
      p_student_id,p_expected_source_section_id,p_source_roll_allocation_id,
      p_expected_source_policy_revision_id,p_requested_numeric_value,
-     locked.business_date) IS DISTINCT FROM true
+     locked.business_date);
+ IF NOT FOUND OR proposal.number_available IS DISTINCT FROM true
  THEN RAISE EXCEPTION 'D1 Roll correction SUBMIT numeric unavailable'; END IF;
-
- SELECT origin_allocation_id INTO origin FROM app_private.roll_allocations
- WHERE id=p_source_roll_allocation_id;
- IF NOT FOUND THEN RAISE EXCEPTION 'D1 Roll correction SUBMIT source origin missing'; END IF;
+ origin:=proposal.source_origin;
  INSERT INTO app_private.approval_requests(
     id,operation_id,payload_schema_version,policy_id,requester_id,campus_id,
     target_ref,expected_target_version,reason,old_snapshot,requested_payload,created_by)
