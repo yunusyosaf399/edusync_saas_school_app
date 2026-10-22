@@ -14,7 +14,7 @@
 
 | Task ID | Deliverable and acceptance gate | Initial status |
 | --- | --- | --- |
-| DB01-01 | Authenticated independent P1 APPROVE and REJECT; configured step review, distinct Person, current reviewer grant, exact review receipt/audit; no Roll mutation | **IN PROGRESS**: stacked draft candidate effect41_09 and isolated pgTAP #90; exact-head runtime not accepted |
+| DB01-01 | Authenticated independent P1 APPROVE and REJECT; configured step review, distinct Person, current reviewer grant, exact review receipt/audit; no Roll mutation | **PASSED (draft local engineering)** — PR #137 at code HEAD `4a0c268ce58151822261f600102206d6e5d45894`; 41/41 authenticated review tests and all 3 CI workflows passed. Not a production deployment or independent security approval |
 | DB01-02 | Revoked/withdrawn reviewer, policy alteration, step/expected version/idempotent terminal replay and multi-step revalidation; real lock-wait security | PENDING |
 | DB01-03 | Separately authenticated APPROVED→APPLY; fresh requester/reviewer/policy/source locks, school-local date and number collision checks, one R0→R1, Student N+1 | PENDING |
 | DB01-04 | APPLY stale/rejected/invalidated/duplicate/no-op/grant-revoked terminal integrity, canonical receipt/applications and audit/outbox proof | PENDING |
@@ -32,3 +32,13 @@
 **No cross-workstream changes:** Only DB-01 SQL draft, its acceptance fixture and DB-01 documentation/test runner manifests. Do not modify DB-02, DB-03 or DB-04 contracts or enabling flags.
 
 **High-risk release blockers:** Cross-domain synchronization of server School-local date/policy revision and DB-02 retained numeric namespace, stack merge readiness, independently authorized review/APPLY, and security signoff remain separate decisions.
+
+
+## DB01-01 exact-code-head acceptance record — 2026-10-22
+
+- **State:** PASSED for isolated draft local engineering; the wider DB-01 feature remains disabled, draft, unmerged, and not independently released.
+- **PR:** [#137](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/137), verified code HEAD `4a0c268ce58151822261f600102206d6e5d45894`.
+- **Exact-code-head runs:** [Static #39734398774](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39734398774) **SUCCESS**; [Foundation #39734398641](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39734398641) **SUCCESS**; [D1 PostgreSQL #39734398694](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39734398694) **SUCCESS**.
+- **Proof:** `D1_BUSINESS_TEST_PASS 90_db01_roll_correct_p1_review.sql 41/41`, `89_db01_roll_correct_p1_approval_submit.sql 33/33`, `D1_BUSINESS_PASS 3530 assertions`, `D1C2A_PASS`. Strict inventory: 562 functions, 544 SECURITY DEFINER, 160 app, 402 private, 34 FORCE RLS, zero private EXECUTE for client roles.
+- **Behavior:** live distinct-Person reviewer APPROVE/REJECT, denial of requester self-review, independent current `student.roll.approve` scope, revoked permission rejection, stale-version and changed-intent denial, exact-key terminal replay, one restricted receipt/audit, no Roll/Student/allocator/outbox effect. The final code also uses Foundation's authorized `PENDING→PENDING` trigger for version advancement across additional review steps, rather than direct row_version modification.
+- **Remaining:** Task DB01-02 expands coverage to multi-stage reviewer revocation and policy/step changes. It has a separate [draft PR #139](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/139); its independent result must not be inferred from DB01-01. After that, DB01-03 APPLY, checked reads and remaining release gates continue.
