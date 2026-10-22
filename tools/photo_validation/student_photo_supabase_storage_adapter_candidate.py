@@ -15,7 +15,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from hashlib import sha256
 from hmac import compare_digest
-from types import MappingProxyType
 from uuid import UUID
 
 from student_photo_content_validation_candidate import (
@@ -76,13 +75,29 @@ class PrivateObjectPlan:
     expected_size: int
 
     def __post_init__(self) -> None:
-        if (type(self.path) is not str or type(self.body) is not bytes
+        if (type(self.path) is not str
+                or type(self.body) is not bytes
                 or type(self.expected_size) is not int
                 or not 1 <= self.expected_size <= LIMIT_BYTES
                 or type(self.expected_sha256_hex) is not str
                 or len(self.expected_sha256_hex) != 64
-                or sha256(self.body).hexdigest() != self.expected_sha256_hex
-                if self.method == "POST" else False):
+                or any(c not in "0123456789abcdef" for c in self.expected_sha256_hex)
+                or type(self.headers) is not tuple
+                or not self.path.startswith("/storage/v1/object/")):
+            _deny()
+        if self.method == "POST":
+            if (self.headers[0:1] not in
+                    ((("content-type", "image/jpeg"),),
+                     (("content-type", "image/png"),))
+                    or self.headers[1:] != (("x-upsert", "false"),)
+                    or len(self.body) != self.expected_size
+                    or not compare_digest(sha256(self.body).hexdigest(),
+                                          self.expected_sha256_hex)):
+                _deny()
+        elif self.method == "GET":
+            if self.headers or self.body != b"" or "/authenticated/" not in self.path:
+                _deny()
+        else:
             _deny()
 
 
