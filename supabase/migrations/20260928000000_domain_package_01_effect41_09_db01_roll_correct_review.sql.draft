@@ -197,9 +197,9 @@ BEGIN
      IF next_candidates=0 THEN
        RAISE EXCEPTION 'D1 Roll correction REVIEW next step lacks reviewer'; END IF;
      final_state:='PENDING';
-     UPDATE app_private.approval_requests
-       SET row_version=approval_requests.row_version+1,
-           updated_at=pg_catalog.statement_timestamp()
+     -- Foundation PENDING->PENDING is an authorized state transition;
+     -- its server-owned row-version trigger increments the version exactly once.
+     UPDATE app_private.approval_requests SET state='PENDING'
        WHERE id=p_request_id RETURNING row_version INTO final_version;
    END IF;
  END IF;
