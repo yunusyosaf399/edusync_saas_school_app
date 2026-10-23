@@ -24,6 +24,8 @@ DOMAIN_TESTS.append(["84_db02_roll_policy_p1_version_selector.sql",20])
 DOMAIN_TESTS.append(["85_db02_school_actor_all_authority.sql",19])
 # Dedicated stacked shared-receipt integration suite (not DB-01 #81).
 DOMAIN_TESTS.append(["86_db02_roll_policy_receipt_allowlist.sql",27])
+# I01: context-only rollback suite; no Roll Policy business effect.
+DOMAIN_TESTS.append(["89_db02_private_command_context.sql",28])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
