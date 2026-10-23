@@ -1,0 +1,125 @@
+# DB-02 — RP-01 to RP-07 owner-decision packet and integration sign-off
+
+**Status: OWNER DECISIONS REQUESTED — NOT APPROVED — NO SQL/OPERATION ACTIVATION AUTHORIZED.**  
+Date: 2026-10-19. Existing branch: `db/db-02-roll-policy-design`, preceding verified HEAD `e71b2f3778811be2fa2aa6668158199cbd764c12`, [PR #101](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/101); verified `main f38c087b989328f0c871b8ec5707e46ba12a856f`. Other workstream references are **read only**: DB-01 [PR #100](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/100) and DB-03 [PR #102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102).
+
+**Purpose:** present the smallest executable set of owner decisions for `student.roll_policy.change`, with exact recommended options, alternative choices, source-supported invariants, developer handoff and test gates. This decision proposal complements [original DB-02 design](db02_student_roll_policy_design_20261019.md), [review plan](db02_student_roll_policy_review_20261019.md), [integrity gate](db02_allocator_namespace_integrity_gate_20261019.md) and [final implementation-readiness review](db02_policy_transition_implementation_readiness_20261019.md). If those older *proposals* differ, this document is the **latest recommendation**, not a retroactive owner approval.
+
+## 1. Verified frozen facts — not choices for this packet
+
+1. **Tenancy/identity:** one School Supabase project, optional multiple Campuses, no invented tenant/Campus key. Roll policy is School scoped. Roll mode must be `PERSISTENT_STUDENT` or `ACADEMIC_CONTEXT`, nonnegative `start_value`.
+2. **Immutable history:** `app_private.roll_policy_revisions` retains School+positive sequential `revision`, exact predecessor `supersedes_id`, immutable identity/mode/start/reason/from and one-way exclusive `effective_until` closure. There is **no mutable policy row_version** and **no policy command_receipt_id column**. Old `roll_allocations` cannot be renumbered, replaced in place or deleted by policy change.
+3. **Namespace:** per-revision allocator `(policy_revision_id, NULL)` for persistent or `(policy_revision_id, class_offering_id)` for academic; partial UNIQUE keys PU01/PU02, server M-row version management. Persistent **other-Student numeric ownership is School-wide across all retained persistent policy revisions** (lock/invariant [#31](31_domain_package_01_concurrency_and_locking.md)); academic collision is policy revision + Offering over overlapping intervals.
+4. **Actual SQL mismatch and defense:** final `effect35_15` `app_private.d1_enrollment_place_allocate_roll` excludes superseded allocations when seeking a free *other-Student* persistent number, yet the `effect30_32` `app_private.d1_guard_crossrow` persistent cross-Student collision arm retains them. The `ac_d1_ancestry` BEFORE INSERT/UPDATE trigger on `roll_allocations` invokes that guard. Thus **the candidate can be chosen incorrectly and the guarded insert is expected to fail; a committed duplicate is not evidenced**. Latest corrected candidate predicate and worked example in [implementation readiness §2](db02_policy_transition_implementation_readiness_20261019.md). The distinct **same-Student latest unsuperseded origin** lookup should remain.
+5. **Prelock/cutover:** final PLACE `effect25_22` and MOVE `effect26_05` / `effect26_09` prelock `School → policy → matching allocator` before Student context. `effect25_19` selects the *placement effective date* policy and requires the allocator to exist; it fails closed if not. END `effect27_02` closes current Roll/Enrollment, not a new allocation.
+6. **Permissions/workflow:** separate non-family-safe `student.roll_policy.change` and `student.roll_policy.approve`, supported **ALL/DIRECT School scope**; `student.roll_policy.view` grants current checked read only. P1 DIRECT/APPROVAL policy needs one valid selected version, independent configured reviewer and current grants. The operation **and change permission are disabled**, and no accepted authenticated roll-policy-change API exists.
+7. **Event not frozen:** Later accepted [#127](127_d1_roll_policy_p1_implementation_readiness_and_invariant_review.md), [#154](154_d1_student_roll_policy_change_p1_contract_readiness.md) and [command matrix](../security/09_domain_checked_reads_and_commands.md) intentionally leave the roll-policy broad event unspecified. An older physical-catalog illustration is **not** permission to register/use it.
+8. **Tracking:** [Issue #69](https://github.com/yunusyosaf399/edusync_saas_school_app/issues/69) is OPEN and explicitly lists RP-01…RP-07 as unresolved. [decision register #156](156_d1_four_student_operation_decision_register.json) also lists them pending. No owner-approved RP document or issue comment was found in this review.
+
+## 2. Decision-ready recommended first release: INIT + REPLACE, NOT END
+
+All seven rows are **PENDING** and require dated explicit owner action. A user saying "Continue" or "Complete next task" to the engineering chat is **not** treated as blanket adoption of these product/security decisions.
+
+| ID | Exact recommended option to approve | Alternative & consequences | Required implementation / tests | Owner decision |
+|---|---|---|---|---|
+| **RP-01** | **Option A:** typed `INIT` only when the School has **zero retained policy revisions**, and `REPLACE` only against the exact currently effective **open head**, with `source_policy_id + revision + mode + start_value + effective_from + expected_effective_until=NULL`. Atomically close old head and append revision n+1; server sets revision and predecessor. **Defer END** in first implementation. | **B:** support END immediately; must also freeze how to resume from a previously ended policy because INIT forbids historical rows. A generic `END` without RESUME would strand the School. | Fixed typed request, School lock, expected-source equality and successor uniqueness; tests duplicate INIT, stale REPLACE, no-op and double close; disabled END denies. | **PENDING** |
+| **RP-02** | **A:** server `CURRENT_DATE` effective boundary for INIT/REPLACE; adjacent `[old.from,t)` / `[t,new.until)`; **old.from < t** (no same-day second REPLACE); no backdate/future scheduled successor; reject any already committed **future-start** roll allocation that would no longer match its recorded policy at its own effective date. No silent allocation migration. | **B:** allow scheduled/backdated replacements, future successors or uncovered gaps; requires calendar state machine, as-of committed placement reconciliation and exact retroactive audit/authorization contract. | Boundary and occupancy query under School lock; tests t−1/t/t+1, same-day replace deny, future placement first/replace first, no fallback on gap. | **PENDING** |
+| **RP-03** | **A:** retain frozen permanent School-wide historical persistent ownership (including corrected-away numbers), correct automatic *other-Student* allocator candidate scan to match guard; preserve same-Student most recent usable persistent origin after a return from academic mode. New persistent policy pool gets previous School persistent high-water floor; AC pool per exact new revision+eligible Offering preprovisioned atomically; no reset/recycle of historic allocations. | **B:** permit cross-Student reuse of corrected-away numbers; contradicts #31 and guard, needs explicit overriding ADR, both DB-01/DB-03 ownership review and revised history/display semantics. **C:** lazily create AC pools; requires separately owned prelock change because current prelock fails on missing rows. | Separate D1 placement owner fixes shared allocator, **not DB-02 SQL**. Tests A:1001→1002 then B candidate 1001 must skip; PS→AC→PS, AC cross-Offering, overflow, rollback. | **PENDING** for cross-domain implementation/high-water/eager provisioning; frozen non-reuse continues |
+| **RP-04** | **A:** School target always uses global Foundation approval-policy version with `campus_id IS NULL`, requiring exactly one live applicable version; **no fabricated Campus**. Complete current `ALL` School-scoped change grant is mandatory. Select and bind actual version UUID at submit/DIRECT; reselect and compare UUID at apply/replay rather than relying on route text alone. | **B:** add a new dedicated School routing model via independently approved Foundation change; broader scope and migration review needed. | Exact typed School-policy selector verifying same validity predicates as `d1_p1_route(code,NULL)`, including configured APPROVAL step/role; test no policy, ambiguous global versions, campus-only versions, same route text/new UUID. | **PENDING** |
+| **RP-05** | **A:** one **DIRECT** effect or **APPROVAL** SUBMIT → independent REVIEW → APPROVED(no effect) → separately authenticated APPLY. Reviewer must be a different **Person**, hold live `student.roll_policy.approve` with School ALL scope, current configured reviewer role and `D1_REVIEWER_ROLE_SCOPE` step. Apply rechecks both participants, source immutable snapshot, route UUID, new pool compatibility and future commitments. Deterministic stale => terminal INVALIDATED + rejected receipt; infrastructure exception rolls back. | **B:** alternate reviewer workflow/disclosure limits, to be explicitly scoped and approved. No self-review or role-name permission shortcut. | Typed participant checked read, separate submit/review/apply functions and narrow EXECUTE/RLS; tests reviewer Person duplication via alternate Principal, revoke-first vs apply-first, approved route drift, no effect on APPROVE. | **PENDING** |
+| **RP-06** | **A:** Foundation typed receipt with **owner-selected literal result_kind**, immutable old/new policy IDs and revisions, action, School, effective date, approved policy version UUID and verified receipt/application identity. Broad audit/event payload only safe identifiers and action/date/correlation; private reason in restricted policy/approval evidence only. Require **owner-selected literal broad outbox event name** before any success emission or activation. Do not invent receipt FK on HE history. | **B:** no approved event code yet ⇒ remain disabled. Older #27 draft illustrative name does **not** satisfy owner sign-off. | Approved literal codes/allowlist, evidence writer registration by separate authorized owner, exact receipt/result-row verifier; tests no leaked private reason, one receipt/event, same-key replay, rejection without success outbox. | **PENDING** — **BOTH LITERAL CODES REQUIRED** |
+| **RP-07** | **A:** Foundation SHARED authorization lock → canonical idempotency/receipt and Principal/workflow prefix → School FOR UPDATE → relevant policy revisions → allocator rows UUID ascending → Student/academic parents only if touched → history; recheck authority, selected P1 policy UUID, actual head and future commitments after waits. Exact terminal replay returns immutable previous result only after current authority. Competing source edits deny/INVALIDATE, never rebase. | **B:** broader scheduling/counter allocation concurrently without School anchor requires separately reviewed serializable protocol and observed-lock tests; risk false success, deadlock, rollback replay. | Real two-session INIT/INIT, REPLACE/REPLACE, REPLACE/PLACE or MOVE at boundary, authorization revoke/apply, rollback/response-loss replay; verify one terminal effect, no duplicate history/evidence. | **PENDING** |
+
+### Minimal owner decision record to complete
+
+For each RP row above record **APPROVE A / APPROVE B (exact amendments) / REJECT / DEFER**, reviewer identity, UTC approval date and repository decision reference. **No values are prefilled; no approval is inferred.** If an option is amended, the complete request/acceptance cases affected by that option must be versioned rather than treating partial agreement as freeze.
+
+**Release recommendation:** RP-01 Option A, RP-02 A, RP-03 A, RP-04 A, RP-05 A, RP-06 A only after actual event/result literals selected, RP-07 A. END and scheduled modifications remain future contracts. Product owner may revise any one of these without granting implementation permission to other gates.
+
+## 3. Concrete school-wide P1 selector and stale-policy contract
+
+The base non-executable `supabase/migrations/20260928000000_domain_package_01.sql.draft` defines `app_private.d1_p1_route(text,uuid)`. For `student.roll_policy.change` with **NULL** Campus, its exact live predicate includes:
+
+~~~sql
+-- Existing resolver predicate, shown for audit only (not runnable migration)
+o.code = 'student.roll_policy.change'
+AND o.enabled
+AND NOT o.requires_approval
+AND v.state = 'ACTIVE'
+AND v.effective_from <= at_time
+AND (v.effective_until IS NULL OR at_time < v.effective_until)
+AND v.campus_id IS NULL  -- follows from input campus_id NULL
+~~~
+
+It counts qualifying versions and succeeds only when count=1 and DIRECT or well-formed APPROVAL steps. The existing resolver returns **route text**, not `approval_policy_versions.id`. Therefore implement (only after RP-04 approval) an internal **fixed School route identity** returning:
+
+~~~text
+(selected_policy_version_id uuid, route_mode DIRECT|APPROVAL)
+~~~
+
+This internal selector must mirror the resolver's current predicates/step validation and fail if they disagree. It must not reconfigure Foundation policy/grants. Under the Foundation SHARED authorization lock and exact School target, bind the **selected UUID**, not merely `APPROVAL`, into immutable request evidence and reselect/compare it at REVIEW/APPLY. An approved request created under version V1 cannot apply under a new V2 even when both say APPROVAL. Current scopes and reviewer role/step must be revalidated after lock waits. Missing or multiple active global policies deny; a Campus-only policy is **not** a fallback for School-wide policy.
+
+**Important disabled-state nuance:** because `o.enabled` is part of the real resolver, calls now return no valid route. Design preparation does not create a backdoor route for disabled operation. No public RPC, permission enable, policy registration or event is authorized by the packet.
+
+**Source version:** policy-revision optimistic checks use exact HE `id`, sequential `revision` and immutable snapshot fields; do **not** invent a HE `row_version`. Distinguish source policy revision from Foundation **approval policy version UUID**: both must be independently rebound at APPLY.
+
+**Evidence precedent:** existing [Family relationship P1 ambiguity acceptance #109](109_d1_family_relationship_p1_approved_policy_ambiguity_acceptance_review.md) invalidates a previously approved request when an overlapping active School-wide policy makes current selection ambiguous. That is *precedent*, not an already approved DB-02 event or result code. The DB-02 application should follow the same fail-closed participant/policy recheck principle while selecting its own owner-approved typed error/result codes.
+
+## 4. Exact source/effective-interval decision and acceptance rules
+
+| State at locked decision time | Proposed result | Data written? |
+|---|---|---|
+| School has no retained policy rows; INIT now | r1, start at business date, mode-appropriate allocator(s) provisioned; immutable receipt when event/result approved | Yes, single committed transaction |
+| School has ended r1 but no current effective row; INIT | Deny; **not** a blank School. Reentry/RESUME is a separate unapproved decision. | No |
+| School has active r1 with `effective_from < CURRENT_DATE`; REPLACE same expected snapshot | r1 closes at date t; r2 starts at t, linked to r1, pools seeded and event/result atomically. | Yes, single committed transaction |
+| School has r1 created *today*; REPLACE today | Deny because old r1 would have empty interval [t,t). | No |
+| New APPROVAL request submitted against r1, then r2 replaces r1 before APPLY | INVALIDATE on stale source/policy at APPLY; no r3 side effect. | Rejected apply/terminal workflow evidence only |
+| Another policy version V2 replaces V1, route mode unchanged | INVALIDATE pending/approved V1 request; do not reuse reviewer approvals from V1. | Rejected apply/terminal workflow evidence only |
+| Future Enrollment+Roll already committed at date >=t under r1; REPLACE would change effective policy to r2 | Deny replacement, unless a separately frozen coordinated placement/roll strategy exists. | No |
+| Existing Enrollment begins before t and extends after t | Preserve its immutable policy/roll identity; no forced reallocation or rewritten past display. | No roll rewrite |
+| END attempted during initial release (recommended) | Deny explicitly as unsupported; do not strand school policy or invent resumption. | No |
+| Same idempotency key with changed old snapshot/new mode/reason | Idempotency intent conflict, no mutation; do not treat as replay. | No |
+| Terminal success replay after later approved r3 | Reauthorize, verify retained immutable original r1→r2 effect, return original bound result; never append r4. | No new effect/event |
+
+In academic mode new `roll_allocator_states` rows are `(new_policy_revision_id, eligible_class_offering_id)` and must exist **before** first placement, because the current `d1_enrollment_place_prelock_roll` does not create them; it fails closed when missing. Define eligible Offerings by verified School/academic status and exact deployment provisioning strategy as part of RP-03 acceptance. A lazy alternative requires a different agreed contract with the D1 placement owner. In persistent mode a new `(new_revision_id,NULL)` counter must use the prior School persistent high-water floor; **historical collision scans remain authoritative** regardless of counter starting value.
+
+No allocation row can be re-parented to a new policy or have its historical numeric value changed as a side effect of REPLACE; the existing as-of policy selection is **by enrollment effective_from**, not today's School policy.
+
+## 5. DB-01 and DB-03 compatibility acceptance requested (not approvals)
+
+| Contract | DB-02 guarantee/proposal | External owner action needed |
+|---|---|---|
+| Persistent historic ownership | Frozen School-wide reserved numeric across all persistent revisions; correction retains original historical claim. | **DB-01 RC-02/RC-05:** align manual corrected-number collisions with full retained history; no new reuse policy without approved override ADR. |
+| Origin versus predecessor | Latest unsuperseded same-Student persistent allocation may be carried; `origin_allocation_id` records Student reuse, `supersedes_id` correction predecessor. | **DB-01 RC-04/RC-08:** verify repeated correction/MOVE/END lineage and later fresh-origin selection. |
+| Auto allocator mismatch | Current loop excludes superseded other-Student allocations but defensive guard does not; candidate can cause failure. | **D1 placement owner / DB-03 dependency:** separately authorize shared allocator SQL fix to scan **all** retained other-Student persistent claims, with tests A(1001→1002), B attempts 1001; do not edit via DB-02 PR. |
+| Policy at effective date | Placement after School lock chooses exactly one as-of policy and matching pool; no split/rewrite of prior retained allocations. | **DB-03 SC-04:** initial Student+Primary placement+Roll uses one verified effective date and destination school, and fails on missing/ambiguous policy. |
+| Atomic numbered Student intake | Admissions number, Student ID allocator and roll numeric are separate; Student created only with verified handoff, capacity and policy. | **DB-03 SC-06:** frozen cross-domain lock DAG with Finance and Admissions, no retry-driven duplicate Student, Enrollment or Roll allocation. |
+| Serialization | Shared Foundation authorization lock followed by School/policy/allocator before Student/academic, with exact rechecks and origin continuity. | **DB-01 and DB-03 owners:** observe genuine simultaneous policy cutover/correction/placement/move, ensuring no Student→School inversion; claims require local two-session evidence. |
+| Historical replay | Policy and roll receipts must bind immutable source/result IDs; current right to disclose is rechecked, earlier successful business mutation not repeated. | **DB-01/03:** same-key corrections, Moves, END and Admissions consumption must not reissue numeric values after later policy change. |
+
+**Read-only dependency notice only:** neither PR #100 nor #102 is modified, signed, or treated as approved by this packet. The implementation owner must not put shared allocator or Admissions/Student Creation SQL under DB-02's design branch.
+
+## 6. Minimal ordered DB-02 SQL/test packages once owner approves
+
+1. **Owner decision freeze:** all seven RP rows dated with signed option and exact RP-06 literals, plus DB-01/03 interface acknowledgement. Update a *versioned owner-approved decision record* only once the owner actually chooses; do not repurpose this packet as approval.
+2. **Integrity dependency prerequisite (external):** separate D1 placement owner proves and fixes the persistent candidate/guard mismatch without changing same-Student origin, reruns BASE PLACE/MOVE/END; add high-water, near-bigint-maximum, historical superseded-value and PS→AC→PS regression with rollback-only tests. Required before positive DB-02 activation.
+3. **DB-02 physical narrow SQL candidate:** additive domain-owned draft only if assigned. Define fixed typed RPC/handler, School-target policy ID validator and current ALL authority, source snapshot guard, revision/pool close+append single transaction; preserve RLS owner and exact executor column grants; no client direct history DML.
+4. **DIRECT candidate:** authenticated happy/negative with exact route version, expected source, half-open boundaries and policy serial concurrency; receipt/result and minimal evidence once names selected.
+5. **APPROVAL candidate:** authenticated submit/review/apply/participant checked read, distinct People, reviewer role+scope+step, stale policy version/snapshot and revocation, rejected terminal receipt, infrastructure rollback preservation.
+6. **True observed-lock tests:** independent PostgreSQL sessions for (a) simultaneous INIT; (b) REPLACE/REPLACE; (c) policy REPLACE vs PLACEMENT on boundary t in either winner order; (d) policy REPLACE vs MOVE; (e) approval APPLY vs Foundation EXCLUSIVE revoke; (f) rollback/lost ACK exact-key replay after later policy revision. Assert single winner, one revision/allocator state, monotone next_value, no duplicate immutable receipt or success event, denial/INVALIDATED criteria, and no retained allocation rewrite.
+7. **Regression/activation gate:** rollback-only pgTAP with SET ROLE authenticated, SET CONSTRAINTS ALL IMMEDIATE, full ROLLBACK; suites #37/#38/#61/#62/#63/#65 remain protected until separately approved activation; D1/Frozen Foundation 1–9 and RLS verified. Independent exact-head SQL/security/CI review before any change to enabled state, event registry, executable Migration 10 or hosted Supabase.
+
+### Concrete owner-facing scenarios
+
+- **RP-03 / retained ownership:** Student A has persistent 1001, later gets approved correction 1002. After switching School to academic and back to persistent, a new Student B must **not** receive A's historical 1001; A's latest usable persistent number is 1002.
+- **RP-02 / future commit:** Next semester's accepted placement has a retained r1 roll as of a future date. Replacing r1 with r2 before that future start must **reject** rather than silently reinterpret the existing placement/number.
+- **RP-04/05 / stale review:** Reviewers approve a change under workflow policy version V1. A School administrator replaces V1 with V2, both APPROVAL. The previously approved request must **invalidate** at apply rather than treat matching route text as proof.
+- **RP-01 / END:** Closing the only School policy without a reviewed RESUME action prevents all subsequent roll allocations; the recommended first release explicitly defers END instead of silently stranding intake.
+
+## 7. Decision request and next engineering task
+
+**The only approval request is substantive:** owner to approve/revise/reject the recommended A options for **RP-01, RP-02, RP-03, RP-04, RP-05, RP-07**, and for **RP-06 explicitly select a stable `result_kind` literal and selected event code plus redaction allowlist**. No approval date/identity is claimed; this is a prepared packet only.
+
+Until approval, **student.roll_policy.change stays disabled**. No SQL, outbox registration, test/CI edits, shared migration assembly or hosted database operation is authorized.
+
+**Next independently useful DB-02 task if sign-off is still outstanding:** perform a deeper read-only exact ordered SQL call-graph and lock/privilege interface inventory for the future fixed School-wide policy selector and revision/allocator effect, documenting any unavoidable D1/Foundation ownership edges. This is preparation, not a protected command implementation.

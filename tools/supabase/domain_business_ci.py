@@ -24,6 +24,22 @@ DOMAIN_TESTS.extend([["75_db01_allocator_retained_history.sql",12],
                      ["87_db01_direct_atomic_success_evidence.sql",23],
                      ["88_db01_roll_correct_direct_authenticated.sql",48],["89_db01_roll_correct_p1_approval_submit.sql",33],["90_db01_roll_correct_p1_review.sql",41],["91_db01_roll_correct_p1_live_multistep.sql",43],["92_db01_roll_correct_p1_apply.sql",113]])
 
+# DB01↔DB02 integration: preserve DB-02 independent School policy fixtures
+# by full filename, including its distinct "92_db02" suite beside "92_db01".
+DOMAIN_TESTS.extend([
+    ["82_db02_school_reviewer_candidates.sql",10],
+    ["83_db02_roll_policy_source_preflight.sql",18],
+    ["84_db02_roll_policy_p1_version_selector.sql",20],
+    ["85_db02_school_actor_all_authority.sql",19],
+    ["86_db02_roll_policy_receipt_allowlist.sql",27],
+    ["89_db02_private_command_context.sql",28],
+    ["90_db02_exact_p1_bound_version.sql",24],
+    ["91_db02_locked_future_commitments.sql",18],
+    ["92_db02_atomic_policy_revision_transition.sql",27],
+    ["93_db02_atomic_roll_allocator_pools.sql",29],
+])
+
+
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
     if source.count(marker) != 1:
