@@ -213,6 +213,18 @@ def run_db01_p1_successive_roll_date_boundaries(container,run_psql,root=ROOT):
     print("D1_DB01_P1_R0_R1_INITIAL_REAL_PG_PASS genuine initial automatic P0, "
           "two independent reviewer steps, first authenticated R1")
 
+    # Current Student version is 2 and R1 is genuinely current, yet a
+    # second correction on this SAME School-local calendar day would close
+    # R1 at its own start and create an illegal zero-length retained segment.
+    _reject_submit(psycopg,student,first,first[7]+7,
+                   "db01-p1-r2-same-school-day","SAME_DAY_DENIED")
+    with closing(_local_connect(psycopg)) as observer:
+        with observer.cursor() as cur:
+            _check(_current(cur,student)==first,"SAME_DAY_DENIAL_MUTATED_R1")
+        observer.rollback()
+    print("D1_DB01_P1_SAME_DAY_SECOND_CORRECTION_DENIED_PASS live current "
+          "R1 cannot be superseded at its own School-local effective date")
+
     # The School's server-authoritative date moves to the following calendar
     # day while a random client/session timezone remains irrelevant.
     _set_school_zone(container,run_psql,"Pacific/Kiritimati","NEXT_DAY")
