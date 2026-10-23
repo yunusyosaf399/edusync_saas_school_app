@@ -160,6 +160,14 @@ SELECT is(:'historical_cnt'::bigint,1::bigint,
 -- A new effective Roll starts at tomorrow even though Enrollment predates today.
 SAVEPOINT i03_future_roll;
 SET ROLE schoolos_schema_owner;
+-- A correction successor may start tomorrow only if the original Roll's
+-- effective interval is ended exactly at the successor date. Keep retained
+-- history; overlapping roll assignments are forbidden by existing guards.
+UPDATE app_private.roll_allocations
+   SET effective_until=:'i03_t'::date+1,
+       ended_at=statement_timestamp(),
+       ended_by='11111111-1111-4111-8111-111111111111'
+ WHERE id='b9300000-0000-4000-8000-000000000011';
 INSERT INTO app_private.roll_allocations(id,enrollment_id,student_id,
  policy_revision_id,numeric_value,effective_from,supersedes_id,correction_reason,created_by)
 VALUES ('b9300000-0000-4000-8000-000000000012',
