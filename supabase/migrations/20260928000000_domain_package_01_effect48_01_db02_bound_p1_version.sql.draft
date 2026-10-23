@@ -1,0 +1,128 @@
+-- DB-02 I02: exact P1 version/route binding, no policy writes or public grants.
+-- Future APPROVAL APPLY/replay must pass the version ID recovered from the
+-- original persisted request/receipt, never a client-chosen version.
+-- Trusted command callers already own the Foundation SHARED authorization lock;
+-- this SELECT-only helper does not acquire a School/authorization lock late.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_roll_policy_p1_binding_current(
+  p_school uuid,p_bound_version uuid,p_bound_route text)
+RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE selected record;
+BEGIN
+  IF pg_catalog.current_setting('transaction_isolation') IS DISTINCT FROM 'read committed'
+     OR p_school IS NULL OR p_bound_version IS NULL
+     OR p_bound_route IS NULL OR p_bound_route NOT IN ('DIRECT','APPROVAL')
+     OR app_private.current_principal_id() IS NULL THEN
+    RETURN false;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM app_private.school_profiles sp WHERE sp.id=p_school) THEN
+    RETURN false;
+  END IF;
+  SELECT * INTO selected FROM app_private.d1_roll_policy_p1_version(p_school);
+  IF NOT FOUND OR selected.error_code IS NOT NULL THEN RETURN false; END IF;
+  RETURN (selected.school_id IS NOT DISTINCT FROM p_school
+      AND selected.policy_version_id IS NOT DISTINCT FROM p_bound_version
+      AND selected.route_mode IS NOT DISTINCT FROM p_bound_route) IS TRUE;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_p1_binding_current(uuid,uuid,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+-- Only the Student-owned non-activating command context may call the verifier.
+-- Workflow APPLY integration needs separate reviewed authority+EXECUTE wiring.
+
+-- Replace only the Student-owned I01 context to consume the exact guard both
+-- before canonical digest creation and after School lock waits. No new RPC.
+CREATE OR REPLACE FUNCTION app_private.d1_roll_policy_command_context(
+  p_school uuid,p_phase text,p_key text,p_action text,
+  p_source uuid,p_old_revision integer,p_old_mode text,
+  p_old_start bigint,p_old_from date,p_new_mode text,
+  p_new_start bigint,p_reason text)
+RETURNS TABLE(actor_id uuid,operation_id uuid,policy_version_id uuid,
+  route_mode text,school_id uuid,command_kind text,intent_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  chosen record;
+  receipt record;
+  intent jsonb;
+  kind text;
+BEGIN
+  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'D1 Roll Policy context requires READ COMMITTED';
+  END IF;
+  IF p_school IS NULL OR p_phase IS NULL
+     OR p_phase NOT IN ('DIRECT','SUBMIT')
+     OR p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200
+     OR p_action IS NULL OR p_action NOT IN ('INIT','REPLACE')
+     OR p_new_mode IS NULL OR p_new_mode NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
+     OR p_new_start IS NULL OR p_new_start<0 OR p_new_start>=9223372036854775807
+     OR p_reason IS NULL OR pg_catalog.btrim(p_reason)=''
+     OR (p_action='INIT' AND (p_source IS NOT NULL
+         OR p_old_revision IS NOT NULL OR p_old_mode IS NOT NULL
+         OR p_old_start IS NOT NULL OR p_old_from IS NOT NULL))
+     OR (p_action='REPLACE' AND (p_source IS NULL
+         OR p_old_revision IS NULL OR p_old_revision<1
+         OR p_old_mode IS NULL OR p_old_mode NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
+         OR p_old_start IS NULL OR p_old_start<0
+         OR p_old_from IS NULL)) THEN
+    RAISE EXCEPTION 'D1 Roll Policy typed command context invalid';
+  END IF;
+
+  -- Frozen global Foundation authorization lock is always first.
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+  SELECT * INTO chosen FROM app_private.d1_roll_policy_p1_version(p_school);
+  IF NOT FOUND OR chosen.error_code IS NOT NULL OR chosen.policy_version_id IS NULL
+    THEN RAISE EXCEPTION 'D1 Roll Policy global route unavailable'; END IF;
+  IF (p_phase='DIRECT' AND chosen.route_mode IS DISTINCT FROM 'DIRECT')
+     OR (p_phase='SUBMIT' AND chosen.route_mode IS DISTINCT FROM 'APPROVAL') THEN
+    RAISE EXCEPTION 'D1 Roll Policy command phase does not match route';
+  END IF;
+  kind:=CASE p_phase WHEN 'DIRECT' THEN 'student.roll_policy.change'
+             ELSE 'request.submit' END;
+  -- Selected version is SERVER derived; the client cannot pick the UUID.
+  intent:=pg_catalog.jsonb_build_array(p_school,p_action,p_source,
+     p_old_revision,p_old_mode,p_old_start,p_old_from,NULL::date,
+     p_new_mode,p_new_start,p_reason,chosen.policy_version_id);
+
+  -- Recheck server-derived immutable Foundation P1 UUID *before* freezing
+  -- the canonical receipt intent; route text alone is not enough.
+  IF app_private.d1_roll_policy_p1_binding_current(
+      p_school,chosen.policy_version_id,chosen.route_mode) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Roll Policy global route changed';
+  END IF;
+
+  -- Delegates the exact fixed-shape / verified Principal / SHA-256/JCS and
+  -- idempotency advisory locks to the unchanged evidence-writer function.
+  SELECT * INTO receipt FROM app_private.d1_roll_policy_receipt_context(
+     kind,p_key,intent);
+  IF NOT FOUND OR receipt.actor_id IS NULL
+     OR receipt.operation_id IS NULL OR receipt.intent_hash IS NULL
+     OR pg_catalog.octet_length(receipt.intent_hash)<>32 THEN
+    RAISE EXCEPTION 'D1 Roll Policy receipt context invalid';
+  END IF;
+  -- No receipt replay until I06 historical result-row proof is implemented.
+  IF receipt.receipt_id IS NOT NULL THEN
+    RAISE EXCEPTION 'D1 Roll Policy historical replay not yet implemented';
+  END IF;
+  -- School is the same serialization anchor already used by PLACE/MOVE.
+  IF app_private.d1_enrollment_place_lock_school(p_school) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Roll Policy School not found';
+  END IF;
+  IF app_private.d1_roll_policy_actor_all_authorized(
+      p_school,receipt.actor_id) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Roll Policy School ALL authority denied';
+  END IF;
+  -- Verify an unchanged exact global P1 identity after the School wait.
+  IF app_private.d1_roll_policy_p1_binding_current(
+      p_school,chosen.policy_version_id,chosen.route_mode) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'D1 Roll Policy global route changed';
+  END IF;
+  RETURN QUERY SELECT receipt.actor_id,receipt.operation_id,
+    chosen.policy_version_id,chosen.route_mode,p_school,kind,receipt.intent_hash;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_command_context(
+  uuid,text,text,text,uuid,integer,text,bigint,date,text,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+-- Owner-only, no Workflow/direct client EXECUTE until separate I08 approval.
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
