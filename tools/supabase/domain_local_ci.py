@@ -481,6 +481,8 @@ def _main() -> int:
         run_db01_cross_campus_roll_history_replay(container, run_psql)
         from domain_db01_p1_review_race_ci import run_db01_p1_review_live_races
         run_db01_p1_review_live_races(container, run_psql, ROOT)
+        from domain_db01_p1_apply_race_ci import run_db01_p1_apply_live_races
+        run_db01_p1_apply_live_races(container, run_psql, ROOT)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
