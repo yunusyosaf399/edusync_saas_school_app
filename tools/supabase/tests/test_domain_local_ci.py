@@ -552,6 +552,18 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertLess(driver.index("run_db01_p1_review_live_races(container"),
                         driver.index("run_db01_p1_apply_live_races(container"))
 
+    def test_db01_p1_apply_vs_move_end_real_pg_is_gated_after_prior_approval_races(self):
+        source=(runtime.ROOT/"tools/supabase/domain_db01_p1_apply_move_end_ci.py").read_text()
+        driver=(runtime.ROOT/"tools/supabase/domain_local_ci.py").read_text()
+        self.assertIn('for case in ("am","ma","ae","ea")', source)
+        self.assertIn("_wait_for_block(", source)
+        self.assertIn("app.d1_move_student_enrollment(", source)
+        self.assertIn("app.d1_end_student_enrollment(", source)
+        self.assertIn('"INVALIDATED"', source)
+        self.assertIn("run_db01_p1_apply_vs_move_end_races(container, run_psql, ROOT)",driver)
+        self.assertLess(driver.index("run_db01_p1_apply_live_races(container"),
+                        driver.index("run_db01_p1_apply_vs_move_end_races(container"))
+
     def test_db01_p1_review_two_backend_race_only_after_prior_protected_races(self):
         source_path = runtime.ROOT / "tools/supabase/domain_db01_p1_review_race_ci.py"
         source = source_path.read_text(encoding="utf-8")
