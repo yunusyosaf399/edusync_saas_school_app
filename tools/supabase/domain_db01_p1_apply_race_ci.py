@@ -17,7 +17,11 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "supabase/tests/domain/fixtures/db01_p1_review_two_backend_setup.sql"
 CASES = {"ra":("d1070000","d1970000"),
          "ar":("d1080000","d1980000"),
-         "aa":("d1090000","d1990000")}
+         "aa":("d1090000","d1990000"),
+         "am":("d10a0000","d19a0000"),
+         "ma":("d10b0000","d19b0000"),
+         "ae":("d10c0000","d19c0000"),
+         "ea":("d10d0000","d19d0000")}
 
 
 def _check(valid, label):
