@@ -52,14 +52,14 @@ class DomainLocalCITests(unittest.TestCase):
         runtime.validate_runtime_probe(observed)
 
     def test_runtime_inventory_private_helper_delta(self):
-        # DB-02 effect44_01 adds one more authz-reader private P1 version selector.
+        # I01 adds two private definers, no public command or new authenticated grant.\n        # DB-02 effect44_01 adds one more authz-reader private P1 version selector.
         # DB-02 effect43_01 adds exactly one private policy preflight.
         # Effect35_12 and DB-01 effect38_02 each add one reviewed private
         # Student-owned definer; public RPC, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 549)
-        self.assertEqual(expected["security_definers"], 531)
-        self.assertEqual(expected["private_functions"], 392)
+        self.assertEqual(expected["functions"], 551)
+        self.assertEqual(expected["security_definers"], 533)
+        self.assertEqual(expected["private_functions"], 394)
         self.assertEqual(expected["app_functions"], 157)
         self.assertEqual(expected["authenticated_app_execute"], 157)
         self.assertEqual(expected["authenticated_private_execute"], 0)
