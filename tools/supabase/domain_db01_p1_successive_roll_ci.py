@@ -263,7 +263,11 @@ def run_db01_p1_successive_roll_date_boundaries(container,run_psql,root=ROOT):
             _receipt_evidence(cur,first_req)
             _receipt_evidence(cur,req2)
         reader.rollback()
-    _reject_submit(psycopg,student,first,new_num+3,
+    # Preserve the latest Student optimistic token so denial cannot be
+    # attributed merely to stale row_version; R1 itself is now historical.
+    superseded=list(first)
+    superseded[0]=final[0]
+    _reject_submit(psycopg,student,tuple(superseded),new_num+3,
                    "db01-p1-r2-obsolete-r1-source","STALE_R1_DENIED")
     _cross_school_probe(psycopg,student,final)
     print("D1_DB01_P1_R2_HISTORIC_REPLAY_POLICY_BOUNDARY_PASS earlier R1 "
