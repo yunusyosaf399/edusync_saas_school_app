@@ -17,9 +17,8 @@ BEGIN
      OR app_private.current_principal_id() IS NULL THEN
     RETURN false;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM app_private.school_profiles sp WHERE sp.id=p_school) THEN
-    RETURN false;
-  END IF;
+  -- School existence is checked by the existing School-lock anchor in I01;
+  -- never widen the Student executor's direct private-table SELECT grants.
   SELECT * INTO selected FROM app_private.d1_roll_policy_p1_version(p_school);
   IF NOT FOUND OR selected.error_code IS NOT NULL THEN RETURN false; END IF;
   RETURN (selected.school_id IS NOT DISTINCT FROM p_school
