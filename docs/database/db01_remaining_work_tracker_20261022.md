@@ -10,6 +10,10 @@
 - Authenticated **P1 APPROVAL SUBMIT** request without Roll mutation; exact source snapshot, protected reviewer candidate selection, authenticated idempotent request receipt/audit; `33/33` new pgTAP assertions and `3,489` aggregate domain assertions, [D1 run #39718738669](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39718738669).
 - All these changes remain `.sql.draft`, with operation and permission **disabled** in the frozen catalog.
 
+## Product owner decision — initial Roll generation (2026-10-23)
+
+**APPROVED Option A:** Initial Roll numbers are generated automatically, server-side, at accepted initial Enrollment placement; staff must not type a manual initial Roll number. A separate authorized `student.roll.correct` request may later propose a corrected numeric value subject to exact current policy, independent reviewer where configured, collision prevention and append-only history. This decision does not alter DB02 policy modes or authorize production changes. [Frozen owner decision](db01_owner_decision_automatic_initial_roll_20261023.md).
+
 ## Outstanding task register (status means verified accepted, not source committed)
 
 | Task ID | Deliverable and acceptance gate | Initial status |
