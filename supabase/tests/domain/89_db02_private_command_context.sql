@@ -23,7 +23,7 @@ SELECT ok((SELECT proconfig @> ARRAY['search_path=pg_catalog, pg_temp'] FROM pg_
  WHERE oid='app_private.d1_roll_policy_receipt_context(text,text,jsonb)'::regprocedure),
  'fixed receipt wrapper search path');
 SELECT ok((SELECT proconfig @> ARRAY['search_path=pg_catalog, pg_temp'] FROM pg_catalog.pg_proc
- WHERE oid='app_private.d1_roll_policy_command_context(uuid,text,text,text,uuid,integer,text,bigint,text,bigint,text)'::regprocedure),
+ WHERE oid='app_private.d1_roll_policy_command_context(uuid,text,text,text,uuid,integer,text,bigint,date,text,bigint,text)'::regprocedure),
  'fixed context search path');
 SELECT is(has_function_privilege('anon',
  'app_private.d1_roll_policy_receipt_context(text,text,jsonb)','EXECUTE'),false,'anon cannot call private receipt wrapper');
