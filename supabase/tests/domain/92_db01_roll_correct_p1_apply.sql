@@ -391,6 +391,15 @@ VALUES('b1960000-0000-4000-8000-000000000045',
  'b1000000-0000-4000-8000-000000000041',
  'DB01-06-B','DB01-06 unrelated Section',2,30,'OPEN',
  '11111111-1111-4111-8111-111111111111');
+-- Every live Section requires its own exactly matching effective capacity
+-- revision when the Foundation deferred capacity projection is checked.
+INSERT INTO app_private.capacity_revisions(
+ id,class_offering_id,section_offering_id,old_capacity,new_capacity,
+ effective_on,reason,created_by)
+VALUES ('b1960000-0000-4000-8000-000000000047',
+ NULL,'b1960000-0000-4000-8000-000000000045',
+ NULL,30,CURRENT_DATE-20,'DB01-06 synthetic alternate Section initial capacity',
+ '11111111-1111-4111-8111-111111111111');
 RESET ROLE;
 
 SAVEPOINT db01_06_wrong_campus;
@@ -959,10 +968,14 @@ SELECT ok(NOT EXISTS (
  SELECT 1 FROM pg_catalog.pg_proc p
  JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
  WHERE n.nspname='app_private'
+ -- Match the exact D1 runtime-catalog guard: Foundation-private functions
+ -- outside this protected domain are not silently counted as DB01 grants.
+ AND (left(p.proname,3)='d1_' OR p.proname IN
+   ('guard_assignment_permission_scopes','guard_scope_interval'))
  AND (pg_catalog.has_function_privilege('authenticated',p.oid,'EXECUTE')
    OR pg_catalog.has_function_privilege('anon',p.oid,'EXECUTE')
    OR pg_catalog.has_function_privilege('service_role',p.oid,'EXECUTE'))),
- 'every private function remains EXECUTE-denied to all three client roles');
+ 'every domain D1 private function remains EXECUTE-denied to client roles');
 
 SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
