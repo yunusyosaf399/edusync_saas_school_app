@@ -2,6 +2,8 @@
 -- Owned exclusively by schoolos_student_executor. Two existing private
 -- signatures are updated IN PLACE; no new tables/functions/client grants.
 -- Draft-only; no authenticated RPC, policy mutation, effect or event enabled.
+-- School ancestry comes from existing academic-owned private destination
+-- projection; never grant Student direct SELECT on academic Offering tables.
 GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
 SET ROLE schoolos_student_executor;
 CREATE OR REPLACE FUNCTION app_private.d1_roll_policy_change_preflight(
@@ -59,9 +61,9 @@ BEGIN
   -- permission to reinterpret a future-effective accepted Enrollment.
   IF EXISTS (
     SELECT 1 FROM app_private.enrollments e
-    JOIN app_private.section_offerings so ON so.id=e.section_offering_id
-    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
-    WHERE co.school_id=p_school AND e.effective_from>=today
+    JOIN LATERAL app_private.d1_enrollment_place_destination(
+      e.section_offering_id) destination ON true
+    WHERE destination.school_id=p_school AND e.effective_from>=today
   ) THEN
     RETURN QUERY SELECT p_school,today,NULL::uuid,NULL::integer,
       NULL::text,0::bigint,'D1_ROLL_POLICY_INIT_FUTURE_ENROLLMENT'::text; RETURN;
@@ -118,10 +120,10 @@ BEGIN
     SELECT 1 FROM app_private.roll_allocations a
     JOIN app_private.roll_policy_revisions rp ON rp.id=a.policy_revision_id
     JOIN app_private.enrollments e ON e.id=a.enrollment_id
-    JOIN app_private.section_offerings so ON so.id=e.section_offering_id
-    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+    JOIN LATERAL app_private.d1_enrollment_place_destination(
+      e.section_offering_id) destination ON true
     WHERE a.effective_from>=today
-      AND (co.school_id=p_school OR rp.school_id=p_school)
+      AND (destination.school_id=p_school OR rp.school_id=p_school)
   ) THEN
     RETURN QUERY SELECT p_school,today,pol.id,pol.revision,pol.mode,
       0::bigint,'D1_ROLL_POLICY_REPLACE_FUTURE_ROLL'::text; RETURN;
@@ -130,9 +132,9 @@ BEGIN
   -- Do not wait for a deferred coverage trigger or invent a new number.
   IF EXISTS (
     SELECT 1 FROM app_private.enrollments e
-    JOIN app_private.section_offerings so ON so.id=e.section_offering_id
-    JOIN app_private.class_offerings co ON co.id=so.class_offering_id
-    WHERE co.school_id=p_school AND e.effective_from>=today
+    JOIN LATERAL app_private.d1_enrollment_place_destination(
+      e.section_offering_id) destination ON true
+    WHERE destination.school_id=p_school AND e.effective_from>=today
   ) THEN
     RETURN QUERY SELECT p_school,today,pol.id,pol.revision,pol.mode,
       0::bigint,'D1_ROLL_POLICY_REPLACE_FUTURE_ENROLLMENT'::text; RETURN;
