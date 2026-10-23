@@ -38,3 +38,11 @@ The **tested two-parent integration code** is `79e4aedefea03e1d4e874171115638b4a
 **Accepted gate:** DB01+DB02 I05 source/SQL/CI composition coexists and all existing enrolled Roll/allocator/approval/race tests pass in one disposable local database. DB02's I05 transition remains a **private rollback-fixture effect**, not a protected authenticated public policy command. This result is **not** a new two-backend DB01 APPLY versus DB02 REPLACE race and does **not** exercise an end-to-end after-cutover correction by the same Student. That gap and DB03/DB04 deployment/interface gates remain blocked exactly as above; no independent security signoff, hosted migration or production rollout was performed.
 
 **Evidence binding:** This report is documentation added *after* the tested SHA; any documentation-only head has its own CI status. The acceptance belongs to `79e4aedefea03e1d4e874171115638b4a45a7143` and both tests were verified on that exact SHA.
+
+## R10-01 owner decision and regression candidate
+
+On 23 October 2026 the owner chose to keep rejecting correction of a current Roll whose stored policy has retired. The Student must first have a Roll under the new policy; the old Roll and policy identity remain retained. No automatic policy rebasing or historical number rewrite is permitted. This resolves the business choice in R10-01, while DB02 still owns the protected policy-change command and transition behavior.
+
+The follow-up integration branch adds four rollback-only assertions to DB01 suite #92: after closing the stored source policy at the trusted School-local date, authenticated APPROVED→APPLY must invalidate the request, retain the original Roll, and create neither an approval application nor a successful APPLY receipt. This uses a schema-owner fixture to establish the cutover; it does not claim a protected DB02 REPLACE command or a two-backend CHANGE↔APPLY race. The new plan is 117 assertions and the combined manifest expects 3,910. These numbers are **pending exact-head PostgreSQL CI** until the branch workflow succeeds.
+
+DB01-10 remains blocked on DB02 I06–I11, the new academic Offering pool hook, the cross-operation races, installed DB03/DB04 handoffs, and independent security review. The original 3,906/3,906 result above belongs only to the prior tested SHA.

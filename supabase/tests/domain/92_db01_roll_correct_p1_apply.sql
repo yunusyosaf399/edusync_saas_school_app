@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(113);
+SELECT plan(117);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -748,6 +748,33 @@ SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_co
  'revoked independent reviewer cannot authorize APPLY');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT db01_apply_reviewer_grant_revoked;
+
+-- Owner-selected DB01/DB02 boundary: a retained current Roll under a
+-- retired source revision cannot be corrected after School-local cutover.
+SAVEPOINT db01_apply_stored_roll_policy_retired;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.roll_policy_revisions SET effective_until=
+ app_private.d1_roll_business_date('22222222-2222-4222-8222-222222222222')
+ WHERE id='b1000000-0000-4000-8000-000000000049';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_roll_correction(
+ :'submitted_request_id'::uuid,:'r2_request_version'::bigint,
+ 'db01-retired-stored-roll-policy') \gset retired_
+RESET ROLE;
+SELECT is(:'retired_request_state'::text,'INVALIDATED'::text,
+ 'retired stored Roll policy invalidates the approved correction');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'),1::bigint,
+ 'retired-policy denial retains R0 without a corrected successor');
+SELECT is((SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id=:'submitted_request_id'::uuid),0::bigint,
+ 'retired-policy denial creates no approval application');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'
+   AND state='SUCCEEDED'),0::bigint,
+ 'retired-policy denial cannot leave a successful APPLY receipt');
+ROLLBACK TO SAVEPOINT db01_apply_stored_roll_policy_retired;
 
 SAVEPOINT db01_apply_source_student_stale;
 SET ROLE schoolos_schema_owner;
