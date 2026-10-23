@@ -192,10 +192,20 @@ ROLLBACK TO SAVEPOINT i03_future_roll;
 -- Separate accepted Enrollment begins today, but roll allocation is missing.
 SAVEPOINT i03_future_enrollment;
 SET ROLE schoolos_schema_owner;
+-- Another accepted Student may have a future primary Enrollment while the
+-- historical student's current Enrollment crosses today. Do not fabricate
+-- overlapping active primary placements for a single Student.
+INSERT INTO app_private.students(id,person_id,school_student_id,admission_number,
+ admission_serial,admitted_on,current_status,created_by)
+VALUES ('b9300000-0000-4000-8000-000000000014',
+ '10000000-0000-4000-8000-000000000002',
+ 'DB02-I03-FUTURE-STUDENT','DB02-I03-FUTURE-ADMISSION',902,
+ :'i03_t'::date-10,'ACTIVE',
+ '11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.enrollments(id,student_id,section_offering_id,
  placement_kind,entry_kind,placement_state,effective_from,reason,created_by)
 VALUES ('b9300000-0000-4000-8000-000000000013',
- 'b9300000-0000-4000-8000-000000000001',
+ 'b9300000-0000-4000-8000-000000000014',
  'b9300000-0000-4000-8000-000000000006',
  'PRIMARY','INITIAL','ACTIVE',:'i03_t'::date,
  'I03 synthetic no-Roll future Enrollment',
