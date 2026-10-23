@@ -28,6 +28,8 @@ DOMAIN_TESTS.append(["86_db02_roll_policy_receipt_allowlist.sql",27])
 DOMAIN_TESTS.append(["89_db02_private_command_context.sql",28])
 # I02: current exact P1 UUID/route guard, no command mutation.
 DOMAIN_TESTS.append(["90_db02_exact_p1_bound_version.sql",24])
+# I03: locked today-only School source and committed future Roll/Enrollment.
+DOMAIN_TESTS.append(["91_db02_locked_future_commitments.sql",18])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
