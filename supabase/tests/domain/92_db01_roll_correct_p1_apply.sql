@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(85);
+SELECT plan(109);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -287,6 +287,220 @@ SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_requ
 SELECT is((SELECT proposed_numeric_value FROM app.d1_read_student_roll_correction_request(
  :'submitted_request_id'::uuid)),NULL::bigint,'reviewer nomination is not Roll history permission');
 RESET ROLE;
+
+-- DB01-06: Same Person, unbound Principal and caller impersonation guards.
+-- All identity/scope modifications are synthetic and rolled back; authenticated
+-- server Principal must always follow the trusted Auth binding, not a SQL arg.
+SAVEPOINT db01_06_same_person_reviewer;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.principals SET person_id=(
+ SELECT person_id FROM app_private.principals
+ WHERE id='55555555-5555-4555-8555-555555555555')
+WHERE id='b1890000-0000-4000-8000-000000000091';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'a second Principal for the requester Person is not an independent reviewer');
+SELECT throws_ok(pg_catalog.format(
+ $q$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'same Person denied','db01-06-same-person')$q$,
+ :'submitted_request_id',:'submitted_request_version'::bigint),
+ 'P0001'::char(5),NULL::text,
+ 'same-Person reviewer cannot approve a request they effectively submitted');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_06_same_person_reviewer;
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REVIEWER'::text,
+ 'restored distinct-Person reviewer retains nominated visibility');
+RESET ROLE;
+SELECT is(app_private.d1_roll_correct_request_participant(
+ :'submitted_request_id'::uuid,'55555555-5555-4555-8555-555555555555'::uuid),
+ NULL::text,'forged actor argument cannot override current authenticated Principal');
+
+-- Deliberately unbound Auth subject. These SET LOCAL simulations verify DB
+-- binding checks, not JWT cryptographic signature verification at the gateway.
+SELECT pg_catalog.set_config('schoolos_test.db01_06_reviewer_sub',
+ current_setting('request.jwt.claim.sub'),true);
+SELECT pg_catalog.set_config('schoolos_test.db01_06_reviewer_claims',
+ current_setting('request.jwt.claims'),true);
+SELECT pg_catalog.set_config('request.jwt.claim.sub',
+ 'b1960000-0000-4000-8000-000000000099',true);
+SELECT pg_catalog.set_config('request.jwt.claims',
+ pg_catalog.jsonb_build_object('sub',
+ 'b1960000-0000-4000-8000-000000000099','role','authenticated',
+ 'iat',extract(epoch FROM pg_catalog.clock_timestamp())::bigint,
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'unbound authenticated subject reveals no protected correction request');
+RESET ROLE;
+SELECT pg_catalog.set_config('request.jwt.claim.sub',
+ current_setting('schoolos_test.db01_06_reviewer_sub'),true);
+SELECT pg_catalog.set_config('request.jwt.claims',
+ current_setting('schoolos_test.db01_06_reviewer_claims'),true);
+SELECT is(app_private.current_principal_id(),
+ 'b1890000-0000-4000-8000-000000000091'::uuid,
+ 'trusted reviewer binding restored after unbound-subject test');
+
+-- Campus/Section scope tests use a genuine other Campus and other Section.
+-- A role assignment/grant by itself grants no access outside its typed scope.
+SET ROLE schoolos_schema_owner;
+INSERT INTO app.campuses(id,school_id,code,name,state,created_by)
+VALUES ('b1960000-0000-4000-8000-000000000041',
+ '22222222-2222-4222-8222-222222222222','DB01-06-OTHER',
+ 'DB01-06 unrelated Campus','ACTIVE',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.section_offerings(
+ id,class_offering_id,campus_id,code,label,display_order,capacity,state,created_by)
+VALUES('b1960000-0000-4000-8000-000000000045',
+ 'b1000000-0000-4000-8000-000000000044',
+ 'b1000000-0000-4000-8000-000000000041',
+ 'DB01-06-B','DB01-06 unrelated Section',2,30,'OPEN',
+ '11111111-1111-4111-8111-111111111111');
+RESET ROLE;
+
+SAVEPOINT db01_06_wrong_campus;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000095';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.roll.approve')
+ AND scope_kind='CAMPUS' AND resolver_key='DIRECT';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,campus_id,valid_from,created_by)
+SELECT 'b1960000-0000-4000-8000-000000000051',
+ 'b1890000-0000-4000-8000-000000000093',g.id,g.role_id,g.permission_id,c.id,
+ 'CAMPUS','DIRECT','b1960000-0000-4000-8000-000000000041',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1890000-0000-4000-8000-000000000094'
+ AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT is(app_private.d1_roll_correct_authorized(
+ 'b1890000-0000-4000-8000-000000000091','student.roll.approve',
+ 'b1000000-0000-4000-8000-000000000045',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),false,
+ 'reviewer Campus grant for another Campus cannot approve this Section');
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'wrong-Campus reviewer cannot inspect protected P1 request');
+SELECT throws_ok(pg_catalog.format(
+ $q$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'wrong Campus denied','db01-06-wrong-campus')$q$,
+ :'submitted_request_id',:'submitted_request_version'::bigint),
+ 'P0001'::char(5),NULL::text,
+ 'wrong-Campus reviewer cannot write approved review evidence');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_06_wrong_campus;
+
+SAVEPOINT db01_06_matching_campus;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000095';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.roll.approve')
+ AND scope_kind='CAMPUS' AND resolver_key='DIRECT';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,campus_id,valid_from,created_by)
+SELECT 'b1960000-0000-4000-8000-000000000052',
+ 'b1890000-0000-4000-8000-000000000093',g.id,g.role_id,g.permission_id,c.id,
+ 'CAMPUS','DIRECT','b1000000-0000-4000-8000-000000000041',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1890000-0000-4000-8000-000000000094'
+ AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT is(app_private.d1_roll_correct_authorized(
+ 'b1890000-0000-4000-8000-000000000091','student.roll.approve',
+ 'b1000000-0000-4000-8000-000000000045',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),true,
+ 'matching Campus-only grant permits current review scope');
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REVIEWER'::text,
+ 'matching Campus-only grant preserves legitimate nominee visibility');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_06_matching_campus;
+
+SAVEPOINT db01_06_wrong_section;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000095';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.roll.approve')
+ AND scope_kind='SECTION' AND resolver_key='DIRECT';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,section_offering_id,valid_from,created_by)
+SELECT 'b1960000-0000-4000-8000-000000000053',
+ 'b1890000-0000-4000-8000-000000000093',g.id,g.role_id,g.permission_id,c.id,
+ 'SECTION','DIRECT','b1960000-0000-4000-8000-000000000045',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1890000-0000-4000-8000-000000000094'
+ AND c.scope_kind='SECTION' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT is(app_private.d1_roll_correct_authorized(
+ 'b1890000-0000-4000-8000-000000000091','student.roll.approve',
+ 'b1000000-0000-4000-8000-000000000045',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),false,
+ 'other Section of same Class never grants review of source Section');
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'wrong-Section current reviewer cannot read source request');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_06_wrong_section;
+
+SAVEPOINT db01_06_matching_section;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000095';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.roll.approve')
+ AND scope_kind='SECTION' AND resolver_key='DIRECT';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,section_offering_id,valid_from,created_by)
+SELECT 'b1960000-0000-4000-8000-000000000054',
+ 'b1890000-0000-4000-8000-000000000093',g.id,g.role_id,g.permission_id,c.id,
+ 'SECTION','DIRECT','b1000000-0000-4000-8000-000000000045',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1890000-0000-4000-8000-000000000094'
+ AND c.scope_kind='SECTION' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT is(app_private.d1_roll_correct_authorized(
+ 'b1890000-0000-4000-8000-000000000091','student.roll.approve',
+ 'b1000000-0000-4000-8000-000000000045',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),true,
+ 'matching exact Section scope permits reviewer for source Section');
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REVIEWER'::text,
+ 'matching Section current role permits typed participant read');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_06_matching_section;
+SELECT is((SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ WHERE s.request_id=:'submitted_request_id'::uuid),0::bigint,
+ 'failed impersonation and cross-scope reviews create zero review rows');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid
+ AND command_kind='request.review'),0::bigint,
+ 'blocked scope/Person/subject attempts create zero review receipts');
 
 SET ROLE authenticated;
 SELECT * FROM app.d1_review_student_roll_correction(
@@ -596,6 +810,44 @@ SELECT is((SELECT count(*) FROM app_private.outbox_events o
  WHERE rc.request_id=:'submitted_request_id'::uuid AND o.event_type='enrollment.roll_corrected'
    AND NOT(o.payload ? 'new_numeric_value')),1::bigint,
  'one minimized correction outbox event without Roll number disclosure');
+-- DB01-06 real success evidence minimization. No display Roll number,
+-- private reason, or source history should leak into broad audit/outbox data.
+SELECT is((SELECT count(*) FROM app_private.audit_events a
+ WHERE a.approval_request_id=:'submitted_request_id'::uuid
+ AND a.authority_evidence->>'phase'='REVIEW'),2::bigint,
+ 'exactly two independent review audit witnesses are recorded');
+SELECT ok(NOT EXISTS (
+ SELECT 1 FROM app_private.audit_events a
+ WHERE a.approval_request_id=:'submitted_request_id'::uuid
+ AND (a.details::text LIKE '%Requested exact reason%'
+   OR a.details::text LIKE '%12001%' OR a.details::text LIKE '%12009%'
+   OR a.details ?| ARRAY['source_numeric_value','proposed_numeric_value',
+                         'old_numeric_value','new_numeric_value','correction_reason'])),
+ 'all review/APPLY broad audit details omit reason and numeric Roll identity');
+SELECT ok(NOT EXISTS (
+ SELECT 1 FROM app_private.outbox_events ev
+ JOIN app_private.command_receipts rc ON rc.id=ev.command_receipt_id
+ WHERE rc.request_id=:'submitted_request_id'::uuid
+ AND (ev.payload ?| ARRAY['source_numeric_value','proposed_numeric_value',
+                       'old_numeric_value','new_numeric_value','correction_reason',
+                       'request_reason']
+   OR ev.payload::text LIKE '%Requested exact reason%'
+   OR ev.payload::text LIKE '%12001%' OR ev.payload::text LIKE '%12009%')),
+ 'full Roll correction outbox payload omits source/proposed number and private reason');
+SELECT is((SELECT count(*) FROM app_private.outbox_events ev
+ JOIN app_private.command_receipts rc ON rc.id=ev.command_receipt_id
+ WHERE rc.request_id=:'submitted_request_id'::uuid
+ AND ev.event_type='enrollment.roll_corrected'),1::bigint,
+ 'approved Roll correction emits precisely one minimized event');
+SELECT ok(NOT EXISTS (
+ SELECT 1 FROM app_private.command_receipts rc
+ WHERE rc.request_id=:'submitted_request_id'::uuid
+ AND rc.command_kind='request.review'
+ AND (rc.result_summary ?| ARRAY['source_numeric_value','proposed_numeric_value',
+    'old_numeric_value','new_numeric_value','correction_reason','request_reason']
+ OR rc.result_summary::text LIKE '%Requested exact reason%')),
+ 'reviewer receipts disclose only typed decision/state and no Roll numbers');
+
 -- DB01-04: exact same-key, same request-version replay MUST return the
 -- original immutable result, never invoke the Roll effect for a second time.
 SET ROLE authenticated;
@@ -656,6 +908,29 @@ SELECT is((SELECT request_state FROM app.d1_read_student_roll_correction_request
 SELECT is((SELECT proposed_numeric_value FROM app.d1_read_student_roll_correction_request(
  :'submitted_request_id'::uuid)),NULL::bigint,'requester did not inherit administrator history access');
 RESET ROLE;
+
+-- DB01-06 private EXECUTE matrix: all three client roles denied on the
+-- independent reviewer, protected APPLY, and evidence helper entrypoints.
+SELECT ok(NOT EXISTS (
+ SELECT 1 FROM unnest(ARRAY['anon','authenticated','service_role']) AS roles(role_name)
+ CROSS JOIN unnest(ARRAY[
+  'app_private.d1_roll_correct_authorized(uuid,text,uuid,uuid)',
+  'app_private.d1_roll_correct_policy(uuid)',
+  'app_private.d1_roll_correct_request_participant(uuid,uuid)',
+  'app_private.d1_roll_correct_reviewer_candidates(uuid,uuid)',
+  'app_private.d1_roll_correct_apply_invalidated_witness(uuid,uuid,uuid)',
+  'app_private.d1_roll_correct_apply_invalidated_receipt(uuid,uuid,text,bytea,uuid,bigint,bigint,bigint,uuid,uuid)'
+ ]) AS f(signature)
+ WHERE pg_catalog.has_function_privilege(roles.role_name,f.signature,'EXECUTE')),
+ 'anon/authenticated/service_role cannot EXECUTE any sampled private DB01 review, read, or APPLY helpers');
+SELECT ok(NOT EXISTS (
+ SELECT 1 FROM pg_catalog.pg_proc p
+ JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='app_private'
+ AND (pg_catalog.has_function_privilege('authenticated',p.oid,'EXECUTE')
+   OR pg_catalog.has_function_privilege('anon',p.oid,'EXECUTE')
+   OR pg_catalog.has_function_privilege('service_role',p.oid,'EXECUTE'))),
+ 'every private function remains EXECUTE-denied to all three client roles');
 
 SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
