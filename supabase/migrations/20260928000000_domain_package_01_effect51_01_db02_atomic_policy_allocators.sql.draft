@@ -3,7 +3,7 @@
 -- School-locked transition; never grant client, Workflow or PUBLIC EXECUTE.
 SET ROLE schoolos_schema_owner;
 CREATE FUNCTION app_private.d1_roll_policy_provision_revision_pools(
- p_school uuid,p_revision uuid,p_actor uuid)
+ p_school uuid,p_revision uuid,p_actor uuid,p_trusted_date date)
 RETURNS integer LANGUAGE plpgsql VOLATILE SECURITY DEFINER
 SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE
@@ -17,7 +17,7 @@ DECLARE
   total integer:=0;
   eligible boolean;
 BEGIN
-  IF p_school IS NULL OR p_revision IS NULL OR p_actor IS NULL
+  IF p_school IS NULL OR p_revision IS NULL OR p_actor IS NULL OR p_trusted_date IS NULL
      OR p_actor IS DISTINCT FROM app_private.current_principal_id()
      OR pg_catalog.current_setting('transaction_isolation')<>'read committed' THEN
     RAISE EXCEPTION 'D1 roll policy allocator context invalid';
@@ -32,7 +32,7 @@ BEGIN
   IF NOT FOUND OR pol.created_by IS DISTINCT FROM p_actor
     OR pol.created_at IS DISTINCT FROM pg_catalog.transaction_timestamp()
     OR pol.effective_until IS NOT NULL OR pol.ended_at IS NOT NULL
-    OR pol.effective_from IS DISTINCT FROM app_private.d1_roll_business_date(p_school)
+    OR pol.effective_from IS DISTINCT FROM p_trusted_date
     OR pol.mode NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
     OR pol.start_value<0 OR pol.start_value>=9223372036854775807 THEN
     RAISE EXCEPTION 'D1 roll policy allocator revision not current transaction';
@@ -120,9 +120,9 @@ BEGIN
   RETURN total;
 END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_roll_policy_provision_revision_pools(
- uuid,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+ uuid,uuid,uuid,date) FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_provision_revision_pools(
- uuid,uuid,uuid) TO schoolos_student_executor;
+ uuid,uuid,uuid,date) TO schoolos_student_executor;
 RESET ROLE;
 
 -- Compose I05 with the I04 revision mutation in the SAME transaction.
@@ -193,7 +193,7 @@ BEGIN
   -- duplicate or failed pool INSERT aborts BOTH this revision and old
   -- source closure, before I06 can publish success evidence.
   PERFORM app_private.d1_roll_policy_provision_revision_pools(
-    p_school,new_id,actor);
+    p_school,new_id,actor,cutover);
   RETURN new_id;
 END $body$;
 RESET ROLE;
