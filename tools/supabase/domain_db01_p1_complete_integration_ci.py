@@ -190,8 +190,10 @@ def run_db01_p1_complete_approve_reject_integration(container,run_psql,root=ROOT
                  numeric_value FROM app_private.roll_allocations
                WHERE id=%s::uuid""",(result[3],))
             successor=cur.fetchone()
-            _check(successor is not None and successor[0]==
-                   (initial[4] if initial[4] else initial[0])
+            # Origin is an immutable inherited value and can be NULL for
+            # the first automatically issued P0 Roll. Never synthesize the
+            # R0 ID as the origin when the stored source did not have it.
+            _check(successor is not None and successor[0]==initial[4]
                    and successor[1]==initial[0] and successor[2]!=initial[1],
                    "ACCEPT_RETAINED_SOURCE_ORIGIN")
             cur.execute("""SELECT count(*) FROM app_private.approval_requests
