@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(77);
+SELECT plan(85);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -328,6 +328,122 @@ SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L
  :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
  'reviewer cannot APPLY without the requesters current Roll authority');
 RESET ROLE;
+-- DB01-05: a separate genuine Person is a scoped administrator only after
+-- BOTH correction scope and independent Roll-history scope are current.
+SELECT id AS admin_auth_id FROM auth.users
+ WHERE email='foundation-own-002@example.invalid' \gset db01admin_
+SET ROLE schoolos_schema_owner;
+INSERT INTO app_private.people(id,display_name,created_by) VALUES
+ ('b1950000-0000-4000-8000-000000000001','DB01 admin Person',
+  '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by) VALUES
+ ('b1950000-0000-4000-8000-000000000002','INDIVIDUAL',
+  'b1950000-0000-4000-8000-000000000001','DB01 scoped admin',
+  'ACTIVE','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principal_auth_bindings(
+ id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
+VALUES('b1950000-0000-4000-8000-000000000003',
+ 'b1950000-0000-4000-8000-000000000002','INDIVIDUAL',
+ :'db01admin_admin_auth_id'::uuid,pg_catalog.clock_timestamp(),
+ pg_catalog.to_timestamp(pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp()))),
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principal_role_assignments(
+ id,principal_id,principal_kind,role_id,role_family_only,context_kind,valid_from,created_by)
+VALUES('b1950000-0000-4000-8000-000000000004',
+ 'b1950000-0000-4000-8000-000000000002','INDIVIDUAL',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,'INDIVIDUAL',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+SELECT 'b1950000-0000-4000-8000-000000000005',
+ 'b1950000-0000-4000-8000-000000000004',
+ g.id,g.role_id,g.permission_id,c.id,'ALL','DIRECT',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1890000-0000-4000-8000-000000000010'
+ AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT pg_catalog.set_config('request.jwt.claim.sub',:'db01admin_admin_auth_id',true);
+SELECT pg_catalog.set_config('request.jwt.claims',
+ pg_catalog.jsonb_build_object('sub',:'db01admin_admin_auth_id','role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+  FROM app_private.principal_auth_bindings
+  WHERE id='b1950000-0000-4000-8000-000000000003'),
+ 'is_anonymous',false)::text,true);
+SELECT is(app_private.current_principal_id(),
+ 'b1950000-0000-4000-8000-000000000002'::uuid,
+ 'scoped administrator authenticated under own independent Person');
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'correction privilege alone cannot inspect other Persons request');
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.permissions SET state='ENABLED' WHERE code='student.roll_history.view';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions
+ WHERE code='student.roll_history.view') AND scope_kind='ALL' AND resolver_key='DIRECT';
+INSERT INTO app_private.role_permission_grants(
+ id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
+SELECT 'b1950000-0000-4000-8000-000000000006',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,id,family_safe,
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.permissions WHERE code='student.roll_history.view';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+SELECT 'b1950000-0000-4000-8000-000000000007',
+ 'b1950000-0000-4000-8000-000000000004',
+ g.id,g.role_id,g.permission_id,c.id,'ALL','DIRECT',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.role_permission_grants g
+ JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+ WHERE g.id='b1950000-0000-4000-8000-000000000006'
+ AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'AUTHORIZED_ADMIN'::text,
+ 'independent current two-permission staff may administer checked request');
+SELECT is((SELECT source_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),12001::bigint,
+ 'separate Roll-history authority unmasks source number only to eligible staff');
+SELECT is((SELECT proposed_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),12009::bigint,
+ 'separate Roll-history authority unmasks proposed number only to eligible staff');
+RESET ROLE;
+SAVEPOINT db01_read_admin_history_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1950000-0000-4000-8000-000000000007';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'history scope revocation removes independent admin viewing eligibility');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_read_admin_history_revoked;
+SAVEPOINT db01_read_admin_correct_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1950000-0000-4000-8000-000000000005';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'correction scope revocation denies admin despite active history grant');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_read_admin_correct_revoked;
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'),
+ 0::bigint,'request viewing never generates an APPLY receipt');
+
 SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.roll_apply_origin_sub'),true);
 SELECT set_config('request.jwt.claims',current_setting('schoolos_test.roll_apply_origin_claims'),true);
 SELECT is(app_private.current_principal_id(),
