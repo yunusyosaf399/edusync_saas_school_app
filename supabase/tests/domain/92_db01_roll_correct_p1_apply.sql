@@ -752,9 +752,12 @@ ROLLBACK TO SAVEPOINT db01_apply_reviewer_grant_revoked;
 -- Owner-selected DB01/DB02 boundary: a retained current Roll under a
 -- retired source revision cannot be corrected after School-local cutover.
 SAVEPOINT db01_apply_stored_roll_policy_retired;
+SET ROLE schoolos_academic_executor;
+SELECT app_private.d1_roll_business_date(
+ '22222222-2222-4222-8222-222222222222') AS cutover_date \gset db01_
+RESET ROLE;
 SET ROLE schoolos_schema_owner;
-UPDATE app_private.roll_policy_revisions SET effective_until=
- app_private.d1_roll_business_date('22222222-2222-4222-8222-222222222222')
+UPDATE app_private.roll_policy_revisions SET effective_until=:'db01_cutover_date'::date
  WHERE id='b1000000-0000-4000-8000-000000000049';
 RESET ROLE;
 SET ROLE authenticated;
