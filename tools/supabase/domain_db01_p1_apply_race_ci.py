@@ -98,14 +98,17 @@ def _apply(conn,request,version,key):
 
 
 def _approve(psycopg,request,version,case):
-    with closing(_local_connect(psycopg)) as reviewer:
-        for step,state in ((1,"PENDING"),(2,"APPROVED")):
+    # _reviewer_identity sets the restricted authenticated SQL role for the
+    # whole connection, so each verified P1 step needs a fresh postgres
+    # connection to resolve the Auth fixture before SET ROLE authenticated.
+    for step,state in ((1,"PENDING"),(2,"APPROVED")):
+        with closing(_local_connect(psycopg)) as reviewer:
             result=_review(reviewer,request,version+step-1,
                            "db01-p1-apply-"+case+"-review-"+str(step),
                            "Genuine independent configured P1 reviewer")
             _check(result==(request,version+step,state),
                    "REVIEW_STAGE_"+case+str(step))
-        reviewer.commit()
+            reviewer.commit()
     return version+2
 
 
