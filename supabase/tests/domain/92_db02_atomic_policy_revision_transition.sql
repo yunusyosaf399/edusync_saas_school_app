@@ -2,6 +2,9 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
+-- Transaction-local test harness: the Student executor needs schema usage
+-- solely to run pgTAP assertions while SET ROLE is active.
+GRANT USAGE ON SCHEMA extensions TO schoolos_student_executor;
 SELECT plan(27);
 \ir fixtures/command_actor.sql
 SELECT is((SELECT pg_catalog.pg_get_userbyid(proowner)::text FROM pg_catalog.pg_proc
