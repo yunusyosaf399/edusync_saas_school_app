@@ -22,7 +22,7 @@ DOMAIN_TESTS.extend([["75_db01_allocator_retained_history.sql",12],
                      ["85_db01_roll_correct_private_authority_p1.sql",22],
                      ["86_db01_roll_correct_canonical_command_context.sql",30],
                      ["87_db01_direct_atomic_success_evidence.sql",23],
-                     ["88_db01_roll_correct_direct_authenticated.sql",48],["89_db01_roll_correct_p1_approval_submit.sql",33],["90_db01_roll_correct_p1_review.sql",41],["91_db01_roll_correct_p1_live_multistep.sql",43],["92_db01_roll_correct_p1_apply.sql",109]])
+                     ["88_db01_roll_correct_direct_authenticated.sql",48],["89_db01_roll_correct_p1_approval_submit.sql",33],["90_db01_roll_correct_p1_review.sql",41],["91_db01_roll_correct_p1_live_multistep.sql",43],["92_db01_roll_correct_p1_apply.sql",113]])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
