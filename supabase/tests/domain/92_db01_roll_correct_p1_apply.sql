@@ -291,78 +291,51 @@ RESET ROLE;
 -- DB01-06: Same Person, unbound Principal and caller impersonation guards.
 -- All identity/scope modifications are synthetic and rolled back; authenticated
 -- server Principal must always follow the trusted Auth binding, not a SQL arg.
--- The Principal's Person identity is immutable by Foundation design.
--- Create a *second* bound Principal for the REQUESTER Person in an isolated
--- savepoint, with genuine current reviewer grant and scope but no independent
--- Person. Unlike SQL UPDATE, this models a distinct current authenticated
--- Principal while respecting the physical immutable identity guard.
-SELECT id AS sameperson_auth_id FROM auth.users
- WHERE email='foundation-own-002@example.invalid' \gset db01same_
-SAVEPOINT db01_06_same_person_reviewer;
+-- Foundation protects a Person from having multiple simultaneously live
+-- INDIVIDUAL Principals. A second active identity cannot bypass separation.
+-- The following expected constraint rejection is rollback-free.
 SET ROLE schoolos_schema_owner;
-INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by)
+SELECT throws_ok($q$INSERT INTO app_private.principals(
+ id,kind,person_id,label,state,created_by)
 VALUES('b1960000-0000-4000-8000-000000000001','INDIVIDUAL',
- '44444444-4444-4444-8444-444444444444','Same Person shadow Principal',
- 'ACTIVE','11111111-1111-4111-8111-111111111111');
-INSERT INTO app_private.principal_auth_bindings(
- id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
-VALUES('b1960000-0000-4000-8000-000000000002',
- 'b1960000-0000-4000-8000-000000000001','INDIVIDUAL',
- :'db01same_sameperson_auth_id'::uuid,pg_catalog.clock_timestamp(),
- pg_catalog.to_timestamp(pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp()))),
- '11111111-1111-4111-8111-111111111111');
-INSERT INTO app_private.principal_role_assignments(
- id,principal_id,principal_kind,role_id,role_family_only,context_kind,valid_from,created_by)
-VALUES('b1960000-0000-4000-8000-000000000003',
- 'b1960000-0000-4000-8000-000000000001','INDIVIDUAL',
- 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,'INDIVIDUAL',
- pg_catalog.statement_timestamp()-interval '1 hour',
- '11111111-1111-4111-8111-111111111111');
-INSERT INTO app_private.assignment_permission_scopes(
- id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
- scope_kind,resolver_key,valid_from,created_by)
-SELECT 'b1960000-0000-4000-8000-000000000004',
- 'b1960000-0000-4000-8000-000000000003',g.id,g.role_id,g.permission_id,c.id,
- 'ALL','DIRECT',pg_catalog.statement_timestamp()-interval '1 hour',
- '11111111-1111-4111-8111-111111111111'
-FROM app_private.role_permission_grants g
-JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
-WHERE g.id='b1890000-0000-4000-8000-000000000094'
- AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+ '44444444-4444-4444-8444-444444444444',
+ 'Forbidden second live requester identity','ACTIVE',
+ '11111111-1111-4111-8111-111111111111')$q$,
+ '23505'::char(5),NULL::text,
+ 'Foundation unique index forbids second live Principal of the requester Person');
+SELECT is((SELECT count(*) FROM app_private.principals p
+ WHERE p.person_id='44444444-4444-4444-8444-444444444444'
+ AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'),1::bigint,
+ 'the requester Person retains exactly one active Principal');
 RESET ROLE;
-SELECT pg_catalog.set_config('request.jwt.claim.sub',:'db01same_sameperson_auth_id',true);
-SELECT pg_catalog.set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
- 'sub',:'db01same_sameperson_auth_id','role','authenticated',
- 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
- FROM app_private.principal_auth_bindings
- WHERE id='b1960000-0000-4000-8000-000000000002'),
- 'is_anonymous',false)::text,true);
-SELECT is(app_private.current_principal_id(),
- 'b1960000-0000-4000-8000-000000000001'::uuid,
- 'second authenticated Principal resolves to same Person as requester');
-SELECT is(app_private.d1_roll_correct_authorized(
- 'b1960000-0000-4000-8000-000000000001','student.roll.approve',
- 'b1000000-0000-4000-8000-000000000045',
- 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),true,
- 'same-Person shadow has real current reviewer role, permission and scope');
 SELECT is((SELECT count(*) FROM app_private.d1_roll_correct_reviewer_candidates(
  :'submitted_request_id'::uuid,
  (SELECT s.id FROM app_private.approval_request_steps s
-  WHERE s.request_id=:'submitted_request_id'::uuid AND s.state='OPEN'
-  ORDER BY s.step_number LIMIT 1)) c
- WHERE c.candidate_principal_id='b1960000-0000-4000-8000-000000000001'),
- 0::bigint,'same-Person despite valid reviewer grant is excluded from nominees');
+ WHERE s.request_id=:'submitted_request_id'::uuid AND s.state='OPEN'
+ ORDER BY s.step_number LIMIT 1)) c
+ WHERE c.candidate_principal_id='55555555-5555-4555-8555-555555555555'),
+ 0::bigint,
+ 'requester Principal is excluded from genuine nominated reviewer candidates');
+
+-- Authenticated requester cannot turn their correction permission into
+-- student.roll.approve; return to the genuinely distinct bound reviewer.
+SELECT pg_catalog.set_config('request.jwt.claim.sub',
+ current_setting('schoolos_test.roll_apply_origin_sub'),true);
+SELECT pg_catalog.set_config('request.jwt.claims',
+ current_setting('schoolos_test.roll_apply_origin_claims'),true);
+SELECT is(app_private.current_principal_id(),
+ '55555555-5555-4555-8555-555555555555'::uuid,
+ 'self-review test uses the actual original authenticated requester');
 SET ROLE authenticated;
-SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
- :'submitted_request_id'::uuid)),0::bigint,
- 'same-Person alternate Principal cannot read request as independent reviewer');
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REQUESTER'::text,
+ 'requester remains a requester, never a reviewer');
 SELECT throws_ok(pg_catalog.format(
- $q$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'same Person denied','db01-06-same-person')$q$,
+ $q$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'self approval denied','db01-06-self-approval')$q$,
  :'submitted_request_id',:'submitted_request_version'::bigint),
  'P0001'::char(5),NULL::text,
- 'same-Person even with reviewer grant cannot approve own effective request');
+ 'a requester cannot self-approve a P1 Roll-correction request');
 RESET ROLE;
-ROLLBACK TO SAVEPOINT db01_06_same_person_reviewer;
 SELECT pg_catalog.set_config('request.jwt.claim.sub',:'db01review_reviewer_auth_id',true);
 SELECT pg_catalog.set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
  'sub',:'db01review_reviewer_auth_id','role','authenticated','iat',
@@ -372,13 +345,7 @@ SELECT pg_catalog.set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
  'is_anonymous',false)::text,true);
 SELECT is(app_private.current_principal_id(),
  'b1890000-0000-4000-8000-000000000091'::uuid,
- 'independent reviewer identity restored after shadow Principal rollback');
-
-SET ROLE authenticated;
-SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
- :'submitted_request_id'::uuid)),'REVIEWER'::text,
- 'restored distinct-Person reviewer retains nominated visibility');
-RESET ROLE;
+ 'genuine independent reviewer binding restored after self-review denial');
 SELECT is(app_private.d1_roll_correct_request_participant(
  :'submitted_request_id'::uuid,'55555555-5555-4555-8555-555555555555'::uuid),
  NULL::text,'forged actor argument cannot override current authenticated Principal');
