@@ -122,6 +122,33 @@ def _verify_invalidated(cur,request,student,version,case):
     _check(cur.fetchone()==(0,),"NO_INVALIDATED_APPLICATION_"+case)
 
 
+def _verify_direct_p1_route_denied(psycopg, student, source, original):
+    # Same Section cannot be both approval-routed and direct-routed. This
+    # protected RPC should fail at its configured P1 policy check, even when
+    # the authenticated requester has a valid Roll-correction grant. There
+    # is no eligible competing DIRECT CORRECT command to acquire the APPLY
+    # lock; genuine approved APPLY/APPLY below covers correction contention.
+    enrollment, from_day, roll, policy, numeric = original
+    with closing(_actor_connection(psycopg)) as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE authenticated")
+                cur.execute("SET LOCAL statement_timeout='18s'")
+                cur.execute("""SELECT * FROM app.d1_correct_student_roll(
+                   %s::uuid,1,%s::uuid,%s::uuid,%s::date,
+                   %s::uuid,%s::date,%s::uuid,%s,%s,%s,%s)""",
+                   (student,enrollment,source,from_day,roll,from_day,
+                    policy,numeric,numeric+10000,
+                    "DB01-07 disallowed DIRECT P1 correction",
+                    "db01-p1-apply-direct-bypass-denied"))
+        except psycopg.errors.RaiseException as exc:
+            conn.rollback()
+            _check(exc.sqlstate=="P0001","DIRECT_ROUTE_DENIAL_SQLSTATE")
+        else:
+            conn.rollback()
+            raise RuntimeError("D1_DB01_P1_APPLY_RACE_DIRECT_BYPASS_ACCEPTED")
+
+
 def run_db01_p1_apply_vs_move_end_races(container,run_psql,root=ROOT):
     _check(container==CONTAINER,"DISPOSABLE_CONTAINER_ONLY")
     import psycopg
@@ -136,6 +163,10 @@ def run_db01_p1_apply_vs_move_end_races(container,run_psql,root=ROOT):
                        ("APPROVED",approved,1,1,0,2,2,0,0,0),
                        "APPROVED_BASELINE_"+case)
             check.rollback()
+        if case=="am":
+            _verify_direct_p1_route_denied(psycopg,student,source,original)
+            print("D1_DB01_P1_DIRECT_CORRECT_ROUTE_DENIED_PASS "
+                  "approval-routed source cannot use protected DIRECT CORRECT")
         other_first=case[0] in ("m","e")
         apply_key="db01-p1-apply-"+case+"-correct"
         other_key="db01-p1-apply-"+case+"-other"
