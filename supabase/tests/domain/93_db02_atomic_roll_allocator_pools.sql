@@ -23,7 +23,7 @@ false,'service role denied');
 SELECT is(has_function_privilege('schoolos_workflow_executor','app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid,date)','EXECUTE'),
 false,'workflow not given interim APPLY edge');
 SELECT is(has_table_privilege('schoolos_student_executor','app_private.roll_allocator_states','INSERT'),
-false,'no raw Student table INSERT rights granted');
+true,'existing Student allocator INSERT privilege retained; I05 adds no new grant');
 SELECT set_config('schoolos_test.db02_i01_subject',
  (SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),true);
 SET ROLE schoolos_schema_owner;
@@ -137,8 +137,13 @@ VALUES
 'b9500000-0000-4000-8000-000000000002',0,'PLANNED','11111111-1111-4111-8111-111111111111',NULL,NULL),
 ('b9500000-0000-4000-8000-000000000008','22222222-2222-4222-8222-222222222222',
 'b9500000-0000-4000-8000-000000000005','b9500000-0000-4000-8000-000000000001',
-'b9500000-0000-4000-8000-000000000002',10,'ARCHIVED','11111111-1111-4111-8111-111111111111',
-statement_timestamp(),'11111111-1111-4111-8111-111111111111');
+'b9500000-0000-4000-8000-000000000002',10,'PLANNED','11111111-1111-4111-8111-111111111111',
+NULL,NULL);
+-- The physical guard forbids rows starting ARCHIVED: archive after creation.
+UPDATE app_private.class_offerings
+ SET state='ARCHIVED',archived_at=statement_timestamp(),
+ archived_by='11111111-1111-4111-8111-111111111111'
+ WHERE id='b9500000-0000-4000-8000-000000000008';
 RESET ROLE;
 SAVEPOINT academic_init;
 SET ROLE schoolos_student_executor;
