@@ -294,7 +294,8 @@ RESET ROLE;
 -- Foundation protects a Person from having multiple simultaneously live
 -- INDIVIDUAL Principals. A second active identity cannot bypass separation.
 -- The following expected constraint rejection is rollback-free.
-SET ROLE schoolos_schema_owner;
+-- pgTAP is invoked by the trusted disposable postgres test runner: the
+-- schema-owner NOLOGIN role deliberately lacks access to the test helper.
 SELECT throws_ok(pg_catalog.format($q$INSERT INTO app_private.principals(
  id,kind,person_id,label,state,created_by)
 VALUES('b1960000-0000-4000-8000-000000000001','INDIVIDUAL',
@@ -307,7 +308,6 @@ SELECT is((SELECT count(*) FROM app_private.principals p
  WHERE p.person_id='44444444-4444-4444-8444-444444444444'
  AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'),1::bigint,
  'the requester Person retains exactly one active Principal');
-RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.d1_roll_correct_reviewer_candidates(
  :'submitted_request_id'::uuid,
  (SELECT s.id FROM app_private.approval_request_steps s
