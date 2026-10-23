@@ -28,7 +28,8 @@ false,'workflow cannot call effect');
 SELECT throws_ok($q$SELECT app_private.d1_roll_policy_revision_transition(
 '22222222-2222-4222-8222-222222222222','i04-denied','INIT',
 NULL,NULL,NULL,NULL,NULL,'PERSISTENT_STUDENT',1000,'I04 private reason')$q$,
-'42501'::char(5),NULL::text,'public executor receives permission denial');
+'P0001'::char(5),'D1 Roll Policy global route unavailable',
+'private effect refuses disabled global route');
 SELECT set_config('schoolos_test.db02_i01_subject',
  (SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),true);
 SET ROLE schoolos_schema_owner;
