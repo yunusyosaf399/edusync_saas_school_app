@@ -133,11 +133,11 @@ class DomainLocalCITests(unittest.TestCase):
         # effect 41_03 adds two authz-reader-owned private gates.
         # Public RPCs, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 567)
-        self.assertEqual(expected["security_definers"], 549)
-        self.assertEqual(expected["private_functions"], 406)
-        self.assertEqual(expected["app_functions"], 161)
-        self.assertEqual(expected["authenticated_app_execute"], 161)
+        self.assertEqual(expected["functions"], 569)
+        self.assertEqual(expected["security_definers"], 551)
+        self.assertEqual(expected["private_functions"], 407)
+        self.assertEqual(expected["app_functions"], 162)
+        self.assertEqual(expected["authenticated_app_execute"], 162)
         self.assertEqual(expected["authenticated_private_execute"], 0)
         self.assertEqual(expected["anon_execute"], 0)
         self.assertEqual(expected["service_role_execute"], 0)
@@ -209,6 +209,28 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertIn("app_private.d1_roll_correct_result_rows_match_exact(", sql)
         self.assertNotIn("GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_application_receipt_guard", sql)
         self.assertNotIn("UPDATE app_private.operation_contracts", sql)
+
+    def test_db01_checked_p1_request_read_is_private_participant_and_independent_history(self):
+        file = runtime.ROOT / "supabase/migrations" / (
+            "20260928000000_domain_package_01_effect41_14_db01_checked_request_read.sql.draft"
+        )
+        sql = file.read_text(encoding="utf-8")
+        self.assertEqual(sql.count("CREATE FUNCTION app_private.d1_roll_correct_request_participant("), 1)
+        self.assertEqual(sql.count("CREATE FUNCTION app.d1_read_student_roll_correction_request("), 1)
+        self.assertIn("TO schoolos_read_executor;", sql)
+        self.assertIn("TO authenticated;", sql)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
+        self.assertIn("actor_person=requester_person", sql)
+        self.assertIn("a.withdrawn_at IS NULL", sql)
+        self.assertIn("p_actor IS DISTINCT FROM app_private.current_principal_id()", sql)
+        self.assertIn("participant", sql)
+        self.assertIn("student.roll_history.view", sql)
+        self.assertIn("WHEN can_view_number THEN prior_number ELSE NULL::bigint", sql)
+        self.assertIn("WHEN can_view_number THEN next_number ELSE NULL::bigint", sql)
+        self.assertNotIn("GRANT SELECT ON app_private.", sql)
+        self.assertNotIn("UPDATE app_private.permissions", sql)
+        self.assertNotIn("INSERT INTO app_private.roll_allocations", sql)
+        self.assertNotIn("CREATE FUNCTION app_private.d1_roll_correct_authorized", sql)
 
     def test_db01_invalidated_replay_audit_witness_is_schema_owned_and_acl_scoped(self):
         sql = (runtime.ROOT / "supabase/migrations" / (
