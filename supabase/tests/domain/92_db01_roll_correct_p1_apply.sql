@@ -295,12 +295,12 @@ RESET ROLE;
 -- INDIVIDUAL Principals. A second active identity cannot bypass separation.
 -- The following expected constraint rejection is rollback-free.
 SET ROLE schoolos_schema_owner;
-SELECT throws_ok($q$INSERT INTO app_private.principals(
+SELECT throws_ok(pg_catalog.format($q$INSERT INTO app_private.principals(
  id,kind,person_id,label,state,created_by)
 VALUES('b1960000-0000-4000-8000-000000000001','INDIVIDUAL',
  '44444444-4444-4444-8444-444444444444',
  'Forbidden second live requester identity','ACTIVE',
- '11111111-1111-4111-8111-111111111111')$q$,
+ '11111111-1111-4111-8111-111111111111')$q$),
  '23505'::char(5),NULL::text,
  'Foundation unique index forbids second live Principal of the requester Person');
 SELECT is((SELECT count(*) FROM app_private.principals p
