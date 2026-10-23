@@ -564,6 +564,23 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertLess(driver.index("run_db01_p1_apply_live_races(container"),
                         driver.index("run_db01_p1_apply_vs_move_end_races(container"))
 
+    def test_db01_successive_p1_roll_proves_retained_lineage_and_school_date(self):
+        file=runtime.ROOT/"tools/supabase/domain_db01_p1_successive_roll_ci.py"
+        sql=file.read_text(encoding="utf-8")
+        driver=(runtime.ROOT/"tools/supabase/domain_local_ci.py").read_text()
+        self.assertIn("_approve(psycopg,first_req,start_version",sql)
+        self.assertIn("_review_second(psycopg,req2,v2)",sql)
+        self.assertIn("app.d1_submit_student_roll_correction(",sql)
+        self.assertIn("_apply(actor,req2,approval2,second_key)",sql)
+        self.assertIn("Pacific/Kiritimati",sql)
+        self.assertIn("Etc/GMT+12",sql)
+        self.assertIn("FOREIGN_POLICY_DENIED",sql)
+        self.assertIn("STALE_R1_DENIED",sql)
+        self.assertIn("R0_R1_R2_REAL_PG_PASS",sql)
+        self.assertIn("run_db01_p1_successive_roll_date_boundaries(",driver)
+        self.assertLess(driver.index("run_db01_p1_apply_vs_move_end_races(container"),
+                        driver.index("run_db01_p1_successive_roll_date_boundaries(container"))
+
     def test_db01_p1_review_two_backend_race_only_after_prior_protected_races(self):
         source_path = runtime.ROOT / "tools/supabase/domain_db01_p1_review_race_ci.py"
         source = source_path.read_text(encoding="utf-8")

@@ -485,6 +485,8 @@ def _main() -> int:
         run_db01_p1_apply_live_races(container, run_psql, ROOT)
         from domain_db01_p1_apply_move_end_ci import run_db01_p1_apply_vs_move_end_races
         run_db01_p1_apply_vs_move_end_races(container, run_psql, ROOT)
+        from domain_db01_p1_successive_roll_ci import run_db01_p1_successive_roll_date_boundaries
+        run_db01_p1_successive_roll_date_boundaries(container, run_psql, ROOT)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
