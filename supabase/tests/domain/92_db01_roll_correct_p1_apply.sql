@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(59);
+SELECT plan(77);
 \ir fixtures/command_actor.sql
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.permissions SET state='ENABLED'
@@ -223,6 +223,32 @@ SELECT * FROM app.d1_submit_student_roll_correction('b1000000-0000-4000-8000-000
  12001,12009,'Requested exact reason ','db01-approved-submit') \gset submitted_
 RESET ROLE;
 SELECT is((SELECT state FROM app_private.approval_requests WHERE id=:'submitted_request_id'::uuid),'PENDING'::text,'source request remains PENDING before review');
+-- DB01-05 checked read before any independent P1 review.
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REQUESTER'::text,'current Roll requester sees own typed request');
+SELECT is((SELECT request_state FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'PENDING'::text,'checked request read exposes current PENDING status');
+SELECT is((SELECT source_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),NULL::bigint,'requester without history grant sees no old Roll number');
+SELECT is((SELECT proposed_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),NULL::bigint,'requester without history grant sees no proposed Roll number');
+SELECT is((SELECT request_reason FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'Requested exact reason '::text,'requester sees typed reason only');
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ 'b1950000-0000-4000-8000-000000000099'::uuid)),0::bigint,'unknown request returns no metadata');
+RESET ROLE;
+SELECT ok(has_function_privilege('authenticated',
+ 'app.d1_read_student_roll_correction_request(uuid)','EXECUTE'),'typed checked read callable by authenticated');
+SELECT ok(NOT has_function_privilege('anon',
+ 'app.d1_read_student_roll_correction_request(uuid)','EXECUTE'),'anon cannot execute checked request read');
+SELECT ok(NOT has_function_privilege('service_role',
+ 'app.d1_read_student_roll_correction_request(uuid)','EXECUTE'),'service_role cannot execute checked read');
+SELECT ok(NOT has_function_privilege('authenticated',
+ 'app_private.d1_roll_correct_request_participant(uuid,uuid)','EXECUTE'),'client cannot call private participant resolver');
+SELECT ok(NOT has_column_privilege('authenticated',
+ 'app_private.approval_requests','old_snapshot','SELECT'),'client cannot fetch stored source snapshot directly');
+
 -- A terminal REJECTED request cannot be applied, even by the original
 -- authenticated requester. Preserve the PENDING original using savepoint.
 SAVEPOINT db01_apply_rejected_request;
@@ -254,6 +280,14 @@ SELECT pg_catalog.set_config('request.jwt.claims',
 SELECT is(app_private.current_principal_id(),
  'b1890000-0000-4000-8000-000000000091'::uuid,
  'review is authenticated as independent Person');
+-- Reviewer must be a current nomination under a configured P1 role.
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REVIEWER'::text,'live nominated reviewer sees pending request');
+SELECT is((SELECT proposed_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),NULL::bigint,'reviewer nomination is not Roll history permission');
+RESET ROLE;
+
 SET ROLE authenticated;
 SELECT * FROM app.d1_review_student_roll_correction(
  :'submitted_request_id'::uuid,'APPROVE',:'submitted_request_version'::bigint,
@@ -262,6 +296,23 @@ SELECT * FROM app.d1_review_student_roll_correction(
  :'submitted_request_id'::uuid,'APPROVE',:'r1_request_version'::bigint,
  'Independent second review approved correction','db01-apply-review-step-2') \gset r2_
 RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REVIEWER'::text,'reviewer remains eligible after two genuine decisions');
+SELECT is((SELECT request_state FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'APPROVED'::text,'reviewer sees APPROVED without applying Roll');
+RESET ROLE;
+SAVEPOINT db01_read_review_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.role_permission_grants SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000094';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,'revoked reviewer role grant removes request visibility');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_read_review_revoked;
+
 SELECT is(:'r1_request_state'::text,'PENDING'::text,
  'first reviewer keeps request pending for next step');
 SELECT is(:'r2_request_state'::text,'APPROVED'::text,
@@ -482,6 +533,14 @@ ROLLBACK TO SAVEPOINT db01_apply_replay_revoked_reviewer;
 SELECT is((SELECT count(*) FROM app_private.approval_applications
  WHERE request_id=:'submitted_request_id'::uuid),1::bigint,
  'revoked historical replay leaves original application immutable');
+-- Original requester sees executed state but still has no numeric disclosure.
+SET ROLE authenticated;
+SELECT is((SELECT request_state FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'EXECUTED'::text,'requester checked read sees terminal execution state');
+SELECT is((SELECT proposed_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),NULL::bigint,'requester did not inherit administrator history access');
+RESET ROLE;
+
 SET CONSTRAINTS ALL IMMEDIATE;
 SELECT * FROM finish();
 ROLLBACK;
