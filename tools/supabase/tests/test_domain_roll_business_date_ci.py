@@ -61,12 +61,17 @@ class RollBusinessDateTests(unittest.TestCase):
         self.assertIn('APPLY receipt naming version 1 cannot apply the APPROVED version 4',fixture)
 
     def test_apply_result_student_version_matches_approved_target(self):
-        sql=(ROOT/'supabase/migrations/20260928000000_domain_package_01_effect40_03_db01_apply_request_version.sql.draft').read_text()
-        self.assertIn("rec.result_summary->'student_version' IS DISTINCT FROM pg_catalog.to_jsonb(req.expected_target_version)",sql)
+        # Later DB01-specific override corrects the frozen pre-APPLY N
+        # comparison to the actual successful Roll correction result N+1.
+        sql=(ROOT/'supabase/migrations/20260928000000_domain_package_01_effect41_11_db01_apply_guard_corrected_student_version.sql.draft').read_text()
+        self.assertIn("rec.result_summary->'student_version' IS DISTINCT FROM pg_catalog.to_jsonb(req.expected_target_version+1)",sql)
+        self.assertNotIn("rec.result_summary->'student_version' IS DISTINCT FROM pg_catalog.to_jsonb(req.expected_target_version)",sql)
+        self.assertIn("rec.expected_request_version IS DISTINCT FROM req.row_version-1",sql)
+        self.assertIn("NEW.applied_target_version IS DISTINCT FROM req.expected_target_version",sql)
         fixture=(ROOT/'supabase/tests/domain/79_db01_approval_application_receipt_guard.sql').read_text()
         self.assertIn('SAVEPOINT mismatched_result_student_version',fixture)
         self.assertLess(fixture.index('SAVEPOINT mismatched_result_student_version'),fixture.index('no application exists before explicit effect'))
-        self.assertIn('result Student version 999 cannot claim approved target version 1',fixture)
+        self.assertIn('result Student version 999 cannot claim actual corrected version N+1',fixture)
 
     def test_runtime_gate_precedes_final_pass(self):
         source=(ROOT/'tools/supabase/domain_local_ci.py').read_text()

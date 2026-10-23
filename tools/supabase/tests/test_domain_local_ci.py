@@ -1,3 +1,5 @@
+import io
+from contextlib import redirect_stderr
 import sys
 import tempfile
 import unittest
@@ -22,6 +24,81 @@ class DomainLocalCITests(unittest.TestCase):
             f'project_id = "{project_id}"\n', encoding="utf-8", newline="\n"
         )
         return root
+
+    def test_failed_start_reports_only_safe_diagnostic_code_and_container_state(self):
+        secret = "postgresql://admin:private-password@internal-host/private"
+        def fake_run(args, **kwargs):
+            if args[:2] == ["supabase", "start"]:
+                return CompletedProcess(args, 1, "untrusted " + secret,
+                                        "port is already allocated; " + secret)
+            if args[:2] == ["supabase", "stop"]:
+                return CompletedProcess(args, 0, "", "")
+            if args[:2] == ["docker", "inspect"]:
+                self.assertIn("supabase_db_" + runtime.EXPECTED_PROJECT_ID, args)
+                return CompletedProcess(args, 0, "exited|137|true", "")
+            self.fail("Unexpected diagnostic command")
+        captured = io.StringIO()
+        with patch.object(runtime.subprocess, "run", side_effect=fake_run):
+            with redirect_stderr(captured):
+                with self.assertRaisesRegex(runtime.DomainLocalCIError, "supabase start"):
+                    runtime._start_disposable_stack()
+        output = captured.getvalue()
+        self.assertIn("D1C2A_START_DIAGNOSTIC code=PORT_CONFLICT", output)
+        self.assertIn("pg_state=exited,exit=137,oom=true", output)
+        self.assertNotIn(secret, output)
+        self.assertNotIn("private-password", output)
+
+    def test_failed_start_does_not_echo_unclassified_cli_output(self):
+        secret = "eyJprivate.secret.jwt"
+        def fake_run(args, **kwargs):
+            if args[:2] == ["supabase", "start"]:
+                return CompletedProcess(args, 1, secret, secret)
+            if args[:2] == ["docker", "inspect"]:
+                return CompletedProcess(args, 1, "", secret)
+            self.fail("Unexpected diagnostic command")
+        captured = io.StringIO()
+        with patch.object(runtime.subprocess, "run", side_effect=fake_run):
+            with redirect_stderr(captured):
+                with self.assertRaises(runtime.DomainLocalCIError):
+                    runtime._start_disposable_stack()
+        output = captured.getvalue()
+        self.assertIn("code=UNCLASSIFIED pg_state=ABSENT", output)
+        self.assertNotIn(secret, output)
+
+    def test_image_pull_failure_retries_an_official_registry_without_changing_tag(self):
+        calls = []
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            if args[:2] == ["supabase", "start"]:
+                if kwargs["env"]["SUPABASE_INTERNAL_IMAGE_REGISTRY"] == "ghcr.io":
+                    return CompletedProcess(args, 1, "failed to pull image", "")
+                if kwargs["env"]["SUPABASE_INTERNAL_IMAGE_REGISTRY"] == "docker.io":
+                    return CompletedProcess(args, 0, "", "")
+                self.fail("Unexpected image registry")
+            if args[:2] == ["supabase", "stop"]:
+                self.assertEqual(args[3], runtime.EXPECTED_PROJECT_ID)
+                return CompletedProcess(args, 0, "", "")
+            if args[:2] == ["docker", "inspect"]:
+                return CompletedProcess(args, 1, "", "")
+            self.fail("Unexpected command")
+        with patch.dict(runtime.os.environ, {"SUPABASE_INTERNAL_IMAGE_REGISTRY": "ghcr.io"}):
+            with patch.object(runtime.subprocess, "run", side_effect=fake_run):
+                with redirect_stderr(io.StringIO()) as captured:
+                    runtime._start_disposable_stack()
+                    self.assertEqual(
+                        runtime.os.environ["SUPABASE_INTERNAL_IMAGE_REGISTRY"],
+                        "docker.io",
+                        "Later local pgTAP commands must use the working image registry",
+                    )
+        registries = [kwargs["env"]["SUPABASE_INTERNAL_IMAGE_REGISTRY"]
+                      for args, kwargs in calls if args[:2] == ["supabase", "start"]]
+        self.assertEqual(registries, ["ghcr.io", "docker.io"])
+        self.assertNotIn("failed to pull image", captured.getvalue())
+
+    def test_startup_fallback_denies_invalid_project(self):
+        from local_stack_registry import start_disposable_stack
+        with self.assertRaisesRegex(RuntimeError, "LOCAL_STACK_TARGET_INVALID"):
+            start_disposable_stack(runtime.ROOT, "some-other-project", "D1C2A")
 
     def test_project_id_is_fail_closed_and_pinned(self):
         root = self.make_root()
@@ -56,11 +133,11 @@ class DomainLocalCITests(unittest.TestCase):
         # effect 41_03 adds two authz-reader-owned private gates.
         # Public RPCs, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 562)
-        self.assertEqual(expected["security_definers"], 544)
-        self.assertEqual(expected["private_functions"], 402)
-        self.assertEqual(expected["app_functions"], 160)
-        self.assertEqual(expected["authenticated_app_execute"], 160)
+        self.assertEqual(expected["functions"], 569)
+        self.assertEqual(expected["security_definers"], 551)
+        self.assertEqual(expected["private_functions"], 407)
+        self.assertEqual(expected["app_functions"], 162)
+        self.assertEqual(expected["authenticated_app_execute"], 162)
         self.assertEqual(expected["authenticated_private_execute"], 0)
         self.assertEqual(expected["anon_execute"], 0)
         self.assertEqual(expected["service_role_execute"], 0)
@@ -132,6 +209,44 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertIn("app_private.d1_roll_correct_result_rows_match_exact(", sql)
         self.assertNotIn("GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_application_receipt_guard", sql)
         self.assertNotIn("UPDATE app_private.operation_contracts", sql)
+
+    def test_db01_checked_p1_request_read_is_private_participant_and_independent_history(self):
+        file = runtime.ROOT / "supabase/migrations" / (
+            "20260928000000_domain_package_01_effect41_14_db01_checked_request_read.sql.draft"
+        )
+        sql = file.read_text(encoding="utf-8")
+        self.assertEqual(sql.count("CREATE FUNCTION app_private.d1_roll_correct_request_participant("), 1)
+        self.assertEqual(sql.count("CREATE FUNCTION app.d1_read_student_roll_correction_request("), 1)
+        self.assertIn("TO schoolos_read_executor;", sql)
+        self.assertIn("TO authenticated;", sql)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
+        self.assertIn("actor_person=requester_person", sql)
+        self.assertIn("a.withdrawn_at IS NULL", sql)
+        self.assertIn("p_actor IS DISTINCT FROM app_private.current_principal_id()", sql)
+        self.assertIn("participant", sql)
+        self.assertIn("student.roll_history.view", sql)
+        self.assertIn("WHEN can_view_number THEN prior_number ELSE NULL::bigint", sql)
+        self.assertIn("WHEN can_view_number THEN next_number ELSE NULL::bigint", sql)
+        self.assertNotIn("GRANT SELECT ON app_private.", sql)
+        self.assertNotIn("UPDATE app_private.permissions", sql)
+        self.assertNotIn("INSERT INTO app_private.roll_allocations", sql)
+        self.assertNotIn("CREATE FUNCTION app_private.d1_roll_correct_authorized", sql)
+
+    def test_db01_invalidated_replay_audit_witness_is_schema_owned_and_acl_scoped(self):
+        sql = (runtime.ROOT / "supabase/migrations" / (
+            "20260928000000_domain_package_01_effect41_13_db01_apply_terminal_invalidation.sql.draft"
+        )).read_text(encoding="utf-8")
+        self.assertEqual(sql.count("CREATE FUNCTION app_private.d1_roll_correct_apply_invalidated_witness("), 1)
+        self.assertIn("SET ROLE schoolos_schema_owner;", sql)
+        self.assertIn("SECURITY DEFINER", sql)
+        self.assertIn("TO schoolos_evidence_writer;", sql)
+        self.assertIn("app_private.d1_roll_correct_apply_invalidated_witness(", sql)
+        self.assertIn("FROM PUBLIC,anon,authenticated,service_role;", sql)
+        self.assertNotIn("GRANT SELECT ON app_private.audit_events", sql)
+        self.assertNotIn("GRANT SELECT ON app_private.outbox_events", sql)
+        private_helpers = sql.split("GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;")[0]
+        self.assertNotIn("TO authenticated;", private_helpers)
+        self.assertIn("IS DISTINCT FROM true", sql)
 
     def test_db01_source_prelock_exact_identity_private_acl(self):
         helper = runtime.ROOT / "supabase/migrations" / (
@@ -424,6 +539,62 @@ class DomainLocalCITests(unittest.TestCase):
             "GRANT EXECUTE",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_db01_p1_apply_two_backend_real_pg_race_after_review(self):
+        source = (runtime.ROOT / "tools/supabase/domain_db01_p1_apply_race_ci.py").read_text()
+        driver = (runtime.ROOT / "tools/supabase/domain_local_ci.py").read_text()
+        self.assertIn("run_db01_p1_apply_live_races", source)
+        self.assertIn("_wait_for_block(", source)
+        self.assertIn("review_before_apply", source.replace('"ra"', "review_before_apply"))
+        self.assertIn("app.d1_apply_student_roll_correction", source)
+        self.assertIn("D1_DB01_P1_APPLY_APPLY_REAL_PG_RACE_PASS", source)
+        self.assertIn("_actor_connection(psycopg)", source)
+        self.assertLess(driver.index("run_db01_p1_review_live_races(container"),
+                        driver.index("run_db01_p1_apply_live_races(container"))
+
+    def test_db01_p1_apply_vs_move_end_real_pg_is_gated_after_prior_approval_races(self):
+        source=(runtime.ROOT/"tools/supabase/domain_db01_p1_apply_move_end_ci.py").read_text()
+        driver=(runtime.ROOT/"tools/supabase/domain_local_ci.py").read_text()
+        self.assertIn('for case in ("am","ma","ae","ea")', source)
+        self.assertIn("_wait_for_block(", source)
+        self.assertIn("app.d1_move_student_enrollment(", source)
+        self.assertIn("app.d1_end_student_enrollment(", source)
+        self.assertIn('"INVALIDATED"', source)
+        self.assertIn("run_db01_p1_apply_vs_move_end_races(container, run_psql, ROOT)",driver)
+        self.assertLess(driver.index("run_db01_p1_apply_live_races(container"),
+                        driver.index("run_db01_p1_apply_vs_move_end_races(container"))
+
+    def test_db01_successive_p1_roll_proves_retained_lineage_and_school_date(self):
+        file=runtime.ROOT/"tools/supabase/domain_db01_p1_successive_roll_ci.py"
+        sql=file.read_text(encoding="utf-8")
+        driver=(runtime.ROOT/"tools/supabase/domain_local_ci.py").read_text()
+        self.assertIn("_approve(psycopg,first_req,start_version",sql)
+        self.assertIn("_review_second(psycopg,req2,v2)",sql)
+        self.assertIn("app.d1_submit_student_roll_correction(",sql)
+        self.assertIn("_apply(actor,req2,approval2,second_key)",sql)
+        self.assertIn("Pacific/Kiritimati",sql)
+        self.assertIn("Etc/GMT+12",sql)
+        self.assertIn("FOREIGN_POLICY_DENIED",sql)
+        self.assertIn("STALE_R1_DENIED",sql)
+        self.assertIn("R0_R1_R2_REAL_PG_PASS",sql)
+        self.assertIn("run_db01_p1_successive_roll_date_boundaries(",driver)
+        self.assertLess(driver.index("run_db01_p1_apply_vs_move_end_races(container"),
+                        driver.index("run_db01_p1_successive_roll_date_boundaries(container"))
+
+    def test_db01_p1_genuine_approve_and_two_terminal_reject_paths(self):
+        code=(runtime.ROOT/"tools/supabase/domain_db01_p1_complete_integration_ci.py").read_text()
+        driver=(runtime.ROOT/"tools/supabase/domain_local_ci.py").read_text()
+        compile(code, "domain_db01_p1_complete_integration_ci.py", "exec")
+        self.assertIn("app.d1_review_student_roll_correction(",code)
+        self.assertIn('"REJECTED"',code)
+        self.assertIn('"APPROVED"',code)
+        self.assertIn("FULL_SUBMIT_APPROVE_APPLY_INTEGRATION_PASS",code)
+        self.assertIn("FULL_SUBMIT_REJECT_STAGE1_INTEGRATION_PASS",code)
+        self.assertIn("FULL_SUBMIT_APPROVE_REJECT_STAGE2_INTEGRATION_PASS",code)
+        self.assertIn("_assert_no_roll_effect(",code)
+        self.assertIn("_rejected_call(",code)
+        self.assertLess(driver.index("run_db01_p1_successive_roll_date_boundaries(container"),
+                        driver.index("run_db01_p1_complete_approve_reject_integration(container"))
 
     def test_db01_p1_review_two_backend_race_only_after_prior_protected_races(self):
         source_path = runtime.ROOT / "tools/supabase/domain_db01_p1_review_race_ci.py"

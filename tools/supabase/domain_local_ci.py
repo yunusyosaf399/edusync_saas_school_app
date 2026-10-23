@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 import re
 import subprocess
@@ -10,6 +11,7 @@ import sys
 from pathlib import Path
 
 from _process import CommandFailure, run
+from local_stack_registry import start_disposable_stack
 from domain_business_ci import run_business_tests
 from domain_profile_history_candidate_ci import run_history_candidate
 from domain_student_photo_real_pg_handoff_ci import run_real_postgres_photo_handoff
@@ -74,11 +76,11 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 562,
-    "security_definers": 544,
-    "app_functions": 160,
-    "private_functions": 402,
-    "authenticated_app_execute": 160,
+    "functions": 569,
+    "security_definers": 551,
+    "app_functions": 162,
+    "private_functions": 407,
+    "authenticated_app_execute": 162,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
     "service_role_execute": 0,
@@ -157,6 +159,15 @@ def _stack_running() -> bool:
 
 def _safe_tail(text: str, lines: int = 60) -> str:
     return "\n".join(text.splitlines()[-lines:])
+
+
+def _start_disposable_stack() -> None:
+    try:
+        start_disposable_stack(ROOT, EXPECTED_PROJECT_ID, "D1C2A")
+    except RuntimeError as exc:
+        # Preserve the D1 acceptance harness's established error contract.
+        # Shared registry diagnostics contain no raw CLI output.
+        raise DomainLocalCIError(str(exc)) from None
 
 
 def run_psql(container: str, sql: str, label: str, *, tuples: bool = False, timeout: int = 900) -> str:
@@ -383,8 +394,10 @@ def _main() -> int:
             raise DomainLocalCIError("DOCKER_LINUX_REQUIRED")
         project_id = local_project_id(ROOT)
         if not _stack_running():
-            run(["supabase", "start"], cwd=ROOT, timeout=900)
+            # Flag before starting so a partially initialized local stack is
+            # diagnosed and cleaned up on failure as well as on success.
             started = True
+            _start_disposable_stack()
             print("D1C2A_LOCAL_STACK_STARTED")
         local_status()
         image = run(["docker", "inspect", "--format", "{{.Config.Image}}",
@@ -468,6 +481,14 @@ def _main() -> int:
         run_db01_cross_campus_roll_history_replay(container, run_psql)
         from domain_db01_p1_review_race_ci import run_db01_p1_review_live_races
         run_db01_p1_review_live_races(container, run_psql, ROOT)
+        from domain_db01_p1_apply_race_ci import run_db01_p1_apply_live_races
+        run_db01_p1_apply_live_races(container, run_psql, ROOT)
+        from domain_db01_p1_apply_move_end_ci import run_db01_p1_apply_vs_move_end_races
+        run_db01_p1_apply_vs_move_end_races(container, run_psql, ROOT)
+        from domain_db01_p1_successive_roll_ci import run_db01_p1_successive_roll_date_boundaries
+        run_db01_p1_successive_roll_date_boundaries(container, run_psql, ROOT)
+        from domain_db01_p1_complete_integration_ci import run_db01_p1_complete_approve_reject_integration
+        run_db01_p1_complete_approve_reject_integration(container, run_psql, ROOT)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
