@@ -22,3 +22,19 @@ Source parents are immutable: DB01 [draft PR #141](https://github.com/yunusyosaf
 ## Merge/rollback
 
 This draft integration head is **not** intended as a second deployable copy of either owner stack. Do not merge it into main along with its complete source ancestry; choose one reviewed integration ancestry after CI, independent DB01-11/security approval and user-authorized DB01-12. All Migration 10 fragments remain `.sql.draft` and Roll operations remain disabled outside ephemeral CI.
+
+## Exact-head integrated PostgreSQL acceptance — PASS
+
+The **tested two-parent integration code** is `79e4aedefea03e1d4e874171115638b4a45a7143` (DB01 parent `c8800dcfa8f2a4439c989f6d37bc25da611227d4`, DB02 parent `2553e10a1848762f9865038c3efcfdf12b53585a`). All three required workflows completed **SUCCESS**:
+
+- [D1 static #39949975376](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39949975376)
+- [Foundation local-stack #39949975323](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39949975323)
+- [D1 disposable PostgreSQL #39949976507](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39949976507) — **SUCCESS**, duplicate [runtime #39949927193](https://github.com/yunusyosaf399/edusync_saas_school_app/actions/runs/39949927193) also SUCCESS on the **same** code.
+
+**Actual log evidence on both full runtimes:** `D1C2A_APPLY_PASS 267 draft fragments`; `D1C2A_CATALOG_PASS tables=34 rls=34/34 functions=577 definers=559 app=162 private=415 auth_private=0 anon=0 service_role=0`; `D1C2A_FOUNDATION_REGRESSION_PASS ... 220/220`; `D1_BUSINESS_TEST_PASS 92_db01_roll_correct_p1_apply.sql 113/113`; `D1_BUSINESS_TEST_PASS 92_db02_atomic_policy_revision_transition.sql 27/27`; `D1_BUSINESS_TEST_PASS 93_db02_atomic_roll_allocator_pools.sql 29/29`; `D1_BUSINESS_PASS 3906 assertions`; `D1C2A_PASS`.
+
+**Real authenticated interaction markers preserved on the composed stack:** `D1_DB01_P1_APPLY_AM_REAL_PG_RACE_PASS`, `..._MA_...`, `..._AE_...`, `..._EA_...` (both winner orders for correction/MOVE and correction/END), `D1_DB01_P1_R0_R1_R2_REAL_PG_PASS`, `D1_DB01_P1_FULL_SUBMIT_APPROVE_APPLY_INTEGRATION_PASS`, `D1_DB01_P1_FULL_SUBMIT_REJECT_STAGE1_INTEGRATION_PASS`, `D1_DB01_P1_FULL_SUBMIT_APPROVE_REJECT_STAGE2_INTEGRATION_PASS`.
+
+**Accepted gate:** DB01+DB02 I05 source/SQL/CI composition coexists and all existing enrolled Roll/allocator/approval/race tests pass in one disposable local database. DB02's I05 transition remains a **private rollback-fixture effect**, not a protected authenticated public policy command. This result is **not** a new two-backend DB01 APPLY versus DB02 REPLACE race and does **not** exercise an end-to-end after-cutover correction by the same Student. That gap and DB03/DB04 deployment/interface gates remain blocked exactly as above; no independent security signoff, hosted migration or production rollout was performed.
+
+**Evidence binding:** This report is documentation added *after* the tested SHA; any documentation-only head has its own CI status. The acceptance belongs to `79e4aedefea03e1d4e874171115638b4a45a7143` and both tests were verified on that exact SHA.
