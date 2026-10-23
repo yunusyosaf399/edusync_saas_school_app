@@ -37,6 +37,7 @@ DOMAIN_TESTS.extend([
     ["91_db02_locked_future_commitments.sql",18],
     ["92_db02_atomic_policy_revision_transition.sql",27],
     ["93_db02_atomic_roll_allocator_pools.sql",29],
+    ["94_db01_db02_retired_policy_cutover.sql",23],
 ])
 
 

@@ -34,7 +34,20 @@ class DB01DB02IntegrationPreviewTests(unittest.TestCase):
         for name,plan in DOMAIN_TESTS:
             self.assertGreater(plan,0,name)
             self.assertTrue((ROOT/"supabase/tests/domain"/name).is_file(),name)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),3906)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),3929)
+
+    def test_r10_01_real_i05_private_cutover_prelock_registered(self):
+        name="94_db01_db02_retired_policy_cutover.sql"
+        registered=dict(DOMAIN_TESTS)
+        self.assertEqual(registered[name],23)
+        sql=(ROOT/"supabase/tests/domain"/name).read_text()
+        self.assertIn("SELECT plan(23);",sql)
+        self.assertIn("app.d1_place_student_enrollment(",sql)
+        self.assertIn("app_private.d1_roll_policy_revision_transition(",sql)
+        self.assertIn("app_private.d1_roll_correct_lock_source(",sql)
+        self.assertIn("D1_ROLL_CORRECT_SOURCE_ROLL_STALE",sql)
+        self.assertIn("SET CONSTRAINTS ALL IMMEDIATE;",sql)
+        self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
 
     def test_both_workstreams_appear_in_full_disposable_runner(self):
         driver=(ROOT/"tools/supabase/domain_local_ci.py").read_text()
