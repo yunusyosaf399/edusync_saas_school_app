@@ -35,6 +35,26 @@ VALUES('""" + prefix + """-0000-4000-8000-000000000056',
  NULL,'""" + section + """',NULL,30,CURRENT_DATE-1,
  'DB01-07 alternate Section initial capacity',
  '11111111-1111-4111-8111-111111111111');
+-- The frozen Enrollment MOVE and END operations require explicit Campus-
+-- specific DIRECT selection for this newly generated Campus. Do not inherit
+-- another fixture's Campus P1 policy or bypass the route gate.
+INSERT INTO app_private.approval_policy_versions(
+ id,policy_key,version,operation_id,campus_id,d1_route_mode,created_by)
+SELECT CASE o.code WHEN 'student.enrollment.move'
+ THEN '""" + prefix + """-0000-4000-8000-000000000059'::uuid
+ ELSE '""" + prefix + """-0000-4000-8000-000000000060'::uuid END,
+ CASE o.code WHEN 'student.enrollment.move'
+ THEN 'db01-p1-apply-""" + case + """-move-direct'
+ ELSE 'db01-p1-apply-""" + case + """-end-direct' END,
+ 1,o.id,'""" + prefix + """-0000-4000-8000-000000000041'::uuid,
+ 'DIRECT','11111111-1111-4111-8111-111111111111'
+FROM app_private.operation_contracts o
+WHERE o.code IN ('student.enrollment.move','student.enrollment.end');
+UPDATE app_private.approval_policy_versions SET state='ACTIVE',
+ effective_from=pg_catalog.statement_timestamp()-interval '1 hour',
+ activated_at=pg_catalog.statement_timestamp()
+WHERE id IN ('""" + prefix + """-0000-4000-8000-000000000059'::uuid,
+             '""" + prefix + """-0000-4000-8000-000000000060'::uuid);
 RESET ROLE;
 COMMIT;
 """)
