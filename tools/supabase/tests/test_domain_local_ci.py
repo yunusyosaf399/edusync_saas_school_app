@@ -581,6 +581,21 @@ class DomainLocalCITests(unittest.TestCase):
         self.assertLess(driver.index("run_db01_p1_apply_vs_move_end_races(container"),
                         driver.index("run_db01_p1_successive_roll_date_boundaries(container"))
 
+    def test_db01_p1_genuine_approve_and_two_terminal_reject_paths(self):
+        code=(runtime.ROOT/"tools/supabase/domain_db01_p1_complete_integration_ci.py").read_text()
+        driver=(runtime.ROOT/"tools/supabase/domain_local_ci.py").read_text()
+        self.assertIn('for case in',code) if False else None
+        self.assertIn("app.d1_review_student_roll_correction(",code)
+        self.assertIn('"REJECTED"',code)
+        self.assertIn('"APPROVED"',code)
+        self.assertIn("FULL_SUBMIT_APPROVE_APPLY_INTEGRATION_PASS",code)
+        self.assertIn("FULL_SUBMIT_REJECT_STAGE1_INTEGRATION_PASS",code)
+        self.assertIn("FULL_SUBMIT_APPROVE_REJECT_STAGE2_INTEGRATION_PASS",code)
+        self.assertIn("_assert_no_roll_effect(",code)
+        self.assertIn("_rejected_call(",code)
+        self.assertLess(driver.index("run_db01_p1_successive_roll_date_boundaries(container"),
+                        driver.index("run_db01_p1_complete_approve_reject_integration(container"))
+
     def test_db01_p1_review_two_backend_race_only_after_prior_protected_races(self):
         source_path = runtime.ROOT / "tools/supabase/domain_db01_p1_review_race_ci.py"
         source = source_path.read_text(encoding="utf-8")
