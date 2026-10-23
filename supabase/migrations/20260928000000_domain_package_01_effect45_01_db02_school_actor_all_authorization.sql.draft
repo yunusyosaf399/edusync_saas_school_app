@@ -1,0 +1,81 @@
+-- DB-02 narrow non-activating School-wide change authority gate.
+-- Receipt-bound DIRECT/SUBMIT commands are BLOCKED until the shared
+-- schoolos_evidence_writer-owned command receipt allowlist accepts an exact
+-- student.roll_policy.change typed intent/phase under integration ownership.
+-- This helper alone is NOT a command, receipt, route or policy write.
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+RESET ROLE;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_roll_policy_actor_all_authorized(
+ p_school uuid, p_actor uuid
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE at_time timestamptz:=pg_catalog.clock_timestamp();
+BEGIN
+  -- Caller cannot substitute any other Principal or grant themselves scope.
+  -- School existence and lock are verified by the separate Effect43 preflight.
+  IF p_school IS NULL OR p_actor IS NULL
+     OR app_private.current_principal_id() IS DISTINCT FROM p_actor
+  THEN RETURN false; END IF;
+  -- Deny when the business command or its current change permission is
+  -- disabled. A configured reviewer grant alone confers no change power.
+  IF NOT EXISTS (
+    SELECT 1 FROM app_private.operation_contracts op
+      JOIN app_private.permissions perm
+        ON perm.code='student.roll_policy.change'
+   WHERE op.code='student.roll_policy.change'
+     AND op.contract_version=1 AND op.enabled
+     AND NOT op.requires_approval
+     AND perm.state='ENABLED' AND NOT perm.family_safe
+  ) THEN RETURN false; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM app_private.principals actor
+    WHERE actor.id=p_actor AND actor.kind='INDIVIDUAL'
+      AND actor.state='ACTIVE' AND actor.person_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM app_private.principal_auth_bindings binding
+                   WHERE binding.principal_id=actor.id
+                     AND binding.auth_user_id IS NOT NULL)
+  ) THEN RETURN false; END IF;
+  -- One live direct non-family grant at School ALL scope, with *no* campus,
+  -- class, section or subject predicate. All joins bind the same original
+  -- role, permission and scope contract (no role-name fallback).
+  RETURN EXISTS (
+    SELECT 1 FROM app_private.assignment_permission_scopes sc
+    JOIN app_private.principal_role_assignments a ON a.id=sc.assignment_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    JOIN app_private.permissions p ON p.id=sc.permission_id
+    JOIN app_private.roles role_row ON role_row.id=sc.role_id
+   WHERE a.principal_id=p_actor AND a.principal_kind='INDIVIDUAL'
+     AND a.context_kind='INDIVIDUAL' AND a.role_id=sc.role_id
+     AND g.role_id=sc.role_id AND g.permission_id=sc.permission_id
+     AND c.permission_id=sc.permission_id
+     AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key
+     AND p.code='student.roll_policy.change'
+     AND p.state='ENABLED' AND NOT p.family_safe
+     AND role_row.state='ACTIVE' AND NOT role_row.family_only
+     AND c.enabled AND sc.scope_kind='ALL' AND sc.resolver_key='DIRECT'
+     AND sc.campus_id IS NULL AND sc.class_offering_id IS NULL
+     AND sc.section_offering_id IS NULL AND sc.subject_id IS NULL
+     AND a.valid_from<=at_time
+     AND (a.valid_until IS NULL OR at_time<a.valid_until)
+     AND (a.revoked_at IS NULL OR at_time<a.revoked_at)
+     AND g.valid_from<=at_time
+     AND (g.valid_until IS NULL OR at_time<g.valid_until)
+     AND (g.revoked_at IS NULL OR at_time<g.revoked_at)
+     AND sc.valid_from<=at_time
+     AND (sc.valid_until IS NULL OR at_time<sc.valid_until)
+     AND (sc.revoked_at IS NULL OR at_time<sc.revoked_at)
+  );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_actor_all_authorized(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_actor_all_authorized(uuid,uuid)
+ TO schoolos_student_executor,schoolos_workflow_executor;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+RESET ROLE;
