@@ -58,8 +58,8 @@ BEGIN
     IF pool_max>=9223372036854775807 OR used_max>=9223372036854775806 THEN
       RAISE EXCEPTION 'D1 roll policy persistent allocator exhausted';
     END IF;
-    seed:=pg_catalog.greatest(pol.start_value,pg_catalog.coalesce(pool_max,0),
-      pg_catalog.coalesce(used_max+1,0));
+    seed:=GREATEST(pol.start_value,COALESCE(pool_max,0),
+      COALESCE(used_max+1,0));
     IF seed>=9223372036854775807 THEN
       RAISE EXCEPTION 'D1 roll policy persistent allocator exhausted';
     END IF;
@@ -107,10 +107,10 @@ BEGIN
       AND candidate.campus_state IN ('PLANNED','ACTIVE')
       AND candidate.year_school IS NOT DISTINCT FROM p_school
       AND candidate.year_state IN ('PLANNED','ACTIVE'));
-    IF candidate.state='OPEN' AND NOT pg_catalog.coalesce(eligible,false) THEN
+    IF candidate.state='OPEN' AND NOT COALESCE(eligible,false) THEN
       RAISE EXCEPTION 'D1 roll policy OPEN Offering ancestry invalid';
     END IF;
-    IF pg_catalog.coalesce(eligible,false) THEN
+    IF COALESCE(eligible,false) THEN
       INSERT INTO app_private.roll_allocator_states(
         policy_revision_id,class_offering_id,next_value,created_by)
         VALUES(p_revision,candidate.id,pol.start_value,p_actor);
