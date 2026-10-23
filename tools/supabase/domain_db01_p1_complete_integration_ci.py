@@ -83,7 +83,7 @@ def _review_evidence(cur,request,decisions):
     audit=cur.fetchall()
     _check(len(audit)==len(decisions),"REVIEW_AUDIT_COUNT")
     _check(sorted(a[0] for a in audit)==sorted(decisions),"AUDIT_DECISIONS")
-    _check(all(not(a[1] ? key) for a in audit for key in
+    _check(all(key not in a[1] for a in audit for key in
            ("old_numeric_value","new_numeric_value","correction_reason",
             "source_numeric_value","proposed_numeric_value")),
            "REVIEW_AUDIT_LEAKS_ROLL")

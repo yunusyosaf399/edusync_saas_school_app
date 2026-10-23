@@ -584,7 +584,7 @@ class DomainLocalCITests(unittest.TestCase):
     def test_db01_p1_genuine_approve_and_two_terminal_reject_paths(self):
         code=(runtime.ROOT/"tools/supabase/domain_db01_p1_complete_integration_ci.py").read_text()
         driver=(runtime.ROOT/"tools/supabase/domain_local_ci.py").read_text()
-        self.assertIn('for case in',code) if False else None
+        compile(code, "domain_db01_p1_complete_integration_ci.py", "exec")
         self.assertIn("app.d1_review_student_roll_correction(",code)
         self.assertIn('"REJECTED"',code)
         self.assertIn('"APPROVED"',code)
