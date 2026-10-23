@@ -1,7 +1,6 @@
 -- DB-02 I05: restricted schema-owner pool writer.
 -- Only the Student executor can call it, after an I04 server-verified,
 -- School-locked transition; never grant client, Workflow or PUBLIC EXECUTE.
-GRANT CREATE ON SCHEMA app_private TO schoolos_schema_owner;
 SET ROLE schoolos_schema_owner;
 CREATE FUNCTION app_private.d1_roll_policy_provision_revision_pools(
  p_school uuid,p_revision uuid,p_actor uuid)
@@ -125,7 +124,6 @@ REVOKE ALL ON FUNCTION app_private.d1_roll_policy_provision_revision_pools(
 GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_provision_revision_pools(
  uuid,uuid,uuid) TO schoolos_student_executor;
 RESET ROLE;
-REVOKE CREATE ON SCHEMA app_private FROM schoolos_schema_owner;
 
 -- Compose I05 with the I04 revision mutation in the SAME transaction.
 GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
