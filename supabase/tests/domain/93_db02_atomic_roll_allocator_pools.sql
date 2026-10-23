@@ -6,21 +6,21 @@ GRANT USAGE ON SCHEMA extensions TO schoolos_student_executor;
 SELECT plan(29);
 \ir fixtures/command_actor.sql
 SELECT is((SELECT pg_catalog.pg_get_userbyid(proowner)::text FROM pg_catalog.pg_proc
-WHERE oid='app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid)'::regprocedure),
+WHERE oid='app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid,date)'::regprocedure),
 'schoolos_schema_owner','restricted pool helper is schema-owner owned');
 SELECT ok((SELECT prosecdef FROM pg_catalog.pg_proc
-WHERE oid='app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid)'::regprocedure),
+WHERE oid='app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid,date)'::regprocedure),
 'pool helper is private SECURITY DEFINER');
 SELECT ok((SELECT proconfig @> ARRAY['search_path=pg_catalog, pg_temp'] FROM pg_catalog.pg_proc
-WHERE oid='app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid)'::regprocedure),
+WHERE oid='app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid,date)'::regprocedure),
 'pool helper fixed search path');
-SELECT is(has_function_privilege('anon','app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid)','EXECUTE'),
+SELECT is(has_function_privilege('anon','app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid,date)','EXECUTE'),
 false,'anon denied');
-SELECT is(has_function_privilege('authenticated','app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid)','EXECUTE'),
+SELECT is(has_function_privilege('authenticated','app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid,date)','EXECUTE'),
 false,'authenticated denied');
-SELECT is(has_function_privilege('service_role','app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid)','EXECUTE'),
+SELECT is(has_function_privilege('service_role','app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid,date)','EXECUTE'),
 false,'service role denied');
-SELECT is(has_function_privilege('schoolos_workflow_executor','app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid)','EXECUTE'),
+SELECT is(has_function_privilege('schoolos_workflow_executor','app_private.d1_roll_policy_provision_revision_pools(uuid,uuid,uuid,date)','EXECUTE'),
 false,'workflow not given interim APPLY edge');
 SELECT is(has_table_privilege('schoolos_student_executor','app_private.roll_allocator_states','INSERT'),
 false,'no raw Student table INSERT rights granted');
