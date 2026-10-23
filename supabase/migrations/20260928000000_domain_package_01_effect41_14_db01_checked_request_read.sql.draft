@@ -94,12 +94,10 @@ BEGIN
    ))
    AND app_private.d1_roll_correct_authorized(
         p_actor,'student.roll.approve',source_section,t.reviewer_role_id) IS TRUE;
- IF matching_assignments=1 THEN
+ IF matching_assignments>0 THEN
+   -- The same eligible Principal may legitimately review sequential P1
+   -- steps; every counted step is pinned to its own configured role/assignment.
    RETURN 'REVIEWER';
- ELSIF matching_assignments>1 THEN
-   -- Multiple eligible assignments in one request should not ambiguously
-   -- authorize a read when the frozen template expects a single reviewer.
-   RETURN NULL;
  END IF;
 
  -- No explicit new "read all requests" or administrator permission exists.
