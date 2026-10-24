@@ -40,19 +40,8 @@ BEGIN
    OR v_request.target_ref IS DISTINCT FROM p_school
    OR v_request.state IS DISTINCT FROM p_next_state
    OR v_request.row_version IS DISTINCT FROM p_next_version
-   OR v_request.requester_id IS DISTINCT FROM p_actor THEN
-   -- A reviewer must be independent of the requester, not equal.
-   IF v_request.requester_id IS NOT DISTINCT FROM p_actor
-      OR NOT FOUND THEN
-     RAISE EXCEPTION 'D1 Roll Policy REVIEW independent actor or request invalid';
-   END IF;
-   IF v_request.operation_id IS DISTINCT FROM p_operation
-      OR v_request.policy_id IS DISTINCT FROM p_p1
-      OR v_request.target_ref IS DISTINCT FROM p_school
-      OR v_request.row_version IS DISTINCT FROM p_next_version
-      OR v_request.state IS DISTINCT FROM p_next_state THEN
-     RAISE EXCEPTION 'D1 Roll Policy REVIEW request evidence mismatch';
-   END IF;
+   OR v_request.requester_id IS NOT DISTINCT FROM p_actor THEN
+   RAISE EXCEPTION 'D1 Roll Policy REVIEW independent request evidence mismatch';
  END IF;
  IF NOT EXISTS (SELECT 1 FROM app_private.approval_reviews v
    WHERE v.step_id=p_step AND v.reviewer_assignment_id=p_assignment
