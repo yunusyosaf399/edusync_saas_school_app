@@ -53,7 +53,7 @@ FINAL_FUNCTION_OWNERS = (
 # Effect40_01 adds exactly one Academic-owned private School-date resolver.
 # DB-02 effect43_01 adds exactly one Student-owned private source preflight definer.
 # DB-02 effect44_01 adds one authz-reader-owned private policy version selector.
-# No public RPC or client grants; RLS/table-DML remains unchanged.
+# I01 adds two narrow private definers (evidence-writer Roll Policy-only\n# receipt wrapper + Student command context), neither a public RPC.\n# No public RPC or client grants; RLS/table-DML remains unchanged.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
     "d1_tables": 34,
@@ -64,10 +64,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 549,
-    "security_definers": 531,
+    "functions": 556,
+    "security_definers": 538,
     "app_functions": 157,
-    "private_functions": 392,
+    "private_functions": 399,
     "authenticated_app_execute": 157,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
