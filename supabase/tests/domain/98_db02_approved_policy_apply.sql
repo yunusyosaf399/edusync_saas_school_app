@@ -2,7 +2,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(59);
+SELECT plan(62);
 \ir fixtures/command_actor.sql
 SELECT is(has_function_privilege('authenticated',
  'app.d1_review_student_roll_policy_change(uuid,text,bigint,text,text)','EXECUTE'),true,
@@ -231,10 +231,9 @@ SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_review_student_roll_p
  %L::uuid,'APPROVE',3,'Changed reason','i09-approve')$q$,:'i09_a_request_id'),
  'P0001'::char(5),'D1 idempotency key conflicts with prior intent',
  'same receipt key with changed review reason conflicts');
-SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_review_student_roll_policy_change(
- %L::uuid,'APPROVE',3,'I09_PRIVATE_APPROVAL_REASON','i09-approve')$q$,:'i09_a_request_id'),
- 'P0001'::char(5),'D1 Roll Policy REVIEW replay reserved for I11',
- 'same key replay remains fail-closed until separately reviewed I11');
+SELECT is((SELECT request_state FROM app.d1_review_student_roll_policy_change(
+ :'i09_a_request_id'::uuid,'APPROVE',3,'I09_PRIVATE_APPROVAL_REASON','i09-approve')),
+ 'APPROVED'::text,'matching REVIEW retry returns the original decision');
 SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_review_student_roll_policy_change(
  %L::uuid,'REJECT',3,'Late second decision','i09-late')$q$,:'i09_a_request_id'),
  'P0001'::char(5),'D1 Roll Policy REVIEW request version/state changed',
@@ -274,6 +273,11 @@ SELECT is(:'i09_rejected_request_state'::text,'REJECTED'::text,
  'independent reject returns REJECTED');
 SELECT is(:'i09_rejected_request_version'::bigint,4::bigint,
  'REJECT increments frozen request version once');
+SET ROLE authenticated;
+SELECT is((SELECT request_state FROM app.d1_review_student_roll_policy_change(
+ :'i09_b_request_id'::uuid,'REJECT',3,'I09_PRIVATE_REJECTION_REASON','i09-reject')),
+ 'REJECTED'::text,'terminal REJECT replay returns original decision');
+RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.approval_reviews v
  JOIN app_private.approval_request_steps s ON s.id=v.step_id
  WHERE s.request_id=:'i09_b_request_id'::uuid AND v.decision='REJECT'),
@@ -387,16 +391,20 @@ SELECT ok((SELECT pg_catalog.strpos(
  WHERE r.request_id=:'i09_a_request_id'::uuid AND r.command_kind='request.apply'),
  'private approved reason is not broadly recorded');
 SET ROLE authenticated;
-SELECT throws_ok(pg_catalog.format($q$
- SELECT * FROM app.d1_apply_student_roll_policy_change(
- %L::uuid,4,'i10-success-apply')$q$,:'i09_a_request_id'),
- 'P0001'::char(5),'D1 Roll Policy APPLY replay reserved for I11',
- 'historical APPLY replay fails closed until I11 shared phase proof');
+SELECT is((SELECT policy_revision_id FROM app.d1_apply_student_roll_policy_change(
+ :'i09_a_request_id'::uuid,4,'i10-success-apply')),
+ :'i10_done_policy_revision_id'::uuid,
+ 'matching APPLY retry returns the original persisted revision');
 SELECT * FROM app.d1_apply_student_roll_policy_change(
  :'i10_stale_request_id'::uuid,4,'i10-stale-apply') \gset i10_bad_
 RESET ROLE;
 SELECT is(:'i10_bad_request_state'::text,'INVALIDATED'::text,
  'second approved INIT becomes stale and is invalidated');
+SET ROLE authenticated;
+SELECT is((SELECT request_state FROM app.d1_apply_student_roll_policy_change(
+ :'i10_stale_request_id'::uuid,4,'i10-stale-apply')),
+ 'INVALIDATED'::text,'terminal invalidation retry returns original response');
+RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.command_receipts r
  WHERE r.request_id=:'i10_stale_request_id'::uuid AND r.command_kind='request.apply'
    AND r.state='REJECTED' AND r.result_ref IS NULL),1::bigint,
@@ -409,6 +417,9 @@ SELECT is((SELECT count(*) FROM app_private.outbox_events e
  'stale APPLY cannot emit another policy event');
 SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions),1::bigint,
  'stale APPLY cannot create a second revision');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'i10_stale_request_id'::uuid AND command_kind='request.apply'),
+ 1::bigint,'invalidated replay creates no second receipt');
 SET ROLE authenticated;
 SELECT throws_ok(pg_catalog.format($q$
  SELECT * FROM app.d1_apply_student_roll_policy_change(

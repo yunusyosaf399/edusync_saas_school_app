@@ -231,10 +231,9 @@ SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_review_student_roll_p
  %L::uuid,'APPROVE',3,'Changed reason','i09-approve')$q$,:'i09_a_request_id'),
  'P0001'::char(5),'D1 idempotency key conflicts with prior intent',
  'same receipt key with changed review reason conflicts');
-SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_review_student_roll_policy_change(
- %L::uuid,'APPROVE',3,'I09_PRIVATE_APPROVAL_REASON','i09-approve')$q$,:'i09_a_request_id'),
- 'P0001'::char(5),'D1 Roll Policy REVIEW replay reserved for I11',
- 'same key replay remains fail-closed until separately reviewed I11');
+SELECT is((SELECT request_state FROM app.d1_review_student_roll_policy_change(
+ :'i09_a_request_id'::uuid,'APPROVE',3,'I09_PRIVATE_APPROVAL_REASON','i09-approve')),
+ 'APPROVED'::text,'matching REVIEW retry returns the original decision');
 SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_review_student_roll_policy_change(
  %L::uuid,'REJECT',3,'Late second decision','i09-late')$q$,:'i09_a_request_id'),
  'P0001'::char(5),'D1 Roll Policy REVIEW request version/state changed',

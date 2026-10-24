@@ -38,7 +38,8 @@ DOMAIN_TESTS.append(["95_db02_authenticated_direct_entry.sql",40])
 DOMAIN_TESTS.append(["96_db02_approval_submit_read.sql",37])
 DOMAIN_TESTS.append(["97_db02_independent_review.sql",34])
 # DB-02 I10: approved APPLY and deterministic stale invalidation, rollback-only.
-DOMAIN_TESTS.append(["98_db02_approved_policy_apply.sql",59])
+DOMAIN_TESTS.append(["98_db02_approved_policy_apply.sql",62])
+DOMAIN_TESTS.append(["99_db02_shared_review_apply_receipts.sql",13])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
