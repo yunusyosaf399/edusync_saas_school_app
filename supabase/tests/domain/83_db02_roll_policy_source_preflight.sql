@@ -18,7 +18,7 @@ SELECT ok((SELECT proconfig @> ARRAY['search_path=pg_catalog, pg_temp'] FROM pg_
 SELECT is(has_function_privilege('authenticated','app_private.d1_roll_policy_change_preflight(uuid,text,uuid,integer,text,bigint,date,date,text,bigint)','EXECUTE'),false,'authenticated has no private preflight EXECUTE');
 SELECT is(has_function_privilege('anon','app_private.d1_roll_policy_change_preflight(uuid,text,uuid,integer,text,bigint,date,date,text,bigint)','EXECUTE'),false,'anon has no preflight EXECUTE');
 SELECT is(has_function_privilege('service_role','app_private.d1_roll_policy_change_preflight(uuid,text,uuid,integer,text,bigint,date,date,text,bigint)','EXECUTE'),false,'service_role has no preflight EXECUTE');
-SELECT is(has_function_privilege('schoolos_workflow_executor','app_private.d1_roll_policy_change_preflight(uuid,text,uuid,integer,text,bigint,date,date,text,bigint)','EXECUTE'),false,'workflow executor has no cross-owner preflight EXECUTE');
+SELECT is(has_function_privilege('schoolos_workflow_executor','app_private.d1_roll_policy_change_preflight(uuid,text,uuid,integer,text,bigint,date,date,text,bigint)','EXECUTE'),true,'I10 trusted workflow executor has the reviewed private preflight EXECUTE edge');
 SELECT app_private.d1_roll_business_date('22222222-2222-4222-8222-222222222222') AS business_date \gset
 SET ROLE schoolos_student_executor;
 SELECT error_code AS invalid_action_code
