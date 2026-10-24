@@ -28,7 +28,7 @@ LANGUAGE plpgsql VOLATILE SECURITY DEFINER
 SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE
   actor uuid;
-  q record;
+  v_req record;
   access_kind text;
   v_source uuid;
   v_revision integer;
@@ -44,23 +44,23 @@ BEGIN
  PERFORM app_private.d1_lock_current_principal(actor);
  SELECT q.id,q.operation_id,q.requester_id,q.target_ref,q.row_version,
    q.state,q.old_snapshot,q.requested_payload,q.payload_schema_version,q.policy_id
-   INTO q FROM app_private.approval_requests q
+   INTO v_req FROM app_private.approval_requests q
    JOIN app_private.operation_contracts o ON o.id=q.operation_id
  WHERE q.id=p_request_id AND o.code='student.roll_policy.change';
- IF NOT FOUND OR q.payload_schema_version IS DISTINCT FROM 1
-   OR q.target_ref IS NULL OR q.policy_id IS NULL
-   OR pg_catalog.jsonb_typeof(q.old_snapshot)<>'object'
-   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(q.old_snapshot))<>5
-   OR pg_catalog.jsonb_typeof(q.requested_payload)<>'object'
-   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(q.requested_payload))<>5
-   OR NOT (q.old_snapshot ?& ARRAY[
+ IF NOT FOUND OR v_req.payload_schema_version IS DISTINCT FROM 1
+   OR v_req.target_ref IS NULL OR v_req.policy_id IS NULL
+   OR pg_catalog.jsonb_typeof(v_req.old_snapshot)<>'object'
+   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(v_req.old_snapshot))<>5
+   OR pg_catalog.jsonb_typeof(v_req.requested_payload)<>'object'
+   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(v_req.requested_payload))<>5
+   OR NOT (v_req.old_snapshot ?& ARRAY[
      'source_policy_id','source_revision','source_mode','source_start_value',
      'source_effective_from'])
-   OR NOT (q.requested_payload ?& ARRAY[
+   OR NOT (v_req.requested_payload ?& ARRAY[
      'action','mode','start_value','selected_p1_version_id',
      'trusted_business_date']) THEN RETURN; END IF;
- IF actor=q.requester_id
-   AND app_private.d1_roll_policy_submit_actor_allowed(q.target_ref,actor) IS TRUE THEN
+ IF actor=v_req.requester_id
+   AND app_private.d1_roll_policy_submit_actor_allowed(v_req.target_ref,actor) IS TRUE THEN
    access_kind:='REQUESTER';
  ELSE
    -- Merely being a historical candidate is NOT authorization. Only a
@@ -79,27 +79,27 @@ BEGIN
    access_kind:='OPEN_REVIEWER';
  END IF;
  BEGIN
-   v_source:=NULLIF(q.old_snapshot->>'source_policy_id','')::uuid;
-   v_revision:=(q.old_snapshot->>'source_revision')::integer;
-   v_start:=(q.requested_payload->>'start_value')::bigint;
-   v_date:=(q.requested_payload->>'trusted_business_date')::date;
+   v_source:=NULLIF(v_req.old_snapshot->>'source_policy_id','')::uuid;
+   v_revision:=(v_req.old_snapshot->>'source_revision')::integer;
+   v_start:=(v_req.requested_payload->>'start_value')::bigint;
+   v_date:=(v_req.requested_payload->>'trusted_business_date')::date;
  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range
    OR datetime_field_overflow THEN RETURN;
  END;
  IF v_start IS NULL OR v_start<0 OR v_date IS NULL
-   OR q.requested_payload->>'trusted_business_date'
+   OR v_req.requested_payload->>'trusted_business_date'
        IS DISTINCT FROM pg_catalog.to_char(v_date,'YYYY-MM-DD')
-   OR q.requested_payload->>'action' NOT IN ('INIT','REPLACE')
-   OR q.requested_payload->>'mode' NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
-   OR q.requested_payload->>'selected_p1_version_id' IS DISTINCT FROM q.policy_id::text
-   OR (q.requested_payload->>'action'='INIT'
+   OR v_req.requested_payload->>'action' NOT IN ('INIT','REPLACE')
+   OR v_req.requested_payload->>'mode' NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
+   OR v_req.requested_payload->>'selected_p1_version_id' IS DISTINCT FROM v_req.policy_id::text
+   OR (v_req.requested_payload->>'action'='INIT'
        AND (v_source IS NOT NULL OR v_revision IS NOT NULL))
-   OR (q.requested_payload->>'action'='REPLACE'
+   OR (v_req.requested_payload->>'action'='REPLACE'
        AND (v_source IS NULL OR v_revision IS NULL OR v_revision<1))
  THEN RETURN; END IF;
- RETURN QUERY SELECT q.id,q.row_version,q.state,q.target_ref,
-   q.requested_payload->>'action',v_source,v_revision,
-   q.requested_payload->>'mode',v_start,v_date,access_kind;
+ RETURN QUERY SELECT v_req.id,v_req.row_version,v_req.state,v_req.target_ref,
+   v_req.requested_payload->>'action',v_source,v_revision,
+   v_req.requested_payload->>'mode',v_start,v_date,access_kind;
 END $body$;
 REVOKE ALL ON FUNCTION app.d1_read_student_roll_policy_request(uuid)
  FROM PUBLIC,anon,authenticated,service_role;
