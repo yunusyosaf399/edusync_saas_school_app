@@ -365,8 +365,8 @@ SELECT is((SELECT count(*) FROM app_private.command_receipts r
  WHERE r.request_id=:'i09_a_request_id'::uuid AND r.command_kind='request.apply'
  AND r.state='SUCCEEDED' AND r.result_kind='D1_STUDENT_ROLL_POLICY'),1::bigint,
  'APPLY success receipt has fixed result kind');
-SELECT is((SELECT count(*) FROM pg_catalog.jsonb_object_keys(r.result_summary)
- FROM app_private.command_receipts r WHERE r.request_id=:'i09_a_request_id'::uuid
+SELECT is((SELECT count(*) FROM app_private.command_receipts r
+ CROSS JOIN LATERAL pg_catalog.jsonb_object_keys(r.result_summary) AS key_name WHERE r.request_id=:'i09_a_request_id'::uuid
  AND r.command_kind='request.apply'),14::bigint,
  'APPLY success has exactly 14 receipt keys');
 SELECT is((SELECT count(*) FROM app_private.audit_events a
@@ -397,8 +397,10 @@ SELECT * FROM app.d1_apply_student_roll_policy_change(
 RESET ROLE;
 SELECT is(:'i10_bad_request_state'::text,'INVALIDATED'::text,
  'second approved INIT becomes stale and is invalidated');
-SELECT ok(:'i10_bad_policy_revision_id'::text IS NULL,
- 'stale APPLY returned no new policy');
+SELECT is((SELECT count(*) FROM app_private.command_receipts r
+ WHERE r.request_id=:'i10_stale_request_id'::uuid AND r.command_kind='request.apply'
+   AND r.state='REJECTED' AND r.result_ref IS NULL),1::bigint,
+ 'stale APPLY stores no successful policy result');
 SELECT is((SELECT count(*) FROM app_private.approval_applications
  WHERE request_id=:'i10_stale_request_id'::uuid),0::bigint,
  'stale approved request creates no application');
