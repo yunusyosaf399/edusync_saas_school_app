@@ -1,7 +1,11 @@
 -- DB-02 I06 stage B: historical DIRECT receipt / persisted-row proof.
 -- Draft-only and owner-only pending transactional composition and pgTAP.
-GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
-SET ROLE schoolos_student_executor;
+-- Evidence-reader verifier uses the same NOLOGIN evidence boundary as the
+-- existing receipt lookup. Student executor gets EXECUTE only, no table reads.
+GRANT SELECT ON app_private.audit_events, app_private.outbox_events,
+ app_private.class_offerings TO schoolos_evidence_writer;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
 CREATE FUNCTION app_private.d1_roll_policy_direct_result_rows_match(
  p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
  p_school uuid,p_action text,p_source uuid,p_result uuid,
@@ -149,5 +153,8 @@ END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_roll_policy_direct_result_rows_match(
  uuid,uuid,text,bytea,uuid,text,uuid,uuid,uuid)
  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_direct_result_rows_match(
+ uuid,uuid,text,bytea,uuid,text,uuid,uuid,uuid)
+ TO schoolos_student_executor;
 RESET ROLE;
-REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
