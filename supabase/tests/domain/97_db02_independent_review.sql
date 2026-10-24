@@ -125,6 +125,11 @@ RESET ROLE;
 
 
 
+-- Enable the operation inside the rollback-only fixture. Production remains disabled.
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.operation_contracts SET enabled=true
+ WHERE code='student.roll_policy.change';
+RESET ROLE;
 SET ROLE authenticated;
 SELECT * FROM app.d1_submit_student_roll_policy_change(
  '22222222-2222-4222-8222-222222222222','INIT',NULL,NULL,NULL,NULL,NULL,
