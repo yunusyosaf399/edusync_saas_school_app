@@ -114,8 +114,9 @@ RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.command_receipts
  WHERE result_ref=:'i06_init_id'::uuid AND state='SUCCEEDED'),1::bigint,
  'INIT commits exactly one SUCCEEDED command receipt');
-SELECT is((SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(result_summary)
- FROM app_private.command_receipts WHERE result_ref=:'i06_init_id'::uuid),14::bigint,
+SELECT is((SELECT pg_catalog.count(*) FROM app_private.command_receipts r
+ CROSS JOIN LATERAL pg_catalog.jsonb_object_keys(r.result_summary) k
+ WHERE r.result_ref=:'i06_init_id'::uuid),14::bigint,
  'INIT receipt summary has exactly 14 keys');
 SELECT is((SELECT result_kind FROM app_private.command_receipts
  WHERE result_ref=:'i06_init_id'::uuid),'D1_STUDENT_ROLL_POLICY',
@@ -126,8 +127,9 @@ SELECT is((SELECT count(*) FROM app_private.audit_events
 SELECT is((SELECT count(*) FROM app_private.outbox_events
  WHERE command_receipt_id=(SELECT id FROM app_private.command_receipts
  WHERE result_ref=:'i06_init_id'::uuid)),1::bigint,'one outbox event');
-SELECT is((SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(payload)
- FROM app_private.outbox_events WHERE command_receipt_id=(
+SELECT is((SELECT pg_catalog.count(*) FROM app_private.outbox_events e
+ CROSS JOIN LATERAL pg_catalog.jsonb_object_keys(e.payload) k
+ WHERE e.command_receipt_id=(
  SELECT id FROM app_private.command_receipts WHERE result_ref=:'i06_init_id'::uuid)),
  6::bigint,'outbox payload has exactly six safe keys');
 SELECT ok((SELECT a.correlation_id=e.correlation_id
