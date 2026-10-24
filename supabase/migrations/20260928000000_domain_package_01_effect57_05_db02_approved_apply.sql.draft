@@ -1,0 +1,213 @@
+-- DB-02 I10 draft: request.submit -> independently reviewed APPROVED
+-- -> separately authorized APPLY -> EXECUTED or deterministic INVALIDATED.
+-- Public RPC is inactive with the operation disabled by default. No I11
+-- shared receipt phase extension and no hosted changes are performed.
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.d1_apply_student_roll_policy_change(
+ p_request_id uuid,p_expected_request_version bigint,p_idempotency_key text)
+RETURNS TABLE(request_id uuid,request_version bigint,request_state text,
+ policy_revision_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ ctx record; q record; locked_q record; step record; v record;
+ old_source uuid; old_revision integer; old_mode text;
+ old_start bigint; old_from date; new_mode text; new_start bigint;
+ frozen_date date; action text; v_date date; pre record; effect record;
+ issue text; v_final bigint; v_receipt uuid; v_seq bigint;
+ v_summary jsonb; applicant_ok boolean:=false;
+BEGIN
+ IF p_request_id IS NULL OR p_expected_request_version IS NULL
+   OR p_expected_request_version<4 THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY intent invalid';
+ END IF;
+ SELECT * INTO ctx FROM app_private.d1_roll_policy_apply_receipt_context(
+   p_request_id,p_expected_request_version,p_idempotency_key);
+ IF NOT FOUND OR ctx.actor_id IS NULL OR ctx.operation_id IS NULL
+   OR ctx.intent_hash IS NULL OR pg_catalog.octet_length(ctx.intent_hash)<>32 THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY context unavailable';
+ END IF;
+ PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+ -- This is not yet the mutation lock. Discover immutable School identity
+ -- without taking the approval row lock before the School lock.
+ SELECT q0.id,q0.target_ref,q0.requester_id,q0.policy_id,
+   q0.operation_id,q0.state,q0.row_version,q0.payload_schema_version,
+   q0.campus_id,q0.expected_target_version,q0.reason,
+   q0.old_snapshot,q0.requested_payload,q0.submitted_at,q0.created_by
+ INTO q FROM app_private.approval_requests q0
+ WHERE q0.id=p_request_id AND q0.operation_id=ctx.operation_id;
+ IF NOT FOUND OR q.target_ref IS NULL OR q.policy_id IS NULL
+   OR q.requester_id IS NULL OR q.campus_id IS NOT NULL
+   OR q.payload_schema_version IS DISTINCT FROM 1
+   OR q.reason IS NULL OR pg_catalog.btrim(q.reason)=''
+   OR q.submitted_at IS NULL OR q.created_by IS DISTINCT FROM q.requester_id
+   OR pg_catalog.jsonb_typeof(q.old_snapshot) IS DISTINCT FROM 'object'
+   OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(q.old_snapshot))<>5
+   OR NOT(q.old_snapshot ?& ARRAY[
+     'source_policy_id','source_revision','source_mode',
+     'source_start_value','source_effective_from'])
+   OR pg_catalog.jsonb_typeof(q.requested_payload) IS DISTINCT FROM 'object'
+   OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(q.requested_payload))<>5
+   OR NOT(q.requested_payload ?& ARRAY[
+      'action','mode','start_value','selected_p1_version_id','trusted_business_date'])
+   OR q.requested_payload->>'selected_p1_version_id' IS DISTINCT FROM q.policy_id::text
+ THEN RAISE EXCEPTION 'D1 Roll Policy APPLY stored request malformed'; END IF;
+ BEGIN
+   old_source:=NULLIF(q.old_snapshot->>'source_policy_id','')::uuid;
+   old_revision:=(q.old_snapshot->>'source_revision')::integer;
+   old_mode:=q.old_snapshot->>'source_mode';
+   old_start:=(q.old_snapshot->>'source_start_value')::bigint;
+   old_from:=(q.old_snapshot->>'source_effective_from')::date;
+   action:=q.requested_payload->>'action';
+   new_mode:=q.requested_payload->>'mode';
+   new_start:=(q.requested_payload->>'start_value')::bigint;
+   frozen_date:=(q.requested_payload->>'trusted_business_date')::date;
+ EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range
+    OR datetime_field_overflow THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY stored request malformed';
+ END;
+ IF action NOT IN ('INIT','REPLACE')
+   OR new_mode NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
+   OR new_start IS NULL OR new_start<0 OR new_start>=9223372036854775807
+   OR frozen_date IS NULL
+   OR q.requested_payload->>'trusted_business_date'
+         IS DISTINCT FROM pg_catalog.to_char(frozen_date,'YYYY-MM-DD')
+   OR (action='INIT' AND (old_source IS NOT NULL OR old_revision IS NOT NULL
+       OR old_mode IS NOT NULL OR old_start IS NOT NULL OR old_from IS NOT NULL))
+   OR (action='REPLACE' AND (old_source IS NULL OR old_revision IS NULL
+       OR old_revision<1 OR old_mode NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
+       OR old_start IS NULL OR old_start<0 OR old_from IS NULL))
+   OR q.expected_target_version IS DISTINCT FROM old_revision
+ THEN RAISE EXCEPTION 'D1 Roll Policy APPLY frozen facts malformed'; END IF;
+ -- APPLY eligibility belongs only to the original requester or an actual
+ -- deciding reviewer. No generic Principal/Administrator role fallback.
+ IF ctx.actor_id=q.requester_id THEN
+   applicant_ok:=app_private.d1_roll_policy_apply_principal_live(
+     ctx.actor_id,'student.roll_policy.change',NULL);
+ ELSE
+   FOR step IN SELECT t.id,t.reviewer_role_id
+     FROM app_private.approval_request_steps s
+     JOIN app_private.approval_step_templates t ON t.id=s.template_id
+     JOIN app_private.approval_reviews rv ON rv.step_id=s.id
+     WHERE s.request_id=p_request_id AND s.state='APPROVED'
+       AND rv.decision='APPROVE' AND rv.reviewer_id=ctx.actor_id
+   LOOP
+     IF app_private.d1_roll_policy_apply_principal_live(
+       ctx.actor_id,'student.roll_policy.approve',step.reviewer_role_id) IS TRUE
+     THEN applicant_ok:=true; END IF;
+   END LOOP;
+ END IF;
+ IF applicant_ok IS DISTINCT FROM true THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY applicant authority denied';
+ END IF;
+ -- READ COMMITTED, Foundation SHARED and receipt-key locks are held from
+ -- context. Lock School before the request and before any revision/pool.
+ IF app_private.d1_enrollment_place_lock_school(q.target_ref) IS DISTINCT FROM true THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY School unavailable';
+ END IF;
+ SELECT q0.id,q0.state,q0.row_version,q0.operation_id,q0.policy_id,
+  q0.target_ref,q0.requester_id,q0.reason,q0.old_snapshot,q0.requested_payload,
+  q0.expected_target_version
+ INTO locked_q FROM app_private.approval_requests q0
+ WHERE q0.id=p_request_id FOR UPDATE;
+ IF NOT FOUND OR locked_q.operation_id IS DISTINCT FROM ctx.operation_id
+   OR locked_q.policy_id IS DISTINCT FROM q.policy_id
+   OR locked_q.target_ref IS DISTINCT FROM q.target_ref
+   OR locked_q.requester_id IS DISTINCT FROM q.requester_id
+   OR locked_q.reason IS DISTINCT FROM q.reason
+   OR locked_q.old_snapshot IS DISTINCT FROM q.old_snapshot
+   OR locked_q.requested_payload IS DISTINCT FROM q.requested_payload
+   OR locked_q.expected_target_version IS DISTINCT FROM q.expected_target_version THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY immutable request changed';
+ END IF;
+ IF ctx.receipt_id IS NOT NULL THEN
+   -- I11 must independently approve shared REVIEW/APPLY phase shapes and
+   -- durable historical replay verifier. No stale successful response reused.
+   RAISE EXCEPTION 'D1 Roll Policy APPLY replay reserved for I11';
+ END IF;
+ IF locked_q.state IS DISTINCT FROM 'APPROVED'
+   OR locked_q.row_version IS DISTINCT FROM p_expected_request_version THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY request version/state changed';
+ END IF;
+ IF app_private.d1_roll_policy_p1_binding_current(
+     q.target_ref,q.policy_id,'APPROVAL') IS DISTINCT FROM true THEN
+   issue:='DB02_APPLY_P1_STALE';
+ ELSIF app_private.d1_roll_policy_apply_principal_live(
+     q.requester_id,'student.roll_policy.change',NULL) IS DISTINCT FROM true THEN
+   issue:='DB02_APPLY_REQUESTER_REVOKED';
+ ELSIF app_private.d1_roll_policy_apply_reviews_live(p_request_id)
+     IS DISTINCT FROM true THEN
+   issue:='DB02_APPLY_REVIEWER_REVOKED';
+ END IF;
+ IF issue IS NULL THEN
+   -- Uses the exact I03 School/current-revision/allocator/future-placement
+   -- preflight. Any stale source or future promise INVALIDATES; SQL/integrity
+   -- failures outside its typed result still roll back.
+   SELECT * INTO pre FROM app_private.d1_roll_policy_change_preflight(
+    q.target_ref,action,old_source,old_revision,old_mode,old_start,old_from,
+    NULL::date,new_mode,new_start);
+   IF NOT FOUND OR pre.error_code IS NOT NULL THEN
+     issue:='DB02_APPLY_SOURCE_STALE';
+   ELSIF pre.business_date IS DISTINCT FROM frozen_date THEN
+     issue:='DB02_APPLY_DATE_STALE';
+   END IF;
+ END IF;
+ IF issue IS NOT NULL THEN
+   UPDATE app_private.approval_requests SET state='INVALIDATED'
+   WHERE id=p_request_id RETURNING row_version INTO v_final;
+   v_receipt:=app_private.d1_roll_policy_apply_invalid_evidence(
+     ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+     q.target_ref,p_request_id,q.policy_id,p_expected_request_version,
+     v_final,issue);
+   SELECT COALESCE(max(t.sequence_number),0)+1 INTO v_seq
+     FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+   INSERT INTO app_private.approval_transitions(
+     request_id,sequence_number,from_state,to_state,reason,
+     command_receipt_id,created_by)
+   VALUES(p_request_id,v_seq,'APPROVED','INVALIDATED',issue,
+     v_receipt,ctx.actor_id);
+   RETURN QUERY SELECT p_request_id,v_final,'INVALIDATED'::text,NULL::uuid;
+   RETURN;
+ END IF;
+ SELECT * INTO effect FROM app_private.d1_roll_policy_approved_effect(
+   q.target_ref,ctx.actor_id,action,old_source,old_revision,old_mode,
+   old_start,old_from,new_mode,new_start,frozen_date,q.reason);
+ IF NOT FOUND OR effect.policy_id IS NULL OR effect.policy_revision IS NULL
+   OR effect.pool_count IS NULL THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY effect proof absent';
+ END IF;
+ v_summary:=pg_catalog.jsonb_build_object(
+  'school_id',q.target_ref,'action',action,'source_policy_id',old_source,
+  'source_revision',old_revision,'source_mode',old_mode,
+  'source_start_value',old_start,'source_effective_from',old_from,
+  'policy_revision_id',effect.policy_id,'revision',effect.policy_revision,
+  'mode',new_mode,'start_value',new_start,'effective_from',frozen_date,
+  'selected_p1_version_id',q.policy_id,'allocator_pool_count',effect.pool_count);
+ UPDATE app_private.approval_requests SET
+   state='EXECUTED',executed_at=pg_catalog.statement_timestamp()
+ WHERE id=p_request_id RETURNING row_version INTO v_final;
+ v_receipt:=app_private.d1_roll_policy_apply_success_evidence(
+   ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
+   q.target_ref,p_request_id,q.policy_id,p_expected_request_version,
+   effect.policy_id,old_source,action,v_summary);
+ INSERT INTO app_private.approval_applications(
+   request_id,command_receipt_id,operation_id,applied_target_version,
+   result_ref,created_by)
+ VALUES(p_request_id,v_receipt,ctx.operation_id,old_revision,
+   effect.policy_id,ctx.actor_id);
+ SELECT COALESCE(max(t.sequence_number),0)+1 INTO v_seq
+ FROM app_private.approval_transitions t WHERE t.request_id=p_request_id;
+ INSERT INTO app_private.approval_transitions(
+  request_id,sequence_number,from_state,to_state,reason,
+  command_receipt_id,created_by)
+ VALUES(p_request_id,v_seq,'APPROVED','EXECUTED',
+   'D1_ROLL_POLICY_APPLIED',v_receipt,ctx.actor_id);
+ RETURN QUERY SELECT p_request_id,v_final,'EXECUTED'::text,effect.policy_id;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_apply_student_roll_policy_change(uuid,bigint,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_apply_student_roll_policy_change(uuid,bigint,text)
+ TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
