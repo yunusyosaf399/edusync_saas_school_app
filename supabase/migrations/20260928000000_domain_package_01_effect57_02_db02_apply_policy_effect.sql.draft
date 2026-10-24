@@ -1,0 +1,67 @@
+-- DB-02 I10 draft-only: a fixed typed Student-owned effect for the
+-- explicitly reviewed APPROVAL path. DIRECT's existing handler is unchanged.
+-- Only the NOLOGIN workflow executor gets this private call edge.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_roll_policy_approved_effect(
+ p_school uuid,p_actor uuid,p_action text,p_source uuid,
+ p_old_revision integer,p_old_mode text,p_old_start bigint,
+ p_old_from date,p_new_mode text,p_new_start bigint,
+ p_frozen_date date,p_private_reason text)
+RETURNS TABLE(policy_id uuid,policy_revision integer,pool_count integer)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE gate record; v_id uuid; v_revision integer; v_pools integer; changed integer;
+BEGIN
+ IF p_school IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+   OR p_frozen_date IS NULL
+   OR p_private_reason IS NULL OR pg_catalog.btrim(p_private_reason)=''
+   OR p_new_mode NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
+   OR p_new_start IS NULL OR p_new_start<0 OR p_new_start>=9223372036854775807
+   OR p_action NOT IN ('INIT','REPLACE')
+   OR app_private.d1_roll_policy_p1_version(p_school) IS NULL THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY typed effect denied';
+ END IF;
+ -- Recheck the same School/current-revision/allocator/future-commitment gate
+ -- used by DIRECT. Caller already locked the School. Date is server-derived,
+ -- not recomputed from a client timestamp.
+ SELECT * INTO gate FROM app_private.d1_roll_policy_change_preflight(
+   p_school,p_action,p_source,p_old_revision,p_old_mode,p_old_start,
+   p_old_from,NULL::date,p_new_mode,p_new_start);
+ IF NOT FOUND OR gate.error_code IS NOT NULL OR gate.business_date IS DISTINCT FROM p_frozen_date THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY source changed after validation';
+ END IF;
+ IF p_action='INIT' THEN
+   v_revision:=1;
+ ELSE
+   v_revision:=gate.source_revision+1;
+   UPDATE app_private.roll_policy_revisions SET
+      effective_until=p_frozen_date,
+      ended_at=pg_catalog.statement_timestamp(),ended_by=p_actor
+   WHERE id=p_source AND school_id=p_school AND revision=gate.source_revision
+     AND mode=p_old_mode AND start_value=p_old_start
+     AND effective_from=p_old_from AND effective_until IS NULL
+     AND effective_from<p_frozen_date;
+   GET DIAGNOSTICS changed=ROW_COUNT;
+   IF changed<>1 THEN
+     RAISE EXCEPTION 'D1 Roll Policy APPLY source changed after lock';
+   END IF;
+ END IF;
+ INSERT INTO app_private.roll_policy_revisions(
+  school_id,revision,mode,start_value,effective_from,reason,supersedes_id,created_by)
+ VALUES(p_school,v_revision,p_new_mode,p_new_start,p_frozen_date,
+  p_private_reason,CASE WHEN p_action='REPLACE' THEN p_source ELSE NULL END,p_actor)
+ RETURNING id INTO v_id;
+ IF v_id IS NULL THEN RAISE EXCEPTION 'D1 Roll Policy APPLY revision missing'; END IF;
+ v_pools:=app_private.d1_roll_policy_provision_revision_pools(
+   p_school,v_id,p_actor,p_frozen_date);
+ RETURN QUERY SELECT v_id,v_revision,v_pools;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_approved_effect(
+ uuid,uuid,text,uuid,integer,text,bigint,date,text,bigint,date,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_approved_effect(
+ uuid,uuid,text,uuid,integer,text,bigint,date,text,bigint,date,text)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
