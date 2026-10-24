@@ -1,6 +1,8 @@
 -- DB-02 I09: terminal REVIEW receipt and reduced audit. Only NOLOGIN
 -- evidence_writer can insert; review reason remains in approval_reviews and
 -- the canonical SHA256 receipt hash, not broadly projected event/details.
+GRANT SELECT(state) ON app_private.approval_request_steps
+ TO schoolos_evidence_writer;
 GRANT SELECT(id,step_id,reviewer_assignment_id,reviewer_id,
  decision,reason,expected_request_version,created_by)
  ON app_private.approval_reviews TO schoolos_evidence_writer;
