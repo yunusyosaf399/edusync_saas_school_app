@@ -3,7 +3,7 @@ BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
 GRANT USAGE ON SCHEMA extensions TO schoolos_student_executor;
-SELECT plan(25);
+SELECT plan(33);
 \ir fixtures/command_actor.sql
 SELECT set_config('schoolos_test.db02_i01_subject',
  (SELECT id::text FROM auth.users WHERE email='foundation-test-001@example.invalid'),true);
@@ -206,6 +206,76 @@ SELECT is((SELECT count(*) FROM app_private.outbox_events
 SELECT is((SELECT count(*) FROM app_private.roll_allocator_states
  WHERE policy_revision_id=:'i06_new_id'::uuid),1::bigint,
  'REPLACE replay retains one pool');
+-- Prove the verifier rejects substitution without mutating any rows.
+SELECT operation_id::text AS operation,
+  pg_catalog.encode(canonical_payload_hash,'hex') AS hash
+FROM app_private.command_receipts
+WHERE result_ref=:'i06_new_id'::uuid
+\gset i06_receipt_
+SET ROLE schoolos_student_executor;
+SELECT is(app_private.d1_roll_policy_direct_result_rows_match(
+ 'b8900000-0000-4000-8000-000000000001',
+ :'i06_receipt_operation'::uuid,'i06-replace',
+ pg_catalog.decode(:'i06_receipt_hash','hex'),
+ '22222222-2222-4222-8222-222222222222','REPLACE',
+ 'b9600000-0000-4000-8000-000000000001',
+ '00000000-0000-4000-8000-000000000001',
+ 'b8900000-0000-4000-8000-000000000003'),false,
+ 'wrong historical result UUID is not accepted');
+SELECT is(app_private.d1_roll_policy_direct_result_rows_match(
+ 'b8900000-0000-4000-8000-000000000001',
+ :'i06_receipt_operation'::uuid,'i06-replace',
+ pg_catalog.decode(:'i06_receipt_hash','hex'),
+ '22222222-2222-4222-8222-222222222222','REPLACE',
+ '00000000-0000-4000-8000-000000000001',
+ :'i06_new_id'::uuid,
+ 'b8900000-0000-4000-8000-000000000003'),false,
+ 'wrong historical source is not accepted');
+SELECT is(app_private.d1_roll_policy_direct_result_rows_match(
+ 'b8900000-0000-4000-8000-000000000001',
+ :'i06_receipt_operation'::uuid,'i06-replace',
+ pg_catalog.decode(:'i06_receipt_hash','hex'),
+ '33333333-3333-4333-8333-333333333333','REPLACE',
+ 'b9600000-0000-4000-8000-000000000001',
+ :'i06_new_id'::uuid,
+ 'b8900000-0000-4000-8000-000000000003'),false,
+ 'cross-School historical substitution is denied');
+RESET ROLE;
 ROLLBACK TO SAVEPOINT i06_replace;
+
+-- A forced late evidence failure must roll back the preceding source close,
+-- new revision, new allocator, and receipt. Entire fixture is transaction-only.
+CREATE FUNCTION pg_temp.db02_i06_deny_event() RETURNS trigger
+LANGUAGE plpgsql AS $abort$
+BEGIN
+ IF NEW.event_type='student.roll_policy_changed' THEN
+   RAISE EXCEPTION 'DB02_I06_TEST_OUTBOX_BLOCK';
+ END IF;
+ RETURN NEW;
+END $abort$;
+CREATE TRIGGER db02_i06_test_outbox_denial
+ BEFORE INSERT ON app_private.outbox_events
+ FOR EACH ROW EXECUTE FUNCTION pg_temp.db02_i06_deny_event();
+SET ROLE schoolos_student_executor;
+SELECT throws_ok($q$SELECT app_private.d1_roll_policy_revision_transition(
+ '22222222-2222-4222-8222-222222222222','i06-evidence-abort','REPLACE',
+ 'b9600000-0000-4000-8000-000000000001',1,'PERSISTENT_STUDENT',5000,
+ :'i06_t'::date-10,'PERSISTENT_STUDENT',7000,'I06 induced rollback')$q$,
+ 'P0001'::char(5),'DB02_I06_TEST_OUTBOX_BLOCK',
+ 'late outbox failure aborts the complete atomic transition');
+RESET ROLE;
+DROP TRIGGER db02_i06_test_outbox_denial ON app_private.outbox_events;
+SELECT is((SELECT effective_until FROM app_private.roll_policy_revisions
+ WHERE id='b9600000-0000-4000-8000-000000000001'),NULL::date,
+ 'late evidence failure rolls back predecessor closure');
+SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions
+ WHERE school_id='22222222-2222-4222-8222-222222222222'),1::bigint,
+ 'late evidence failure retains only original source revision');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE idempotency_key='i06-evidence-abort'),0::bigint,
+ 'late evidence failure leaves no durable success receipt');
+SELECT is((SELECT count(*) FROM app_private.outbox_events
+ WHERE event_type='student.roll_policy_changed'),0::bigint,
+ 'late evidence failure leaves no outbox event');
 SELECT * FROM finish();
 ROLLBACK;
