@@ -4,7 +4,7 @@ GRANT SELECT(row_version) ON app_private.approval_requests TO schoolos_evidence_
 GRANT SELECT(policy_id,request_id,template_id) ON app_private.approval_request_steps TO schoolos_evidence_writer;
 GRANT SELECT(reviewer_id,withdrawn_at) ON app_private.approval_step_reviewers TO schoolos_evidence_writer;
 GRANT SELECT(command_receipt_id,to_state) ON app_private.approval_transitions TO schoolos_evidence_writer;
-GRANT SELECT(person_id) ON app_private.principals TO schoolos_evidence_writer;
+GRANT SELECT(id,person_id) ON app_private.principals TO schoolos_evidence_writer;
 SET ROLE schoolos_schema_owner;
 CREATE POLICY db02_i11_evidence_principal ON app_private.principals
  FOR SELECT TO schoolos_evidence_writer USING (true);
