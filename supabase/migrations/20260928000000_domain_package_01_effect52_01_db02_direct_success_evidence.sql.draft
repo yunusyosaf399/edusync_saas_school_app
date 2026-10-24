@@ -87,7 +87,15 @@ BEGIN
  END IF;
  SELECT pg_catalog.count(*) INTO v_pool_count
    FROM app_private.roll_allocator_states WHERE policy_revision_id=p_revision;
- IF (v_policy.mode='PERSISTENT_STUDENT' AND v_pool_count<>1)
+ IF (v_policy.mode='PERSISTENT_STUDENT'
+       AND (v_pool_count<>1 OR NOT EXISTS (
+         SELECT 1 FROM app_private.roll_allocator_states a
+         WHERE a.policy_revision_id=p_revision AND a.class_offering_id IS NULL)))
+   OR (v_policy.mode='ACADEMIC_CONTEXT' AND EXISTS (
+         SELECT 1 FROM app_private.roll_allocator_states a
+         WHERE a.policy_revision_id=p_revision AND a.class_offering_id IS NULL))
+   OR EXISTS (SELECT 1 FROM app_private.roll_allocator_states a
+         WHERE a.policy_revision_id=p_revision AND a.created_by IS DISTINCT FROM p_actor)
    OR p_summary->>'allocator_pool_count' IS DISTINCT FROM v_pool_count::text
    OR EXISTS (SELECT 1 FROM app_private.command_receipts
        WHERE operation_id=p_operation AND result_ref=p_revision AND state='SUCCEEDED')
