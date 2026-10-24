@@ -1,7 +1,7 @@
 # DB-02 I07 — authenticated Roll Policy DIRECT entry (draft, local-only)
 
 **Implementation:** `supabase/migrations/20260928000000_domain_package_01_effect54_01_db02_authenticated_direct.sql.draft`  
-**Acceptance:** `supabase/tests/domain/95_db02_authenticated_direct_entry.sql` (37 rollback-only assertions).  
+**Acceptance:** `supabase/tests/domain/95_db02_authenticated_direct_entry.sql` (40 rollback-only assertions).  
 **Dependency:** I06 draft transition + receipt/evidence/proof from PR #151; this I07 branch is stacked on the exact I06 green commit `756f8947ba7aa90df1286cf013869386d6c16af8`.
 
 ## Public API (no publication, hosted migration, or live switch)
