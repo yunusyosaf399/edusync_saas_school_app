@@ -75,7 +75,7 @@ SELECT is((SELECT supersedes_id FROM app_private.roll_policy_revisions WHERE id=
 SELECT ok((SELECT effective_until IS NULL FROM app_private.roll_policy_revisions WHERE id='97000000-0000-4000-8000-000000000003'),'future policy has open-ended interval without current disclosure');
 SELECT is((SELECT enabled FROM app_private.operation_contracts WHERE code='student.roll_policy.change'),false,'unimplemented student.roll_policy.change operation is disabled');
 SELECT is((SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='app' AND p.proname='d1_read_roll_policy'),1::bigint,'read endpoint is registered exactly once');
-SELECT is((SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='app' AND p.proname LIKE 'd1_%roll%policy%' AND p.proname NOT IN ('d1_read_roll_policy','d1_change_student_roll_policy','d1_submit_student_roll_policy_change','d1_read_student_roll_policy_request')),0::bigint,'no unimplemented roll-policy APPROVAL or other RPC is published');
+SELECT is((SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='app' AND p.proname LIKE 'd1_%roll%policy%' AND p.proname NOT IN ('d1_read_roll_policy','d1_change_student_roll_policy','d1_submit_student_roll_policy_change','d1_read_student_roll_policy_request','d1_review_student_roll_policy_change')),0::bigint,'no unimplemented roll-policy APPROVAL or other RPC is published');
 SAVEPOINT roll_policy_scope_revoked;
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.assignment_permission_scopes SET revoked_at=clock_timestamp()
