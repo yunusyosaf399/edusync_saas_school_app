@@ -1,0 +1,127 @@
+-- DB-02 I06 stage B: historical DIRECT receipt / persisted-row proof.
+-- Draft-only and owner-only pending transactional composition and pgTAP.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_roll_policy_direct_result_rows_match(
+ p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+ p_school uuid,p_action text,p_source uuid,p_result uuid,
+ p_policy_version uuid
+) RETURNS boolean
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ r app_private.command_receipts%ROWTYPE;
+ pol app_private.roll_policy_revisions%ROWTYPE;
+ src app_private.roll_policy_revisions%ROWTYPE;
+ s jsonb;
+ pool_count bigint;
+ evidence_count bigint;
+ event_count bigint;
+BEGIN
+ IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+   OR p_operation IS NULL OR p_key IS NULL OR p_hash IS NULL
+   OR pg_catalog.octet_length(p_hash)<>32
+   OR p_school IS NULL OR p_result IS NULL OR p_policy_version IS NULL
+   OR p_action NOT IN ('INIT','REPLACE')
+ THEN RETURN false; END IF;
+ SELECT * INTO r FROM app_private.command_receipts
+ WHERE principal_id=p_actor AND operation_id=p_operation
+   AND idempotency_key=p_key;
+ IF NOT FOUND OR r.state IS DISTINCT FROM 'SUCCEEDED'
+   OR r.command_kind IS DISTINCT FROM 'student.roll_policy.change'
+   OR r.canonicalization_version IS DISTINCT FROM 1
+   OR r.canonical_payload_hash IS DISTINCT FROM p_hash
+   OR r.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_POLICY'
+   OR r.result_ref IS DISTINCT FROM p_result
+   OR r.error_code IS NOT NULL OR r.request_id IS NOT NULL
+   OR r.result_summary IS NULL
+ THEN RETURN false; END IF;
+ s:=r.result_summary;
+ IF pg_catalog.jsonb_typeof(s)<>'object'
+   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(s))<>14
+   OR NOT (s ?& ARRAY['school_id','action','source_policy_id',
+      'source_revision','source_mode','source_start_value',
+      'source_effective_from','policy_revision_id','revision','mode',
+      'start_value','effective_from','selected_p1_version_id',
+      'allocator_pool_count'])
+ THEN RETURN false; END IF;
+ SELECT * INTO pol FROM app_private.roll_policy_revisions
+   WHERE id=p_result AND school_id=p_school;
+ IF NOT FOUND OR pol.created_by IS DISTINCT FROM p_actor
+   OR pol.supersedes_id IS DISTINCT FROM p_source
+   OR s->>'school_id' IS DISTINCT FROM p_school::text
+   OR s->>'action' IS DISTINCT FROM p_action
+   OR s->>'source_policy_id' IS DISTINCT FROM p_source::text
+   OR s->>'policy_revision_id' IS DISTINCT FROM p_result::text
+   OR s->>'selected_p1_version_id' IS DISTINCT FROM p_policy_version::text
+   OR s->>'revision' IS DISTINCT FROM pol.revision::text
+   OR s->>'mode' IS DISTINCT FROM pol.mode
+   OR s->>'start_value' IS DISTINCT FROM pol.start_value::text
+   OR s->>'effective_from' IS DISTINCT FROM pol.effective_from::text
+   OR r.expected_target_version IS DISTINCT FROM pol.revision
+ THEN RETURN false; END IF;
+ IF p_action='INIT' THEN
+   IF p_source IS NOT NULL OR pol.revision<>1
+     OR pg_catalog.jsonb_typeof(s->'source_policy_id') IS DISTINCT FROM 'null'
+     OR pg_catalog.jsonb_typeof(s->'source_revision') IS DISTINCT FROM 'null'
+     OR pg_catalog.jsonb_typeof(s->'source_mode') IS DISTINCT FROM 'null'
+     OR pg_catalog.jsonb_typeof(s->'source_start_value') IS DISTINCT FROM 'null'
+     OR pg_catalog.jsonb_typeof(s->'source_effective_from') IS DISTINCT FROM 'null'
+   THEN RETURN false; END IF;
+ ELSE
+   SELECT * INTO src FROM app_private.roll_policy_revisions
+     WHERE id=p_source AND school_id=p_school;
+   IF NOT FOUND OR src.revision+1<>pol.revision
+     OR src.effective_until IS DISTINCT FROM pol.effective_from
+     OR src.ended_at IS NULL
+     OR s->>'source_revision' IS DISTINCT FROM src.revision::text
+     OR s->>'source_mode' IS DISTINCT FROM src.mode
+     OR s->>'source_start_value' IS DISTINCT FROM src.start_value::text
+     OR s->>'source_effective_from' IS DISTINCT FROM src.effective_from::text
+   THEN RETURN false; END IF;
+ END IF;
+ SELECT pg_catalog.count(*) INTO pool_count
+   FROM app_private.roll_allocator_states WHERE policy_revision_id=p_result;
+ IF s->>'allocator_pool_count' IS DISTINCT FROM pool_count::text
+   OR (pol.mode='PERSISTENT_STUDENT' AND
+       (pool_count<>1 OR NOT EXISTS (
+         SELECT 1 FROM app_private.roll_allocator_states
+          WHERE policy_revision_id=p_result AND class_offering_id IS NULL)))
+   OR (pol.mode='ACADEMIC_CONTEXT' AND EXISTS (
+        SELECT 1 FROM app_private.roll_allocator_states
+         WHERE policy_revision_id=p_result AND class_offering_id IS NULL))
+ THEN RETURN false; END IF;
+ SELECT pg_catalog.count(*) INTO evidence_count
+ FROM app_private.audit_events a
+ WHERE a.command_receipt_id=r.id
+   AND a.actor_id=p_actor AND a.outcome='SUCCEEDED'
+   AND a.event_type='student.roll_policy.change'
+   AND a.target_kind='SCHOOL' AND a.target_ref=p_school
+   AND a.authority_evidence->>'phase'='DIRECT';
+ SELECT pg_catalog.count(*) INTO event_count
+ FROM app_private.outbox_events e
+ WHERE e.command_receipt_id=r.id
+   AND e.event_type='student.roll_policy_changed'
+   AND e.aggregate_kind='ROLL_POLICY' AND e.aggregate_ref=p_result
+   AND e.aggregate_version=pol.revision AND e.event_ordinal=1
+   AND e.payload=pg_catalog.jsonb_build_object(
+     'school_id',p_school,'action',p_action,'source_policy_id',p_source,
+     'policy_revision_id',p_result,'revision',pol.revision,
+     'effective_from',pol.effective_from);
+ RETURN evidence_count=1 AND event_count=1
+   AND EXISTS (
+      SELECT 1 FROM app_private.audit_events a
+      JOIN app_private.outbox_events e ON e.command_receipt_id=a.command_receipt_id
+        AND e.correlation_id=a.correlation_id
+      WHERE a.command_receipt_id=r.id
+        AND a.event_type='student.roll_policy.change'
+        AND e.event_type='student.roll_policy_changed')
+   AND (SELECT pg_catalog.count(*) FROM app_private.command_receipts c
+        WHERE c.operation_id=p_operation AND c.result_ref=p_result
+          AND c.state='SUCCEEDED')=1;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_direct_result_rows_match(
+ uuid,uuid,text,bytea,uuid,text,uuid,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
