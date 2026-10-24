@@ -77,7 +77,7 @@ BEGIN
    OR q.reason IS DISTINCT FROM p_reason
    OR q.old_snapshot IS DISTINCT FROM p_snapshot
    OR pg_catalog.jsonb_typeof(q.requested_payload)<>'object'
-   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(q.requested_payload))<>6
+   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(q.requested_payload))<>5
    OR q.requested_payload - 'trusted_business_date' IS DISTINCT FROM p_requested_core
    OR pg_catalog.jsonb_typeof(q.requested_payload->'trusted_business_date')<>'string'
    OR q.submitted_at IS NULL THEN RETURN false; END IF;
