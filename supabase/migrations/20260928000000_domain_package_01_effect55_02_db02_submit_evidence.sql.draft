@@ -49,7 +49,7 @@ CREATE FUNCTION app_private.d1_roll_policy_submit_rows_match(
 LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE
-  q record;
+  v_req record;
   r record;
   v_step_count bigint;
   v_template_count bigint;
@@ -65,26 +65,26 @@ BEGIN
  SELECT q.id,q.operation_id,q.policy_id,q.requester_id,q.campus_id,
    q.target_ref,q.expected_target_version,q.payload_schema_version,
    q.reason,q.old_snapshot,q.requested_payload,q.state,q.submitted_at,q.created_by
-   INTO q FROM app_private.approval_requests q WHERE q.id=p_request;
- IF NOT FOUND OR q.operation_id IS DISTINCT FROM p_operation
-   OR q.policy_id IS DISTINCT FROM p_p1
-   OR q.requester_id IS DISTINCT FROM p_actor
-   OR q.created_by IS DISTINCT FROM p_actor
-   OR q.campus_id IS NOT NULL
-   OR q.target_ref IS DISTINCT FROM p_school
-   OR q.payload_schema_version IS DISTINCT FROM 1
-   OR q.expected_target_version IS DISTINCT FROM p_expected_revision
-   OR q.reason IS DISTINCT FROM p_reason
-   OR q.old_snapshot IS DISTINCT FROM p_snapshot
-   OR pg_catalog.jsonb_typeof(q.requested_payload)<>'object'
-   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(q.requested_payload))<>5
-   OR q.requested_payload - 'trusted_business_date' IS DISTINCT FROM p_requested_core
-   OR pg_catalog.jsonb_typeof(q.requested_payload->'trusted_business_date')<>'string'
-   OR q.submitted_at IS NULL THEN RETURN false; END IF;
+   INTO v_req FROM app_private.approval_requests q WHERE q.id=p_request;
+ IF NOT FOUND OR v_req.operation_id IS DISTINCT FROM p_operation
+   OR v_req.policy_id IS DISTINCT FROM p_p1
+   OR v_req.requester_id IS DISTINCT FROM p_actor
+   OR v_req.created_by IS DISTINCT FROM p_actor
+   OR v_req.campus_id IS NOT NULL
+   OR v_req.target_ref IS DISTINCT FROM p_school
+   OR v_req.payload_schema_version IS DISTINCT FROM 1
+   OR v_req.expected_target_version IS DISTINCT FROM p_expected_revision
+   OR v_req.reason IS DISTINCT FROM p_reason
+   OR v_req.old_snapshot IS DISTINCT FROM p_snapshot
+   OR pg_catalog.jsonb_typeof(v_req.requested_payload)<>'object'
+   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(v_req.requested_payload))<>5
+   OR v_req.requested_payload - 'trusted_business_date' IS DISTINCT FROM p_requested_core
+   OR pg_catalog.jsonb_typeof(v_req.requested_payload->'trusted_business_date')<>'string'
+   OR v_req.submitted_at IS NULL THEN RETURN false; END IF;
  BEGIN
-   v_date:=(q.requested_payload->>'trusted_business_date')::date;
+   v_date:=(v_req.requested_payload->>'trusted_business_date')::date;
  EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RETURN false; END;
- IF v_date IS NULL OR q.requested_payload->>'trusted_business_date'
+ IF v_date IS NULL OR v_req.requested_payload->>'trusted_business_date'
       IS DISTINCT FROM pg_catalog.to_char(v_date,'YYYY-MM-DD') THEN
     RETURN false;
  END IF;
@@ -174,10 +174,10 @@ BEGIN
    OR p_request IS NULL OR p_p1 IS NULL OR p_action NOT IN ('INIT','REPLACE') THEN
    RAISE EXCEPTION 'D1 Roll Policy SUBMIT evidence intent invalid';
  END IF;
- SELECT q.id,q.operation_id,q.policy_id,q.requester_id,q.campus_id,q.target_ref,
-   q.expected_target_version,q.payload_schema_version,q.row_version,q.state,
-   q.created_by INTO v_request
- FROM app_private.approval_requests q WHERE q.id=p_request;
+ SELECT v_req.id,v_req.operation_id,v_req.policy_id,v_req.requester_id,v_req.campus_id,v_req.target_ref,
+   v_req.expected_target_version,v_req.payload_schema_version,v_req.row_version,v_req.state,
+   v_req.created_by INTO v_request
+ FROM app_private.approval_requests q WHERE v_req.id=p_request;
  IF NOT FOUND OR v_request.operation_id IS DISTINCT FROM p_operation
    OR v_request.policy_id IS DISTINCT FROM p_p1
    OR v_request.requester_id IS DISTINCT FROM p_actor
@@ -209,9 +209,9 @@ BEGIN
    'student.roll_policy.change','SCHOOL',p_school,
    v_receipt,p_request,'API',pg_catalog.gen_random_uuid(),
    pg_catalog.jsonb_build_object(
-     'action',p_action,'source_policy_id',q.old_snapshot->'source_policy_id'),
+     'action',p_action,'source_policy_id',v_req.old_snapshot->'source_policy_id'),
    p_actor
- FROM app_private.approval_requests q WHERE q.id=p_request;
+ FROM app_private.approval_requests q WHERE v_req.id=p_request;
  RETURN v_receipt;
 END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_roll_policy_submit_success_evidence(
