@@ -35,6 +35,7 @@ DOMAIN_TESTS.append(["92_db02_atomic_policy_revision_transition.sql",27])
 DOMAIN_TESTS.append(["93_db02_atomic_roll_allocator_pools.sql",29])
 DOMAIN_TESTS.append(["94_db02_direct_evidence_replay.sql",33])
 DOMAIN_TESTS.append(["95_db02_authenticated_direct_entry.sql",40])
+DOMAIN_TESTS.append(["96_db02_approval_submit_read.sql",37])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
