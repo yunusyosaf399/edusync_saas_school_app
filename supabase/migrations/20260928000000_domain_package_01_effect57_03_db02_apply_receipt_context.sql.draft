@@ -1,6 +1,11 @@
 -- DB-02 I10 private two-slot APPLY receipt context. Shared phase
 -- lookup is deliberately NOT extended: independent I11 SQL-owner gate.
 -- Matching historical APPLY replay fails closed until I11.
+-- This context checks the route's approval mode as well as its identity.
+-- Earlier evidence grants omit requires_approval, so grant only that column
+-- to the private function owner; the existing operation RLS still applies.
+GRANT SELECT(requires_approval) ON app_private.operation_contracts
+ TO schoolos_evidence_writer;
 GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
 SET ROLE schoolos_evidence_writer;
 CREATE FUNCTION app_private.d1_roll_policy_apply_receipt_context(
