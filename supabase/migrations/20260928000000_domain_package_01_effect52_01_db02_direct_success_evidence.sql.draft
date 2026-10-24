@@ -2,6 +2,10 @@
 -- DRAFT ONLY. Composed internally by the non-public I06 transition override.
 -- Callers must compose this inside the same transaction as the policy/pool
 -- mutation; no success may be exposed before a separate row-proof verifier.
+-- NOLOGIN evidence-writer receives only SELECT, never row mutation rights.
+-- Student-owned transition holds the school serialization lock already.
+GRANT SELECT ON app_private.roll_policy_revisions,
+  app_private.roll_allocator_states TO schoolos_evidence_writer;
 GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
 SET ROLE schoolos_evidence_writer;
 CREATE FUNCTION app_private.d1_roll_policy_direct_success_evidence(
@@ -41,7 +45,7 @@ BEGIN
  ) THEN RAISE EXCEPTION 'D1 Roll Policy operation not enabled'; END IF;
  SELECT * INTO v_policy FROM app_private.roll_policy_revisions
    WHERE id=p_revision AND school_id=p_school AND created_by=p_actor
-   FOR UPDATE;
+;
  IF NOT FOUND OR v_policy.created_at IS DISTINCT FROM pg_catalog.transaction_timestamp()
    OR v_policy.revision IS DISTINCT FROM p_expected_revision
    OR v_policy.supersedes_id IS DISTINCT FROM p_source
@@ -70,7 +74,7 @@ BEGIN
    THEN RAISE EXCEPTION 'D1 Roll Policy INIT source mismatch'; END IF;
  ELSE
    SELECT * INTO v_source FROM app_private.roll_policy_revisions
-     WHERE id=p_source AND school_id=p_school FOR UPDATE;
+     WHERE id=p_source AND school_id=p_school;
    IF NOT FOUND OR v_source.revision+1<>v_policy.revision
      OR v_source.effective_until IS DISTINCT FROM v_policy.effective_from
      OR v_source.ended_by IS DISTINCT FROM p_actor
