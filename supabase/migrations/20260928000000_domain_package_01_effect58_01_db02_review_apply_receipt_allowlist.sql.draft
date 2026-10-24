@@ -181,7 +181,7 @@ BEGIN
            AND pg_catalog.jsonb_array_length(p_intent)=2
            AND p_intent->>0 ~ '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$'
            AND pg_catalog.jsonb_typeof(p_intent->1)='string'
-           AND p_intent->>1 ~ '^[1-9][0-9]*$')) IS TRUE)
+           AND p_intent->>1 ~ '^[1-9][0-9]*$'))) IS TRUE)
        OR (p_operation_code='family.child_access.change' AND (
             (p_command_kind=p_operation_code AND pg_catalog.jsonb_array_length(p_intent)=9)
          OR (p_command_kind='request.submit' AND pg_catalog.jsonb_array_length(p_intent)=9)
