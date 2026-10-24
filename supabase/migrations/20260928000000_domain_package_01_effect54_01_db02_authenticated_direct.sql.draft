@@ -1,0 +1,50 @@
+-- DB-02 I07: single authenticated DIRECT entry point for Roll Policy INIT/REPLACE.
+-- Migration 10 draft ONLY: no hosted migration or operation activation.
+-- The I06 private transition provides the complete Foundation P1 routing,
+-- verified Principal/School ALL authority, School/source locks, typed JCS
+-- idempotency, immutable policy revision, new allocator pools, success evidence
+-- and historical row-proof replay in ONE database transaction.
+--
+-- Public result is the persisted revision UUID only. Callers do not supply a
+-- P1 version, business/cutover date, receipt, actor or allocator identity.
+-- A reason is mandatory and remains private (revision + hashed intent only).
+GRANT CREATE ON SCHEMA app TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app.d1_change_student_roll_policy(
+ p_school_id uuid,
+ p_action text,
+ p_source_policy_id uuid,
+ p_expected_source_revision integer,
+ p_expected_source_mode text,
+ p_expected_source_start_value bigint,
+ p_expected_source_effective_from date,
+ p_new_mode text,
+ p_new_start_value bigint,
+ p_reason text,
+ p_idempotency_key text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  v_policy_revision_id uuid;
+BEGIN
+  -- No early success or retry shortcut at the RPC boundary: the private
+  -- handler reauthorizes and row-verifies fresh effects AND saved replays.
+  v_policy_revision_id:=app_private.d1_roll_policy_revision_transition(
+    p_school_id,p_idempotency_key,p_action,p_source_policy_id,
+    p_expected_source_revision,p_expected_source_mode,
+    p_expected_source_start_value,p_expected_source_effective_from,
+    p_new_mode,p_new_start_value,p_reason);
+  IF v_policy_revision_id IS NULL THEN
+    RAISE EXCEPTION 'D1 Roll Policy DIRECT returned no verified revision';
+  END IF;
+  RETURN v_policy_revision_id;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_student_roll_policy(
+ uuid,text,uuid,integer,text,bigint,date,text,bigint,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_student_roll_policy(
+ uuid,text,uuid,integer,text,bigint,date,text,bigint,text,text)
+ TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_student_executor;
