@@ -56,9 +56,9 @@ SELECT pg_catalog.encode(intent_hash,'hex') AS private_apply_hash
 RESET ROLE;
 SELECT is(length(:'i11_review_hash'),64,'REVIEW has SHA-256 intent');
 SELECT is(length(:'i11_apply_hash'),64,'APPLY has SHA-256 intent');
-SELECT isnt(:'i11_review_hash',:'i11_apply_hash','phases have different hashes');
-SELECT is(:'i11_review_hash',:'i11_private_review_hash','private REVIEW uses exact shared digest');
-SELECT is(:'i11_apply_hash',:'i11_private_apply_hash','private APPLY uses exact shared digest');
+SELECT isnt(:'i11_review_hash'::text,:'i11_apply_hash'::text,'phases have different hashes');
+SELECT is(:'i11_review_hash'::text,:'i11_private_review_hash'::text,'private REVIEW uses exact shared digest');
+SELECT is(:'i11_apply_hash'::text,:'i11_private_apply_hash'::text,'private APPLY uses exact shared digest');
 SET ROLE schoolos_evidence_writer;
 SELECT throws_ok($q$SELECT * FROM app_private.d1_command_receipt_lookup(
  'student.roll_policy.change','request.review','i11-bad-decision',
