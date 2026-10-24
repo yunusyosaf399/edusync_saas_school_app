@@ -110,7 +110,7 @@ BEGIN
  IF p_decision='REJECT' THEN
    UPDATE app_private.approval_request_steps SET state='CANCELLED',
      closed_at=pg_catalog.statement_timestamp()
-   WHERE request_id=p_request_id AND state='WAITING';
+   WHERE approval_request_steps.request_id=p_request_id AND approval_request_steps.state='WAITING';
    v_final_state:='REJECTED';
    UPDATE app_private.approval_requests SET state=v_final_state
      WHERE id=p_request_id RETURNING row_version INTO v_final_version;
