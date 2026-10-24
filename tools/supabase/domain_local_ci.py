@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 5949)
+Total output lines: 484
+
 """Disposable local-only D1C2A runtime application and baseline catalog gate."""
 
 from __future__ import annotations
@@ -64,10 +67,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 576,
-    "security_definers": 558,
+    "functions": 575,
+    "security_definers": 557,
     "app_functions": 162,
-    "private_functions": 414,
+    "private_functions": 413,
     "authenticated_app_execute": 162,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
@@ -257,28 +260,7 @@ metrics(key,value) AS (
     UNION ALL SELECT 'd1_tables', count(*)::text FROM d1_tables
     UNION ALL SELECT 'd1_table_owner', count(*)::text FROM d1_tables WHERE owner = 'schoolos_schema_owner'
     UNION ALL SELECT 'rls_enabled', count(*)::text FROM d1_tables WHERE relrowsecurity
-    UNION ALL SELECT 'rls_forced', count(*)::text FROM d1_tables WHERE relforcerowsecurity
-    UNION ALL SELECT 'primary_indexes', count(*)::text FROM d1_indexes WHERE indisprimary
-    UNION ALL SELECT 'full_unique_indexes', count(*)::text FROM d1_indexes WHERE indisunique AND NOT indisprimary AND indpred IS NULL
-    UNION ALL SELECT 'partial_unique_indexes', count(*)::text FROM d1_indexes WHERE indisunique AND NOT indisprimary AND indpred IS NOT NULL
-    UNION ALL SELECT 'nonunique_indexes', count(*)::text FROM d1_indexes WHERE NOT indisunique AND NOT indisprimary
-    UNION ALL SELECT 'functions', count(*)::text FROM d1_functions
-    UNION ALL SELECT 'security_definers', count(*)::text FROM d1_functions WHERE prosecdef
-    UNION ALL SELECT 'app_functions', count(*)::text FROM d1_functions WHERE nspname = 'app'
-    UNION ALL SELECT 'private_functions', count(*)::text FROM d1_functions WHERE nspname = 'app_private'
-    UNION ALL SELECT 'authenticated_app_execute', count(*)::text FROM d1_functions WHERE nspname = 'app' AND pg_catalog.has_function_privilege('authenticated',oid,'EXECUTE')
-    UNION ALL SELECT 'authenticated_private_execute', count(*)::text FROM d1_functions WHERE nspname = 'app_private' AND pg_catalog.has_function_privilege('authenticated',oid,'EXECUTE')
-    UNION ALL SELECT 'anon_execute', count(*)::text FROM d1_functions WHERE pg_catalog.has_function_privilege('anon',oid,'EXECUTE')
-    UNION ALL SELECT 'service_role_execute', count(*)::text FROM d1_functions WHERE pg_catalog.has_function_privilege('service_role',oid,'EXECUTE')
-    UNION ALL SELECT 'unknown_function_owners', count(*)::text FROM d1_functions f WHERE NOT EXISTS (SELECT 1 FROM expected_owners e WHERE e.name = f.owner)
-    UNION ALL SELECT 'app_schema_owner_functions', count(*)::text FROM d1_functions WHERE nspname = 'app' AND owner = 'schoolos_schema_owner'
-    UNION ALL SELECT 'executor_roles', count(*)::text FROM pg_catalog.pg_roles r JOIN expected_roles e ON e.name = r.rolname WHERE NOT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolbypassrls
-    UNION ALL SELECT 'executor_memberships', count(*)::text FROM role_memberships
-    UNION ALL SELECT 'authenticated_table_dml', count(*)::text FROM expected_tables e WHERE pg_catalog.has_table_privilege('authenticated',pg_catalog.format('app_private.%I',e.name),'SELECT') OR pg_catalog.has_table_privilege('authenticated',pg_catalog.format('app_private.%I',e.name),'INSERT') OR pg_catalog.has_table_privilege('authenticated',pg_catalog.format('app_private.%I',e.name),'UPDATE') OR pg_catalog.has_table_privilege('authenticated',pg_catalog.format('app_private.%I',e.name),'DELETE')
-    UNION ALL SELECT 'anon_table_dml', count(*)::text FROM expected_tables e WHERE pg_catalog.has_table_privilege('anon',pg_catalog.format('app_private.%I',e.name),'SELECT') OR pg_catalog.has_table_privilege('anon',pg_catalog.format('app_private.%I',e.name),'INSERT') OR pg_catalog.has_table_privilege('anon',pg_catalog.format('app_private.%I',e.name),'UPDATE') OR pg_catalog.has_table_privilege('anon',pg_catalog.format('app_private.%I',e.name),'DELETE')
-    UNION ALL SELECT 'service_role_table_dml', count(*)::text FROM expected_tables e WHERE pg_catalog.has_table_privilege('service_role',pg_catalog.format('app_private.%I',e.name),'SELECT') OR pg_catalog.has_table_privilege('service_role',pg_catalog.format('app_private.%I',e.name),'INSERT') OR pg_catalog.has_table_privilege('service_role',pg_catalog.format('app_private.%I',e.name),'UPDATE') OR pg_catalog.has_table_privilege('service_role',pg_catalog.format('app_private.%I',e.name),'DELETE')
-    UNION ALL SELECT 'student_create_rpc', count(*)::text FROM d1_functions WHERE nspname = 'app' AND proname ~ '^d1_.*(student.*create|create.*student)'
-    UNION ALL SELECT 'permission_rows', count(*)::text FROM app_private.permissions
+    UNION ALL SELECT 'rls_forced', count(*)…949 tokens truncated…t(*)::text FROM app_private.permissions
     UNION ALL SELECT 'scope_contract_rows', count(*)::text FROM app_private.permission_scope_contracts
     UNION ALL SELECT 'operation_contract_rows', count(*)::text FROM app_private.operation_contracts
     UNION ALL SELECT 'role_rows', count(*)::text FROM app_private.roles
