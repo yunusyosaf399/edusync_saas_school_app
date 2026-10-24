@@ -2,7 +2,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(37);
+SELECT plan(40);
 \ir fixtures/command_actor.sql
 
 -- Public surface and private boundaries are fixed before any fixture enable.
@@ -72,6 +72,37 @@ SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
  'P0001'::char(5),'D1 Roll Policy global route unavailable',
  'enabled operation without a global P1 policy remains denied');
 RESET ROLE;
+-- A complete global APPROVAL P1 may never be used through DIRECT.
+-- This fixture is rolled back before the active DIRECT version is created.
+SAVEPOINT i07_approval_only;
+SET ROLE schoolos_schema_owner;
+INSERT INTO app_private.roles(id,code,label,family_only,state,created_by)
+VALUES ('b9710000-0000-4000-8000-000000000001','db02-i07-approver','I07 approver',false,'ACTIVE',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.approval_policy_versions(id,policy_key,version,operation_id,d1_route_mode,created_by)
+SELECT 'b9710000-0000-4000-8000-000000000002','db02-i07-approval',1,id,'APPROVAL',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.operation_contracts WHERE code='student.roll_policy.change';
+INSERT INTO app_private.approval_step_templates(
+ id,policy_id,step_number,reviewer_role_id,required_reviews,selection_resolver_key,created_by)
+VALUES ('b9710000-0000-4000-8000-000000000003',
+ 'b9710000-0000-4000-8000-000000000002',1,
+ 'b9710000-0000-4000-8000-000000000001',1,'D1_REVIEWER_ROLE_SCOPE',
+ '11111111-1111-4111-8111-111111111111');
+UPDATE app_private.approval_policy_versions SET state='ACTIVE',
+ effective_from=statement_timestamp()-interval '1 hour',activated_at=statement_timestamp()
+WHERE id='b9710000-0000-4000-8000-000000000002';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','INIT',
+ NULL,NULL,NULL,NULL,NULL,'PERSISTENT_STUDENT',4100,
+ 'No approval bypass','i07-approval-denied')$q$,
+ 'P0001'::char(5),'D1 Roll Policy command phase does not match route',
+ 'authenticated DIRECT never bypasses a configured APPROVAL policy');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT i07_approval_only;
+
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.approval_policy_versions(id,policy_key,version,operation_id,d1_route_mode,created_by)
 SELECT 'b8900000-0000-4000-8000-000000000003','db02-i01-direct',1,id,'DIRECT',
@@ -270,6 +301,27 @@ RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions
  WHERE school_id='22222222-2222-4222-8222-222222222222'),2::bigint,
  'stale direct attempts create no further policy revision');
+-- Even an already-succeeded replay requires CURRENT School ALL authority.
+SAVEPOINT i07_replay_scope_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes
+ SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b8900000-0000-4000-8000-000000000007';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','REPLACE',
+ 'b9700000-0000-4000-8000-000000000001',1,'PERSISTENT_STUDENT',
+ 5000,%L::date-10,'PERSISTENT_STUDENT',6000,
+ 'I07_PRIVATE_REPLACE_REASON','i07-replace')$q$,:'i07_t'),
+ 'P0001'::char(5),'D1 Roll Policy School ALL authority denied',
+ 'replay is denied after School ALL scope revocation');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT i07_replay_scope_revoked;
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE result_ref=:'i07_new_id'::uuid),1::bigint,
+ 'revoked replay does not add any receipt');
+
 ROLLBACK TO SAVEPOINT i07_replace;
 SELECT * FROM finish();
 ROLLBACK;
