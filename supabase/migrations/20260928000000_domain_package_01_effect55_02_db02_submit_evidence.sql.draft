@@ -50,7 +50,7 @@ LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE
   v_req record;
-  r record;
+  v_receipt_row record;
   v_step_count bigint;
   v_template_count bigint;
   v_audit_count bigint;
@@ -92,32 +92,32 @@ BEGIN
    r.canonical_payload_hash,r.canonicalization_version,r.expected_target_version,
    r.request_id,r.expected_request_version,r.state,r.result_kind,r.result_ref,
    r.result_summary,r.error_code,r.completed_at,r.created_by
-   INTO r FROM app_private.command_receipts r
+   INTO v_receipt_row FROM app_private.command_receipts r
  WHERE r.principal_id=p_actor AND r.operation_id=p_operation AND r.idempotency_key=p_key;
- IF NOT FOUND OR r.command_kind IS DISTINCT FROM 'request.submit'
-   OR r.canonical_payload_hash IS DISTINCT FROM p_hash
-   OR r.canonicalization_version IS DISTINCT FROM 1
-   OR r.expected_target_version IS DISTINCT FROM p_expected_revision
-   OR r.request_id IS DISTINCT FROM p_request
-   OR r.expected_request_version IS NOT NULL
-   OR r.state IS DISTINCT FROM 'SUCCEEDED'
-   OR r.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_POLICY_REQUEST'
-   OR r.result_ref IS DISTINCT FROM p_request
-   OR r.result_summary IS DISTINCT FROM
+ IF NOT FOUND OR v_receipt_row.command_kind IS DISTINCT FROM 'request.submit'
+   OR v_receipt_row.canonical_payload_hash IS DISTINCT FROM p_hash
+   OR v_receipt_row.canonicalization_version IS DISTINCT FROM 1
+   OR v_receipt_row.expected_target_version IS DISTINCT FROM p_expected_revision
+   OR v_receipt_row.request_id IS DISTINCT FROM p_request
+   OR v_receipt_row.expected_request_version IS NOT NULL
+   OR v_receipt_row.state IS DISTINCT FROM 'SUCCEEDED'
+   OR v_receipt_row.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_POLICY_REQUEST'
+   OR v_receipt_row.result_ref IS DISTINCT FROM p_request
+   OR v_receipt_row.result_summary IS DISTINCT FROM
         pg_catalog.jsonb_build_object('request_version',3,'state','PENDING')
-   OR r.error_code IS NOT NULL OR r.completed_at IS NULL
-   OR r.created_by IS DISTINCT FROM p_actor THEN RETURN false; END IF;
+   OR v_receipt_row.error_code IS NOT NULL OR v_receipt_row.completed_at IS NULL
+   OR v_receipt_row.created_by IS DISTINCT FROM p_actor THEN RETURN false; END IF;
  -- The historical receipt records the original PENDING submission. Later
  -- independent REVIEW/APPLY may move the request from PENDING legitimately.
  IF NOT EXISTS (SELECT 1 FROM app_private.approval_transitions t
    WHERE t.request_id=p_request AND t.sequence_number=1 AND t.from_state IS NULL
-     AND t.to_state='DRAFT' AND t.command_receipt_id=r.id AND t.created_by=p_actor)
+     AND t.to_state='DRAFT' AND t.command_receipt_id=v_receipt_row.id AND t.created_by=p_actor)
    OR NOT EXISTS (SELECT 1 FROM app_private.approval_transitions t
    WHERE t.request_id=p_request AND t.sequence_number=2 AND t.from_state='DRAFT'
-     AND t.to_state='SUBMITTED' AND t.command_receipt_id=r.id AND t.created_by=p_actor)
+     AND t.to_state='SUBMITTED' AND t.command_receipt_id=v_receipt_row.id AND t.created_by=p_actor)
    OR NOT EXISTS (SELECT 1 FROM app_private.approval_transitions t
    WHERE t.request_id=p_request AND t.sequence_number=3 AND t.from_state='SUBMITTED'
-     AND t.to_state='PENDING' AND t.command_receipt_id=r.id AND t.created_by=p_actor)
+     AND t.to_state='PENDING' AND t.command_receipt_id=v_receipt_row.id AND t.created_by=p_actor)
  THEN RETURN false; END IF;
  SELECT pg_catalog.count(*) INTO v_step_count
  FROM app_private.approval_request_steps s WHERE s.request_id=p_request
@@ -130,7 +130,7 @@ BEGIN
      AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
  ) THEN RETURN false; END IF;
  SELECT pg_catalog.count(*) INTO v_audit_count FROM app_private.audit_events a
- WHERE a.command_receipt_id=r.id AND a.approval_request_id=p_request
+ WHERE a.command_receipt_id=v_receipt_row.id AND a.approval_request_id=p_request
    AND a.actor_id=p_actor AND a.created_by=p_actor
    AND a.actor_kind='INDIVIDUAL' AND a.outcome='SUCCEEDED'
    AND a.event_type='student.roll_policy.change'
@@ -144,9 +144,9 @@ BEGIN
       'source_policy_id',p_snapshot->'source_policy_id');
  RETURN v_audit_count=1
    AND (SELECT pg_catalog.count(*) FROM app_private.audit_events
-        WHERE command_receipt_id=r.id)=1
+        WHERE command_receipt_id=v_receipt_row.id)=1
    AND (SELECT pg_catalog.count(*) FROM app_private.outbox_events
-        WHERE command_receipt_id=r.id)=0
+        WHERE command_receipt_id=v_receipt_row.id)=0
    AND (SELECT pg_catalog.count(*) FROM app_private.command_receipts
         WHERE operation_id=p_operation AND result_ref=p_request
           AND state='SUCCEEDED' AND command_kind='request.submit')=1;
