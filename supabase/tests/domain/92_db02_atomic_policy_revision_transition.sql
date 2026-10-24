@@ -185,8 +185,8 @@ SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions
 'old revision retained with one successor');
 SELECT is((SELECT count(*) FROM app_private.command_receipts
  WHERE operation_id=(SELECT id FROM app_private.operation_contracts WHERE code='student.roll_policy.change')),
-0::bigint,'no successful receipt without I06');
+1::bigint,'I06 persists one success receipt for replacement');
 SELECT is((SELECT count(*) FROM app_private.outbox_events WHERE event_type='student.roll_policy_changed'),
-0::bigint,'no success event without I06');
+1::bigint,'I06 persists one outbox event for replacement');
 SELECT * FROM finish();
 ROLLBACK;
