@@ -28,7 +28,7 @@ SELECT is(has_function_privilege('service_role',
  false,'service role has no I03 context edge');
 SELECT is(has_function_privilege('schoolos_workflow_executor',
  'app_private.d1_roll_policy_change_preflight(uuid,text,uuid,integer,text,bigint,date,date,text,bigint)','EXECUTE'),
- false,'Workflow APPLY preflight not granted without approval');
+ true,'I10 approved APPLY has narrow Workflow preflight edge; private table DML remains denied');
 
 SELECT app_private.d1_roll_business_date('22222222-2222-4222-8222-222222222222') AS t \gset i03_
 -- The foreign School principal and one admitted Student are synthetic.
