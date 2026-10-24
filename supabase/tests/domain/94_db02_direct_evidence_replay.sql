@@ -257,10 +257,10 @@ CREATE TRIGGER db02_i06_test_outbox_denial
  BEFORE INSERT ON app_private.outbox_events
  FOR EACH ROW EXECUTE FUNCTION pg_temp.db02_i06_deny_event();
 SET ROLE schoolos_student_executor;
-SELECT throws_ok($q$SELECT app_private.d1_roll_policy_revision_transition(
+SELECT throws_ok(pg_catalog.format($q$SELECT app_private.d1_roll_policy_revision_transition(
  '22222222-2222-4222-8222-222222222222','i06-evidence-abort','REPLACE',
  'b9600000-0000-4000-8000-000000000001',1,'PERSISTENT_STUDENT',5000,
- :'i06_t'::date-10,'PERSISTENT_STUDENT',7000,'I06 induced rollback')$q$,
+ %L::date-10,'PERSISTENT_STUDENT',7000,'I06 induced rollback')$q$,:'i06_t'),
  'P0001'::char(5),'DB02_I06_TEST_OUTBOX_BLOCK',
  'late outbox failure aborts the complete atomic transition');
 RESET ROLE;
