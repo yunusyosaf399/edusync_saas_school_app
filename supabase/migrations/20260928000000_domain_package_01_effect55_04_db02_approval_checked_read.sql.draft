@@ -52,7 +52,7 @@ BEGIN
    OR pg_catalog.jsonb_typeof(q.old_snapshot)<>'object'
    OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(q.old_snapshot))<>5
    OR pg_catalog.jsonb_typeof(q.requested_payload)<>'object'
-   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(q.requested_payload))<>6
+   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(q.requested_payload))<>5
    OR NOT (q.old_snapshot ?& ARRAY[
      'source_policy_id','source_revision','source_mode','source_start_value',
      'source_effective_from'])
