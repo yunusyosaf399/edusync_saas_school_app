@@ -19,7 +19,7 @@ BEGIN
    OR p_new_mode NOT IN ('PERSISTENT_STUDENT','ACADEMIC_CONTEXT')
    OR p_new_start IS NULL OR p_new_start<0 OR p_new_start>=9223372036854775807
    OR p_action NOT IN ('INIT','REPLACE')
-   OR app_private.d1_roll_policy_p1_version(p_school) IS NULL THEN
+   THEN
    RAISE EXCEPTION 'D1 Roll Policy APPLY typed effect denied';
  END IF;
  -- Recheck the same School/current-revision/allocator/future-commitment gate
