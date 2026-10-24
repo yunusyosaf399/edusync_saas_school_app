@@ -64,7 +64,22 @@ BEGIN
   JOIN app_private.roles role_row ON role_row.id=sc.role_id
   WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL'
     AND a.context_kind='INDIVIDUAL'
-    AND (p_required_role IS NULL OR a.role_id=p_required_role)
+    -- Reviewer role membership and review permission may come through
+    -- different complete live assignments. Match I09's candidate semantics.
+    AND (p_required_role IS NULL OR EXISTS (
+      SELECT 1 FROM app_private.principal_role_assignments reviewer_role
+      JOIN app_private.roles configured_role
+        ON configured_role.id=reviewer_role.role_id
+      WHERE reviewer_role.principal_id=p_principal
+        AND reviewer_role.principal_kind='INDIVIDUAL'
+        AND reviewer_role.context_kind='INDIVIDUAL'
+        AND reviewer_role.role_id=p_required_role
+        AND configured_role.state='ACTIVE'
+        AND NOT configured_role.family_only
+        AND reviewer_role.valid_from<=t
+        AND (reviewer_role.valid_until IS NULL OR t<reviewer_role.valid_until)
+        AND (reviewer_role.revoked_at IS NULL OR t<reviewer_role.revoked_at)
+    ))
     AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
     AND c.enabled AND role_row.state='ACTIVE' AND NOT role_row.family_only
     AND sc.scope_kind='ALL' AND sc.resolver_key='DIRECT'
