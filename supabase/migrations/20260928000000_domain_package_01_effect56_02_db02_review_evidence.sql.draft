@@ -1,0 +1,91 @@
+-- DB-02 I09: terminal REVIEW receipt and reduced audit. Only NOLOGIN
+-- evidence_writer can insert; review reason remains in approval_reviews and
+-- the canonical SHA256 receipt hash, not broadly projected event/details.
+GRANT SELECT(id,step_id,reviewer_assignment_id,reviewer_id,
+ decision,reason,expected_request_version,created_by)
+ ON app_private.approval_reviews TO schoolos_evidence_writer;
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db02_i09_evidence_review ON app_private.approval_reviews
+ FOR SELECT TO schoolos_evidence_writer USING (EXISTS (
+  SELECT 1 FROM app_private.approval_request_steps s
+  WHERE s.id=step_id));
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_roll_policy_review_success_evidence(
+ p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_request uuid,
+ p_p1 uuid,p_school uuid,p_expected_version bigint,p_decision text,
+ p_next_version bigint,p_next_state text,p_step uuid,p_assignment uuid)
+RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v_request record; v_receipt uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+ IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+   OR p_operation IS NULL OR p_request IS NULL OR p_school IS NULL OR p_p1 IS NULL
+   OR p_step IS NULL OR p_assignment IS NULL
+   OR p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200
+   OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+   OR p_expected_version IS NULL OR p_expected_version<3
+   OR p_next_version IS NULL OR p_next_version<=p_expected_version
+   OR p_decision NOT IN ('APPROVE','REJECT')
+   OR p_next_state NOT IN ('PENDING','APPROVED','REJECTED') THEN
+   RAISE EXCEPTION 'D1 Roll Policy REVIEW evidence invalid';
+ END IF;
+ SELECT q.id,q.operation_id,q.policy_id,q.target_ref,q.row_version,
+   q.state,q.requester_id INTO v_request
+ FROM app_private.approval_requests q WHERE q.id=p_request;
+ IF NOT FOUND OR v_request.operation_id IS DISTINCT FROM p_operation
+   OR v_request.policy_id IS DISTINCT FROM p_p1
+   OR v_request.target_ref IS DISTINCT FROM p_school
+   OR v_request.state IS DISTINCT FROM p_next_state
+   OR v_request.row_version IS DISTINCT FROM p_next_version
+   OR v_request.requester_id IS NOT DISTINCT FROM p_actor THEN
+   RAISE EXCEPTION 'D1 Roll Policy REVIEW independent request evidence mismatch';
+ END IF;
+ IF NOT EXISTS (SELECT 1 FROM app_private.approval_reviews v
+   WHERE v.step_id=p_step AND v.reviewer_assignment_id=p_assignment
+     AND v.reviewer_id=p_actor AND v.decision=p_decision
+     AND v.expected_request_version=p_expected_version
+     AND v.created_by=p_actor)
+   OR NOT EXISTS (SELECT 1 FROM app_private.approval_request_steps s
+     WHERE s.id=p_step AND s.request_id=p_request
+       AND s.policy_id=p_p1 AND s.state=
+        CASE WHEN p_decision='APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END)
+   OR EXISTS (SELECT 1 FROM app_private.command_receipts r
+     WHERE r.operation_id=p_operation AND r.request_id=p_request
+       AND r.command_kind='request.review'
+       AND r.principal_id=p_actor AND r.idempotency_key=p_key) THEN
+   RAISE EXCEPTION 'D1 Roll Policy REVIEW persisted decision missing';
+ END IF;
+ INSERT INTO app_private.command_receipts(
+  id,principal_id,operation_id,command_kind,idempotency_key,
+  canonical_payload_hash,canonicalization_version,expected_request_version,
+  request_id,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(v_receipt,p_actor,p_operation,'request.review',p_key,p_hash,1,
+  p_expected_version,p_request,'SUCCEEDED','D1_STUDENT_ROLL_POLICY_REVIEW',
+  p_request,pg_catalog.jsonb_build_object(
+   'request_version',p_next_version,'state',p_next_state),
+  pg_catalog.statement_timestamp(),p_actor);
+ INSERT INTO app_private.audit_events(
+  actor_id,actor_kind,outcome,authority_evidence,event_type,target_kind,
+  target_ref,command_receipt_id,approval_request_id,source_kind,
+  correlation_id,details,created_by)
+ VALUES(p_actor,'INDIVIDUAL','SUCCEEDED',
+  pg_catalog.jsonb_build_object(
+   'operation','student.roll_policy.change','phase','REVIEW',
+   'selected_p1_version_id',p_p1),
+  'student.roll_policy.change','SCHOOL',p_school,
+  v_receipt,p_request,'API',pg_catalog.gen_random_uuid(),
+  pg_catalog.jsonb_build_object('decision',p_decision,'request_id',p_request),
+  p_actor);
+ RETURN v_receipt;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_review_success_evidence(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,bigint,text,bigint,text,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_review_success_evidence(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,bigint,text,bigint,text,uuid,uuid)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
