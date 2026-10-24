@@ -33,7 +33,6 @@ BEGIN
    OR r.canonical_payload_hash IS DISTINCT FROM p_hash
    OR r.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_POLICY'
    OR r.result_ref IS DISTINCT FROM p_result
-   OR r.error_code IS NOT NULL OR r.request_id IS NOT NULL
    OR r.result_summary IS NULL
  THEN RETURN false; END IF;
  s:=r.result_summary;
@@ -74,6 +73,7 @@ BEGIN
    IF NOT FOUND OR src.revision+1<>pol.revision
      OR src.effective_until IS DISTINCT FROM pol.effective_from
      OR src.ended_at IS NULL
+     OR src.ended_by IS DISTINCT FROM p_actor
      OR s->>'source_revision' IS DISTINCT FROM src.revision::text
      OR s->>'source_mode' IS DISTINCT FROM src.mode
      OR s->>'source_start_value' IS DISTINCT FROM src.start_value::text
@@ -97,7 +97,8 @@ BEGIN
    AND a.actor_id=p_actor AND a.outcome='SUCCEEDED'
    AND a.event_type='student.roll_policy.change'
    AND a.target_kind='SCHOOL' AND a.target_ref=p_school
-   AND a.authority_evidence->>'phase'='DIRECT';
+   AND a.authority_evidence->>'phase'='DIRECT'
+   AND a.authority_evidence->>'selected_p1_version_id'=p_policy_version::text;
  SELECT pg_catalog.count(*) INTO event_count
  FROM app_private.outbox_events e
  WHERE e.command_receipt_id=r.id
