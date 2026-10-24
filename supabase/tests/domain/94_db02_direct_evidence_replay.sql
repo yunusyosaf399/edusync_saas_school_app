@@ -149,7 +149,7 @@ SELECT app_private.d1_roll_policy_revision_transition(
  NULL,NULL,NULL,NULL,NULL,'PERSISTENT_STUDENT',4000,
  'I06_PRIVATE_REASON_CANARY')::text AS id \gset i06_replay_
 RESET ROLE;
-SELECT is(:'i06_replay_id',:'i06_init_id','same-key exact INIT replay returns historical revision');
+SELECT is(:'i06_replay_id'::uuid,:'i06_init_id'::uuid,'same-key exact INIT replay returns historical revision');
 SELECT is((SELECT count(*) FROM app_private.command_receipts
  WHERE result_ref=:'i06_init_id'::uuid),1::bigint,'replay does not duplicate receipt');
 SELECT is((SELECT count(*) FROM app_private.roll_allocator_states
@@ -199,7 +199,7 @@ SELECT app_private.d1_roll_policy_revision_transition(
  :'i06_t'::date-10,'PERSISTENT_STUDENT',6000,
  'I06_PRIVATE_REPLACE_CANARY')::text AS id \gset i06_new_replay_
 RESET ROLE;
-SELECT is(:'i06_new_replay_id',:'i06_new_id','exact historical REPLACE replays without preflight mutation');
+SELECT is(:'i06_new_replay_id'::uuid,:'i06_new_id'::uuid,'exact historical REPLACE replays without preflight mutation');
 SELECT is((SELECT count(*) FROM app_private.outbox_events
  WHERE aggregate_ref=:'i06_new_id'::uuid AND event_type='student.roll_policy_changed'),
  1::bigint,'REPLACE replay does not duplicate outbox');
