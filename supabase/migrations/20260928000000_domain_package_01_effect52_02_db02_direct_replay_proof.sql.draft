@@ -139,6 +139,10 @@ BEGIN
      'policy_revision_id',p_result,'revision',pol.revision,
      'effective_from',pol.effective_from);
  RETURN evidence_count=1 AND event_count=1
+   AND (SELECT pg_catalog.count(*) FROM app_private.audit_events a
+        WHERE a.command_receipt_id=r.id)=1
+   AND (SELECT pg_catalog.count(*) FROM app_private.outbox_events e
+        WHERE e.command_receipt_id=r.id)=1
    AND EXISTS (
       SELECT 1 FROM app_private.audit_events a
       JOIN app_private.outbox_events e ON e.command_receipt_id=a.command_receipt_id
