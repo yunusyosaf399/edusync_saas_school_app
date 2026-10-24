@@ -187,7 +187,7 @@ SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
  'a different idempotency key cannot INIT the same School twice');
 SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
  '22222222-2222-4222-8222-222222222222','END',
- :'i07_init_id'::uuid,1,'PERSISTENT_STUDENT',4100,:'i07_t'::date,
+ NULL,NULL,NULL,NULL,NULL,
  'PERSISTENT_STUDENT',5100,'I07 end','i07-end')$q$,
  'P0001'::char(5),'D1 Roll Policy typed command context invalid',
  'END is not a first-release action');
