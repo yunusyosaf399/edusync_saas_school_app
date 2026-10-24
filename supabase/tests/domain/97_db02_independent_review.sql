@@ -149,7 +149,7 @@ SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.auth_su
 SELECT set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
  'sub',current_setting('schoolos_test.auth_subject'),
  'role','authenticated','iat',
- (SELECT pg_catalog.extract(epoch FROM tokens_valid_from)::bigint
+ (SELECT extract(epoch FROM tokens_valid_from)::bigint
  FROM app_private.principal_auth_bindings
  WHERE id='66666666-6666-4666-8666-666666666666'),
  'is_anonymous',false)::text,true);
@@ -244,7 +244,7 @@ SELECT is((SELECT count(*) FROM app_private.command_receipts
 SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.db02_i01_subject'),true);
 SELECT set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
  'sub',current_setting('schoolos_test.db02_i01_subject'),'role','authenticated',
- 'iat',(SELECT pg_catalog.extract(epoch FROM tokens_valid_from)::bigint
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
  FROM app_private.principal_auth_bindings
  WHERE id='b8900000-0000-4000-8000-000000000002'),
  'is_anonymous',false)::text,true);
@@ -256,7 +256,7 @@ RESET ROLE;
 SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.auth_subject'),true);
 SELECT set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
  'sub',current_setting('schoolos_test.auth_subject'),'role','authenticated',
- 'iat',(SELECT pg_catalog.extract(epoch FROM tokens_valid_from)::bigint
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
  FROM app_private.principal_auth_bindings
  WHERE id='66666666-6666-4666-8666-666666666666'),
  'is_anonymous',false)::text,true);
