@@ -33,7 +33,7 @@ BEGIN
    OR r.canonical_payload_hash IS DISTINCT FROM p_hash
    OR r.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_POLICY'
    OR r.result_ref IS DISTINCT FROM p_result
-   OR r.result_summary IS NULL
+   OR r.result_summary IS NULL OR r.completed_at IS NULL
  THEN RETURN false; END IF;
  s:=r.result_summary;
  IF pg_catalog.jsonb_typeof(s)<>'object'
@@ -43,6 +43,15 @@ BEGIN
       'source_effective_from','policy_revision_id','revision','mode',
       'start_value','effective_from','selected_p1_version_id',
       'allocator_pool_count'])
+   OR pg_catalog.jsonb_typeof(s->'school_id') IS DISTINCT FROM 'string'
+   OR pg_catalog.jsonb_typeof(s->'action') IS DISTINCT FROM 'string'
+   OR pg_catalog.jsonb_typeof(s->'policy_revision_id') IS DISTINCT FROM 'string'
+   OR pg_catalog.jsonb_typeof(s->'selected_p1_version_id') IS DISTINCT FROM 'string'
+   OR pg_catalog.jsonb_typeof(s->'revision') IS DISTINCT FROM 'number'
+   OR pg_catalog.jsonb_typeof(s->'mode') IS DISTINCT FROM 'string'
+   OR pg_catalog.jsonb_typeof(s->'start_value') IS DISTINCT FROM 'number'
+   OR pg_catalog.jsonb_typeof(s->'effective_from') IS DISTINCT FROM 'string'
+   OR pg_catalog.jsonb_typeof(s->'allocator_pool_count') IS DISTINCT FROM 'number'
  THEN RETURN false; END IF;
  SELECT * INTO pol FROM app_private.roll_policy_revisions
    WHERE id=p_result AND school_id=p_school;
@@ -74,6 +83,10 @@ BEGIN
      OR src.effective_until IS DISTINCT FROM pol.effective_from
      OR src.ended_at IS NULL
      OR src.ended_by IS DISTINCT FROM p_actor
+     OR pg_catalog.jsonb_typeof(s->'source_revision') IS DISTINCT FROM 'number'
+     OR pg_catalog.jsonb_typeof(s->'source_mode') IS DISTINCT FROM 'string'
+     OR pg_catalog.jsonb_typeof(s->'source_start_value') IS DISTINCT FROM 'number'
+     OR pg_catalog.jsonb_typeof(s->'source_effective_from') IS DISTINCT FROM 'string'
      OR s->>'source_revision' IS DISTINCT FROM src.revision::text
      OR s->>'source_mode' IS DISTINCT FROM src.mode
      OR s->>'source_start_value' IS DISTINCT FROM src.start_value::text
@@ -88,8 +101,13 @@ BEGIN
          SELECT 1 FROM app_private.roll_allocator_states
           WHERE policy_revision_id=p_result AND class_offering_id IS NULL)))
    OR (pol.mode='ACADEMIC_CONTEXT' AND EXISTS (
-        SELECT 1 FROM app_private.roll_allocator_states
-         WHERE policy_revision_id=p_result AND class_offering_id IS NULL))
+        SELECT 1 FROM app_private.roll_allocator_states a
+        LEFT JOIN app_private.class_offerings c ON c.id=a.class_offering_id
+         WHERE a.policy_revision_id=p_result
+           AND (a.class_offering_id IS NULL OR c.school_id IS DISTINCT FROM p_school)))
+   OR EXISTS (SELECT 1 FROM app_private.roll_allocator_states a
+        WHERE a.policy_revision_id=p_result
+          AND a.created_by IS DISTINCT FROM p_actor)
  THEN RETURN false; END IF;
  SELECT pg_catalog.count(*) INTO evidence_count
  FROM app_private.audit_events a
@@ -97,8 +115,15 @@ BEGIN
    AND a.actor_id=p_actor AND a.outcome='SUCCEEDED'
    AND a.event_type='student.roll_policy.change'
    AND a.target_kind='SCHOOL' AND a.target_ref=p_school
-   AND a.authority_evidence->>'phase'='DIRECT'
-   AND a.authority_evidence->>'selected_p1_version_id'=p_policy_version::text;
+   AND a.target_version=pol.revision AND a.actor_kind='INDIVIDUAL'
+   AND a.source_kind='API'
+   AND a.authority_evidence=pg_catalog.jsonb_build_object(
+     'operation','student.roll_policy.change','phase','DIRECT',
+     'selected_p1_version_id',p_policy_version)
+   AND a.details=pg_catalog.jsonb_build_object(
+     'action',p_action,'source_policy_id',p_source,
+     'policy_revision_id',p_result,'revision',pol.revision,
+     'effective_from',pol.effective_from);
  SELECT pg_catalog.count(*) INTO event_count
  FROM app_private.outbox_events e
  WHERE e.command_receipt_id=r.id
