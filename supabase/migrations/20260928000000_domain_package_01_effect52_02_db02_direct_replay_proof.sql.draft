@@ -121,7 +121,8 @@ BEGIN
    AND a.actor_id=p_actor AND a.outcome='SUCCEEDED'
    AND a.event_type='student.roll_policy.change'
    AND a.target_kind='SCHOOL' AND a.target_ref=p_school
-   AND a.target_version=pol.revision AND a.actor_kind='INDIVIDUAL'
+   AND a.target_version=pol.revision AND a.created_by=p_actor
+   AND a.actor_kind='INDIVIDUAL'
    AND a.source_kind='API'
    AND a.authority_evidence=pg_catalog.jsonb_build_object(
      'operation','student.roll_policy.change','phase','DIRECT',
@@ -135,6 +136,8 @@ BEGIN
  WHERE e.command_receipt_id=r.id
    AND e.event_type='student.roll_policy_changed'
    AND e.aggregate_kind='ROLL_POLICY' AND e.aggregate_ref=p_result
+   AND e.schema_version=1 AND e.causation_event_id IS NULL
+   AND e.created_by=p_actor
    AND e.aggregate_version=pol.revision AND e.event_ordinal=1
    AND e.payload=pg_catalog.jsonb_build_object(
      'school_id',p_school,'action',p_action,'source_policy_id',p_source,
