@@ -152,7 +152,7 @@ BEGIN
    p_request_id,v_req.policy_id,v_req.target_ref,p_expected_request_version,
    p_decision,v_final_version,v_final_state,v_step.id,v_assign);
  IF v_final_state IN ('APPROVED','REJECTED') THEN
-   SELECT pg_catalog.coalesce(pg_catalog.max(t.sequence_number),0)+1
+   SELECT COALESCE(pg_catalog.max(t.sequence_number),0)+1
    INTO v_seq FROM app_private.approval_transitions t
    WHERE t.request_id=p_request_id;
    INSERT INTO app_private.approval_transitions(
