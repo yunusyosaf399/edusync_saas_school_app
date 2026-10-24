@@ -1,0 +1,197 @@
+-- DB-02 I10: fixed APPLY success/invalidation evidence.
+-- Private reason is never copied into receipts, audit or outbox payload.
+-- Shared receipt phase allowlist remains unchanged until independent I11.
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_roll_policy_apply_success_evidence(
+ p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_school uuid,
+ p_request uuid,p_p1 uuid,p_expected_request_version bigint,
+ p_revision uuid,p_source uuid,p_action text,p_summary jsonb)
+RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ pol app_private.roll_policy_revisions%ROWTYPE;
+ q record; src record; pools bigint;
+ v_receipt uuid:=pg_catalog.gen_random_uuid();
+ correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+ IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+   OR p_operation IS NULL OR p_request IS NULL OR p_p1 IS NULL
+   OR p_school IS NULL OR p_revision IS NULL OR p_action NOT IN ('INIT','REPLACE')
+   OR p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200
+   OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+   OR p_expected_request_version IS NULL OR p_expected_request_version<4
+   OR pg_catalog.jsonb_typeof(p_summary) IS DISTINCT FROM 'object'
+   OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>14
+   OR NOT (p_summary ?& ARRAY[
+    'school_id','action','source_policy_id','source_revision','source_mode',
+    'source_start_value','source_effective_from','policy_revision_id',
+    'revision','mode','start_value','effective_from',
+    'selected_p1_version_id','allocator_pool_count']) THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY success evidence shape denied';
+ END IF;
+ SELECT req.id,req.operation_id,req.policy_id,req.target_ref,req.state,
+        req.requester_id,req.expected_target_version,req.row_version,
+        req.requested_payload,req.old_snapshot
+ INTO q FROM app_private.approval_requests req WHERE req.id=p_request;
+ IF NOT FOUND OR q.operation_id IS DISTINCT FROM p_operation
+   OR q.policy_id IS DISTINCT FROM p_p1 OR q.target_ref IS DISTINCT FROM p_school
+   OR q.state IS DISTINCT FROM 'EXECUTED'
+   OR q.row_version<=p_expected_request_version
+   OR q.requested_payload->>'selected_p1_version_id' IS DISTINCT FROM p_p1::text
+   OR q.requested_payload->>'action' IS DISTINCT FROM p_action THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY request evidence mismatch';
+ END IF;
+ SELECT * INTO pol FROM app_private.roll_policy_revisions
+ WHERE id=p_revision AND school_id=p_school;
+ IF NOT FOUND OR pol.created_by IS DISTINCT FROM p_actor
+   OR pol.created_at IS DISTINCT FROM pg_catalog.transaction_timestamp()
+   OR pol.supersedes_id IS DISTINCT FROM p_source
+   OR p_summary->>'school_id' IS DISTINCT FROM p_school::text
+   OR p_summary->>'action' IS DISTINCT FROM p_action
+   OR p_summary->>'source_policy_id' IS DISTINCT FROM p_source::text
+   OR p_summary->>'policy_revision_id' IS DISTINCT FROM p_revision::text
+   OR p_summary->>'selected_p1_version_id' IS DISTINCT FROM p_p1::text
+   OR p_summary->>'revision' IS DISTINCT FROM pol.revision::text
+   OR p_summary->>'mode' IS DISTINCT FROM pol.mode
+   OR p_summary->>'start_value' IS DISTINCT FROM pol.start_value::text
+   OR p_summary->>'effective_from' IS DISTINCT FROM pol.effective_from::text
+   OR p_summary->>'mode' IS DISTINCT FROM q.requested_payload->>'mode'
+   OR p_summary->>'start_value' IS DISTINCT FROM q.requested_payload->>'start_value'
+   OR p_summary->>'effective_from' IS DISTINCT FROM
+        q.requested_payload->>'trusted_business_date' THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY revision evidence mismatch';
+ END IF;
+ IF p_action='INIT' THEN
+   IF p_source IS NOT NULL OR pol.revision<>1
+     OR q.old_snapshot->>'source_policy_id' IS NOT NULL
+     OR EXISTS (SELECT 1 FROM app_private.roll_policy_revisions h
+        WHERE h.school_id=p_school AND h.id<>p_revision) THEN
+     RAISE EXCEPTION 'D1 Roll Policy APPLY INIT evidence mismatch';
+   END IF;
+ ELSE
+   SELECT h.revision,h.mode,h.start_value,h.effective_from,h.effective_until,
+          h.ended_by,h.ended_at INTO src FROM app_private.roll_policy_revisions h
+   WHERE h.id=p_source AND h.school_id=p_school;
+   IF NOT FOUND OR src.revision+1<>pol.revision
+     OR src.effective_until IS DISTINCT FROM pol.effective_from
+     OR src.ended_at IS NULL OR src.ended_by IS DISTINCT FROM p_actor
+     OR p_summary->>'source_revision' IS DISTINCT FROM src.revision::text
+     OR p_summary->>'source_mode' IS DISTINCT FROM src.mode
+     OR p_summary->>'source_start_value' IS DISTINCT FROM src.start_value::text
+     OR p_summary->>'source_effective_from' IS DISTINCT FROM src.effective_from::text
+     OR q.old_snapshot->>'source_revision' IS DISTINCT FROM src.revision::text
+     OR q.old_snapshot->>'source_mode' IS DISTINCT FROM src.mode
+     OR q.old_snapshot->>'source_start_value' IS DISTINCT FROM src.start_value::text
+     OR q.old_snapshot->>'source_effective_from' IS DISTINCT FROM src.effective_from::text
+   THEN RAISE EXCEPTION 'D1 Roll Policy APPLY source evidence mismatch'; END IF;
+ END IF;
+ SELECT count(*) INTO pools FROM app_private.roll_allocator_states
+ WHERE policy_revision_id=p_revision;
+ IF p_summary->>'allocator_pool_count' IS DISTINCT FROM pools::text
+   OR (pol.mode='PERSISTENT_STUDENT' AND (pools<>1 OR NOT EXISTS(
+      SELECT 1 FROM app_private.roll_allocator_states a
+      WHERE a.policy_revision_id=p_revision AND a.class_offering_id IS NULL)))
+   OR (pol.mode='ACADEMIC_CONTEXT' AND EXISTS(
+      SELECT 1 FROM app_private.roll_allocator_states a
+      LEFT JOIN app_private.class_offerings co ON co.id=a.class_offering_id
+      WHERE a.policy_revision_id=p_revision
+        AND (a.class_offering_id IS NULL OR co.school_id IS DISTINCT FROM p_school)))
+   OR EXISTS(SELECT 1 FROM app_private.roll_allocator_states a
+      WHERE a.policy_revision_id=p_revision AND a.created_by IS DISTINCT FROM p_actor)
+ THEN RAISE EXCEPTION 'D1 Roll Policy APPLY allocator proof mismatch'; END IF;
+ INSERT INTO app_private.command_receipts(
+  id,principal_id,operation_id,command_kind,idempotency_key,
+  canonical_payload_hash,canonicalization_version,
+  expected_target_version,expected_request_version,request_id,
+  state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(v_receipt,p_actor,p_operation,'request.apply',p_key,p_hash,1,
+  q.expected_target_version,p_expected_request_version,p_request,
+  'SUCCEEDED','D1_STUDENT_ROLL_POLICY',p_revision,p_summary,
+  pg_catalog.statement_timestamp(),p_actor);
+ INSERT INTO app_private.audit_events(
+  actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
+  target_kind,target_ref,command_receipt_id,approval_request_id,source_kind,
+  correlation_id,details,created_by)
+ VALUES(p_actor,'INDIVIDUAL','SUCCEEDED',
+  pg_catalog.jsonb_build_object('operation','student.roll_policy.change',
+    'phase','APPLY','selected_p1_version_id',p_p1),
+  pol.revision,'student.roll_policy.change','SCHOOL',p_school,
+  v_receipt,p_request,'API',correlation,
+  pg_catalog.jsonb_build_object('action',p_action,'source_policy_id',p_source,
+    'policy_revision_id',p_revision,'revision',pol.revision,
+    'effective_from',pol.effective_from),p_actor);
+ INSERT INTO app_private.outbox_events(
+  event_type,aggregate_kind,aggregate_ref,aggregate_version,
+  command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+ VALUES('student.roll_policy_changed','ROLL_POLICY',p_revision,pol.revision,
+  v_receipt,1,correlation,
+  pg_catalog.jsonb_build_object('school_id',p_school,'action',p_action,
+   'source_policy_id',p_source,'policy_revision_id',p_revision,
+   'revision',pol.revision,'effective_from',pol.effective_from),p_actor);
+ RETURN v_receipt;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_apply_success_evidence(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,bigint,uuid,uuid,text,jsonb)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_apply_success_evidence(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,bigint,uuid,uuid,text,jsonb)
+ TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_roll_policy_apply_invalid_evidence(
+ p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_school uuid,
+ p_request uuid,p_p1 uuid,p_expected_request_version bigint,
+ p_next_version bigint,p_error text)
+RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v_receipt uuid:=pg_catalog.gen_random_uuid(); q record;
+BEGIN
+ IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+   OR p_operation IS NULL OR p_school IS NULL OR p_request IS NULL OR p_p1 IS NULL
+   OR p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200
+   OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+   OR p_expected_request_version IS NULL OR p_expected_request_version<4
+   OR p_next_version<=p_expected_request_version
+   OR p_error NOT IN (
+      'DB02_APPLY_P1_STALE','DB02_APPLY_REQUESTER_REVOKED',
+      'DB02_APPLY_REVIEWER_REVOKED','DB02_APPLY_SOURCE_STALE',
+      'DB02_APPLY_DATE_STALE','DB02_APPLY_ALLOCATOR_STALE') THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY invalidation evidence invalid';
+ END IF;
+ SELECT q0.operation_id,q0.policy_id,q0.target_ref,q0.row_version,q0.state
+   INTO q FROM app_private.approval_requests q0 WHERE q0.id=p_request;
+ IF NOT FOUND OR q.operation_id IS DISTINCT FROM p_operation
+   OR q.policy_id IS DISTINCT FROM p_p1 OR q.target_ref IS DISTINCT FROM p_school
+   OR q.row_version IS DISTINCT FROM p_next_version
+   OR q.state IS DISTINCT FROM 'INVALIDATED' THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY invalidation result mismatch';
+ END IF;
+ INSERT INTO app_private.command_receipts(
+  id,principal_id,operation_id,command_kind,idempotency_key,
+  canonical_payload_hash,canonicalization_version,
+  expected_request_version,request_id,state,
+  result_summary,error_code,completed_at,created_by)
+ VALUES(v_receipt,p_actor,p_operation,'request.apply',p_key,p_hash,1,
+  p_expected_request_version,p_request,'REJECTED',
+  pg_catalog.jsonb_build_object('request_version',p_next_version,'state','INVALIDATED'),
+  p_error,pg_catalog.statement_timestamp(),p_actor);
+ INSERT INTO app_private.audit_events(
+  actor_id,actor_kind,outcome,authority_evidence,event_type,target_kind,
+  target_ref,command_receipt_id,approval_request_id,source_kind,
+  correlation_id,details,created_by)
+ VALUES(p_actor,'INDIVIDUAL','REJECTED',
+  pg_catalog.jsonb_build_object('operation','student.roll_policy.change',
+  'phase','APPLY','selected_p1_version_id',p_p1),
+  'student.roll_policy.change','SCHOOL',p_school,
+  v_receipt,p_request,'API',pg_catalog.gen_random_uuid(),
+  pg_catalog.jsonb_build_object('error_code',p_error),p_actor);
+ RETURN v_receipt;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_apply_invalid_evidence(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,bigint,bigint,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_apply_invalid_evidence(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,bigint,bigint,text)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
