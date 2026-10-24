@@ -6,7 +6,7 @@ GRANT SELECT(id,kind,person_id,state) ON app_private.principals TO schoolos_auth
 GRANT SELECT(principal_id,auth_user_id) ON app_private.principal_auth_bindings TO schoolos_authz_reader;
 GRANT SELECT(id,request_id,policy_id,template_id,step_number,state,required_reviews)
  ON app_private.approval_request_steps TO schoolos_authz_reader;
-GRANT SELECT(id,request_id,operation_id,policy_id,requester_id,target_ref,state)
+GRANT SELECT(id,operation_id,policy_id,requester_id,target_ref,state)
  ON app_private.approval_requests TO schoolos_authz_reader;
 GRANT SELECT(id,step_id,reviewer_assignment_id,reviewer_id,decision,created_by)
  ON app_private.approval_reviews TO schoolos_authz_reader;
