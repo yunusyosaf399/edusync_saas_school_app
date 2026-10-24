@@ -1,0 +1,101 @@
+-- DB-02 I06 (stage A): narrow, private DIRECT success evidence writer.
+-- DRAFT ONLY. Not connected to a public RPC or to I05 transition yet.
+-- Callers must compose this inside the same transaction as the policy/pool
+-- mutation; no success may be exposed before a separate row-proof verifier.
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_roll_policy_direct_success_evidence(
+ p_actor uuid,p_operation uuid,p_key text,p_hash bytea,
+ p_school uuid,p_revision uuid,p_source uuid,p_action text,
+ p_policy_version uuid,p_expected_revision integer,p_summary jsonb
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ v_policy app_private.roll_policy_revisions%ROWTYPE;
+ v_receipt uuid:=pg_catalog.gen_random_uuid();
+ v_correlation uuid:=pg_catalog.gen_random_uuid();
+ v_pool_count bigint;
+BEGIN
+ IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+   OR p_operation IS NULL OR p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200
+   OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32
+   OR p_school IS NULL OR p_revision IS NULL OR p_policy_version IS NULL
+   OR p_action NOT IN ('INIT','REPLACE')
+   OR p_expected_revision IS NULL OR p_expected_revision<1
+   OR p_summary IS NULL OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>14
+   OR NOT (p_summary ?& ARRAY[
+     'school_id','action','source_policy_id','source_revision','source_mode',
+     'source_start_value','source_effective_from','policy_revision_id',
+     'revision','mode','start_value','effective_from',
+     'selected_p1_version_id','allocator_pool_count']) THEN
+   RAISE EXCEPTION 'D1 Roll Policy success evidence shape denied';
+ END IF;
+ IF NOT EXISTS (
+   SELECT 1 FROM app_private.operation_contracts
+   WHERE id=p_operation AND code='student.roll_policy.change'
+     AND contract_version=1 AND handler_key='student.roll_policy.change'
+     AND enabled
+ ) THEN RAISE EXCEPTION 'D1 Roll Policy operation not enabled'; END IF;
+ SELECT * INTO v_policy FROM app_private.roll_policy_revisions
+   WHERE id=p_revision AND school_id=p_school AND created_by=p_actor
+   FOR UPDATE;
+ IF NOT FOUND OR v_policy.created_at IS DISTINCT FROM pg_catalog.transaction_timestamp()
+   OR v_policy.revision IS DISTINCT FROM p_expected_revision
+   OR v_policy.supersedes_id IS DISTINCT FROM p_source
+   OR (p_action='INIT' AND (p_source IS NOT NULL OR v_policy.revision<>1))
+   OR (p_action='REPLACE' AND p_source IS NULL)
+   OR p_summary->>'school_id' IS DISTINCT FROM p_school::text
+   OR p_summary->>'action' IS DISTINCT FROM p_action
+   OR p_summary->>'policy_revision_id' IS DISTINCT FROM p_revision::text
+   OR p_summary->>'selected_p1_version_id' IS DISTINCT FROM p_policy_version::text
+   OR p_summary->>'revision' IS DISTINCT FROM v_policy.revision::text
+   OR p_summary->>'mode' IS DISTINCT FROM v_policy.mode
+   OR p_summary->>'start_value' IS DISTINCT FROM v_policy.start_value::text
+   OR p_summary->>'effective_from' IS DISTINCT FROM v_policy.effective_from::text
+   OR p_summary->>'source_policy_id' IS DISTINCT FROM p_source::text THEN
+   RAISE EXCEPTION 'D1 Roll Policy persisted success mismatch';
+ END IF;
+ SELECT pg_catalog.count(*) INTO v_pool_count
+   FROM app_private.roll_allocator_states WHERE policy_revision_id=p_revision;
+ IF v_pool_count=0 OR p_summary->>'allocator_pool_count' IS DISTINCT FROM v_pool_count::text
+   OR EXISTS (SELECT 1 FROM app_private.command_receipts
+       WHERE operation_id=p_operation AND result_ref=p_revision AND state='SUCCEEDED')
+ THEN RAISE EXCEPTION 'D1 Roll Policy evidence target mismatch'; END IF;
+ INSERT INTO app_private.command_receipts(
+   id,principal_id,operation_id,command_kind,idempotency_key,
+   canonical_payload_hash,canonicalization_version,expected_target_version,
+   state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES (v_receipt,p_actor,p_operation,'student.roll_policy.change',p_key,
+   p_hash,1,p_expected_revision,'SUCCEEDED','D1_STUDENT_ROLL_POLICY',
+   p_revision,p_summary,pg_catalog.statement_timestamp(),p_actor);
+ INSERT INTO app_private.audit_events(
+   actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
+   target_kind,target_ref,command_receipt_id,source_kind,correlation_id,
+   details,created_by)
+ VALUES (p_actor,'INDIVIDUAL','SUCCEEDED',
+   pg_catalog.jsonb_build_object('operation','student.roll_policy.change',
+     'phase','DIRECT','selected_p1_version_id',p_policy_version),
+   v_policy.revision,'student.roll_policy.change','SCHOOL',p_school,
+   v_receipt,'API',v_correlation,
+   pg_catalog.jsonb_build_object('action',p_action,'source_policy_id',p_source,
+     'policy_revision_id',p_revision,'revision',v_policy.revision,
+     'effective_from',v_policy.effective_from),p_actor);
+ INSERT INTO app_private.outbox_events(
+   event_type,aggregate_kind,aggregate_ref,aggregate_version,
+   command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+ VALUES ('student.roll_policy_changed','ROLL_POLICY',p_revision,v_policy.revision,
+   v_receipt,1,v_correlation,
+   pg_catalog.jsonb_build_object('school_id',p_school,'action',p_action,
+     'source_policy_id',p_source,'policy_revision_id',p_revision,
+     'revision',v_policy.revision,'effective_from',v_policy.effective_from),p_actor);
+ RETURN v_receipt;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_direct_success_evidence(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,text,uuid,integer,jsonb)
+ FROM PUBLIC,anon,authenticated,service_role;
+-- Deliberately no executor grant until full I06 verifier + transaction
+-- composition are independently tested; owner-only intermediate.
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
