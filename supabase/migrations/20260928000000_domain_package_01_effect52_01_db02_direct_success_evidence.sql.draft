@@ -1,5 +1,5 @@
 -- DB-02 I06 (stage A): narrow, private DIRECT success evidence writer.
--- DRAFT ONLY. Not connected to a public RPC or to I05 transition yet.
+-- DRAFT ONLY. Composed internally by the non-public I06 transition override.
 -- Callers must compose this inside the same transaction as the policy/pool
 -- mutation; no success may be exposed before a separate row-proof verifier.
 GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
@@ -83,7 +83,8 @@ BEGIN
  END IF;
  SELECT pg_catalog.count(*) INTO v_pool_count
    FROM app_private.roll_allocator_states WHERE policy_revision_id=p_revision;
- IF v_pool_count=0 OR p_summary->>'allocator_pool_count' IS DISTINCT FROM v_pool_count::text
+ IF (v_policy.mode='PERSISTENT_STUDENT' AND v_pool_count<>1)
+   OR p_summary->>'allocator_pool_count' IS DISTINCT FROM v_pool_count::text
    OR EXISTS (SELECT 1 FROM app_private.command_receipts
        WHERE operation_id=p_operation AND result_ref=p_revision AND state='SUCCEEDED')
  THEN RAISE EXCEPTION 'D1 Roll Policy evidence target mismatch'; END IF;
@@ -119,7 +120,6 @@ END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_roll_policy_direct_success_evidence(
  uuid,uuid,text,bytea,uuid,uuid,uuid,text,uuid,integer,jsonb)
  FROM PUBLIC,anon,authenticated,service_role;
--- Deliberately no executor grant until full I06 verifier + transaction
--- composition are independently tested; owner-only intermediate.
+-- Narrow executor-only edge is granted by effect53 AFTER the row-proof verifier.
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
