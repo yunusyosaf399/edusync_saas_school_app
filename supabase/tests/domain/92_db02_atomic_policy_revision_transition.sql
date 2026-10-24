@@ -141,7 +141,7 @@ SET ROLE schoolos_student_executor;
 SELECT throws_ok($q$SELECT app_private.d1_roll_policy_revision_transition(
 '22222222-2222-4222-8222-222222222222','i04-duplicate','INIT',
 NULL,NULL,NULL,NULL,NULL,'PERSISTENT_STUDENT',1000,'I04 repeated')$q$,
-'P0001'::char(5),'D1 Roll Policy source or future commitment invalid',
+'P0001'::char(5),'D1 Roll Policy transition preflight invalid',
 'duplicate INIT blocked by exact locked preflight');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT i04_initial;
