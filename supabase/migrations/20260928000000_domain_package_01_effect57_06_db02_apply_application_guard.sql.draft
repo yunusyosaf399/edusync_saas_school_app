@@ -1,0 +1,63 @@
+-- DB-02 I10: application-row defense for this one operation only.
+-- Trigger-only schema-owner exception; no client/runtime schema-owner RPC.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db02_guard_roll_policy_approval_application()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE q record; r record; pol record; op text; s jsonb;
+BEGIN
+ IF TG_OP<>'INSERT' THEN
+  RAISE EXCEPTION 'D1 Roll Policy approval application is immutable';
+ END IF;
+ SELECT code INTO op FROM app_private.operation_contracts
+ WHERE id=NEW.operation_id;
+ IF op IS DISTINCT FROM 'student.roll_policy.change' THEN RETURN NEW; END IF;
+ SELECT id,operation_id,policy_id,target_ref,requester_id,
+   expected_target_version,row_version,state,requested_payload
+ INTO q FROM app_private.approval_requests WHERE id=NEW.request_id;
+ SELECT id,operation_id,request_id,command_kind,state,principal_id,
+   result_kind,result_ref,result_summary,error_code,expected_request_version,
+   created_by
+ INTO r FROM app_private.command_receipts WHERE id=NEW.command_receipt_id;
+ SELECT id,school_id,revision,mode,start_value,effective_from,supersedes_id
+ INTO pol FROM app_private.roll_policy_revisions WHERE id=NEW.result_ref;
+ IF NOT FOUND OR q.id IS NULL OR r.id IS NULL
+   OR q.operation_id IS DISTINCT FROM NEW.operation_id
+   OR r.operation_id IS DISTINCT FROM NEW.operation_id
+   OR r.request_id IS DISTINCT FROM NEW.request_id
+   OR r.command_kind IS DISTINCT FROM 'request.apply'
+   OR r.state IS DISTINCT FROM 'SUCCEEDED'
+   OR r.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_POLICY'
+   OR r.result_ref IS DISTINCT FROM NEW.result_ref
+   OR r.error_code IS NOT NULL
+   OR r.principal_id IS DISTINCT FROM NEW.created_by
+   OR r.created_by IS DISTINCT FROM NEW.created_by
+   OR q.state IS DISTINCT FROM 'EXECUTED'
+   OR q.row_version<=r.expected_request_version
+   OR NEW.applied_target_version IS DISTINCT FROM q.expected_target_version
+   OR pol.school_id IS DISTINCT FROM q.target_ref
+   OR q.requested_payload->>'selected_p1_version_id' IS DISTINCT FROM q.policy_id::text
+   OR r.result_summary IS NULL
+   OR pg_catalog.jsonb_typeof(r.result_summary) IS DISTINCT FROM 'object'
+   OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(r.result_summary))<>14
+   THEN RAISE EXCEPTION 'D1 Roll Policy approval application receipt mismatch';
+ END IF;
+ s:=r.result_summary;
+ IF s->>'school_id' IS DISTINCT FROM pol.school_id::text
+   OR s->>'selected_p1_version_id' IS DISTINCT FROM q.policy_id::text
+   OR s->>'policy_revision_id' IS DISTINCT FROM pol.id::text
+   OR s->>'revision' IS DISTINCT FROM pol.revision::text
+   OR s->>'mode' IS DISTINCT FROM pol.mode
+   OR s->>'start_value' IS DISTINCT FROM pol.start_value::text
+   OR s->>'effective_from' IS DISTINCT FROM pol.effective_from::text
+   OR s->>'action' IS DISTINCT FROM q.requested_payload->>'action'
+   OR s->>'source_policy_id' IS DISTINCT FROM pol.supersedes_id::text
+ THEN RAISE EXCEPTION 'D1 Roll Policy approval application revision mismatch'; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db02_guard_roll_policy_approval_application()
+ FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER db02_roll_policy_approval_application_guard
+ BEFORE INSERT ON app_private.approval_applications
+ FOR EACH ROW EXECUTE FUNCTION app_private.db02_guard_roll_policy_approval_application();
+RESET ROLE;

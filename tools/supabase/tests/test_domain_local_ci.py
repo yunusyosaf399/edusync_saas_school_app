@@ -57,11 +57,11 @@ class DomainLocalCITests(unittest.TestCase):
         # Effect35_12 and DB-01 effect38_02 each add one reviewed private
         # Student-owned definer; public RPC, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 566)
-        self.assertEqual(expected["security_definers"], 548)
-        self.assertEqual(expected["private_functions"], 405)
-        self.assertEqual(expected["app_functions"], 161)
-        self.assertEqual(expected["authenticated_app_execute"], 161)
+        self.assertEqual(expected["functions"], 573)
+        self.assertEqual(expected["security_definers"], 555)
+        self.assertEqual(expected["private_functions"], 411)
+        self.assertEqual(expected["app_functions"], 162)
+        self.assertEqual(expected["authenticated_app_execute"], 162)
         self.assertEqual(expected["authenticated_private_execute"], 0)
         self.assertEqual(expected["anon_execute"], 0)
         self.assertEqual(expected["service_role_execute"], 0)
