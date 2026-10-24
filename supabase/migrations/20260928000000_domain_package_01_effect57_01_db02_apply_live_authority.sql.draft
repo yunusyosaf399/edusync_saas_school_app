@@ -29,8 +29,10 @@ CREATE POLICY db02_i10_authority_assignment ON app_private.approval_step_reviewe
  FOR SELECT TO schoolos_authz_reader USING (EXISTS (
    SELECT 1 FROM app_private.approval_request_steps s WHERE s.id=step_id));
 RESET ROLE;
-SET ROLE schoolos_authz_reader;
+SET ROLE schoolos_schema_owner;
 GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+RESET ROLE;
+SET ROLE schoolos_authz_reader;
 CREATE FUNCTION app_private.d1_roll_policy_apply_principal_live(
  p_principal uuid,p_permission text,p_required_role uuid DEFAULT NULL)
 RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER
