@@ -184,8 +184,7 @@ BEGIN
   'policy_revision_id',effect.policy_id,'revision',effect.policy_revision,
   'mode',new_mode,'start_value',new_start,'effective_from',frozen_date,
   'selected_p1_version_id',q.policy_id,'allocator_pool_count',effect.pool_count);
- UPDATE app_private.approval_requests SET
-   state='EXECUTED',executed_at=pg_catalog.statement_timestamp()
+ UPDATE app_private.approval_requests SET state='EXECUTED'
  WHERE id=p_request_id RETURNING row_version INTO v_final;
  v_receipt:=app_private.d1_roll_policy_apply_success_evidence(
    ctx.actor_id,ctx.operation_id,p_idempotency_key,ctx.intent_hash,
