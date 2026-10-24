@@ -174,10 +174,10 @@ BEGIN
    OR p_request IS NULL OR p_p1 IS NULL OR p_action NOT IN ('INIT','REPLACE') THEN
    RAISE EXCEPTION 'D1 Roll Policy SUBMIT evidence intent invalid';
  END IF;
- SELECT v_req.id,v_req.operation_id,v_req.policy_id,v_req.requester_id,v_req.campus_id,v_req.target_ref,
-   v_req.expected_target_version,v_req.payload_schema_version,v_req.row_version,v_req.state,
-   v_req.created_by INTO v_request
- FROM app_private.approval_requests q WHERE v_req.id=p_request;
+ SELECT q.id,q.operation_id,q.policy_id,q.requester_id,q.campus_id,q.target_ref,
+   q.expected_target_version,q.payload_schema_version,q.row_version,q.state,
+   q.created_by INTO v_request
+ FROM app_private.approval_requests q WHERE q.id=p_request;
  IF NOT FOUND OR v_request.operation_id IS DISTINCT FROM p_operation
    OR v_request.policy_id IS DISTINCT FROM p_p1
    OR v_request.requester_id IS DISTINCT FROM p_actor
@@ -209,9 +209,9 @@ BEGIN
    'student.roll_policy.change','SCHOOL',p_school,
    v_receipt,p_request,'API',pg_catalog.gen_random_uuid(),
    pg_catalog.jsonb_build_object(
-     'action',p_action,'source_policy_id',v_req.old_snapshot->'source_policy_id'),
+     'action',p_action,'source_policy_id',q.old_snapshot->'source_policy_id'),
    p_actor
- FROM app_private.approval_requests q WHERE v_req.id=p_request;
+ FROM app_private.approval_requests q WHERE q.id=p_request;
  RETURN v_receipt;
 END $body$;
 REVOKE ALL ON FUNCTION app_private.d1_roll_policy_submit_success_evidence(
