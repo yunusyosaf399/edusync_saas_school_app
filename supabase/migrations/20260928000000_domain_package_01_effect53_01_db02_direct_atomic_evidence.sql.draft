@@ -1,6 +1,26 @@
 -- DB-02 I06: private DIRECT receipt, historical replay and atomically composed
 -- transition. This overrides only the existing private DB-02 functions.
 -- All SQL remains .draft; no public RPC or hosted migration.
+-- These SELECT policies are internal-only: evidence_writer is NOLOGIN,
+-- has no client grant and verifies persisted evidence via fixed helpers.
+-- Foundation private tables are RLS-enabled; GRANT SELECT alone is not a
+-- visibility policy for this verifier.
+CREATE POLICY db02_i06_evidence_policy_revision_read
+ ON app_private.roll_policy_revisions FOR SELECT
+ TO schoolos_evidence_writer USING (true);
+CREATE POLICY db02_i06_evidence_allocator_read
+ ON app_private.roll_allocator_states FOR SELECT
+ TO schoolos_evidence_writer USING (true);
+CREATE POLICY db02_i06_evidence_offering_read
+ ON app_private.class_offerings FOR SELECT
+ TO schoolos_evidence_writer USING (true);
+CREATE POLICY db02_i06_evidence_audit_read
+ ON app_private.audit_events FOR SELECT
+ TO schoolos_evidence_writer USING (true);
+CREATE POLICY db02_i06_evidence_outbox_read
+ ON app_private.outbox_events FOR SELECT
+ TO schoolos_evidence_writer USING (true);
+
 GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_direct_success_evidence(
  uuid,uuid,text,bytea,uuid,uuid,uuid,text,uuid,integer,jsonb)
  TO schoolos_student_executor;
