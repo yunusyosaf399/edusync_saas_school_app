@@ -38,6 +38,8 @@ BEGIN
    OR r.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_POLICY'
    OR r.result_ref IS DISTINCT FROM p_result
    OR r.result_summary IS NULL OR r.completed_at IS NULL
+   OR r.request_id IS NOT NULL OR r.expected_request_version IS NOT NULL
+   OR r.error_code IS NOT NULL
  THEN RETURN false; END IF;
  s:=r.result_summary;
  IF pg_catalog.jsonb_typeof(s)<>'object'
