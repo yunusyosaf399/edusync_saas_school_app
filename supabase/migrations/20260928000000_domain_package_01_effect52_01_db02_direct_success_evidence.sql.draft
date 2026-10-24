@@ -16,6 +16,7 @@ DECLARE
  v_receipt uuid:=pg_catalog.gen_random_uuid();
  v_correlation uuid:=pg_catalog.gen_random_uuid();
  v_pool_count bigint;
+ v_source app_private.roll_policy_revisions%ROWTYPE;
 BEGIN
  IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
    OR p_operation IS NULL OR p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200
@@ -56,6 +57,29 @@ BEGIN
    OR p_summary->>'effective_from' IS DISTINCT FROM v_policy.effective_from::text
    OR p_summary->>'source_policy_id' IS DISTINCT FROM p_source::text THEN
    RAISE EXCEPTION 'D1 Roll Policy persisted success mismatch';
+ END IF;
+ -- Source identity and closure are historical facts, not caller assertions.
+ IF p_action='INIT' THEN
+   IF p_summary->>'source_policy_id' IS NOT NULL
+     OR pg_catalog.jsonb_typeof(p_summary->'source_revision') IS DISTINCT FROM 'null'
+     OR pg_catalog.jsonb_typeof(p_summary->'source_mode') IS DISTINCT FROM 'null'
+     OR pg_catalog.jsonb_typeof(p_summary->'source_start_value') IS DISTINCT FROM 'null'
+     OR pg_catalog.jsonb_typeof(p_summary->'source_effective_from') IS DISTINCT FROM 'null'
+     OR EXISTS (SELECT 1 FROM app_private.roll_policy_revisions h
+          WHERE h.school_id=p_school AND h.id<>p_revision)
+   THEN RAISE EXCEPTION 'D1 Roll Policy INIT source mismatch'; END IF;
+ ELSE
+   SELECT * INTO v_source FROM app_private.roll_policy_revisions
+     WHERE id=p_source AND school_id=p_school FOR UPDATE;
+   IF NOT FOUND OR v_source.revision+1<>v_policy.revision
+     OR v_source.effective_until IS DISTINCT FROM v_policy.effective_from
+     OR v_source.ended_by IS DISTINCT FROM p_actor
+     OR v_source.ended_at IS NULL
+     OR p_summary->>'source_revision' IS DISTINCT FROM v_source.revision::text
+     OR p_summary->>'source_mode' IS DISTINCT FROM v_source.mode
+     OR p_summary->>'source_start_value' IS DISTINCT FROM v_source.start_value::text
+     OR p_summary->>'source_effective_from' IS DISTINCT FROM v_source.effective_from::text
+   THEN RAISE EXCEPTION 'D1 Roll Policy REPLACE source mismatch'; END IF;
  END IF;
  SELECT pg_catalog.count(*) INTO v_pool_count
    FROM app_private.roll_allocator_states WHERE policy_revision_id=p_revision;
