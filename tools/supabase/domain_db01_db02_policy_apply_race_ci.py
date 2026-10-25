@@ -160,6 +160,42 @@ def _verify(cur,request,student,policy_id,change_first):
     _check(cur.fetchone()==((1 if change_first else 0),),"POLICY_RECEIPTS")
 
 
+def _retained_state(cur):
+    # Fixed disposable tables: compare complete rows, including counter/version,
+    # original policy/origin links and immutable receipt/audit/event content.
+    tables = ("students", "enrollments", "roll_allocations",
+              "roll_policy_revisions", "roll_allocator_states",
+              "approval_requests", "approval_applications",
+              "command_receipts", "audit_events", "outbox_events")
+    result = {}
+    for table in tables:
+        cur.execute("SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),"
+                    "'[]'::jsonb) FROM app_private." + table + " t")
+        result[table] = cur.fetchone()[0]
+    return result
+
+
+def _verify_replay(psycopg, observer, request, approved, case, today,
+                   original_apply, policy_id):
+    with observer.cursor() as cur:
+        before = _retained_state(cur)
+    observer.rollback()
+    with closing(_actor_connection(psycopg)) as actor:
+        replay = _apply(actor, request, approved, "db01-db02-"+case+"-apply")
+        _check(replay == original_apply, "CANONICAL_APPLY_REPLAY_"+case)
+        actor.commit()
+    if case == "pc":
+        with closing(_policy_actor_connection(psycopg)) as actor:
+            replay = _change(actor, today, "db01-db02-pc-change")
+            _check(replay == policy_id, "CANONICAL_POLICY_REPLAY")
+            actor.commit()
+    with observer.cursor() as cur:
+        _check(_retained_state(cur) == before, "REPLAY_MUTATED_HISTORY_"+case)
+    observer.rollback()
+    print("D1_DB01_DB02_RETAINED_REPLAY_PASS "+case+
+          " canonical_result=true full_rows_unchanged=10")
+
+
 def run_db01_db02_policy_apply_races(container,run_psql,fresh_database):
     _check(container==CONTAINER,"DISPOSABLE_CONTAINER_ONLY")
     import psycopg
@@ -221,6 +257,8 @@ def run_db01_db02_policy_apply_races(container,run_psql,fresh_database):
             with observer.cursor() as c:
                 _verify(c,request,student,policy_id,case=="pc")
             observer.rollback()
+            _verify_replay(psycopg, observer, request, approved, case, today,
+                           result, policy_id)
         print("D1_DB01_DB02_POLICY_APPLY_RACE_PASS "+case+
               " exact_school_wait=true retained_roll_and_evidence=true"+
               (" replacement_denied_after_apply=true" if case=="cp" else ""))
