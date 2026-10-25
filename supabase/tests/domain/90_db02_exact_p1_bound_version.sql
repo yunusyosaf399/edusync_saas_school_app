@@ -26,8 +26,8 @@ SELECT is(has_function_privilege('service_role',
  'app_private.d1_roll_policy_p1_binding_current(uuid,uuid,text)','EXECUTE'),false,
  'service role has no internal P1 EXECUTE');
 SELECT is(has_function_privilege('schoolos_workflow_executor',
- 'app_private.d1_roll_policy_p1_binding_current(uuid,uuid,text)','EXECUTE'),false,
- 'workflow is not granted premature APPLY authority');
+ 'app_private.d1_roll_policy_p1_binding_current(uuid,uuid,text)','EXECUTE'),true,
+ 'workflow uses read-only P1 binding for REVIEW; no APPLY endpoint exists');
 SELECT ok(has_function_privilege('schoolos_student_executor',
  'app_private.d1_roll_policy_p1_binding_current(uuid,uuid,text)','EXECUTE'),
  'Student-owned context can call exact guard');

@@ -76,11 +76,11 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 577,
-    "security_definers": 559,
-    "app_functions": 162,
-    "private_functions": 415,
-    "authenticated_app_execute": 162,
+    "functions": 598,
+    "security_definers": 580,
+    "app_functions": 167,
+    "private_functions": 431,
+    "authenticated_app_execute": 167,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
     "service_role_execute": 0,
@@ -489,6 +489,29 @@ def _main() -> int:
         run_db01_p1_successive_roll_date_boundaries(container, run_psql, ROOT)
         from domain_db01_p1_complete_integration_ci import run_db01_p1_complete_approve_reject_integration
         run_db01_p1_complete_approve_reject_integration(container, run_psql, ROOT)
+        # Each T04 case starts from the frozen migrations and the same draft
+        # chain, preserving the singleton School and immutable prior evidence.
+        def fresh_db02_database() -> None:
+            run(["supabase", "db", "reset", "--local", "--no-seed"],
+                cwd=ROOT, timeout=900)
+            run_psql(container, sql, "DB02_T04_APPLY", timeout=1200)
+            fresh_url, fresh_key = local_status()
+            ensure_local_auth_route(fresh_url)
+            try:
+                if len(prepare(fresh_url, fresh_key)) != 5:
+                    raise DomainLocalCIError("DB02_T04_AUTH_FIXTURE_COUNT")
+            finally:
+                fresh_key = None
+        # Combined owner boundary: genuine APPROVED DB-01 APPLY contends with
+        # authenticated DB-02 REPLACE in both commit orders on fresh Schools.
+        from domain_db01_db02_policy_apply_race_ci import run_db01_db02_policy_apply_races
+        run_db01_db02_policy_apply_races(container, run_psql, fresh_db02_database)
+        from domain_db02_policy_race_ci import run_db02_policy_races
+        run_db02_policy_races(container, run_psql, fresh_db02_database)
+        from domain_db02_enrollment_race_ci import run_db02_enrollment_races
+        run_db02_enrollment_races(container, run_psql, fresh_db02_database)
+        from domain_db02_authority_race_ci import run_db02_authority_races
+        run_db02_authority_races(container, run_psql, fresh_db02_database)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0

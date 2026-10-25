@@ -1,0 +1,224 @@
+-- DB-02 I08: NOLOGIN evidence writer owns immutable SUBMIT receipt, private
+-- audit and an exact historical request proof. This never emits an outbox event
+-- or changes a Roll Policy; existing DIRECT evidence helpers are untouched.
+-- All read grants are internal-only and guarded by operation-specific RLS.
+GRANT SELECT(id,code,contract_version,handler_key,enabled)
+ ON app_private.operation_contracts TO schoolos_evidence_writer;
+GRANT SELECT(id,operation_id,policy_id,requester_id,campus_id,target_ref,
+ expected_target_version,reason,old_snapshot,requested_payload,state,row_version,
+ payload_schema_version,created_by,submitted_at)
+ ON app_private.approval_requests TO schoolos_evidence_writer;
+GRANT SELECT(id,request_id,step_number,policy_id,template_id,required_reviews,
+ opened_at,created_by)
+ ON app_private.approval_request_steps TO schoolos_evidence_writer;
+GRANT SELECT(id,step_id,reviewer_id,assignment_reason)
+ ON app_private.approval_step_reviewers TO schoolos_evidence_writer;
+GRANT SELECT(request_id,sequence_number,from_state,to_state,command_receipt_id,
+ created_by)
+ ON app_private.approval_transitions TO schoolos_evidence_writer;
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db02_i08_evidence_operation ON app_private.operation_contracts
+ FOR SELECT TO schoolos_evidence_writer
+ USING (code='student.roll_policy.change');
+CREATE POLICY db02_i08_evidence_request ON app_private.approval_requests
+ FOR SELECT TO schoolos_evidence_writer
+ USING (EXISTS (
+  SELECT 1 FROM app_private.operation_contracts o
+   WHERE o.id=operation_id AND o.code='student.roll_policy.change'));
+CREATE POLICY db02_i08_evidence_steps ON app_private.approval_request_steps
+ FOR SELECT TO schoolos_evidence_writer
+ USING (EXISTS (
+  SELECT 1 FROM app_private.approval_requests q WHERE q.id=request_id));
+CREATE POLICY db02_i08_evidence_reviewers ON app_private.approval_step_reviewers
+ FOR SELECT TO schoolos_evidence_writer
+ USING (EXISTS (
+  SELECT 1 FROM app_private.approval_request_steps s WHERE s.id=step_id));
+CREATE POLICY db02_i08_evidence_transitions ON app_private.approval_transitions
+ FOR SELECT TO schoolos_evidence_writer
+ USING (EXISTS (
+  SELECT 1 FROM app_private.approval_requests q WHERE q.id=request_id));
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_roll_policy_submit_rows_match(
+ p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_school uuid,
+ p_request uuid,p_p1 uuid,p_expected_revision integer,
+ p_snapshot jsonb,p_requested_core jsonb,p_reason text
+) RETURNS boolean
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  v_req record;
+  v_receipt_row record;
+  v_step_count bigint;
+  v_template_count bigint;
+  v_audit_count bigint;
+  v_date date;
+BEGIN
+ IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+   OR p_operation IS NULL OR p_key IS NULL OR p_hash IS NULL
+   OR pg_catalog.octet_length(p_hash)<>32 OR p_school IS NULL OR p_request IS NULL
+   OR p_p1 IS NULL OR p_reason IS NULL OR p_snapshot IS NULL
+   OR p_requested_core IS NULL
+ THEN RETURN false; END IF;
+ SELECT q.id,q.operation_id,q.policy_id,q.requester_id,q.campus_id,
+   q.target_ref,q.expected_target_version,q.payload_schema_version,
+   q.reason,q.old_snapshot,q.requested_payload,q.state,q.submitted_at,q.created_by
+   INTO v_req FROM app_private.approval_requests q WHERE q.id=p_request;
+ IF NOT FOUND OR v_req.operation_id IS DISTINCT FROM p_operation
+   OR v_req.policy_id IS DISTINCT FROM p_p1
+   OR v_req.requester_id IS DISTINCT FROM p_actor
+   OR v_req.created_by IS DISTINCT FROM p_actor
+   OR v_req.campus_id IS NOT NULL
+   OR v_req.target_ref IS DISTINCT FROM p_school
+   OR v_req.payload_schema_version IS DISTINCT FROM 1
+   OR v_req.expected_target_version IS DISTINCT FROM p_expected_revision
+   OR v_req.reason IS DISTINCT FROM p_reason
+   OR v_req.old_snapshot IS DISTINCT FROM p_snapshot
+   OR pg_catalog.jsonb_typeof(v_req.requested_payload)<>'object'
+   OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(v_req.requested_payload))<>5
+   OR v_req.requested_payload - 'trusted_business_date' IS DISTINCT FROM p_requested_core
+   OR pg_catalog.jsonb_typeof(v_req.requested_payload->'trusted_business_date')<>'string'
+   OR v_req.submitted_at IS NULL THEN RETURN false; END IF;
+ BEGIN
+   v_date:=(v_req.requested_payload->>'trusted_business_date')::date;
+ EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN RETURN false; END;
+ IF v_date IS NULL OR v_req.requested_payload->>'trusted_business_date'
+      IS DISTINCT FROM pg_catalog.to_char(v_date,'YYYY-MM-DD') THEN
+    RETURN false;
+ END IF;
+ SELECT r.id,r.principal_id,r.operation_id,r.command_kind,r.idempotency_key,
+   r.canonical_payload_hash,r.canonicalization_version,r.expected_target_version,
+   r.request_id,r.expected_request_version,r.state,r.result_kind,r.result_ref,
+   r.result_summary,r.error_code,r.completed_at,r.created_by
+   INTO v_receipt_row FROM app_private.command_receipts r
+ WHERE r.principal_id=p_actor AND r.operation_id=p_operation AND r.idempotency_key=p_key;
+ IF NOT FOUND OR v_receipt_row.command_kind IS DISTINCT FROM 'request.submit'
+   OR v_receipt_row.canonical_payload_hash IS DISTINCT FROM p_hash
+   OR v_receipt_row.canonicalization_version IS DISTINCT FROM 1
+   OR v_receipt_row.expected_target_version IS DISTINCT FROM p_expected_revision
+   OR v_receipt_row.request_id IS DISTINCT FROM p_request
+   OR v_receipt_row.expected_request_version IS NOT NULL
+   OR v_receipt_row.state IS DISTINCT FROM 'SUCCEEDED'
+   OR v_receipt_row.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_POLICY_REQUEST'
+   OR v_receipt_row.result_ref IS DISTINCT FROM p_request
+   OR v_receipt_row.result_summary IS DISTINCT FROM
+        pg_catalog.jsonb_build_object('request_version',3,'state','PENDING')
+   OR v_receipt_row.error_code IS NOT NULL OR v_receipt_row.completed_at IS NULL
+   OR v_receipt_row.created_by IS DISTINCT FROM p_actor THEN RETURN false; END IF;
+ -- The historical receipt records the original PENDING submission. Later
+ -- independent REVIEW/APPLY may move the request from PENDING legitimately.
+ IF NOT EXISTS (SELECT 1 FROM app_private.approval_transitions t
+   WHERE t.request_id=p_request AND t.sequence_number=1 AND t.from_state IS NULL
+     AND t.to_state='DRAFT' AND t.command_receipt_id=v_receipt_row.id AND t.created_by=p_actor)
+   OR NOT EXISTS (SELECT 1 FROM app_private.approval_transitions t
+   WHERE t.request_id=p_request AND t.sequence_number=2 AND t.from_state='DRAFT'
+     AND t.to_state='SUBMITTED' AND t.command_receipt_id=v_receipt_row.id AND t.created_by=p_actor)
+   OR NOT EXISTS (SELECT 1 FROM app_private.approval_transitions t
+   WHERE t.request_id=p_request AND t.sequence_number=3 AND t.from_state='SUBMITTED'
+     AND t.to_state='PENDING' AND t.command_receipt_id=v_receipt_row.id AND t.created_by=p_actor)
+ THEN RETURN false; END IF;
+ SELECT pg_catalog.count(*) INTO v_step_count
+ FROM app_private.approval_request_steps s WHERE s.request_id=p_request
+   AND s.policy_id=p_p1 AND s.created_by=p_actor AND s.opened_at IS NOT NULL
+   AND s.step_number=1;
+ IF v_step_count<>1 OR NOT EXISTS (
+   SELECT 1 FROM app_private.approval_step_reviewers a
+   JOIN app_private.approval_request_steps s ON s.id=a.step_id
+   WHERE s.request_id=p_request AND s.step_number=1
+     AND a.assignment_reason='D1_REVIEWER_ROLE_SCOPE'
+ ) THEN RETURN false; END IF;
+ SELECT pg_catalog.count(*) INTO v_audit_count FROM app_private.audit_events a
+ WHERE a.command_receipt_id=v_receipt_row.id AND a.approval_request_id=p_request
+   AND a.actor_id=p_actor AND a.created_by=p_actor
+   AND a.actor_kind='INDIVIDUAL' AND a.outcome='SUCCEEDED'
+   AND a.event_type='student.roll_policy.change'
+   AND a.target_kind='SCHOOL' AND a.target_ref=p_school
+   AND a.target_version IS NULL AND a.source_kind='API'
+   AND a.authority_evidence=pg_catalog.jsonb_build_object(
+      'operation','student.roll_policy.change','phase','SUBMIT',
+      'selected_p1_version_id',p_p1)
+   AND a.details=pg_catalog.jsonb_build_object(
+      'action',p_requested_core->>'action',
+      'source_policy_id',p_snapshot->'source_policy_id');
+ RETURN v_audit_count=1
+   AND (SELECT pg_catalog.count(*) FROM app_private.audit_events
+        WHERE command_receipt_id=v_receipt_row.id)=1
+   AND (SELECT pg_catalog.count(*) FROM app_private.outbox_events
+        WHERE command_receipt_id=v_receipt_row.id)=0
+   AND (SELECT pg_catalog.count(*) FROM app_private.command_receipts
+        WHERE operation_id=p_operation AND result_ref=p_request
+          AND state='SUCCEEDED' AND command_kind='request.submit')=1;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_submit_rows_match(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,integer,jsonb,jsonb,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_submit_rows_match(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,integer,jsonb,jsonb,text)
+ TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_roll_policy_submit_success_evidence(
+ p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_school uuid,
+ p_request uuid,p_p1 uuid,p_expected_revision integer,p_action text
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  v_request record;
+  v_receipt uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+ IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+   OR p_operation IS NULL OR p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200
+   OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32 OR p_school IS NULL
+   OR p_request IS NULL OR p_p1 IS NULL OR p_action NOT IN ('INIT','REPLACE') THEN
+   RAISE EXCEPTION 'D1 Roll Policy SUBMIT evidence intent invalid';
+ END IF;
+ SELECT q.id,q.operation_id,q.policy_id,q.requester_id,q.campus_id,q.target_ref,
+   q.expected_target_version,q.payload_schema_version,q.row_version,q.state,
+   q.created_by INTO v_request
+ FROM app_private.approval_requests q WHERE q.id=p_request;
+ IF NOT FOUND OR v_request.operation_id IS DISTINCT FROM p_operation
+   OR v_request.policy_id IS DISTINCT FROM p_p1
+   OR v_request.requester_id IS DISTINCT FROM p_actor
+   OR v_request.campus_id IS NOT NULL OR v_request.target_ref IS DISTINCT FROM p_school
+   OR v_request.expected_target_version IS DISTINCT FROM p_expected_revision
+   OR v_request.payload_schema_version IS DISTINCT FROM 1
+   OR v_request.row_version IS DISTINCT FROM 3
+   OR v_request.state IS DISTINCT FROM 'PENDING'
+   OR v_request.created_by IS DISTINCT FROM p_actor
+   OR EXISTS (SELECT 1 FROM app_private.command_receipts WHERE
+       operation_id=p_operation AND result_ref=p_request AND state='SUCCEEDED')
+ THEN RAISE EXCEPTION 'D1 Roll Policy SUBMIT persisted request mismatch'; END IF;
+ INSERT INTO app_private.command_receipts(
+   id,principal_id,operation_id,command_kind,idempotency_key,
+   canonical_payload_hash,canonicalization_version,expected_target_version,
+   request_id,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES (v_receipt,p_actor,p_operation,'request.submit',p_key,
+    p_hash,1,p_expected_revision,p_request,
+    'SUCCEEDED','D1_STUDENT_ROLL_POLICY_REQUEST',p_request,
+    pg_catalog.jsonb_build_object('request_version',3,'state','PENDING'),
+    pg_catalog.statement_timestamp(),p_actor);
+ INSERT INTO app_private.audit_events(
+   actor_id,actor_kind,outcome,authority_evidence,event_type,target_kind,
+   target_ref,command_receipt_id,approval_request_id,source_kind,
+   correlation_id,details,created_by)
+ SELECT p_actor,'INDIVIDUAL','SUCCEEDED',
+   pg_catalog.jsonb_build_object('operation','student.roll_policy.change',
+     'phase','SUBMIT','selected_p1_version_id',p_p1),
+   'student.roll_policy.change','SCHOOL',p_school,
+   v_receipt,p_request,'API',pg_catalog.gen_random_uuid(),
+   pg_catalog.jsonb_build_object(
+     'action',p_action,'source_policy_id',q.old_snapshot->'source_policy_id'),
+   p_actor
+ FROM app_private.approval_requests q WHERE q.id=p_request;
+ RETURN v_receipt;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_submit_success_evidence(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,integer,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_submit_success_evidence(
+ uuid,uuid,text,bytea,uuid,uuid,uuid,integer,text)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;

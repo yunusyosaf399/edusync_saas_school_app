@@ -39,6 +39,17 @@ DOMAIN_TESTS.extend([
     ["93_db02_atomic_roll_allocator_pools.sql",29],
 ])
 
+# Later DB-02 suites retain their complete filenames beside DB-01 #92.
+DOMAIN_TESTS.extend([
+    ["94_db02_direct_evidence_replay.sql",33],
+    ["95_db02_authenticated_direct_entry.sql",58],
+    ["96_db02_approval_submit_read.sql",37],
+    ["97_db02_independent_review.sql",34],
+    ["98_db02_approved_policy_apply.sql",79],
+    ["99_db02_shared_review_apply_receipts.sql",13],
+    ["100_db02_t07_allocator_handoff.sql",31],
+    ["101_db02_t08_privacy_acl_rls.sql",26],
+])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
