@@ -38,6 +38,31 @@ INSERT INTO app_private.roll_allocator_states(
  policy_revision_id,class_offering_id,next_value,created_by)
 VALUES ('{POLICY}',NULL,12001,
  '11111111-1111-4111-8111-111111111111');
+-- The DB01 fixture normally inherits these three actor grants from earlier
+-- domain races. A fresh database must provide them explicitly.
+INSERT INTO app_private.role_permission_grants(
+ id,role_id,role_family_only,permission_id,permission_family_safe,
+ valid_from,created_by)
+SELECT gen_random_uuid(),'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,
+ p.id,p.family_safe,statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.permissions p
+WHERE p.code IN ('student.enrollment.place','student.roll.correct',
+ 'student.roll.approve');
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+SELECT gen_random_uuid(),'ffffffff-ffff-4fff-8fff-ffffffffffff',
+ g.id,g.role_id,g.permission_id,c.id,'ALL','DIRECT',
+ statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+JOIN app_private.permissions p ON p.id=g.permission_id
+WHERE g.role_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+ AND p.code IN ('student.enrollment.place','student.roll.correct',
+ 'student.roll.approve')
+ AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
 RESET ROLE;
 """
     run_psql(container,"BEGIN;\n"+fixture+policy+"COMMIT;\n",
