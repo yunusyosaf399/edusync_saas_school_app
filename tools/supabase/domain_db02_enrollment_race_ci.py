@@ -74,7 +74,12 @@ def _observe(container: str, execute_sql, holder: str, waiter: str,
    AND c.relname='school_profiles') THEN 1 ELSE 0 END;"""
     deadline = time.monotonic() + 12
     while time.monotonic() < deadline:
-        _check(process.poll() is None, 'WORKER_EXITED_BEFORE_WAIT')
+        if process.poll() is not None:
+            out, err = process.communicate(timeout=5)
+            raise RuntimeError('DB02_T05_WORKER_EXITED_BEFORE_WAIT holder=' +
+                               holder + ' waiter=' + waiter + ' rc=' +
+                               str(process.returncode) + ' out=' +
+                               repr(out[-250:]) + ' err=' + repr(err[-400:]))
         if execute_sql(container, probe, 'DB02_T05_LOCK_PROBE',
                        tuples=True, timeout=10).strip() == '1':
             return
