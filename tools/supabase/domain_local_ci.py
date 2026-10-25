@@ -506,6 +506,8 @@ def _main() -> int:
         # authenticated DB-02 REPLACE in both commit orders on fresh Schools.
         from domain_db01_db02_policy_apply_race_ci import run_db01_db02_policy_apply_races
         run_db01_db02_policy_apply_races(container, run_psql, fresh_db02_database)
+        from domain_academic_roll_pool_race_ci import run_academic_roll_pool_races
+        run_academic_roll_pool_races(container, run_psql, fresh_db02_database)
         from domain_db02_policy_race_ci import run_db02_policy_races
         run_db02_policy_races(container, run_psql, fresh_db02_database)
         from domain_db02_enrollment_race_ci import run_db02_enrollment_races
