@@ -1,0 +1,180 @@
+-- G02: academic command-owned eager pool provisioning; non-executable draft.
+SET ROLE schoolos_academic_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_business_date(uuid) TO schoolos_schema_owner;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_roll_policy_offering_pool(
+ p_school uuid,p_offering uuid,p_actor uuid,p_phase text)
+RETURNS integer LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE pol app_private.roll_policy_revisions%ROWTYPE; n bigint;
+  offering app_private.class_offerings%ROWTYPE; eligible boolean; pool uuid;
+BEGIN
+ IF p_school IS NULL OR p_actor IS NULL OR p_phase IS NULL
+    OR p_phase NOT IN ('PRELOCK','PROVISION')
+    OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+    OR current_setting('transaction_isolation')<>'read committed' THEN
+   RAISE EXCEPTION 'D1 Offering pool context invalid';
+ END IF;
+ PERFORM 1 FROM app_private.school_profiles WHERE id=p_school FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'D1 Offering pool School missing'; END IF;
+ SELECT count(*) INTO n FROM app_private.roll_policy_revisions
+ WHERE school_id=p_school AND effective_from<=app_private.d1_roll_business_date(p_school)
+   AND effective_until IS NULL;
+ IF n=0 THEN RETURN 0; END IF;
+ IF n<>1 THEN RAISE EXCEPTION 'D1 Offering pool policy ambiguous'; END IF;
+ SELECT * INTO pol FROM app_private.roll_policy_revisions
+ WHERE school_id=p_school AND effective_from<=app_private.d1_roll_business_date(p_school)
+   AND effective_until IS NULL FOR UPDATE;
+ IF pol.mode<>'ACADEMIC_CONTEXT' THEN RETURN 0; END IF;
+ SELECT id INTO pool FROM app_private.roll_allocator_states
+ WHERE policy_revision_id=pol.id AND class_offering_id=p_offering FOR UPDATE;
+ IF p_phase='PRELOCK' THEN RETURN 0; END IF;
+ SELECT * INTO offering FROM app_private.class_offerings
+ WHERE id=p_offering AND school_id=p_school FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'D1 Offering pool target missing'; END IF;
+ SELECT s.state IN ('SETUP','ACTIVE') AND c.state='ACTIVE'
+   AND cp.state IN ('PLANNED','ACTIVE') AND y.state IN ('PLANNED','ACTIVE')
+   AND offering.state IN ('PLANNED','OPEN','CLOSED') INTO eligible
+ FROM app_private.school_profiles s
+ JOIN app_private.academic_classes c ON c.id=offering.class_id AND c.school_id=s.id
+ JOIN app.campuses cp ON cp.id=offering.campus_id AND cp.school_id=s.id
+ JOIN app.academic_years y ON y.id=offering.academic_year_id AND y.school_id=s.id
+ WHERE s.id=p_school;
+ IF offering.state='OPEN' AND NOT coalesce(eligible,false) THEN
+   RAISE EXCEPTION 'D1 Offering pool OPEN ancestry invalid';
+ END IF;
+ IF NOT coalesce(eligible,false) OR pool IS NOT NULL THEN RETURN 0; END IF;
+ IF pol.start_value>=9223372036854775807 OR EXISTS (
+   SELECT 1 FROM app_private.roll_allocations a
+   JOIN app_private.enrollments e ON e.id=a.enrollment_id
+   JOIN app_private.section_offerings so ON so.id=e.section_offering_id
+   WHERE a.policy_revision_id=pol.id AND so.class_offering_id=p_offering) THEN
+   RAISE EXCEPTION 'D1 Offering pool missing counter provenance';
+ END IF;
+ INSERT INTO app_private.roll_allocator_states(
+   policy_revision_id,class_offering_id,next_value,created_by)
+ VALUES(pol.id,p_offering,pol.start_value,p_actor);
+ RETURN 1;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_offering_pool(uuid,uuid,uuid,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_offering_pool(uuid,uuid,uuid,text)
+ TO schoolos_academic_executor;
+RESET ROLE;
+GRANT CREATE ON SCHEMA app TO schoolos_academic_executor;
+SET ROLE schoolos_academic_executor;
+CREATE OR REPLACE FUNCTION app.d1_change_academic_offering(
+  p_action text,p_offering_id uuid,p_school_id uuid,p_class_id uuid,
+  p_campus_id uuid,p_academic_year_id uuid,p_capacity integer,p_state text,
+  p_expected_version bigint,p_idempotency_key text
+) RETURNS TABLE (offering_id uuid,row_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; old_row app_private.class_offerings%ROWTYPE; new_id uuid;
+  new_version bigint; new_state text; receipt uuid; revision_id uuid;
+  correlation uuid:=pg_catalog.gen_random_uuid();
+BEGIN
+  IF p_action NOT IN ('CREATE','UPDATE','ARCHIVE') OR p_school_id IS NULL
+     OR p_class_id IS NULL OR p_campus_id IS NULL OR p_academic_year_id IS NULL
+     OR (p_action='CREATE' AND (p_offering_id IS NOT NULL OR p_expected_version IS NOT NULL
+          OR p_capacity IS NULL OR p_capacity<0 OR p_state NOT IN ('PLANNED','OPEN','CLOSED')))
+     OR (p_action='UPDATE' AND (p_offering_id IS NULL OR p_expected_version IS NULL
+          OR p_expected_version<1 OR p_capacity IS NOT NULL
+          OR p_state NOT IN ('PLANNED','OPEN','CLOSED')))
+     OR (p_action='ARCHIVE' AND (p_offering_id IS NULL OR p_expected_version IS NULL
+          OR p_expected_version<1 OR p_capacity IS NOT NULL OR p_state IS NOT NULL)) THEN
+    RAISE EXCEPTION 'D1 Academic Offering intent invalid';
+  END IF;
+  SELECT * INTO ctx FROM app_private.d1_command_receipt_lookup(
+    'academic.offering.change','academic.offering.change',p_idempotency_key,
+    pg_catalog.jsonb_build_array(p_action,p_offering_id,p_school_id,p_class_id,
+      p_campus_id,p_academic_year_id,p_capacity,p_state,p_expected_version::text));
+  PERFORM app_private.d1_lock_current_principal(ctx.actor_id);
+  PERFORM 1 FROM app_private.school_profiles s WHERE s.id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 school target missing'; END IF;
+  PERFORM app_private.d1_roll_policy_offering_pool(p_school_id,p_offering_id,ctx.actor_id,'PRELOCK');
+  PERFORM 1 FROM app.campuses c
+   WHERE c.id=p_campus_id AND c.school_id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Offering Campus ancestry missing'; END IF;
+  PERFORM 1 FROM app.academic_years y
+   WHERE y.id=p_academic_year_id AND y.school_id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Offering Academic Year ancestry missing'; END IF;
+  PERFORM 1 FROM app_private.academic_classes c
+   WHERE c.id=p_class_id AND c.school_id=p_school_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'D1 Offering Class ancestry missing'; END IF;
+  IF p_action<>'CREATE' THEN
+    SELECT * INTO old_row FROM app_private.class_offerings o
+     WHERE o.id=p_offering_id FOR UPDATE;
+    IF NOT FOUND OR old_row.school_id IS DISTINCT FROM p_school_id
+       OR old_row.class_id IS DISTINCT FROM p_class_id
+       OR old_row.campus_id IS DISTINCT FROM p_campus_id
+       OR old_row.academic_year_id IS DISTINCT FROM p_academic_year_id THEN
+      RAISE EXCEPTION 'D1 Academic Offering target/ancestry changed';
+    END IF;
+  END IF;
+  IF NOT app_private.d1_authorized('academic.offering.manage',
+      CASE WHEN p_action='CREATE' THEN 'CAMPUS' ELSE 'CLASS' END,
+      CASE WHEN p_action='CREATE' THEN p_campus_id ELSE p_offering_id END) THEN
+    RAISE EXCEPTION 'D1 Academic Offering authority denied';
+  END IF;
+  IF ctx.receipt_id IS NOT NULL THEN
+    IF ctx.receipt_state<>'SUCCEEDED' OR ctx.result_ref IS NULL THEN
+      RAISE EXCEPTION 'D1 prior terminal Offering command was not successful';
+    END IF;
+    RETURN QUERY SELECT ctx.result_ref,(ctx.result_summary->>'row_version')::bigint;
+    RETURN;
+  END IF;
+  IF p_action='CREATE' THEN
+    new_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.class_offerings
+      (id,school_id,class_id,campus_id,academic_year_id,capacity,state,created_by)
+    VALUES(new_id,p_school_id,p_class_id,p_campus_id,p_academic_year_id,
+      p_capacity,p_state,ctx.actor_id);
+    new_version:=1; new_state:=p_state;
+  ELSE
+    IF old_row.row_version<>p_expected_version OR old_row.state='ARCHIVED' THEN
+      RAISE EXCEPTION 'D1 Academic Offering stale version/state';
+    END IF;
+    new_id:=old_row.id;
+    IF p_action='UPDATE' THEN
+      UPDATE app_private.class_offerings o SET state=p_state WHERE o.id=new_id
+       RETURNING o.row_version INTO new_version;
+      new_state:=p_state;
+    ELSE
+      IF EXISTS (SELECT 1 FROM app_private.section_offerings s
+                  WHERE s.class_offering_id=new_id AND s.state<>'ARCHIVED') THEN
+        RAISE EXCEPTION 'D1 Academic Offering has nonarchived Sections';
+      END IF;
+      UPDATE app_private.class_offerings o SET state='ARCHIVED',
+        archived_at=pg_catalog.statement_timestamp(),archived_by=ctx.actor_id
+       WHERE o.id=new_id RETURNING o.row_version INTO new_version;
+      new_state:='ARCHIVED';
+    END IF;
+  END IF;
+  IF p_action<>'ARCHIVE' THEN
+    PERFORM app_private.d1_roll_policy_offering_pool(p_school_id,new_id,ctx.actor_id,'PROVISION');
+  END IF;
+  receipt:=app_private.d1_academic_receipt(ctx.actor_id,ctx.operation_id,
+    p_idempotency_key,ctx.intent_hash,p_expected_version,'D1_CLASS_OFFERING',new_id,
+    pg_catalog.jsonb_build_object('row_version',new_version,'state',new_state));
+  IF p_action='CREATE' THEN
+    revision_id:=pg_catalog.gen_random_uuid();
+    INSERT INTO app_private.capacity_revisions
+      (id,class_offering_id,old_capacity,new_capacity,effective_on,reason,
+       command_receipt_id,created_by)
+    VALUES(revision_id,new_id,NULL,p_capacity,CURRENT_DATE,
+      'INITIAL_CONFIGURATION',receipt,ctx.actor_id);
+  END IF;
+  PERFORM app_private.d1_academic_audit(ctx.actor_id,'academic.offering.change',
+    'CLASS_OFFERING',new_id,p_campus_id,receipt,new_version,new_state,correlation);
+  PERFORM app_private.d1_academic_event(ctx.actor_id,'academic.offering.change',
+    new_id,new_version,receipt,correlation,new_state);
+  RETURN QUERY SELECT new_id,new_version;
+END $body$;
+REVOKE ALL ON FUNCTION app.d1_change_academic_offering(text,uuid,uuid,uuid,uuid,uuid,integer,text,bigint,text)
+  FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.d1_change_academic_offering(text,uuid,uuid,uuid,uuid,uuid,integer,text,bigint,text)
+  TO authenticated;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_academic_executor;

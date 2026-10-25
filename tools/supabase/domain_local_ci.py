@@ -76,10 +76,10 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 598,
-    "security_definers": 580,
+    "functions": 599,
+    "security_definers": 581,
     "app_functions": 167,
-    "private_functions": 431,
+    "private_functions": 432,
     "authenticated_app_execute": 167,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
@@ -506,6 +506,8 @@ def _main() -> int:
         # authenticated DB-02 REPLACE in both commit orders on fresh Schools.
         from domain_db01_db02_policy_apply_race_ci import run_db01_db02_policy_apply_races
         run_db01_db02_policy_apply_races(container, run_psql, fresh_db02_database)
+        from domain_academic_roll_pool_race_ci import run_academic_roll_pool_races
+        run_academic_roll_pool_races(container, run_psql, fresh_db02_database)
         from domain_db02_policy_race_ci import run_db02_policy_races
         run_db02_policy_races(container, run_psql, fresh_db02_database)
         from domain_db02_enrollment_race_ci import run_db02_enrollment_races
