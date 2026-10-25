@@ -1,0 +1,75 @@
+-- DB-02 I10 private two-slot APPLY receipt context. Shared phase
+-- lookup is deliberately NOT extended: independent I11 SQL-owner gate.
+-- Matching historical APPLY replay fails closed until I11.
+-- This context checks the route's approval mode as well as its identity.
+-- Earlier evidence grants omit requires_approval, so grant only that column
+-- to the private function owner; the existing operation RLS still applies.
+GRANT SELECT(requires_approval) ON app_private.operation_contracts
+ TO schoolos_evidence_writer;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_roll_policy_apply_receipt_context(
+ p_request uuid,p_expected_version bigint,p_idempotency_key text)
+RETURNS TABLE(actor_id uuid,operation_id uuid,intent_hash bytea,
+ receipt_id uuid,receipt_state text,result_ref uuid,result_summary jsonb)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ v_actor uuid; v_operation uuid; v_intent jsonb;
+ v_hash bytea; v_digest bytea; v_resource bigint;
+ v_receipt app_private.command_receipts%ROWTYPE;
+BEGIN
+ IF pg_catalog.current_setting('transaction_isolation') IS DISTINCT FROM 'read committed'
+   OR p_request IS NULL OR p_expected_version IS NULL OR p_expected_version<4
+   OR p_idempotency_key IS NULL
+   OR pg_catalog.char_length(p_idempotency_key) NOT BETWEEN 1 AND 200 THEN
+   RAISE EXCEPTION 'D1 Roll Policy APPLY typed receipt context invalid';
+ END IF;
+ PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+ v_actor:=app_private.current_principal_id();
+ IF v_actor IS NULL THEN RAISE EXCEPTION 'D1 Roll Policy APPLY requires verified actor'; END IF;
+ SELECT o.id INTO v_operation FROM app_private.operation_contracts o
+ WHERE o.code='student.roll_policy.change' AND o.contract_version=1
+   AND o.handler_key='student.roll_policy.change' AND o.enabled
+   AND NOT o.requires_approval;
+ IF v_operation IS NULL THEN RAISE EXCEPTION 'D1 Roll Policy APPLY operation unavailable'; END IF;
+ v_intent:=pg_catalog.jsonb_build_array(p_request,p_expected_version::text);
+ v_hash:=pg_catalog.sha256(pg_catalog.convert_to(
+  app_private.d1_jcs_typed(pg_catalog.jsonb_build_object(
+   'canonicalization_version',1,
+   'operation_code','student.roll_policy.change',
+   'operation_contract_version','1',
+   'operation_id',v_operation::text,
+   'command_kind','request.apply',
+   'principal_id',v_actor::text,
+   'intent',v_intent,'idempotency_key',p_idempotency_key)),'UTF8'));
+ v_digest:=pg_catalog.sha256(pg_catalog.convert_to(
+   v_actor::text||'|'||v_operation::text||'|'||p_idempotency_key,'UTF8'));
+ v_resource:=pg_catalog.get_byte(v_digest,0)::bigint*16777216
+   +pg_catalog.get_byte(v_digest,1)::bigint*65536
+   +pg_catalog.get_byte(v_digest,2)::bigint*256
+   +pg_catalog.get_byte(v_digest,3)::bigint;
+ IF v_resource>2147483647 THEN v_resource:=v_resource-4294967296; END IF;
+ PERFORM pg_catalog.pg_advisory_xact_lock(71002,v_resource::integer);
+ SELECT r.* INTO v_receipt FROM app_private.command_receipts r
+ WHERE r.principal_id=v_actor AND r.operation_id=v_operation
+   AND r.idempotency_key=p_idempotency_key;
+ IF FOUND THEN
+   IF v_receipt.canonicalization_version IS DISTINCT FROM 1
+      OR v_receipt.canonical_payload_hash IS DISTINCT FROM v_hash
+      OR v_receipt.command_kind IS DISTINCT FROM 'request.apply' THEN
+     RAISE EXCEPTION 'D1 idempotency key conflicts with prior intent';
+   END IF;
+   RETURN QUERY SELECT v_actor,v_operation,v_hash,v_receipt.id,
+     v_receipt.state,v_receipt.result_ref,v_receipt.result_summary;
+ ELSE
+   RETURN QUERY SELECT v_actor,v_operation,v_hash,NULL::uuid,
+     NULL::text,NULL::uuid,NULL::jsonb;
+ END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_apply_receipt_context(uuid,bigint,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_apply_receipt_context(uuid,bigint,text)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;

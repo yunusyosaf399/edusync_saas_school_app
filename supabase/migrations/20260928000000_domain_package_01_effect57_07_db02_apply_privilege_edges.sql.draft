@@ -1,0 +1,11 @@
+-- DB-02 I10: operation-specific trusted NOLOGIN Workflow -> locked
+-- Academic School anchor and Student-owned source preflight.
+-- Both functions already enforce School/source and trusted School-local date;
+-- neither is a public RPC. No raw private table DML is granted.
+GRANT EXECUTE ON FUNCTION app_private.d1_enrollment_place_lock_school(uuid)
+ TO schoolos_workflow_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_change_preflight(
+ uuid,text,uuid,integer,text,bigint,date,date,text,bigint)
+ TO schoolos_workflow_executor;
+-- The first phase takes Foundation SHARED auth lock and verifies Principal.
+-- The protected APPLY RPC, not clients, is the only caller of this new edge.

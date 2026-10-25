@@ -135,11 +135,11 @@ class DomainLocalCITests(unittest.TestCase):
         # effect 41_03 adds two authz-reader-owned private gates.
         # Public RPCs, client grants and RLS remain frozen.
         expected = runtime.EXPECTED_RUNTIME_METRICS
-        self.assertEqual(expected["functions"], 577)
-        self.assertEqual(expected["security_definers"], 559)
-        self.assertEqual(expected["private_functions"], 415)
-        self.assertEqual(expected["app_functions"], 162)
-        self.assertEqual(expected["authenticated_app_execute"], 162)
+        self.assertEqual(expected["functions"], 598)
+        self.assertEqual(expected["security_definers"], 580)
+        self.assertEqual(expected["private_functions"], 431)
+        self.assertEqual(expected["app_functions"], 167)
+        self.assertEqual(expected["authenticated_app_execute"], 167)
         self.assertEqual(expected["authenticated_private_execute"], 0)
         self.assertEqual(expected["anon_execute"], 0)
         self.assertEqual(expected["service_role_execute"], 0)

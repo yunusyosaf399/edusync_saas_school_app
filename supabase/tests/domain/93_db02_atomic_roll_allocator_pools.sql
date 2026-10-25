@@ -246,9 +246,9 @@ WHERE policy_revision_id='b9500000-0000-4000-8000-000000000009'),1::bigint,
 'old persistent pool not repointed or deleted');
 SELECT is((SELECT count(*) FROM app_private.command_receipts
 WHERE operation_id=(SELECT id FROM app_private.operation_contracts WHERE code='student.roll_policy.change')),
-0::bigint,'unfinished effect writes no success receipt');
+1::bigint,'I06 replacement persists one success receipt');
 SELECT is((SELECT count(*) FROM app_private.outbox_events
-WHERE event_type='student.roll_policy_changed'),0::bigint,
-'no success event until I06');
+WHERE event_type='student.roll_policy_changed'),1::bigint,
+'I06 persists one event for the successful replacement');
 SELECT * FROM finish();
 ROLLBACK;
