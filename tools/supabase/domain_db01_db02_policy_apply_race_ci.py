@@ -63,6 +63,18 @@ WHERE g.role_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
  AND p.code IN ('student.enrollment.place','student.roll.correct',
  'student.roll.approve')
  AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+-- The DB01 approval fixture requires a separate, currently bound Person.
+INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by)
+VALUES ('76000000-0000-4000-8000-000000000002','INDIVIDUAL',
+ '10000000-0000-4000-8000-000000000003','DB01 independent reviewer',
+ 'ACTIVE','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principal_auth_bindings(
+ id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
+VALUES ('76000000-0000-4000-8000-000000000006',
+ '76000000-0000-4000-8000-000000000002','INDIVIDUAL',
+ (SELECT id FROM auth.users WHERE email='foundation-own-001@example.invalid'),
+ clock_timestamp(),to_timestamp(floor(extract(epoch FROM clock_timestamp()))),
+ '11111111-1111-4111-8111-111111111111');
 RESET ROLE;
 """
     run_psql(container,"BEGIN;\n"+fixture+policy+"COMMIT;\n",
@@ -88,6 +100,27 @@ def _change(conn, today, key):
         row=cur.fetchone()
         _check(row is not None and row[0] is not None,"NO_CHANGE_RESULT")
         return str(row[0])
+
+
+def _policy_actor_connection(psycopg):
+    # T04 grants the protected policy command to a separate bound Person.
+    conn = _local_connect(psycopg)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT set_config('request.jwt.claim.sub',
+              (SELECT id::text FROM auth.users
+               WHERE email='foundation-test-001@example.invalid'),true)""")
+            cur.execute("""SELECT set_config('request.jwt.claims',
+              jsonb_build_object('sub',current_setting('request.jwt.claim.sub'),
+                'role','authenticated','iat',
+                (SELECT extract(epoch FROM tokens_valid_from)::bigint
+                 FROM app_private.principal_auth_bindings
+                 WHERE id='76000000-0000-4000-8000-000000000005'),
+                'is_anonymous',false)::text,true)""")
+        return conn
+    except Exception:
+        conn.close()
+        raise
 
 
 def _verify(cur,request,student,policy_id,change_first):
@@ -132,7 +165,7 @@ def run_db01_db02_policy_apply_races(container,run_psql,fresh_database):
                 c.execute("SELECT app_private.d1_roll_business_date(%s::uuid)",(SCHOOL,))
                 today=c.fetchone()[0]
             observer.rollback()
-        with closing(_actor_connection(psycopg)) as changer, \
+        with closing(_policy_actor_connection(psycopg)) as changer, \
              closing(_actor_connection(psycopg)) as applier, \
              closing(_local_connect(psycopg)) as observer:
             first,second=(changer,applier) if case=="pc" else (applier,changer)
