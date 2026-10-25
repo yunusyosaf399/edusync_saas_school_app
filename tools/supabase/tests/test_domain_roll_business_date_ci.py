@@ -28,7 +28,7 @@ class RollBusinessDateTests(unittest.TestCase):
         state=states['app_private.d1_roll_business_date']
         self.assertEqual(state.owner,'schoolos_academic_executor')
         self.assertTrue(state.security_definer)
-        self.assertEqual(state.execute_roles,{'schoolos_student_executor','schoolos_workflow_executor','schoolos_read_executor'})
+        self.assertEqual(state.execute_roles,{'schoolos_student_executor','schoolos_workflow_executor','schoolos_read_executor','schoolos_schema_owner'})
 
     def test_mutators_preserve_bodies_except_date_expression(self):
         path=ROOT/'supabase/migrations/20260928000000_domain_package_01_effect40_02_school_local_roll_consumers.sql.draft'

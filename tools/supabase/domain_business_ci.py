@@ -85,3 +85,5 @@ def run_business_tests() -> int:
         print("D1_BUSINESS_TEST_PASS " + filename + " " + str(count) + "/" + str(expected))
     print("D1_BUSINESS_PASS " + str(total) + " assertions; coverage is incremental")
     return total
+
+DOMAIN_TESTS.append(['102_academic_roll_pool_lifecycle.sql',59])

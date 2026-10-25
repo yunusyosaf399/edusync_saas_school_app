@@ -15,7 +15,7 @@ class DB01DB02IntegrationPreviewTests(unittest.TestCase):
         m=EXPECTED_RUNTIME_METRICS
         self.assertEqual((m["functions"],m["security_definers"],
                           m["app_functions"],m["private_functions"]),
-                         (598,580,167,431))
+                         (599,581,167,432))
         self.assertEqual(m["d1_tables"],34)
         self.assertEqual(m["rls_forced"],34)
         for key in ("authenticated_private_execute","anon_execute",
@@ -34,7 +34,7 @@ class DB01DB02IntegrationPreviewTests(unittest.TestCase):
         for name,plan in DOMAIN_TESTS:
             self.assertGreater(plan,0,name)
             self.assertTrue((ROOT/"supabase/tests/domain"/name).is_file(),name)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),4221)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),4280)
 
     def test_both_workstreams_appear_in_full_disposable_runner(self):
         driver=(ROOT/"tools/supabase/domain_local_ci.py").read_text()
