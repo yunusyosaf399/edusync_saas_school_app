@@ -224,7 +224,7 @@ def run_db02_authority_races(container: str, execute_sql, fresh_database) -> Non
                 rc,out,err=_finish(second,'revoke-after')
                 _check(rc==0,'REVOKE_AFTER_FAIL '+repr(err[-400:]))
                 _direct_evidence(container,execute_sql,success=True,
-                                 key='db02-t04-replace-commit-a')
+                                 key='db02-t06-direct-first')
             else:
                 first=_start(_revoke(kind,hold=True));workers.append(first)
                 _observe(container,execute_sql,first,'db02-t06-owner-'+kind,None,
@@ -253,7 +253,7 @@ def run_db02_authority_races(container: str, execute_sql, fresh_database) -> Non
                            'DIRECT_NOT_DENIED '+kind+' rc='+str(rc)+
                            ' err='+repr(err[-450:]))
                     _direct_evidence(container,execute_sql,success=False,
-                                     key='db02-t04-replace-commit-a')
+                                     key='db02-t06-direct-'+kind)
             print('DB02_T06_RACE_PASS '+kind+
                   ' exact_foundation_block=true zero_partial_effect=true')
         finally:
