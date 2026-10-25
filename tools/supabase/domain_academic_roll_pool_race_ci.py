@@ -1,6 +1,7 @@
 """G02: protected Offering CREATE vs DB02 REPLACE, observed School waits."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from domain_concurrency_ci import settings_sql
 from domain_db01_db02_policy_apply_race_ci import (
     ROOT, SCHOOL, POLICY, _seed, _change, _policy_actor_connection, _check)
 from domain_db01_p1_apply_race_ci import _setup
@@ -30,7 +31,7 @@ def run_academic_roll_pool_races(container, run_psql, fresh_database):
         _setup(container, run_psql, ROOT, 'pc')
         fixture = (ROOT/'supabase/tests/domain/33_academic_class_offering_lifecycle_authorization.sql').read_text()
         grants = fixture.split('-- Installed ALL/DIRECT non-FAMILY grant bound to real staff role assignment.\n',1)[1].split('SET ROLE authenticated;',1)[0]
-        run_psql(container, "BEGIN;\nSET ROLE schoolos_schema_owner;\n"+f"""
+        run_psql(container, "BEGIN;\n"+settings_sql()+"\nRESET ROLE;\nSET ROLE schoolos_schema_owner;\n"+f"""
 UPDATE app_private.permissions SET state='ENABLED' WHERE code='academic.offering.manage';
 UPDATE app_private.operation_contracts SET enabled=true WHERE code='academic.offering.change';
 UPDATE app_private.permission_scope_contracts SET enabled=true
