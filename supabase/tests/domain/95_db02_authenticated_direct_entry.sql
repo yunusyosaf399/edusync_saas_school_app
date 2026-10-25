@@ -2,7 +2,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(49);
+SELECT plan(58);
 \ir fixtures/command_actor.sql
 
 -- Public surface and private boundaries are fixed before any fixture enable.
@@ -429,6 +429,73 @@ ROLLBACK TO SAVEPOINT i07_replay_scope_revoked;
 SELECT is((SELECT count(*) FROM app_private.command_receipts
  WHERE result_ref=:'i07_new_id'::uuid),1::bigint,
  'revoked replay does not add any receipt');
+SET ROLE authenticated;
+SELECT is(app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','REPLACE',
+ 'b9700000-0000-4000-8000-000000000001',1,'PERSISTENT_STUDENT',
+ 5000,:'i07_t'::date-10,'PERSISTENT_STUDENT',6000,
+ 'I07_PRIVATE_REPLACE_REASON','i07-replace'),:'i07_new_id'::uuid,
+ 'restored School ALL authority permits exact saved response');
+SELECT throws_ok(pg_catalog.format($q$SELECT app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','REPLACE',
+ 'b9700000-0000-4000-8000-000000000001',1,'PERSISTENT_STUDENT',
+ 5000,%L::date-10,'PERSISTENT_STUDENT',6000,
+ 'CHANGED_PRIVATE_REPLACE_REASON','i07-replace')$q$,:'i07_t'),
+ 'P0001'::char(5),'D1 idempotency key conflicts with prior intent',
+ 'lost-response retry key rejects a changed private reason');
+RESET ROLE;
+
+-- Represent a later-day successor under a savepoint. The original public
+-- REPLACE receipt must continue proving its own historical result rows.
+SAVEPOINT t03_later_revision;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.roll_policy_revisions
+ SET effective_until=:'i07_t'::date+1,
+ ended_at=pg_catalog.statement_timestamp(),
+ ended_by='b8900000-0000-4000-8000-000000000001'
+ WHERE id=:'i07_new_id'::uuid;
+INSERT INTO app_private.roll_policy_revisions(
+ id,school_id,revision,mode,start_value,effective_from,reason,
+ supersedes_id,created_by)
+VALUES ('b9730000-0000-4000-8000-000000000003',
+ '22222222-2222-4222-8222-222222222222',3,'PERSISTENT_STUDENT',
+ 7000,:'i07_t'::date+1,'T03 later day successor',:'i07_new_id'::uuid,
+ 'b8900000-0000-4000-8000-000000000001');
+INSERT INTO app_private.roll_allocator_states(
+ id,policy_revision_id,class_offering_id,next_value,created_by)
+VALUES ('b9730000-0000-4000-8000-000000000004',
+ 'b9730000-0000-4000-8000-000000000003',NULL,7000,
+ 'b8900000-0000-4000-8000-000000000001');
+RESET ROLE;
+SELECT is((SELECT revision FROM app_private.roll_policy_revisions
+ WHERE id='b9730000-0000-4000-8000-000000000003'),3,
+ 'later synthetic revision is a distinct successor');
+SET ROLE authenticated;
+SELECT is(app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','REPLACE',
+ 'b9700000-0000-4000-8000-000000000001',1,'PERSISTENT_STUDENT',
+ 5000,:'i07_t'::date-10,'PERSISTENT_STUDENT',6000,
+ 'I07_PRIVATE_REPLACE_REASON','i07-replace'),:'i07_new_id'::uuid,
+ 'historical replay returns revision two after a later successor');
+RESET ROLE;
+SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions
+ WHERE school_id='22222222-2222-4222-8222-222222222222'),3::bigint,
+ 'historical replay does not add another policy revision');
+SELECT is((SELECT count(*) FROM app_private.roll_allocator_states
+ WHERE policy_revision_id=:'i07_new_id'::uuid),1::bigint,
+ 'historical replay retains one original allocator');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE result_ref=:'i07_new_id'::uuid),1::bigint,
+ 'historical replay retains one original receipt');
+SELECT is((SELECT count(*) FROM app_private.audit_events a
+ JOIN app_private.command_receipts r ON r.id=a.command_receipt_id
+ WHERE r.result_ref=:'i07_new_id'::uuid),1::bigint,
+ 'historical replay retains one original audit');
+SELECT is((SELECT count(*) FROM app_private.outbox_events e
+ JOIN app_private.command_receipts r ON r.id=e.command_receipt_id
+ WHERE r.result_ref=:'i07_new_id'::uuid),1::bigint,
+ 'historical replay retains one original event');
+ROLLBACK TO SAVEPOINT t03_later_revision;
 
 ROLLBACK TO SAVEPOINT i07_replace;
 SELECT * FROM finish();

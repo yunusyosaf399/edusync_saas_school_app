@@ -2,7 +2,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(73);
+SELECT plan(79);
 \ir fixtures/command_actor.sql
 SELECT is(has_function_privilege('authenticated',
  'app.d1_review_student_roll_policy_change(uuid,text,bigint,text,text)','EXECUTE'),true,
@@ -467,6 +467,58 @@ SELECT is((SELECT policy_revision_id FROM app.d1_apply_student_roll_policy_chang
  :'i09_a_request_id'::uuid,4,'i10-success-apply')),
  :'i10_done_policy_revision_id'::uuid,
  'matching APPLY retry returns the original persisted revision');
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM
+ app.d1_apply_student_roll_policy_change(%L::uuid,5,'i10-success-apply')$q$,
+ :'i09_a_request_id'), 'P0001'::char(5),
+ 'D1 idempotency key conflicts with prior intent',
+ 'lost APPLY response cannot be reclaimed with a changed expected version');
+RESET ROLE;
+
+-- A later-day revision is synthetic and savepoint-local. The original
+-- successful APPLY must prove its retained result despite a newer School head.
+SAVEPOINT t03_later_apply_revision;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.roll_policy_revisions
+ SET effective_until=(SELECT effective_from+1 FROM app_private.roll_policy_revisions
+   WHERE id=:'i10_done_policy_revision_id'::uuid),
+ ended_at=pg_catalog.statement_timestamp(),
+ ended_by='b8900000-0000-4000-8000-000000000001'
+ WHERE id=:'i10_done_policy_revision_id'::uuid;
+INSERT INTO app_private.roll_policy_revisions(
+ id,school_id,revision,mode,start_value,effective_from,reason,
+ supersedes_id,created_by)
+SELECT 'b9830000-0000-4000-8000-000000000003',school_id,2,
+ 'PERSISTENT_STUDENT',9000,effective_until,'T03 later APPLY successor',id,
+ 'b8900000-0000-4000-8000-000000000001'
+FROM app_private.roll_policy_revisions
+WHERE id=:'i10_done_policy_revision_id'::uuid;
+INSERT INTO app_private.roll_allocator_states(
+ id,policy_revision_id,class_offering_id,next_value,created_by)
+VALUES ('b9830000-0000-4000-8000-000000000004',
+ 'b9830000-0000-4000-8000-000000000003',NULL,9000,
+ 'b8900000-0000-4000-8000-000000000001');
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT policy_revision_id FROM app.d1_apply_student_roll_policy_change(
+ :'i09_a_request_id'::uuid,4,'i10-success-apply')),
+ :'i10_done_policy_revision_id'::uuid,
+ 'historical APPLY returns original revision after a later successor');
+RESET ROLE;
+SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions),2::bigint,
+ 'historical APPLY replay adds no third revision');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'i09_a_request_id'::uuid AND command_kind='request.apply'),
+ 1::bigint,'historical APPLY replay adds no receipt');
+SELECT is((SELECT count(*) FROM app_private.audit_events a
+ JOIN app_private.command_receipts r ON r.id=a.command_receipt_id
+ WHERE r.request_id=:'i09_a_request_id'::uuid AND r.command_kind='request.apply'),
+ 1::bigint,'historical APPLY replay adds no audit');
+SELECT is((SELECT count(*) FROM app_private.outbox_events e
+ JOIN app_private.command_receipts r ON r.id=e.command_receipt_id
+ WHERE r.request_id=:'i09_a_request_id'::uuid AND r.command_kind='request.apply'),
+ 1::bigint,'historical APPLY replay adds no event');
+ROLLBACK TO SAVEPOINT t03_later_apply_revision;
+SET ROLE authenticated;
 SELECT * FROM app.d1_apply_student_roll_policy_change(
  :'i10_stale_request_id'::uuid,4,'i10-stale-apply') \gset i10_bad_
 RESET ROLE;
