@@ -178,21 +178,25 @@ SELECT effective_from::text FROM app_private.roll_policy_revisions
                 _observe(container, execute_sql, second, action, outcome, waiting=True)
                 first_out, first_err = first.communicate(timeout=20)
                 second_out, second_err = second.communicate(timeout=20)
-                ids = UUID.findall(first_out)
-                second_ids = UUID.findall(second_out)
-                if first.returncode or len(ids) != 1:
+                # The JWT setup SELECTs also print the Auth subject and
+                # claims; the command result is the final nonblank row.
+                first_lines = first_out.strip().splitlines()
+                second_lines = second_out.strip().splitlines()
+                first_result = UUID.fullmatch(first_lines[-1]) if first_lines else None
+                second_result = UUID.fullmatch(second_lines[-1]) if second_lines else None
+                if first.returncode or first_result is None:
                     raise RuntimeError("DB02_T04_HOLDER_FAILED rc=" +
-                                       str(first.returncode) + " ids=" + str(len(ids)) +
+                                       str(first.returncode) +
                                        " stdout=" + repr(first_out[-400:]) +
                                        " stderr=" + repr(first_err[-400:]))
                 if outcome == "commit":
                     if second.returncode == 0 or "D1 Roll Policy transition preflight invalid" not in second_err:
                         raise RuntimeError("DB02_T04_COMMITTED_LOSER_NOT_DENIED " + second_err[-400:])
-                    winner, loser = ids[0], "00000000-0000-0000-0000-000000000000"
+                    winner, loser = first_result.group(1), "00000000-0000-0000-0000-000000000000"
                 else:
-                    if second.returncode or len(second_ids) != 1 or second_ids[0] == ids[0]:
+                    if second.returncode or second_result is None or second_result.group(1) == first_result.group(1):
                         raise RuntimeError("DB02_T04_ROLLBACK_WINNER_INVALID " + second_err[-400:])
-                    winner, loser = second_ids[0], ids[0]
+                    winner, loser = second_result.group(1), first_result.group(1)
                 actual = _snapshot(container, execute_sql, action, outcome, winner, loser)
                 expected = ["2" if action == "REPLACE" else "1", "1", "0",
                             "1", "1", "1", "1", "0",
