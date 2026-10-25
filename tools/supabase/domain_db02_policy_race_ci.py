@@ -13,27 +13,25 @@ ACTORS = {
     "b": ("foundation-test-001@example.invalid",
           "76000000-0000-4000-8000-000000000005"),
 }
-SCHOOLS = {
-    ("INIT", "commit"): "b4410000-0000-4000-8000-000000000001",
-    ("INIT", "rollback"): "b4420000-0000-4000-8000-000000000001",
-    ("REPLACE", "commit"): "b4430000-0000-4000-8000-000000000001",
-    ("REPLACE", "rollback"): "b4440000-0000-4000-8000-000000000001",
-}
+SCHOOL = "22222222-2222-4222-8222-222222222222"
+SOURCE = "b4430000-0000-4000-8000-000000000002"
+CASES = (("INIT", "commit"), ("INIT", "rollback"),
+         ("REPLACE", "commit"), ("REPLACE", "rollback"))
 UUID = re.compile(r"(?m)^([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$")
 
 
 def _worker_sql(action: str, outcome: str, actor: str, source_from: str | None,
                 *, holder: bool) -> str:
-    if ((action, outcome) not in SCHOOLS or actor not in ACTORS
+    if ((action, outcome) not in CASES or actor not in ACTORS
             or (action == "REPLACE" and (source_from is None or
                 re.fullmatch(r"\d{4}-\d{2}-\d{2}", source_from) is None))
             or (action == "INIT" and source_from is not None)):
         raise RuntimeError("DB02_T04_UNEXPECTED_INTENT")
-    school = SCHOOLS[action, outcome]
+    school = SCHOOL
     email, binding = ACTORS[actor]
     name = f"db02-t04-{action.lower()}-{outcome}-{actor}"
     key = f"db02-t04-{action.lower()}-{outcome}-{actor}"
-    source = school[:-1] + "2" if action == "REPLACE" else None
+    source = SOURCE if action == "REPLACE" else None
     typed = (f"'{source}'::uuid,1,'PERSISTENT_STUDENT',5000,"
              f"'{source_from}'::date") if source else (
                  "NULL::uuid,NULL::integer,NULL::text,NULL::bigint,NULL::date")
@@ -116,8 +114,8 @@ SELECT CASE WHEN EXISTS (
 
 def _snapshot(container: str, execute_sql, action: str, outcome: str,
               winner: str, loser: str) -> list[str]:
-    school = SCHOOLS[action, outcome]
-    source = school[:-1] + "2" if action == "REPLACE" else "00000000-0000-0000-0000-000000000000"
+    school = SCHOOL
+    source = SOURCE if action == "REPLACE" else "00000000-0000-0000-0000-000000000000"
     query = f"""
 SELECT count(*) FROM app_private.roll_policy_revisions WHERE school_id='{school}';
 SELECT count(*) FROM app_private.roll_policy_revisions WHERE id='{winner}'
@@ -145,21 +143,26 @@ SELECT count(*) FROM app_private.roll_policy_revisions WHERE id='{source}'
                        tuples=True, timeout=30).split()
 
 
-def run_db02_policy_races(container: str, execute_sql) -> None:
+def run_db02_policy_races(container: str, execute_sql, fresh_database) -> None:
     if container != CONTAINER:
         raise RuntimeError("DB02_T04_DISPOSABLE_CONTAINER_REQUIRED")
     fixture = (ROOT / "supabase/tests/domain/fixtures/"
                "db02_t04_two_backend_race_setup.sql").read_text(encoding="utf-8")
-    execute_sql(container, "BEGIN;\n" + fixture + "\nCOMMIT;",
-                "DB02_T04_SETUP", timeout=60)
     for action in ("INIT", "REPLACE"):
         for outcome in ("commit", "rollback"):
+            # The product has exactly one School. Each scenario gets a newly
+            # reset local database; committed evidence is never deleted to
+            # manufacture another INIT on the same singleton School.
+            fresh_database()
+            actor = (ROOT / "supabase/tests/domain/fixtures/command_actor.sql").read_text(encoding="utf-8")
+            execute_sql(container, "BEGIN;\nSELECT set_config('schoolos_test.t04_action','" +
+                        action + "',true);\n" + actor + "\n" + fixture + "\nCOMMIT;",
+                        "DB02_T04_SETUP", timeout=60)
             source_from = None
             if action == "REPLACE":
-                school = SCHOOLS[action, outcome]
                 source_from = execute_sql(container, f"""
 SELECT effective_from::text FROM app_private.roll_policy_revisions
- WHERE id='{school[:-1]}2' AND school_id='{school}';
+ WHERE id='{SOURCE}' AND school_id='{SCHOOL}';
 """, "DB02_T04_FROZEN_SOURCE_DATE", tuples=True).strip()
                 if re.fullmatch(r"\d{4}-\d{2}-\d{2}", source_from) is None:
                     raise RuntimeError("DB02_T04_SOURCE_DATE_INVALID")
