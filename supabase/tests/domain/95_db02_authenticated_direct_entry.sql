@@ -2,7 +2,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(40);
+SELECT plan(49);
 \ir fixtures/command_actor.sql
 
 -- Public surface and private boundaries are fixed before any fixture enable.
@@ -157,6 +157,40 @@ RESET ROLE;
 SELECT app_private.d1_roll_business_date(
  '22222222-2222-4222-8222-222222222222') AS t \gset i07_
 
+-- T01 public input/School boundaries after genuine actor and grant setup.
+SET ROLE authenticated;
+SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
+ NULL,'INIT',NULL,NULL,NULL,NULL,NULL,'PERSISTENT_STUDENT',4100,
+ 'Required School','t01-null-school')$q$,'P0001'::char(5),
+ 'D1 Roll Policy typed command context invalid','NULL School is denied');
+SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222',NULL,
+ NULL,NULL,NULL,NULL,NULL,'PERSISTENT_STUDENT',4100,
+ 'Required action','t01-null-action')$q$,'P0001'::char(5),
+ 'D1 Roll Policy typed command context invalid','NULL action is denied');
+SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','INIT',
+ NULL,NULL,NULL,NULL,NULL,NULL,4100,
+ 'Required mode','t01-null-mode')$q$,'P0001'::char(5),
+ 'D1 Roll Policy typed command context invalid','NULL mode is denied');
+SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','INIT',
+ NULL,NULL,NULL,NULL,NULL,'PERSISTENT_STUDENT',4100,
+ 'Required key',NULL)$q$,'P0001'::char(5),
+ 'D1 Roll Policy typed command context invalid','NULL key is denied');
+SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
+ '99999999-9999-4999-8999-999999999999','INIT',
+ NULL,NULL,NULL,NULL,NULL,'PERSISTENT_STUDENT',4100,
+ 'Wrong School','t01-wrong-school')$q$,'P0001'::char(5),
+ 'D1 Roll Policy School not found','unknown School cannot acquire the School anchor');
+SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','INIT',
+ 'b9700000-0000-4000-8000-000000000099',NULL,NULL,NULL,NULL,
+ 'PERSISTENT_STUDENT',4100,'Unexpected source','t01-init-source')$q$,
+ 'P0001'::char(5),'D1 Roll Policy typed command context invalid',
+ 'INIT cannot accept an invented predecessor');
+RESET ROLE;
+
 SAVEPOINT i07_init;
 SET ROLE authenticated;
 SELECT app.d1_change_student_roll_policy(
@@ -202,6 +236,16 @@ SELECT is((SELECT count(*) FROM app_private.command_receipts
 SELECT is((SELECT count(*) FROM app_private.outbox_events
  WHERE aggregate_ref=:'i07_init_id'::uuid),1::bigint,
  'INIT replay writes zero duplicate events');
+
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','REPLACE',
+ %L::uuid,1,'PERSISTENT_STUDENT',4100,%L::date,
+ 'ACADEMIC_CONTEXT',5000,'Same-day cutover','t01-same-day')$q$,
+ :'i07_init_id',:'i07_t'), 'P0001'::char(5),
+ 'D1 Roll Policy transition preflight invalid',
+ 'REPLACE cannot close a policy created on the same School-local day');
+RESET ROLE;
 
 SET ROLE authenticated;
 SELECT throws_ok($q$SELECT app.d1_change_student_roll_policy(
@@ -250,8 +294,72 @@ VALUES ('b9700000-0000-4000-8000-000000000002',
  'b9700000-0000-4000-8000-000000000001',NULL,5001,
  '11111111-1111-4111-8111-111111111111');
 RESET ROLE;
+
+-- A committed future placement in this School blocks a cutover through the
+-- authenticated API, even if that placement has no Roll yet.
+SAVEPOINT t01_future_placement;
+SET ROLE schoolos_schema_owner;
+INSERT INTO app_private.students(id,person_id,school_student_id,admission_number,
+ admission_serial,admitted_on,current_status,created_by)
+VALUES ('b9700000-0000-4000-8000-000000000010',
+ '10000000-0000-4000-8000-000000000001',
+ 'DB02-T01-STUDENT','DB02-T01-ADMISSION',901,:'i07_t'::date-30,'ACTIVE',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app.campuses(id,school_id,code,name,state,created_by)
+VALUES ('b9700000-0000-4000-8000-000000000011',
+ '22222222-2222-4222-8222-222222222222',
+ 'DB02-T01-CAMPUS','T01 campus','ACTIVE',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app.academic_years(id,school_id,code,label,starts_on,ends_on,state,created_by)
+VALUES ('b9700000-0000-4000-8000-000000000012',
+ '22222222-2222-4222-8222-222222222222',
+ 'DB02-T01-YEAR','T01 academic year',:'i07_t'::date-180,:'i07_t'::date+180,
+ 'ACTIVE','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.academic_classes(id,school_id,code,label,display_order,created_by)
+VALUES ('b9700000-0000-4000-8000-000000000013',
+ '22222222-2222-4222-8222-222222222222','DB02-T01-CLASS','T01 class',1,
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.class_offerings(
+ id,school_id,class_id,campus_id,academic_year_id,capacity,state,created_by)
+VALUES ('b9700000-0000-4000-8000-000000000014',
+ '22222222-2222-4222-8222-222222222222',
+ 'b9700000-0000-4000-8000-000000000013',
+ 'b9700000-0000-4000-8000-000000000011',
+ 'b9700000-0000-4000-8000-000000000012',25,'OPEN',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.section_offerings(id,class_offering_id,campus_id,
+ code,label,display_order,capacity,state,created_by)
+VALUES ('b9700000-0000-4000-8000-000000000015',
+ 'b9700000-0000-4000-8000-000000000014',
+ 'b9700000-0000-4000-8000-000000000011',
+ 'A','T01 section',1,25,'OPEN','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.enrollments(id,student_id,section_offering_id,
+ placement_kind,entry_kind,placement_state,effective_from,reason,created_by)
+VALUES ('b9700000-0000-4000-8000-000000000016',
+ 'b9700000-0000-4000-8000-000000000010',
+ 'b9700000-0000-4000-8000-000000000015',
+ 'PRIMARY','INITIAL','ACTIVE',:'i07_t'::date+1,
+ 'T01 accepted future Enrollment','11111111-1111-4111-8111-111111111111');
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','REPLACE',
+ 'b9700000-0000-4000-8000-000000000001',1,'PERSISTENT_STUDENT',
+ 5000,%L::date-10,'ACADEMIC_CONTEXT',6000,
+ 'Committed future placement','t01-future-enrollment')$q$,:'i07_t'),
+ 'P0001'::char(5),'D1 Roll Policy transition preflight invalid',
+ 'committed future Enrollment blocks authenticated policy cutover');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT t01_future_placement;
 SAVEPOINT i07_replace;
 SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT app.d1_change_student_roll_policy(
+ '22222222-2222-4222-8222-222222222222','REPLACE',
+ 'b9700000-0000-4000-8000-000000000099',1,'PERSISTENT_STUDENT',
+ 5000,%L::date-10,'PERSISTENT_STUDENT',6000,
+ 'Wrong source','t01-bad-source')$q$,:'i07_t'), 'P0001'::char(5),
+ 'D1 Roll Policy transition preflight invalid',
+ 'REPLACE cannot borrow an unrelated source policy ID');
 SELECT app.d1_change_student_roll_policy(
  '22222222-2222-4222-8222-222222222222','REPLACE',
  'b9700000-0000-4000-8000-000000000001',1,'PERSISTENT_STUDENT',

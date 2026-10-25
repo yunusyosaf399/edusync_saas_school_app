@@ -34,7 +34,7 @@ DOMAIN_TESTS.append(["92_db02_atomic_policy_revision_transition.sql",27])
 # I05 private revision+allocator atomicity and namespace boundaries.
 DOMAIN_TESTS.append(["93_db02_atomic_roll_allocator_pools.sql",29])
 DOMAIN_TESTS.append(["94_db02_direct_evidence_replay.sql",33])
-DOMAIN_TESTS.append(["95_db02_authenticated_direct_entry.sql",40])
+DOMAIN_TESTS.append(["95_db02_authenticated_direct_entry.sql",49])
 DOMAIN_TESTS.append(["96_db02_approval_submit_read.sql",37])
 DOMAIN_TESTS.append(["97_db02_independent_review.sql",34])
 # DB-02 I10: approved APPLY and deterministic stale invalidation, rollback-only.
