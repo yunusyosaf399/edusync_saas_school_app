@@ -28,6 +28,9 @@ def _check(ok, label):
 def _seed(container, run_psql):
     fixture=(ROOT/"supabase/tests/domain/fixtures/command_actor.sql").read_text()
     policy=f"""
+SELECT set_config('schoolos_test.db01_reviewer_subject',
+ (SELECT id::text FROM auth.users
+  WHERE email='foundation-own-001@example.invalid'),true);
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.roll_policy_revisions(
  id,school_id,revision,mode,start_value,effective_from,reason,created_by)
@@ -72,7 +75,7 @@ INSERT INTO app_private.principal_auth_bindings(
  id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
 VALUES ('76000000-0000-4000-8000-000000000006',
  '76000000-0000-4000-8000-000000000002','INDIVIDUAL',
- (SELECT id FROM auth.users WHERE email='foundation-own-001@example.invalid'),
+ current_setting('schoolos_test.db01_reviewer_subject')::uuid,
  clock_timestamp(),to_timestamp(floor(extract(epoch FROM clock_timestamp()))),
  '11111111-1111-4111-8111-111111111111');
 RESET ROLE;
