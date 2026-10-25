@@ -461,6 +461,8 @@ def _main() -> int:
                 fresh_key = None
         from domain_db02_policy_race_ci import run_db02_policy_races
         run_db02_policy_races(container, run_psql, fresh_db02_database)
+        from domain_db02_enrollment_race_ci import run_db02_enrollment_races
+        run_db02_enrollment_races(container, run_psql, fresh_db02_database)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
