@@ -435,6 +435,10 @@ def _main() -> int:
         # Run isolated trial before races, whose workers retain committed synthetic principals.
         run_history_candidate(container, run_psql, ROOT)
         run_concurrency_tests(container, run_psql)
+        # DB-02 T04: distinct authenticated principals contend on the same
+        # School under genuine INIT/REPLACE commit and rollback orderings.
+        from domain_db02_policy_race_ci import run_db02_policy_races
+        run_db02_policy_races(container, run_psql)
         # Run AFTER frozen suites: synthetic fixture rows commit only in this
         # disposable stack and are torn down by the existing supabase stop.
         run_real_postgres_photo_handoff(container, run_psql, ROOT)
