@@ -1,3 +1,4 @@
+-- G02: Opening a retained Offering provisions a later academic policy pool.
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
