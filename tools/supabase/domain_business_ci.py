@@ -57,7 +57,51 @@ def render_fixture(source: str,fixture: str) -> str:
         raise RuntimeError("D1_BUSINESS_FIXTURE_MARKER")
     return source.replace(marker,fixture)
 
+TEST_OWNERS = frozenset({'db01', 'db02', 'db03', 'db04', 'academic'})
+SHARED_TEST_FILENAMES = frozenset({'80_school_local_roll_business_date.sql'})
+
+
+def validate_test_registry(root: Path, tests) -> None:
+    """Validate every full filename before starting any acceptance subprocess.
+
+    Numeric labels are unique within an owner, not across owners. Legacy
+    suites 01–74 and the frozen shared date suite retain their names.
+    """
+    directory = Path(root) / 'supabase/tests/domain'
+    filenames, identities = set(), set()
+    for filename, expected in tests:
+        match = re.fullmatch(r'([0-9]+)_([a-z][a-z0-9]*)(?:_[a-z0-9]+)*\.sql', filename)
+        if match is None:
+            raise RuntimeError('D1_BUSINESS_MANIFEST_NAME ' + str(filename))
+        if filename in filenames:
+            raise RuntimeError('D1_BUSINESS_MANIFEST_DUPLICATE ' + filename)
+        filenames.add(filename)
+        ordinal, owner = int(match[1]), match[2]
+        if ordinal < 1 or type(expected) is not int or expected < 1:
+            raise RuntimeError('D1_BUSINESS_MANIFEST_COUNT ' + filename)
+        if owner not in TEST_OWNERS:
+            if ordinal > 74 and filename not in SHARED_TEST_FILENAMES:
+                raise RuntimeError('D1_BUSINESS_MANIFEST_OWNER ' + filename)
+            owner = 'legacy'
+        identity = (ordinal, owner)
+        if identity in identities:
+            raise RuntimeError('D1_BUSINESS_OWNER_ORDINAL ' + filename)
+        identities.add(identity)
+        source = (directory / filename).read_text(encoding='utf-8')
+        if not source.startswith('--') or 'BEGIN;' not in source or not source.rstrip().endswith('ROLLBACK;'):
+            raise RuntimeError('D1_BUSINESS_TRANSACTION_BOUNDARY ' + filename)
+        plans = re.findall(r'(?mi)^\s*SELECT\s+plan\((\d+)\);', source)
+        if plans != [str(expected)]:
+            raise RuntimeError('D1_BUSINESS_MANIFEST_PLAN ' + filename)
+        if source.count(chr(92)+'ir fixtures/command_actor.sql') != 1:
+            raise RuntimeError('D1_BUSINESS_FIXTURE_MARKER ' + filename)
+    unregistered = {path.name for path in directory.glob('*.sql')} - filenames
+    if unregistered:
+        raise RuntimeError('D1_BUSINESS_SOURCE_UNREGISTERED ' + ','.join(sorted(unregistered)))
+
+
 def run_business_tests() -> int:
+    validate_test_registry(ROOT, DOMAIN_TESTS)
     total = 0
     for filename, expected in DOMAIN_TESTS:
         path = "supabase/tests/domain/" + filename
