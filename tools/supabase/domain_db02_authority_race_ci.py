@@ -48,6 +48,10 @@ def _mutation(kind: str) -> str:
                else 'b6600000-0000-4000-8000-000000000005')
         successor = ('b6700000-0000-4000-8000-000000000007' if kind == 'route'
                      else 'b6700000-0000-4000-8000-000000000008')
+        step = ('b6700000-0000-4000-8000-000000000009' if kind == 'route'
+                else 'b6700000-0000-4000-8000-00000000000a')
+        reviewer = ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' if kind == 'route'
+                    else 'b6600000-0000-4000-8000-000000000001')
         return f"""UPDATE app_private.approval_policy_versions SET state='RETIRED'
  WHERE id='{old}';
 INSERT INTO app_private.approval_policy_versions(id,policy_key,version,
@@ -55,6 +59,10 @@ INSERT INTO app_private.approval_policy_versions(id,policy_key,version,
 SELECT '{successor}','t06-successor-{kind}',1,id,'APPROVAL',
  '11111111-1111-4111-8111-111111111111'
 FROM app_private.operation_contracts WHERE code='student.roll_policy.change';
+INSERT INTO app_private.approval_step_templates(id,policy_id,step_number,
+ reviewer_role_id,required_reviews,selection_resolver_key,created_by)
+VALUES ('{step}','{successor}',1,'{reviewer}',1,
+ 'D1_REVIEWER_ROLE_SCOPE','11111111-1111-4111-8111-111111111111');
 UPDATE app_private.approval_policy_versions SET state='ACTIVE',
  effective_from=pg_catalog.statement_timestamp()-interval '1 hour',
  activated_at=pg_catalog.statement_timestamp() WHERE id='{successor}';"""
