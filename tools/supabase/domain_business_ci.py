@@ -41,7 +41,9 @@ DOMAIN_TESTS.append(["97_db02_independent_review.sql",34])
 DOMAIN_TESTS.append(["98_db02_approved_policy_apply.sql",79])
 DOMAIN_TESTS.append(["99_db02_shared_review_apply_receipts.sql",13])
 # T07: retained number ownership across mode handoffs and rollback.
-DOMAIN_TESTS.append(["100_db02_t07_allocator_handoff.sql",28])
+DOMAIN_TESTS.append(["100_db02_t07_allocator_handoff.sql",31])
+# T08: all DB-02 function surfaces, privacy, client ACL and forced RLS.
+DOMAIN_TESTS.append(["101_db02_t08_privacy_acl_rls.sql",26])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
