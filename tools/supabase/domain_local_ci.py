@@ -446,6 +446,21 @@ def _main() -> int:
         run_enrollment_move_approval(container, run_psql, ROOT)
         from domain_roll_business_date_ci import run_roll_business_date
         run_roll_business_date(container, run_psql, ROOT)
+        # Each T04 case starts from the frozen migrations and the same draft
+        # chain, preserving the singleton School and immutable prior evidence.
+        def fresh_db02_database() -> None:
+            run(["supabase", "db", "reset", "--local", "--no-seed"],
+                cwd=ROOT, timeout=900)
+            run_psql(container, sql, "DB02_T04_APPLY", timeout=1200)
+            fresh_url, fresh_key = local_status()
+            ensure_local_auth_route(fresh_url)
+            try:
+                if len(prepare(fresh_url, fresh_key)) != 5:
+                    raise DomainLocalCIError("DB02_T04_AUTH_FIXTURE_COUNT")
+            finally:
+                fresh_key = None
+        from domain_db02_policy_race_ci import run_db02_policy_races
+        run_db02_policy_races(container, run_psql, fresh_db02_database)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0
