@@ -2,7 +2,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(62);
+SELECT plan(73);
 \ir fixtures/command_actor.sql
 SELECT is(has_function_privilege('authenticated',
  'app.d1_review_student_roll_policy_change(uuid,text,bigint,text,text)','EXECUTE'),true,
@@ -186,6 +186,11 @@ SELECT is(:'i09_approved_request_version'::bigint,4::bigint,
  'review increments request version exactly once');
 SELECT is(:'i09_approved_request_state'::text,'APPROVED'::text,
  'one-step independent approval ends in APPROVED');
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_policy_request(
+ :'i09_a_request_id'::uuid)),0::bigint,
+ 'closed reviewer step no longer grants checked request read');
+RESET ROLE;
 SELECT is((SELECT state FROM app_private.approval_requests
  WHERE id=:'i09_a_request_id'::uuid),'APPROVED'::text,
  'Foundation request state reflects approved decision');
@@ -274,6 +279,9 @@ SELECT is(:'i09_rejected_request_state'::text,'REJECTED'::text,
 SELECT is(:'i09_rejected_request_version'::bigint,4::bigint,
  'REJECT increments frozen request version once');
 SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_policy_request(
+ :'i09_b_request_id'::uuid)),0::bigint,
+ 'REJECT closes reviewer checked-read access');
 SELECT is((SELECT request_state FROM app.d1_review_student_roll_policy_change(
  :'i09_b_request_id'::uuid,'REJECT',3,'I09_PRIVATE_REJECTION_REASON','i09-reject')),
  'REJECTED'::text,'terminal REJECT replay returns original decision');
@@ -348,6 +356,65 @@ SELECT set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
  WHERE id='b8900000-0000-4000-8000-000000000002'),
  'is_anonymous',false)::text,true);
 SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_policy_change(
+ %L::uuid,4,'t02-rejected-apply')$q$,:'i09_b_request_id'),
+ 'P0001'::char(5),'D1 Roll Policy APPLY request version/state changed',
+ 'REJECTED request cannot enter APPLY');
+SELECT is((SELECT request_state FROM app.d1_read_student_roll_policy_request(
+ :'i09_a_request_id'::uuid)),'APPROVED'::text,
+ 'requester checked read sees independently APPROVED request');
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_policy_request(
+ :'i09_a_request_id'::uuid)),'REQUESTER'::text,
+ 'checked projection identifies current requester after review');
+RESET ROLE;
+
+-- Same-route successor UUID invalidates the approved frozen P1. Restore the
+-- prior state so the original approved request can still demonstrate APPLY.
+SAVEPOINT t02_replaced_p1;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.approval_policy_versions SET state='RETIRED'
+ WHERE id='b9800000-0000-4000-8000-000000000003';
+INSERT INTO app_private.approval_policy_versions(
+ id,policy_key,version,operation_id,d1_route_mode,created_by)
+SELECT 'b9820000-0000-4000-8000-000000000003',
+ 'db02-t02-successor-approval',1,o.id,'APPROVAL',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.operation_contracts o WHERE o.code='student.roll_policy.change';
+INSERT INTO app_private.approval_step_templates(
+ id,policy_id,step_number,reviewer_role_id,required_reviews,
+ selection_resolver_key,created_by)
+VALUES ('b9820000-0000-4000-8000-000000000004',
+ 'b9820000-0000-4000-8000-000000000003',1,
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',1,
+ 'D1_REVIEWER_ROLE_SCOPE','11111111-1111-4111-8111-111111111111');
+UPDATE app_private.approval_policy_versions SET state='ACTIVE',
+ effective_from=statement_timestamp()-interval '1 hour',
+ activated_at=statement_timestamp()
+ WHERE id='b9820000-0000-4000-8000-000000000003';
+RESET ROLE;
+SELECT is((SELECT policy_id FROM app_private.approval_requests
+ WHERE id=:'i10_stale_request_id'::uuid),
+ 'b9800000-0000-4000-8000-000000000003'::uuid,
+ 'approved request still pins original P1 UUID');
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_roll_policy_change(
+ :'i10_stale_request_id'::uuid,4,'t02-replaced-p1-apply')
+ \gset t02_stale_p1_
+RESET ROLE;
+SELECT is(:'t02_stale_p1_request_state'::text,'INVALIDATED'::text,
+ 'same-route replacement P1 invalidates the approved request');
+SELECT is((SELECT reason FROM app_private.approval_transitions
+ WHERE request_id=:'i10_stale_request_id'::uuid
+ AND from_state='APPROVED' AND to_state='INVALIDATED'),
+ 'DB02_APPLY_P1_STALE'::text,'invalidation records exact P1 stale cause');
+SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions),0::bigint,
+ 'stale P1 APPLY cannot create a policy revision');
+SELECT is((SELECT count(*) FROM app_private.outbox_events
+ WHERE event_type='student.roll_policy_changed'),0::bigint,
+ 'stale P1 APPLY cannot emit a policy-change event');
+ROLLBACK TO SAVEPOINT t02_replaced_p1;
+
+SET ROLE authenticated;
 SELECT * FROM app.d1_apply_student_roll_policy_change(
  :'i09_a_request_id'::uuid,4,'i10-success-apply') \gset i10_done_
 RESET ROLE;
@@ -355,6 +422,11 @@ SELECT is(:'i10_done_request_state'::text,'EXECUTED'::text,
  'separate approved APPLY reaches EXECUTED');
 SELECT is(:'i10_done_request_version'::bigint,5::bigint,
  'APPROVED to EXECUTED increments version');
+SET ROLE authenticated;
+SELECT is((SELECT request_state FROM app.d1_read_student_roll_policy_request(
+ :'i09_a_request_id'::uuid)),'EXECUTED'::text,
+ 'requester checked read sees executed request without raw private tables');
+RESET ROLE;
 SELECT ok(:'i10_done_policy_revision_id'::uuid IS NOT NULL,
  'APPLY returns a persisted revision ID');
 SELECT is((SELECT count(*) FROM app_private.roll_policy_revisions),1::bigint,

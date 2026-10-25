@@ -1,0 +1,7 @@
+# DB-02 T02 — approval lifecycle acceptance (draft, rollback-only)
+
+T02 joins the authenticated approval suites #96–#98. They cover SUBMIT, independent different-Person REVIEW, APPROVED, separately authorized APPLY, and a terminal REJECT path. The request remains PENDING after SUBMIT and has no policy revision, allocator, or change event until APPLY. APPROVED likewise has no policy effect; successful APPLY binds one revision, matching allocator, receipt, audit, application, and event.
+
+Suite #98 now has 73 assertions. A rejected request cannot APPLY. The checked request projection is visible to the authorized requester at APPROVED and EXECUTED, while a reviewer loses checked-read access when the assigned step closes. The suite also retires the frozen P1 UUID and activates a distinct APPROVAL version, then verifies that APPLY terminally INVALIDATES with `DB02_APPLY_P1_STALE` and writes no policy revision or event. A savepoint restores the original P1 and approved request before the positive APPLY path. Existing #96/#97 cases cover requester/reviewer checked read at PENDING, revocation of reviewer authority, self-review denial, and independent REJECT. All fixtures end in `ROLLBACK`.
+
+T02 is draft-local acceptance. Exact-head D1 static, Foundation local, and disposable D1 runtime must pass before its tracker gate is closed. Independent non-author SQL/security review and hosted release remain separate.
