@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(28);
+SELECT plan(31);
 \ir fixtures/command_actor.sql
 SELECT set_config('schoolos_test.t04_action','REPLACE',true);
 -- Disposable-only setup, run once per freshly reset singleton-School case.
@@ -450,6 +450,20 @@ SELECT is((SELECT count(*) FROM app_private.outbox_events
 SELECT is((SELECT count(*) FROM app_private.command_receipts
  WHERE result_ref=:'t07_last_id'::uuid),1::bigint,
  'successful reverse handoff retains one receipt');
+SET ROLE authenticated;
+SELECT * FROM app.d1_place_student_enrollment(
+ 'b7700000-0000-4000-8000-000000000005',1,
+ 'b4500000-0000-4000-8000-000000000045','INITIAL',
+ :'t07_d'::date,NULL,'T07 resumed persistent owner',NULL,'t07-place-d') \gset t07_d_
+RESET ROLE;
+SELECT is(:'t07_d_numeric_value'::bigint,5501::bigint,
+ 'protected placement consumes retained-history persistent successor number');
+SELECT is((SELECT policy_revision_id FROM app_private.roll_allocations
+ WHERE id=:'t07_d_roll_allocation_id'::uuid),:'t07_last_id'::uuid,
+ 'new Roll belongs to resumed persistent revision');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE numeric_value IN (5001,5500) AND student_id='c83125a4-42f9-4d63-9176-000000000001'),
+ 2::bigint,'original and corrected-away persistent ownership both survive handoff');
 ROLLBACK TO SAVEPOINT ac_to_ps_success;
 SELECT is((SELECT count(*) FROM app_private.roll_allocator_states
  WHERE policy_revision_id=:'t07_last_id'::uuid),0::bigint,
