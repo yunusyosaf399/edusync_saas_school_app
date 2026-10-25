@@ -87,3 +87,4 @@ def run_business_tests() -> int:
     return total
 
 DOMAIN_TESTS.append(['102_academic_roll_pool_lifecycle.sql',59])
+DOMAIN_TESTS.append(['103_academic_roll_pool_reopen.sql',12])

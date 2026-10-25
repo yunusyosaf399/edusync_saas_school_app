@@ -34,7 +34,7 @@ class DB01DB02IntegrationPreviewTests(unittest.TestCase):
         for name,plan in DOMAIN_TESTS:
             self.assertGreater(plan,0,name)
             self.assertTrue((ROOT/"supabase/tests/domain"/name).is_file(),name)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),4280)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),4292)
 
     def test_both_workstreams_appear_in_full_disposable_runner(self):
         driver=(ROOT/"tools/supabase/domain_local_ci.py").read_text()
