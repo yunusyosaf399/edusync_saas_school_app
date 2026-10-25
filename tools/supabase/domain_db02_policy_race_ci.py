@@ -181,7 +181,10 @@ SELECT effective_from::text FROM app_private.roll_policy_revisions
                 ids = UUID.findall(first_out)
                 second_ids = UUID.findall(second_out)
                 if first.returncode or len(ids) != 1:
-                    raise RuntimeError("DB02_T04_HOLDER_FAILED " + first_err[-400:])
+                    raise RuntimeError("DB02_T04_HOLDER_FAILED rc=" +
+                                       str(first.returncode) + " ids=" + str(len(ids)) +
+                                       " stdout=" + repr(first_out[-400:]) +
+                                       " stderr=" + repr(first_err[-400:]))
                 if outcome == "commit":
                     if second.returncode == 0 or "D1 Roll Policy transition preflight invalid" not in second_err:
                         raise RuntimeError("DB02_T04_COMMITTED_LOSER_NOT_DENIED " + second_err[-400:])
