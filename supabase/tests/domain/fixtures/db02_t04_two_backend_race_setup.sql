@@ -1,5 +1,7 @@
 -- Disposable-only committed setup for four genuine DB-02 School races.
 -- The shared command_actor fixture and prior D1 races already exist locally.
+SELECT id::text AS id FROM auth.users
+ WHERE email='foundation-test-001@example.invalid' \gset t04_actor_
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by)
 VALUES ('b4400000-0000-4000-8000-000000000001','INDIVIDUAL',
@@ -9,7 +11,7 @@ INSERT INTO app_private.principal_auth_bindings(
  id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
 VALUES ('b4400000-0000-4000-8000-000000000002',
  'b4400000-0000-4000-8000-000000000001','INDIVIDUAL',
- (SELECT id FROM auth.users WHERE email='foundation-test-001@example.invalid'),
+ :'t04_actor_id'::uuid,
  clock_timestamp(),to_timestamp(floor(extract(epoch FROM clock_timestamp()))),
  '11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.principal_role_assignments(
