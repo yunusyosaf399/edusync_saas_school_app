@@ -127,15 +127,21 @@ def _policy_actor_connection(psycopg):
 
 
 def _verify(cur,request,student,policy_id,change_first):
-    cur.execute("""SELECT mode,effective_from FROM app_private.roll_policy_revisions
-      WHERE id=%s::uuid AND revision=2""",(policy_id,))
-    row=cur.fetchone()
-    _check(row is not None and row[0]=="ACADEMIC_CONTEXT","NO_NEW_POLICY")
+    cur.execute("""SELECT id,mode,effective_from FROM app_private.roll_policy_revisions
+      WHERE school_id=%s::uuid AND revision=2""",(SCHOOL,))
+    rows=cur.fetchall()
     cur.execute("SELECT effective_until FROM app_private.roll_policy_revisions WHERE id=%s::uuid",(POLICY,))
-    _check(cur.fetchone()==(row[1],),"SOURCE_CUTOFF")
-    cur.execute("""SELECT count(*) FROM app_private.roll_allocator_states
-      WHERE policy_revision_id=%s::uuid AND class_offering_id IS NOT NULL""",(policy_id,))
-    _check(cur.fetchone()==(1,),"OFFERING_POOL")
+    source_until=cur.fetchone()[0]
+    if change_first:
+        _check(len(rows)==1 and str(rows[0][0])==policy_id
+               and rows[0][1]=="ACADEMIC_CONTEXT","NO_NEW_POLICY")
+        _check(source_until==rows[0][2],"SOURCE_CUTOFF")
+        cur.execute("""SELECT count(*) FROM app_private.roll_allocator_states
+          WHERE policy_revision_id=%s::uuid AND class_offering_id IS NOT NULL""",(policy_id,))
+        _check(cur.fetchone()==(1,),"OFFERING_POOL")
+    else:
+        _check(policy_id is None and rows==[] and source_until is None,
+               "APPLY_FIRST_POLICY_UNCHANGED")
     got=_snapshot(cur,request,student)
     if change_first:
         _check(got[0]=="INVALIDATED" and got[2]==1 and got[3]==1
@@ -150,9 +156,8 @@ def _verify(cur,request,student,policy_id,change_first):
                and got[4]==1 and got[7]==1 and got[9]==1,
                "APPLY_FIRST_LEDGER_"+str(got))
     cur.execute("""SELECT count(*) FROM app_private.command_receipts
-      WHERE result_ref=%s::uuid AND command_kind='student.roll_policy.change'
-        AND state='SUCCEEDED'""",(policy_id,))
-    _check(cur.fetchone()==(1,),"ONE_POLICY_RECEIPT")
+      WHERE command_kind='student.roll_policy.change' AND state='SUCCEEDED'""")
+    _check(cur.fetchone()==((1 if change_first else 0),),"POLICY_RECEIPTS")
 
 
 def run_db01_db02_policy_apply_races(container,run_psql,fresh_database):
@@ -195,8 +200,19 @@ def run_db01_db02_policy_apply_races(container,run_psql,fresh_database):
                     observer.rollback()
                 finally:
                     first.commit()
-                second_result=future.result(timeout=25)
-                second.commit()
+                if case=="pc":
+                    second_result=future.result(timeout=25)
+                    second.commit()
+                else:
+                    try:
+                        future.result(timeout=25)
+                    except psycopg.errors.RaiseException as exc:
+                        _check(exc.sqlstate=="P0001","FUTURE_ROLL_DENIAL_CODE")
+                        second.rollback()
+                        second_result=None
+                    else:
+                        second.rollback()
+                        raise RuntimeError("D1_DB01_DB02_POLICY_APPLY_FUTURE_ROLL_ACCEPTED")
             policy_id=first_result if case=="pc" else second_result
             result=second_result if case=="pc" else first_result
             _check(result[0]==request and
@@ -206,5 +222,6 @@ def run_db01_db02_policy_apply_races(container,run_psql,fresh_database):
                 _verify(c,request,student,policy_id,case=="pc")
             observer.rollback()
         print("D1_DB01_DB02_POLICY_APPLY_RACE_PASS "+case+
-              " exact_school_wait=true retained_roll_and_evidence=true")
+              " exact_school_wait=true retained_roll_and_evidence=true"+
+              (" replacement_denied_after_apply=true" if case=="cp" else ""))
     print("D1_DB01_DB02_POLICY_APPLY_PASS 2 protected winner orders")
