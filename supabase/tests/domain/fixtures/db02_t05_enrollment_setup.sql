@@ -75,4 +75,18 @@ UPDATE app_private.approval_policy_versions SET state='ACTIVE',
  effective_from=statement_timestamp()-interval '1 hour',
  activated_at=statement_timestamp()
 WHERE id='b4500000-0000-4000-8000-000000000027';
+-- The isolated END route must select the protected DIRECT command, as in
+-- the existing END lock trial's later committed runtime fixture.
+UPDATE app_private.approval_policy_versions SET state='RETIRED'
+ WHERE operation_id=(SELECT id FROM app_private.operation_contracts
+ WHERE code='student.enrollment.end') AND state='ACTIVE';
+INSERT INTO app_private.approval_policy_versions(id,policy_key,version,operation_id,
+ d1_route_mode,created_by)
+SELECT 'b4500000-0000-4000-8000-000000000028','t05-end-direct',1,id,
+ 'DIRECT','11111111-1111-4111-8111-111111111111'
+FROM app_private.operation_contracts WHERE code='student.enrollment.end';
+UPDATE app_private.approval_policy_versions SET state='ACTIVE',
+ effective_from=statement_timestamp()-interval '1 hour',
+ activated_at=statement_timestamp()
+WHERE id='b4500000-0000-4000-8000-000000000028';
 RESET ROLE;
