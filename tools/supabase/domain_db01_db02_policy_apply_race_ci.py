@@ -46,7 +46,7 @@ RESET ROLE;
         "db02_t04_two_backend_race_setup.sql").read_text()
     # INIT selects the fixture's authority route but does not insert its own
     # old source; the genuine DB01 P0 will use the seeded policy above.
-    run_psql(container,"BEGIN;\n"+settings_sql()+
+    run_psql(container,"BEGIN;\n"+settings_sql()+"\nRESET ROLE;\n"+
              "SELECT set_config('schoolos_test.t04_action','INIT',true);\n"+
              p1+"\nCOMMIT;\n","D1_DB01_DB02_RACE_CHANGE_P1",timeout=120)
 
