@@ -89,3 +89,7 @@ Deferred does not mean forgotten. Architecture should remain extensible for GPS,
 ## Storage entitlement invariants
 
 [ADR-004](ADR-004-storage-plan-entitlements.md): school capabilities and user/domain permissions must both pass for uploads. Purpose codes are deployment-controlled; full storage means supported/enabled purposes. Commercial plan names never authorize core actions. Downgrade preserves existing valid files and authorized reads, blocks new disallowed uploads/replacements; suspension never auto-deletes. Generated PDFs remain on demand. Snapshot freshness and secure service enforcement gate activation; exact commercial packaging/prices/total quotas remain TBD.
+
+## DB02 development review — solo maintainer (2026-10-26)
+
+[ADR-006](ADR-006-db02-solo-maintainer-review.md) replaces the non-author development-review mechanism of DB02 P03/G03 with documented technical/security review, exact-source test evidence and the sole maintainer's subsequent explicit acceptance of the reviewed code SHA. The owner accepted the policy change on 26 October 2026. This does not replace runtime independent different-Person School approval rules, other domain gates or separate merge/deployment authorization.
