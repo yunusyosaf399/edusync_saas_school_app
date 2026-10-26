@@ -45,7 +45,7 @@ SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE command_kind=
 SELECT throws_ok($q$UPDATE app_private.admission_identity_resolutions SET person_version=2$q$,'P0001'::char(5),'DB03 identity inspection history is immutable'::text,'inspection cannot be rewritten');
 SELECT throws_ok($q$DELETE FROM app_private.admission_identity_resolutions$q$,'P0001'::char(5),'DB03 identity inspection history is immutable'::text,'inspection cannot be deleted');
 SET CONSTRAINTS ALL IMMEDIATE;
-SELECT throws_ok($q$TRUNCATE app_private.admission_identity_resolutions$q$,'P0001'::char(5),'DB03 identity inspection history is immutable'::text,'inspection cannot be truncated');
+SELECT throws_ok($q$TRUNCATE app_private.admission_identity_resolutions CASCADE$q$,'P0001'::char(5),'DB03 identity inspection history is immutable'::text,'inspection cannot be truncated');
 SET CONSTRAINTS ALL DEFERRED;
 SELECT throws_ok(format($q$UPDATE app_private.admission_applications SET person_id=NULL WHERE id=%L$q$,:'a_application_id'),'P0001'::char(5),'DB03 intake requires protected command'::text,'raw SQL cannot clear identity binding');
 UPDATE app_private.people SET display_name='Synthetic corrected spelling' WHERE id='61616161-6161-4161-8161-616161616161';
