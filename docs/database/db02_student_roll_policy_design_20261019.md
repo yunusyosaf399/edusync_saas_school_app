@@ -1,5 +1,7 @@
 # DB-02 — student.roll_policy.change: school policy and namespace contract
 
+> **Historical design snapshot, superseded for current status on 26 October 2026.** Product choices were resolved on 20 October; protected implementation, replay, races and scoped owner acceptance are complete in the inactive development source. The current accepted contract, exact codes, API and final validation are frozen in [DB02 G05](db02_g05_accepted_contract_freeze_20261026.md). The original proposals and unresolved statements below are preserved as history; END/scheduling remain deferred and G06 hosted release remains open.
+
 **Status: PRODUCT DECISION REQUIRED — design-only / not approved / not enabled.**
 **Audited 2026-10-19. Source `main`:** `14fcfa5ba0d97e41264297338b702b23a4d40dbf`.
 **Branch:** `db/db-02-roll-policy-design`. **Exclusive owner:** DB-02; this document only describes the existing `student.roll_policy.change` operation and related allocator handoff. It does not change DB-01 roll correction, DB-03 placement/move/end, Admissions, Foundation, CI, the global migration draft, shared acceptance tests or central trackers.
