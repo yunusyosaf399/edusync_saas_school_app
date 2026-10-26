@@ -266,6 +266,13 @@ def main() -> int:
             except local.DomainLocalCIError:
                 local.run_psql(container, "\\o /dev/null\n" + intake_test, "DB03_INTAKE_SQL_DIAGNOSTIC")
                 raise
+            if re.search(r"(?m)^\s*not ok\b", intake_output):
+                # Preserve failed TAP and its diagnostics, without successful
+                # fixture/JWT configuration output or private domain rows.
+                lines = intake_output.splitlines()
+                for i, line in enumerate(lines):
+                    if re.match(r"\s*not ok\b", line):
+                        print("DB03_INTAKE_ASSERTION_DETAIL " + "\n".join(lines[max(0,i-1):i+12]))
             parse_tap(intake_output, 50)
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.admission_application_transitions)+(SELECT count(*) FROM app_private.admission_certificate_grace_history)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.school_profiles);", "DB03_INTAKE_FIXTURE_CLEANUP", tuples=True).strip()
             if remaining != "0":
