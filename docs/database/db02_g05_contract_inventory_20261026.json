@@ -1,0 +1,1477 @@
+{
+  "format_version": 1,
+  "frozen_on": "2026-10-26",
+  "status": "ACCEPTED_INACTIVE_DEVELOPMENT_SOURCE",
+  "operation": "student.roll_policy.change",
+  "contract_version": 1,
+  "tested_head": "64ce0e6afe2915a6e899a1402217d0d87e66ebaa",
+  "successor_merge": "5ba526123ff83b0cb3cd90eac06b12e244e51f01",
+  "tested_and_merge_tree": "a722a4ef83ea133d181cc2a4cc37d1dff2f0ac9c",
+  "ci_runs": {
+    "static": 40266399670,
+    "foundation": 40266399560,
+    "runtime": 40266399667
+  },
+  "composition_manifest": {
+    "version": 1,
+    "inputs": {
+      "main": "df1c98d5c2d19424946986fc6ba7615202b0a443",
+      "db01": "c8800dcfa8f2a4439c989f6d37bc25da611227d4",
+      "db02": "794bb999e726a9893bd6b774de23a579d11039f0",
+      "receipt": "df8caf9162d41d4eb4868b42abc582d042ec8441",
+      "academic": "327ccb7c1f557b2a619f2e0cd737fc3832c37eca",
+      "registry": "3d0c8df8c93118554599d53965cb16318b610a6e"
+    },
+    "db02_owner_tree": "38731bdf2a5f3c69232d2819542a8c538fd8bbb9",
+    "preserved_db02_owner_migration_files": 286,
+    "draft_fragments": 291,
+    "draft_chain_sha256": "61362b17d094371e7b6ebaec8a9ca577fc3c6fbadb11bf9c903fd5721f57f809",
+    "business_suites": [
+      [
+        "01_employee_create.sql",
+        37
+      ],
+      [
+        "02_academic_class.sql",
+        25
+      ],
+      [
+        "03_employee_state.sql",
+        22
+      ],
+      [
+        "04_employee_state_approval.sql",
+        42
+      ],
+      [
+        "05_subject_teacher_assignment.sql",
+        25
+      ],
+      [
+        "06_subject_teacher_retroactive_p2.sql",
+        32
+      ],
+      [
+        "07_subject_teacher_p2_reject_requester_stale.sql",
+        37
+      ],
+      [
+        "08_family_child_access_boundaries.sql",
+        34
+      ],
+      [
+        "09_family_principal_membership_authorization.sql",
+        38
+      ],
+      [
+        "10_family_relationship_direct_access.sql",
+        52
+      ],
+      [
+        "11_family_relationship_p1_approval.sql",
+        66
+      ],
+      [
+        "12_family_principal_membership_p1_approval.sql",
+        40
+      ],
+      [
+        "13_family_membership_p1_end_correct.sql",
+        85
+      ],
+      [
+        "14_family_membership_p1_stale_conflicts.sql",
+        35
+      ],
+      [
+        "15_family_membership_p1_protected_request_read.sql",
+        49
+      ],
+      [
+        "16_family_membership_p1_policy_multistep.sql",
+        63
+      ],
+      [
+        "17_family_relationship_primary_multibasis.sql",
+        41
+      ],
+      [
+        "18_family_relationship_p1_checked_request_read.sql",
+        36
+      ],
+      [
+        "19_family_relationship_p1_cross_campus_scope.sql",
+        34
+      ],
+      [
+        "20_family_relationship_p1_primary_replacement.sql",
+        44
+      ],
+      [
+        "21_family_relationship_p1_reviewer_scope_stale_apply.sql",
+        36
+      ],
+      [
+        "22_family_relationship_p1_retired_policy_stale_apply.sql",
+        43
+      ],
+      [
+        "23_family_relationship_p1_policy_replacement_stale_apply.sql",
+        65
+      ],
+      [
+        "24_family_relationship_p1_approved_policy_ambiguity.sql",
+        77
+      ],
+      [
+        "25_family_relationship_p1_approval_to_direct_route_stale_apply.sql",
+        84
+      ],
+      [
+        "26_family_relationship_p1_direct_to_approval_route.sql",
+        80
+      ],
+      [
+        "27_family_portal_checked_current_read_revocation.sql",
+        69
+      ],
+      [
+        "28_family_portal_student_roster_profile_disclosure.sql",
+        67
+      ],
+      [
+        "29_family_portal_emergency_contact_current_checked_read.sql",
+        77
+      ],
+      [
+        "30_family_portal_historical_relationship_alternate_basis.sql",
+        78
+      ],
+      [
+        "31_family_portal_two_family_child_access_isolation.sql",
+        81
+      ],
+      [
+        "32_academic_subject_lifecycle_authorization.sql",
+        54
+      ],
+      [
+        "33_academic_class_offering_lifecycle_authorization.sql",
+        52
+      ],
+      [
+        "34_academic_section_offering_lifecycle_authorization.sql",
+        56
+      ],
+      [
+        "35_academic_section_room_assignment_history_authorization.sql",
+        77
+      ],
+      [
+        "36_academic_capacity_change_revision_authorization.sql",
+        85
+      ],
+      [
+        "37_student_roll_policy_current_checked_read_authorization.sql",
+        35
+      ],
+      [
+        "38_student_roll_policy_retained_history_defensive_invariants.sql",
+        40
+      ],
+      [
+        "39_employee_department_catalog_lifecycle_authorization.sql",
+        57
+      ],
+      [
+        "40_employee_designation_catalog_lifecycle_authorization.sql",
+        59
+      ],
+      [
+        "41_employee_job_assignment_p1_direct_lifecycle_authorization.sql",
+        67
+      ],
+      [
+        "42_employee_campus_affiliation_p1_direct_lifecycle_authorization.sql",
+        74
+      ],
+      [
+        "43_employee_profile_p1_direct_photo_authorization.sql",
+        49
+      ],
+      [
+        "44_employee_qualification_p1_direct_history_authorization.sql",
+        46
+      ],
+      [
+        "45_employee_experience_p1_direct_history_authorization.sql",
+        51
+      ],
+      [
+        "46_teacher_capability_p1_direct_history_authorization.sql",
+        50
+      ],
+      [
+        "47_employee_identity_p2_approval_history_authorization.sql",
+        40
+      ],
+      [
+        "48_class_teacher_p0_direct_history_authorization.sql",
+        32
+      ],
+      [
+        "49_employee_identity_p2_reject_requester_stale.sql",
+        32
+      ],
+      [
+        "50_teacher_capability_p1_approval_reject.sql",
+        31
+      ],
+      [
+        "51_class_teacher_p2_retroactive_correct_approval.sql",
+        23
+      ],
+      [
+        "52_class_teacher_p2_reject_replay.sql",
+        20
+      ],
+      [
+        "53_employee_identity_p2_retired_policy_invalidation.sql",
+        29
+      ],
+      [
+        "54_teacher_capability_p1_retired_policy_invalidation.sql",
+        28
+      ],
+      [
+        "55_class_teacher_p0_capability_employment_gate.sql",
+        15
+      ],
+      [
+        "56_student_status_p1_direct_lifecycle.sql",
+        11
+      ],
+      [
+        "57_student_emergency_contact_p1_direct_history.sql",
+        12
+      ],
+      [
+        "58_student_identity_p2_approval_history.sql",
+        11
+      ],
+      [
+        "59_student_special_p2_approval_history.sql",
+        11
+      ],
+      [
+        "60_student_status_correct_p2_approval_history.sql",
+        10
+      ],
+      [
+        "61_student_enrollment_place_p0_initial_roll.sql",
+        18
+      ],
+      [
+        "62_student_enrollment_end_p1_direct_history.sql",
+        28
+      ],
+      [
+        "63_student_enrollment_move_p1_direct_section_history.sql",
+        34
+      ],
+      [
+        "64_family_primary_context_p0_select_correct_end.sql",
+        37
+      ],
+      [
+        "65_remaining_student_commands_fail_closed.sql",
+        38
+      ],
+      [
+        "66_student_profile_p1_direct_history_authorization.sql",
+        33
+      ],
+      [
+        "67_student_profile_p1_approval_review_apply.sql",
+        41
+      ],
+      [
+        "68_student_profile_p1_reject_no_effect.sql",
+        20
+      ],
+      [
+        "69_student_profile_p1_retired_policy_invalidation.sql",
+        21
+      ],
+      [
+        "70_student_profile_p1_requester_scope_revocation.sql",
+        19
+      ],
+      [
+        "71_student_profile_p1_target_version_drift.sql",
+        17
+      ],
+      [
+        "72_student_profile_p1_replacement_policy_stale_apply.sql",
+        22
+      ],
+      [
+        "73_student_profile_p1_ambiguous_active_policy.sql",
+        22
+      ],
+      [
+        "74_student_profile_p1_reviewer_scope_revoked.sql",
+        23
+      ],
+      [
+        "75_db01_allocator_retained_history.sql",
+        12
+      ],
+      [
+        "76_db01_end_stored_policy_prelock.sql",
+        30
+      ],
+      [
+        "77_db01_retained_result_pair_private_acl.sql",
+        30
+      ],
+      [
+        "78_db01_direct_receipt_provenance_private_acl.sql",
+        24
+      ],
+      [
+        "79_db01_approval_application_receipt_guard.sql",
+        14
+      ],
+      [
+        "80_school_local_roll_business_date.sql",
+        24
+      ],
+      [
+        "81_db01_roll_correct_source_prelock.sql",
+        20
+      ],
+      [
+        "82_db01_private_correct_effect.sql",
+        21
+      ],
+      [
+        "83_db01_academic_cross_section_correct_effect.sql",
+        22
+      ],
+      [
+        "84_db01_persistent_cross_revision_roll_correction.sql",
+        12
+      ],
+      [
+        "85_db01_roll_correct_private_authority_p1.sql",
+        22
+      ],
+      [
+        "86_db01_roll_correct_canonical_command_context.sql",
+        30
+      ],
+      [
+        "87_db01_direct_atomic_success_evidence.sql",
+        23
+      ],
+      [
+        "88_db01_roll_correct_direct_authenticated.sql",
+        48
+      ],
+      [
+        "89_db01_roll_correct_p1_approval_submit.sql",
+        33
+      ],
+      [
+        "90_db01_roll_correct_p1_review.sql",
+        41
+      ],
+      [
+        "91_db01_roll_correct_p1_live_multistep.sql",
+        43
+      ],
+      [
+        "92_db01_roll_correct_p1_apply.sql",
+        117
+      ],
+      [
+        "82_db02_school_reviewer_candidates.sql",
+        10
+      ],
+      [
+        "83_db02_roll_policy_source_preflight.sql",
+        18
+      ],
+      [
+        "84_db02_roll_policy_p1_version_selector.sql",
+        20
+      ],
+      [
+        "85_db02_school_actor_all_authority.sql",
+        19
+      ],
+      [
+        "86_db02_roll_policy_receipt_allowlist.sql",
+        27
+      ],
+      [
+        "89_db02_private_command_context.sql",
+        28
+      ],
+      [
+        "90_db02_exact_p1_bound_version.sql",
+        24
+      ],
+      [
+        "91_db02_locked_future_commitments.sql",
+        18
+      ],
+      [
+        "92_db02_atomic_policy_revision_transition.sql",
+        27
+      ],
+      [
+        "93_db02_atomic_roll_allocator_pools.sql",
+        29
+      ],
+      [
+        "94_db02_direct_evidence_replay.sql",
+        33
+      ],
+      [
+        "95_db02_authenticated_direct_entry.sql",
+        58
+      ],
+      [
+        "96_db02_approval_submit_read.sql",
+        37
+      ],
+      [
+        "97_db02_independent_review.sql",
+        34
+      ],
+      [
+        "98_db02_approved_policy_apply.sql",
+        79
+      ],
+      [
+        "99_db02_shared_review_apply_receipts.sql",
+        13
+      ],
+      [
+        "100_db02_t07_allocator_handoff.sql",
+        31
+      ],
+      [
+        "101_db02_t08_privacy_acl_rls.sql",
+        26
+      ],
+      [
+        "102_academic_roll_pool_lifecycle.sql",
+        59
+      ],
+      [
+        "103_academic_roll_pool_reopen.sql",
+        12
+      ]
+    ],
+    "business_assertions": 4292,
+    "runtime_metrics": {
+      "postgres_major": 17,
+      "d1_tables": 34,
+      "d1_table_owner": 34,
+      "rls_enabled": 34,
+      "rls_forced": 34,
+      "primary_indexes": 34,
+      "full_unique_indexes": 21,
+      "partial_unique_indexes": 3,
+      "nonunique_indexes": 47,
+      "functions": 599,
+      "security_definers": 581,
+      "app_functions": 167,
+      "private_functions": 432,
+      "authenticated_app_execute": 167,
+      "authenticated_private_execute": 0,
+      "anon_execute": 0,
+      "service_role_execute": 0,
+      "unknown_function_owners": 0,
+      "app_schema_owner_functions": 0,
+      "executor_roles": 5,
+      "executor_memberships": 5,
+      "authenticated_table_dml": 0,
+      "anon_table_dml": 0,
+      "service_role_table_dml": 0,
+      "student_create_rpc": 0,
+      "permission_rows": 0,
+      "scope_contract_rows": 0,
+      "operation_contract_rows": 0,
+      "role_rows": 0,
+      "system_principals": 0
+    },
+    "final_receipt_fragment": "20260928000000_domain_package_01_effect58_01_db02_review_apply_receipt_allowlist.sql.draft",
+    "required_race_calls": [
+      "run_db01_correct_vs_move_end_races",
+      "run_db01_cross_campus_roll_history_replay",
+      "run_db01_p1_review_live_races",
+      "run_db01_p1_apply_live_races",
+      "run_db01_p1_apply_vs_move_end_races",
+      "run_db01_p1_successive_roll_date_boundaries",
+      "run_db01_p1_complete_approve_reject_integration",
+      "run_db01_db02_policy_apply_races",
+      "run_academic_roll_pool_races",
+      "run_db02_policy_races",
+      "run_db02_enrollment_races",
+      "run_db02_authority_races"
+    ]
+  },
+  "public_entries": [
+    "app.d1_apply_student_roll_policy_change",
+    "app.d1_change_student_roll_policy",
+    "app.d1_read_student_roll_policy_request",
+    "app.d1_review_student_roll_policy_change",
+    "app.d1_submit_student_roll_policy_change"
+  ],
+  "routines": {
+    "app.d1_apply_student_roll_policy_change": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect58_05_db02_apply_replay_entry.sql.draft",
+      "arguments": "p_request_id uuid,p_expected_request_version bigint,p_idempotency_key text",
+      "returns": "TABLE(request_id uuid,request_version bigint,request_state text, policy_revision_id uuid)",
+      "owner": "schoolos_workflow_executor",
+      "security_definer": true,
+      "execute_roles": [
+        "authenticated"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "d816523c059d13f8940d7fede88d56671926c4b5a6da451122438f870b23f479",
+      "literal_exceptions": [
+        "D1 Roll Policy APPLY School unavailable",
+        "D1 Roll Policy APPLY applicant authority denied",
+        "D1 Roll Policy APPLY context unavailable",
+        "D1 Roll Policy APPLY effect proof absent",
+        "D1 Roll Policy APPLY frozen facts malformed",
+        "D1 Roll Policy APPLY immutable request changed",
+        "D1 Roll Policy APPLY intent invalid",
+        "D1 Roll Policy APPLY replay evidence denied",
+        "D1 Roll Policy APPLY request version/state changed",
+        "D1 Roll Policy APPLY stored request malformed"
+      ],
+      "private_or_app_calls": [
+        "app_private.approval_applications",
+        "app_private.approval_transitions",
+        "app_private.d1_enrollment_place_lock_school",
+        "app_private.d1_lock_current_principal",
+        "app_private.d1_roll_policy_apply_invalid_evidence",
+        "app_private.d1_roll_policy_apply_principal_live",
+        "app_private.d1_roll_policy_apply_receipt_context",
+        "app_private.d1_roll_policy_apply_replay",
+        "app_private.d1_roll_policy_apply_reviews_live",
+        "app_private.d1_roll_policy_apply_success_evidence",
+        "app_private.d1_roll_policy_approved_effect",
+        "app_private.d1_roll_policy_change_preflight",
+        "app_private.d1_roll_policy_p1_binding_current"
+      ],
+      "code_literals": [
+        "D1_ROLL_POLICY_APPLIED",
+        "DB02_APPLY_DATE_STALE",
+        "DB02_APPLY_P1_STALE",
+        "DB02_APPLY_REQUESTER_REVOKED",
+        "DB02_APPLY_REVIEWER_REVOKED",
+        "DB02_APPLY_SOURCE_STALE"
+      ]
+    },
+    "app.d1_change_student_roll_policy": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect54_01_db02_authenticated_direct.sql.draft",
+      "arguments": "p_school_id uuid, p_action text, p_source_policy_id uuid, p_expected_source_revision integer, p_expected_source_mode text, p_expected_source_start_value bigint, p_expected_source_effective_from date, p_new_mode text, p_new_start_value bigint, p_reason text, p_idempotency_key text",
+      "returns": "uuid",
+      "owner": "schoolos_student_executor",
+      "security_definer": true,
+      "execute_roles": [
+        "authenticated"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "2fed3856dc60a71327eb0bebaefb273c73f84803a058b3216d7b13a446d881bd",
+      "literal_exceptions": [
+        "D1 Roll Policy DIRECT returned no verified revision"
+      ],
+      "private_or_app_calls": [
+        "app_private.d1_roll_policy_revision_transition"
+      ],
+      "code_literals": []
+    },
+    "app.d1_read_student_roll_policy_request": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect55_04_db02_approval_checked_read.sql.draft",
+      "arguments": "p_request_id uuid",
+      "returns": "TABLE( request_id uuid,request_version bigint,request_state text,school_id uuid, action text,source_policy_id uuid,source_revision integer, new_mode text,new_start_value bigint,trusted_business_date date, participant_kind text)",
+      "owner": "schoolos_workflow_executor",
+      "security_definer": true,
+      "execute_roles": [
+        "authenticated"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "4166b19f407dce4b6084a484fb851084c1277b7ee20d43fab6b0366bcbb25f32",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.current_principal_id",
+        "app_private.d1_current_reviewer_eligible",
+        "app_private.d1_lock_current_principal",
+        "app_private.d1_roll_policy_submit_actor_allowed"
+      ],
+      "code_literals": []
+    },
+    "app.d1_review_student_roll_policy_change": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect58_04_db02_review_replay_entry.sql.draft",
+      "arguments": "p_request_id uuid,p_decision text,p_expected_request_version bigint, p_reason text,p_idempotency_key text",
+      "returns": "TABLE(request_id uuid,request_version bigint,request_state text)",
+      "owner": "schoolos_workflow_executor",
+      "security_definer": true,
+      "execute_roles": [
+        "authenticated"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "5e38993c3064ce6e09f8288d03e0004643e6ba626b60991903ba8452552569a6",
+      "literal_exceptions": [
+        "D1 Roll Policy REVIEW frozen P1 no longer active",
+        "D1 Roll Policy REVIEW frozen request invalid",
+        "D1 Roll Policy REVIEW independent reviewer denied",
+        "D1 Roll Policy REVIEW intent invalid",
+        "D1 Roll Policy REVIEW next independent reviewer unavailable",
+        "D1 Roll Policy REVIEW open step unavailable",
+        "D1 Roll Policy REVIEW receipt context invalid",
+        "D1 Roll Policy REVIEW replay authority denied",
+        "D1 Roll Policy REVIEW replay evidence denied",
+        "D1 Roll Policy REVIEW request version/state changed",
+        "D1 Roll Policy REVIEW version progression missing"
+      ],
+      "private_or_app_calls": [
+        "app_private.approval_reviews",
+        "app_private.approval_step_reviewers",
+        "app_private.approval_transitions",
+        "app_private.d1_current_reviewer_eligible",
+        "app_private.d1_lock_current_principal",
+        "app_private.d1_review_candidates",
+        "app_private.d1_roll_policy_apply_principal_live",
+        "app_private.d1_roll_policy_p1_binding_current",
+        "app_private.d1_roll_policy_review_receipt_context",
+        "app_private.d1_roll_policy_review_replay",
+        "app_private.d1_roll_policy_review_success_evidence"
+      ],
+      "code_literals": [
+        "D1_ROLL_POLICY_REVIEW_"
+      ]
+    },
+    "app.d1_submit_student_roll_policy_change": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect55_03_db02_approval_submit.sql.draft",
+      "arguments": "p_school_id uuid,p_action text,p_source_policy_id uuid, p_expected_source_revision integer,p_expected_source_mode text, p_expected_source_start_value bigint,p_expected_source_effective_from date, p_new_mode text,p_new_start_value bigint,p_reason text,p_idempotency_key text",
+      "returns": "TABLE(request_id uuid,request_version bigint)",
+      "owner": "schoolos_workflow_executor",
+      "security_definer": true,
+      "execute_roles": [
+        "authenticated"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "3f7d51360b171266b3d5bcf8c4fb8bf9c33c23f345cfcc2d0acdea3f0ae911f5",
+      "literal_exceptions": [
+        "D1 Roll Policy SUBMIT first approval step required",
+        "D1 Roll Policy SUBMIT historical request proof failed",
+        "D1 Roll Policy SUBMIT independent reviewer unavailable",
+        "D1 Roll Policy SUBMIT persisted request proof failed",
+        "D1 Roll Policy SUBMIT request lifecycle unexpected",
+        "D1 Roll Policy SUBMIT reviewer policy unsupported",
+        "D1 Roll Policy SUBMIT trusted School date absent",
+        "D1 Roll Policy SUBMIT validated context missing"
+      ],
+      "private_or_app_calls": [
+        "app_private.approval_request_steps",
+        "app_private.approval_requests",
+        "app_private.approval_step_reviewers",
+        "app_private.approval_transitions",
+        "app_private.d1_review_candidates",
+        "app_private.d1_roll_policy_submit_context",
+        "app_private.d1_roll_policy_submit_rows_match",
+        "app_private.d1_roll_policy_submit_success_evidence"
+      ],
+      "code_literals": [
+        "D1_ROLL_POLICY_SUBMIT"
+      ]
+    },
+    "app_private.d1_command_receipt_lookup": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect58_01_db02_review_apply_receipt_allowlist.sql.draft",
+      "arguments": "p_operation_code text, p_command_kind text, p_idempotency_key text, p_intent jsonb",
+      "returns": "TABLE ( actor_id uuid, operation_id uuid, receipt_id uuid, result_ref uuid, result_summary jsonb, receipt_state text, intent_hash bytea )",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_academic_executor",
+        "schoolos_employee_executor",
+        "schoolos_family_executor",
+        "schoolos_student_executor",
+        "schoolos_teaching_executor",
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "2fb8882655853cce927dfc546b7e0a581c94b72c63b9d0c86e342592da6d0867",
+      "literal_exceptions": [
+        "D1 command idempotency input invalid",
+        "D1 command requires READ COMMITTED",
+        "D1 command requires verified actor",
+        "D1 idempotency key conflicts with prior intent",
+        "D1 operation is not enabled",
+        "D1 receipt operation phase or shape unsupported"
+      ],
+      "private_or_app_calls": [
+        "app_private.current_principal_id",
+        "app_private.d1_jcs_typed"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_review_candidates": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect42_01_db02_school_reviewer_candidates.sql.draft",
+      "arguments": "p_request_id uuid, p_step_id uuid",
+      "returns": "TABLE (candidate_principal_id uuid)",
+      "owner": "schoolos_authz_reader",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "6befc47fa46c6e8fe24fe9b6165c74c513843113cd57e3deba1b099e153c9620",
+      "literal_exceptions": [],
+      "private_or_app_calls": [],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_actor_all_authorized": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect45_01_db02_school_actor_all_authorization.sql.draft",
+      "arguments": "p_school uuid, p_actor uuid",
+      "returns": "boolean",
+      "owner": "schoolos_authz_reader",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_student_executor",
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "62b8fae5dc4b627766746fade520e01ee6c8526a06c52300559281c6cdb8083a",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.current_principal_id"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_apply_invalid_evidence": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect57_04_db02_apply_evidence.sql.draft",
+      "arguments": "p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_school uuid, p_request uuid,p_p1 uuid,p_expected_request_version bigint, p_next_version bigint,p_error text",
+      "returns": "uuid",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "d75bd2e1e5f1418f97791b57ef110e8998dee89887642f132c98d6d4d6f3cfe5",
+      "literal_exceptions": [
+        "D1 Roll Policy APPLY invalidation evidence invalid",
+        "D1 Roll Policy APPLY invalidation result mismatch"
+      ],
+      "private_or_app_calls": [
+        "app_private.audit_events",
+        "app_private.command_receipts",
+        "app_private.current_principal_id"
+      ],
+      "code_literals": [
+        "DB02_APPLY_ALLOCATOR_STALE",
+        "DB02_APPLY_DATE_STALE",
+        "DB02_APPLY_P1_STALE",
+        "DB02_APPLY_REQUESTER_REVOKED",
+        "DB02_APPLY_REVIEWER_REVOKED",
+        "DB02_APPLY_SOURCE_STALE"
+      ]
+    },
+    "app_private.d1_roll_policy_apply_principal_live": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect57_01_db02_apply_live_authority.sql.draft",
+      "arguments": "p_principal uuid,p_permission text,p_required_role uuid DEFAULT NULL",
+      "returns": "boolean",
+      "owner": "schoolos_authz_reader",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "dc42fe9ce0bab0627f3fe9fd49a280ca6d61e76be4be8c269bc1891eaf274687",
+      "literal_exceptions": [],
+      "private_or_app_calls": [],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_apply_receipt_context": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect57_03_db02_apply_receipt_context.sql.draft",
+      "arguments": "p_request uuid,p_expected_version bigint,p_idempotency_key text",
+      "returns": "TABLE(actor_id uuid,operation_id uuid,intent_hash bytea, receipt_id uuid,receipt_state text,result_ref uuid,result_summary jsonb)",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "c6299894fce9d389cfaa3670ca2cfd921a23b61b8202446a0f5222f2e5867c21",
+      "literal_exceptions": [
+        "D1 Roll Policy APPLY operation unavailable",
+        "D1 Roll Policy APPLY requires verified actor",
+        "D1 Roll Policy APPLY typed receipt context invalid",
+        "D1 idempotency key conflicts with prior intent"
+      ],
+      "private_or_app_calls": [
+        "app_private.current_principal_id",
+        "app_private.d1_jcs_typed"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_apply_replay": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect58_03_db02_apply_replay.sql.draft",
+      "arguments": "p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_request uuid,p_expected bigint",
+      "returns": "TABLE(result_version bigint,result_state text,result_revision uuid)",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "c603a576706a2b65e318572690203714d2f1993edc996dd0835bb5bedb07f357",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.current_principal_id"
+      ],
+      "code_literals": [
+        "DB02_APPLY_ALLOCATOR_STALE",
+        "DB02_APPLY_DATE_STALE",
+        "DB02_APPLY_P1_STALE",
+        "DB02_APPLY_REQUESTER_REVOKED",
+        "DB02_APPLY_REVIEWER_REVOKED",
+        "DB02_APPLY_SOURCE_STALE"
+      ]
+    },
+    "app_private.d1_roll_policy_apply_reviews_live": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect57_01_db02_apply_live_authority.sql.draft",
+      "arguments": "p_request uuid",
+      "returns": "boolean",
+      "owner": "schoolos_authz_reader",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "9838a2a8f88627e2d9df300176650610ec705a80a1106409a493e4b7319e4da3",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.d1_roll_policy_apply_principal_live"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_apply_success_evidence": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect57_04_db02_apply_evidence.sql.draft",
+      "arguments": "p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_school uuid, p_request uuid,p_p1 uuid,p_expected_request_version bigint, p_revision uuid,p_source uuid,p_action text,p_summary jsonb",
+      "returns": "uuid",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "7198e14a0b6de1965f7c209d68feab8ff4868d035546a1d51f3e0f6e3a4ae3c1",
+      "literal_exceptions": [
+        "D1 Roll Policy APPLY INIT evidence mismatch",
+        "D1 Roll Policy APPLY allocator proof mismatch",
+        "D1 Roll Policy APPLY request evidence mismatch",
+        "D1 Roll Policy APPLY revision evidence mismatch",
+        "D1 Roll Policy APPLY source evidence mismatch",
+        "D1 Roll Policy APPLY success evidence shape denied"
+      ],
+      "private_or_app_calls": [
+        "app_private.audit_events",
+        "app_private.command_receipts",
+        "app_private.current_principal_id",
+        "app_private.outbox_events"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_approved_effect": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect57_02_db02_apply_policy_effect.sql.draft",
+      "arguments": "p_school uuid,p_actor uuid,p_action text,p_source uuid, p_old_revision integer,p_old_mode text,p_old_start bigint, p_old_from date,p_new_mode text,p_new_start bigint, p_frozen_date date,p_private_reason text",
+      "returns": "TABLE(policy_id uuid,policy_revision integer,pool_count integer)",
+      "owner": "schoolos_student_executor",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "0b2ff81ed48badc9910e9afa9d12c22779dad6b5f2caaaed47270d0ab3310a79",
+      "literal_exceptions": [
+        "D1 Roll Policy APPLY revision missing",
+        "D1 Roll Policy APPLY source changed after lock",
+        "D1 Roll Policy APPLY source changed after validation",
+        "D1 Roll Policy APPLY typed effect denied"
+      ],
+      "private_or_app_calls": [
+        "app_private.current_principal_id",
+        "app_private.d1_roll_policy_change_preflight",
+        "app_private.d1_roll_policy_provision_revision_pools",
+        "app_private.roll_policy_revisions"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_change_preflight": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect49_01_db02_locked_future_source_preflight.sql.draft",
+      "arguments": "p_school uuid, p_action text, p_source uuid, p_expected_revision integer, p_expected_mode text, p_expected_start_value bigint, p_expected_effective_from date, p_expected_effective_until date, p_new_mode text, p_new_start_value bigint",
+      "returns": "TABLE(school_id uuid, business_date date, source_policy_id uuid, source_revision integer, source_mode text, locked_allocator_count bigint, error_code text)",
+      "owner": "schoolos_student_executor",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "bb9c08440735ab0b112a7def3e8a370efd12c11a7ca1c0790e0733389479195c",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.d1_enrollment_place_destination",
+        "app_private.d1_enrollment_place_lock_school",
+        "app_private.d1_roll_business_date"
+      ],
+      "code_literals": [
+        "D1_ROLL_POLICY_INIT_FUTURE_ENROLLMENT",
+        "D1_ROLL_POLICY_INIT_HISTORY_EXISTS",
+        "D1_ROLL_POLICY_INIT_SOURCE_NOT_EMPTY",
+        "D1_ROLL_POLICY_PREFLIGHT_INVALID",
+        "D1_ROLL_POLICY_REPLACE_FUTURE_ENROLLMENT",
+        "D1_ROLL_POLICY_REPLACE_FUTURE_ROLL",
+        "D1_ROLL_POLICY_REPLACE_SAME_DAY",
+        "D1_ROLL_POLICY_REPLACE_SOURCE_INVALID",
+        "D1_ROLL_POLICY_REPLACE_SOURCE_MISSING",
+        "D1_ROLL_POLICY_REPLACE_SOURCE_POOL_INVALID",
+        "D1_ROLL_POLICY_REPLACE_STALE",
+        "D1_ROLL_POLICY_REPLACE_SUCCESSOR_EXISTS",
+        "D1_ROLL_POLICY_SCHOOL_MISSING"
+      ]
+    },
+    "app_private.d1_roll_policy_command_context": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect55_01_db02_submit_context.sql.draft",
+      "arguments": "p_school uuid,p_phase text,p_key text,p_action text, p_source uuid,p_old_revision integer,p_old_mode text, p_old_start bigint,p_old_from date,p_new_mode text, p_new_start bigint,p_reason text",
+      "returns": "TABLE(actor_id uuid,operation_id uuid,policy_version_id uuid, route_mode text,school_id uuid,command_kind text,intent_hash bytea)",
+      "owner": "schoolos_student_executor",
+      "security_definer": true,
+      "execute_roles": [],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "75e339f0e0acebd38f3aa712826abdbb6e59b35e9cf5354f355a9bc9069c6625",
+      "literal_exceptions": [
+        "D1 Roll Policy School ALL authority denied",
+        "D1 Roll Policy School not found",
+        "D1 Roll Policy command phase does not match route",
+        "D1 Roll Policy context requires READ COMMITTED",
+        "D1 Roll Policy global route changed",
+        "D1 Roll Policy global route unavailable",
+        "D1 Roll Policy nonterminal or unsupported replay denied",
+        "D1 Roll Policy receipt context invalid",
+        "D1 Roll Policy typed command context invalid"
+      ],
+      "private_or_app_calls": [
+        "app_private.d1_enrollment_place_lock_school",
+        "app_private.d1_roll_policy_actor_all_authorized",
+        "app_private.d1_roll_policy_p1_version",
+        "app_private.d1_roll_policy_receipt_context"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_direct_result_rows_match": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect52_02_db02_direct_replay_proof.sql.draft",
+      "arguments": "p_actor uuid,p_operation uuid,p_key text,p_hash bytea, p_school uuid,p_action text,p_source uuid,p_result uuid, p_policy_version uuid",
+      "returns": "boolean",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_student_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "ba20eecbd36753d2d59c2b89c28c7db3ab9c64d02bfe95241c2d82c927dd91eb",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.current_principal_id"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_direct_success_evidence": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect52_01_db02_direct_success_evidence.sql.draft",
+      "arguments": "p_actor uuid,p_operation uuid,p_key text,p_hash bytea, p_school uuid,p_revision uuid,p_source uuid,p_action text, p_policy_version uuid,p_expected_revision integer,p_summary jsonb",
+      "returns": "uuid",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_student_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "26d50d0a680eb77ec62d5035bd7ce3fa22d633c3975863159f00112f292449e8",
+      "literal_exceptions": [
+        "D1 Roll Policy INIT source mismatch",
+        "D1 Roll Policy REPLACE source mismatch",
+        "D1 Roll Policy evidence target mismatch",
+        "D1 Roll Policy operation not enabled",
+        "D1 Roll Policy persisted success mismatch",
+        "D1 Roll Policy success evidence shape denied"
+      ],
+      "private_or_app_calls": [
+        "app_private.audit_events",
+        "app_private.command_receipts",
+        "app_private.current_principal_id",
+        "app_private.outbox_events"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_p1_binding_current": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect48_01_db02_bound_p1_version.sql.draft",
+      "arguments": "p_school uuid,p_bound_version uuid,p_bound_route text",
+      "returns": "boolean",
+      "owner": "schoolos_student_executor",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "355d48c9d0d3bc3350333806ebbe45ac58a3fc25a387195f43b3cf88ceac6957",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.current_principal_id",
+        "app_private.d1_roll_policy_p1_version"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_p1_version": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect44_01_db02_roll_policy_p1_version_selector.sql.draft",
+      "arguments": "p_school uuid",
+      "returns": "TABLE(school_id uuid,policy_version_id uuid,route_mode text,error_code text)",
+      "owner": "schoolos_authz_reader",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_student_executor",
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "c241cdc4c3fe3b21047c8aa44813322868d02ca2cfc8545794ca8c7957d39685",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.d1_p1_route"
+      ],
+      "code_literals": [
+        "D1_ROLL_POLICY_P1_AMBIGUOUS",
+        "D1_ROLL_POLICY_P1_INVALID_STEPS_OR_ROUTE",
+        "D1_ROLL_POLICY_P1_ROUTE_STALE",
+        "D1_ROLL_POLICY_P1_SCHOOL_REQUIRED",
+        "D1_ROLL_POLICY_P1_UNAVAILABLE"
+      ]
+    },
+    "app_private.d1_roll_policy_provision_revision_pools": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect51_01_db02_atomic_policy_allocators.sql.draft",
+      "arguments": "p_school uuid,p_revision uuid,p_actor uuid,p_trusted_date date",
+      "returns": "integer",
+      "owner": "schoolos_schema_owner",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_student_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "856d44291b5c2ac89c0ef005efdf818a39a8fcb687d46f962c78ed1d08f032a6",
+      "literal_exceptions": [
+        "D1 roll policy OPEN Offering ancestry invalid",
+        "D1 roll policy allocator School missing",
+        "D1 roll policy allocator context invalid",
+        "D1 roll policy allocator revision already provisioned",
+        "D1 roll policy allocator revision not current transaction",
+        "D1 roll policy persistent allocator exhausted"
+      ],
+      "private_or_app_calls": [
+        "app_private.current_principal_id",
+        "app_private.roll_allocator_states"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_receipt_context": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect47_01_db02_private_command_context.sql.draft",
+      "arguments": "p_kind text,p_key text,p_intent jsonb",
+      "returns": "TABLE(actor_id uuid,operation_id uuid,receipt_id uuid, result_ref uuid,result_summary jsonb,receipt_state text,intent_hash bytea)",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_student_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "570d7e368ec1fdfd61f6f77d63a8be6a3e039594903b4b2399955a7cae658082",
+      "literal_exceptions": [
+        "D1 Roll Policy receipt phase or shape invalid"
+      ],
+      "private_or_app_calls": [
+        "app_private.d1_command_receipt_lookup"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_review_receipt_context": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect56_01_db02_review_context.sql.draft",
+      "arguments": "p_request uuid,p_decision text,p_expected_version bigint, p_reason text,p_idempotency_key text",
+      "returns": "TABLE(actor_id uuid,operation_id uuid,intent_hash bytea, receipt_id uuid,receipt_state text,result_ref uuid,result_summary jsonb)",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "74cb96a8f7b66df56d07dab6f1ff3f32dce023c3b950572223c6383ca9718e1b",
+      "literal_exceptions": [
+        "D1 Roll Policy REVIEW operation unavailable",
+        "D1 Roll Policy REVIEW requires verified actor",
+        "D1 Roll Policy REVIEW typed context invalid",
+        "D1 idempotency key conflicts with prior intent"
+      ],
+      "private_or_app_calls": [
+        "app_private.current_principal_id",
+        "app_private.d1_jcs_typed"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_review_replay": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect58_02_db02_review_replay.sql.draft",
+      "arguments": "p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_request uuid, p_expected bigint,p_decision text,p_reason text",
+      "returns": "TABLE(result_version bigint,result_state text)",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "50fa7545751b84c48d532ad54f74fa1261c2932174dc1fd33c6db24b66d9f2d7",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.current_principal_id"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_review_success_evidence": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect56_02_db02_review_evidence.sql.draft",
+      "arguments": "p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_request uuid, p_p1 uuid,p_school uuid,p_expected_version bigint,p_decision text, p_next_version bigint,p_next_state text,p_step uuid,p_assignment uuid",
+      "returns": "uuid",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "b2410fe80d9299ebb2a38531457f3e5536a69939df19980f55e871dce4354c49",
+      "literal_exceptions": [
+        "D1 Roll Policy REVIEW evidence invalid",
+        "D1 Roll Policy REVIEW independent request evidence mismatch",
+        "D1 Roll Policy REVIEW persisted decision missing"
+      ],
+      "private_or_app_calls": [
+        "app_private.audit_events",
+        "app_private.command_receipts",
+        "app_private.current_principal_id"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_revision_transition": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect53_01_db02_direct_atomic_evidence.sql.draft",
+      "arguments": "p_school uuid,p_key text,p_action text,p_source uuid, p_expected_revision integer,p_expected_mode text,p_expected_start bigint, p_expected_from date,p_new_mode text,p_new_start bigint,p_reason text",
+      "returns": "uuid",
+      "owner": "schoolos_student_executor",
+      "security_definer": true,
+      "execute_roles": [],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "a5797d4efb71ec766c71ae5d0a2775fac164292111a7e674dca358e7c0952696",
+      "literal_exceptions": [
+        "D1 Roll Policy action invalid",
+        "D1 Roll Policy historical result proof failed",
+        "D1 Roll Policy insert failed",
+        "D1 Roll Policy new result proof failed",
+        "D1 Roll Policy source changed after locked preflight",
+        "D1 Roll Policy transition context invalid",
+        "D1 Roll Policy transition preflight invalid",
+        "D1 Roll Policy verified receipt context changed"
+      ],
+      "private_or_app_calls": [
+        "app_private.d1_roll_policy_change_preflight",
+        "app_private.d1_roll_policy_command_context",
+        "app_private.d1_roll_policy_direct_result_rows_match",
+        "app_private.d1_roll_policy_direct_success_evidence",
+        "app_private.d1_roll_policy_provision_revision_pools",
+        "app_private.d1_roll_policy_receipt_context",
+        "app_private.roll_policy_revisions"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_submit_actor_allowed": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect55_01_db02_submit_context.sql.draft",
+      "arguments": "p_school uuid,p_actor uuid",
+      "returns": "boolean",
+      "owner": "schoolos_student_executor",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "c58295a7b4bd5957e53f74a43ba86a959a55af90a46929706880e85edb633d5d",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.current_principal_id",
+        "app_private.d1_roll_policy_actor_all_authorized"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_submit_context": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect55_01_db02_submit_context.sql.draft",
+      "arguments": "p_school uuid,p_key text,p_action text,p_source uuid, p_revision integer,p_mode text,p_start bigint,p_effective_from date, p_new_mode text,p_new_start bigint,p_reason text",
+      "returns": "TABLE(actor_id uuid,operation_id uuid,policy_version_id uuid, intent_hash bytea,receipt_id uuid,receipt_state text,result_ref uuid, result_summary jsonb,business_date date)",
+      "owner": "schoolos_student_executor",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "fc1ce62fabfbf28aad78906cba75e6a7ec4ab0b67cc031781efcbb48a825ac1d",
+      "literal_exceptions": [
+        "D1 Roll Policy SUBMIT context invalid",
+        "D1 Roll Policy SUBMIT historical receipt invalid",
+        "D1 Roll Policy SUBMIT locked source preflight invalid",
+        "D1 Roll Policy SUBMIT receipt binding changed"
+      ],
+      "private_or_app_calls": [
+        "app_private.d1_roll_policy_change_preflight",
+        "app_private.d1_roll_policy_command_context",
+        "app_private.d1_roll_policy_receipt_context"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_submit_rows_match": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect55_02_db02_submit_evidence.sql.draft",
+      "arguments": "p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_school uuid, p_request uuid,p_p1 uuid,p_expected_revision integer, p_snapshot jsonb,p_requested_core jsonb,p_reason text",
+      "returns": "boolean",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "0b83c3fe7b6b9f5e44ee8504c9b2952dc32dfefe719a09e09ef6a04510310422",
+      "literal_exceptions": [],
+      "private_or_app_calls": [
+        "app_private.current_principal_id"
+      ],
+      "code_literals": []
+    },
+    "app_private.d1_roll_policy_submit_success_evidence": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect55_02_db02_submit_evidence.sql.draft",
+      "arguments": "p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_school uuid, p_request uuid,p_p1 uuid,p_expected_revision integer,p_action text",
+      "returns": "uuid",
+      "owner": "schoolos_evidence_writer",
+      "security_definer": true,
+      "execute_roles": [
+        "schoolos_workflow_executor"
+      ],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "d6d83f60add89c9a90fc90ebdd3805f716efd1fb699fd961e4ea024c4503f6a9",
+      "literal_exceptions": [
+        "D1 Roll Policy SUBMIT evidence intent invalid",
+        "D1 Roll Policy SUBMIT persisted request mismatch"
+      ],
+      "private_or_app_calls": [
+        "app_private.audit_events",
+        "app_private.command_receipts",
+        "app_private.current_principal_id"
+      ],
+      "code_literals": []
+    },
+    "app_private.db02_guard_roll_policy_approval_application": {
+      "final_fragment": "supabase/migrations/20260928000000_domain_package_01_effect57_06_db02_apply_application_guard.sql.draft",
+      "arguments": "",
+      "returns": "trigger",
+      "owner": "schoolos_schema_owner",
+      "security_definer": true,
+      "execute_roles": [],
+      "search_path": [
+        "pg_catalog",
+        "pg_temp"
+      ],
+      "definition_sha256": "abc489f3f0dbd82fa9f050312abefbb695a4fec4bb3db601a459d6e4cfbd6aaf",
+      "literal_exceptions": [
+        "D1 Roll Policy approval application is immutable",
+        "D1 Roll Policy approval application receipt mismatch",
+        "D1 Roll Policy approval application revision mismatch"
+      ],
+      "private_or_app_calls": [],
+      "code_literals": []
+    }
+  },
+  "literal_inventory_scope": "Final bodies of the 32 DB02-created/replaced routines; inherited dependency and PostgreSQL exceptions remain governed by source, not enumerated here.",
+  "computed_review_transition_codes": [
+    "D1_ROLL_POLICY_REVIEW_APPROVED",
+    "D1_ROLL_POLICY_REVIEW_REJECTED"
+  ],
+  "emitted_apply_invalidation_codes": [
+    "DB02_APPLY_DATE_STALE",
+    "DB02_APPLY_REQUESTER_REVOKED",
+    "DB02_APPLY_REVIEWER_REVOKED",
+    "DB02_APPLY_SOURCE_STALE"
+  ],
+  "helper_only_allowlisted_apply_code": "DB02_APPLY_ALLOCATOR_STALE",
+  "disabled_regression": {
+    "filename": "65_remaining_student_commands_fail_closed.sql",
+    "assertions": 38,
+    "restoration_required": false,
+    "reason": "Registered unchanged in exact-head passing runtime; operation and permission disabled by default."
+  },
+  "file_sha256": {
+    "supabase/config/db02_g02_composition_manifest.json": "7f25ce282877a75a4b506ec2d4a097b2818add0845229d7e5d4480ef5b2055fa",
+    "supabase/migrations/20260928000000_domain_package_01_effect42_01_db02_school_reviewer_candidates.sql.draft": "feb02f4bd8eddb66ba783bac290eaa3d42c70b6a6293b1c0e1132a677f448262",
+    "supabase/migrations/20260928000000_domain_package_01_effect43_01_db02_roll_policy_source_preflight.sql.draft": "e3b6fc56502a59a5e76d1dd4d5845fcf220be8c7b6d3a9e6bcb2616f3162e11c",
+    "supabase/migrations/20260928000000_domain_package_01_effect44_01_db02_roll_policy_p1_version_selector.sql.draft": "4d21c7b7072a9800001b2f09d5e13d5762ad38dfb440b408f77123b79f7c54f5",
+    "supabase/migrations/20260928000000_domain_package_01_effect45_01_db02_school_actor_all_authorization.sql.draft": "ea55d7feade31e52f97455604ebbb3c484f1b7530125a46b739667b44d7538e6",
+    "supabase/migrations/20260928000000_domain_package_01_effect46_01_db02_roll_policy_receipt_allowlist.sql.draft": "a641270f02af751214c08f71657adf97e601082ebeb74df12485aaeb79e43347",
+    "supabase/migrations/20260928000000_domain_package_01_effect47_01_db02_private_command_context.sql.draft": "b822f4118fb6bcda8dac97dde870ca84c69972791b7fa65dfb4ec62112c220b5",
+    "supabase/migrations/20260928000000_domain_package_01_effect48_01_db02_bound_p1_version.sql.draft": "a531788d63b0bcaebcbfc4451e34fe7092bb1ba51188677b627846ec06f72b3e",
+    "supabase/migrations/20260928000000_domain_package_01_effect49_01_db02_locked_future_source_preflight.sql.draft": "4f8bdc0fe07deec34f14fc7154273126180084c01b1342851838d5efbf5b5589",
+    "supabase/migrations/20260928000000_domain_package_01_effect50_01_db02_policy_revision_transition.sql.draft": "a9387f2d36b5f854635469671fb3a9f8ed84a396b39899609e9f004a12efe94d",
+    "supabase/migrations/20260928000000_domain_package_01_effect51_01_db02_atomic_policy_allocators.sql.draft": "c1e1c3e1b5423c7e7b10d7106327abeca085069fe004eab2de44441a1b6312c8",
+    "supabase/migrations/20260928000000_domain_package_01_effect52_01_db02_direct_success_evidence.sql.draft": "e06e1e13a764079de57364f7a2bfc924ae364884ad161ffc3dcb9796bc123250",
+    "supabase/migrations/20260928000000_domain_package_01_effect52_02_db02_direct_replay_proof.sql.draft": "9b274b3fca47accbc1c9290b37a303470fd7e5d78c3a7cbf7f39a9dcf7f66671",
+    "supabase/migrations/20260928000000_domain_package_01_effect53_01_db02_direct_atomic_evidence.sql.draft": "f0fb8faaa454529492c93c9ce2f75baf62991787e8a4f961297e4aebda402a25",
+    "supabase/migrations/20260928000000_domain_package_01_effect54_01_db02_authenticated_direct.sql.draft": "72a0de9a5a0f8173786c6e718a729f8eab20bb305df30a04efca1007d55c88b6",
+    "supabase/migrations/20260928000000_domain_package_01_effect55_01_db02_submit_context.sql.draft": "a4bd88b3f00295a44408dda76b4b0df6d57d2c8525a448a29edf69e6a6f24009",
+    "supabase/migrations/20260928000000_domain_package_01_effect55_02_db02_submit_evidence.sql.draft": "730d2f3f241a8a9aeacb5e34a6cd61b6b64bff872de7fd2031e7526fcbe936c1",
+    "supabase/migrations/20260928000000_domain_package_01_effect55_03_db02_approval_submit.sql.draft": "f434b1fd25300cb43dceda784044f16c9a7e3b13dc7a16696f0b850227ea8d60",
+    "supabase/migrations/20260928000000_domain_package_01_effect55_04_db02_approval_checked_read.sql.draft": "b6216622e3bab6e4531e1f5a99f39f0ff10333a13627b44b11670de001a951a4",
+    "supabase/migrations/20260928000000_domain_package_01_effect56_01_db02_review_context.sql.draft": "53170b09ae191f6bfd454df24072b030718e2f1716a2dacf37866f01ec76ee3d",
+    "supabase/migrations/20260928000000_domain_package_01_effect56_02_db02_review_evidence.sql.draft": "da684133ea0965e0de32403a0c9d5dd0452b35884e25bcb50a22c3bf833c951f",
+    "supabase/migrations/20260928000000_domain_package_01_effect56_03_db02_independent_review.sql.draft": "b569c38a6f6a3d766eb735fa223b8b887ee0038a473ed16a0caa45bb47f2ebb4",
+    "supabase/migrations/20260928000000_domain_package_01_effect57_01_db02_apply_live_authority.sql.draft": "508e9740d9d7053b8e7f51cf86b762ae51ba8d79a63088ed403ab0da424162b2",
+    "supabase/migrations/20260928000000_domain_package_01_effect57_02_db02_apply_policy_effect.sql.draft": "68dcf5856481829a5704a9c545206715abf7e0f7f37b0bb806134502d1344fed",
+    "supabase/migrations/20260928000000_domain_package_01_effect57_03_db02_apply_receipt_context.sql.draft": "08bd0046a11e1a3879c333769c004e7059a5871f0e7247d794a9f62ddde72d8e",
+    "supabase/migrations/20260928000000_domain_package_01_effect57_04_db02_apply_evidence.sql.draft": "02e3bb6b2ab056b8cfdcbe438bfbfb151c4e407ef37db99d811bba11d0236821",
+    "supabase/migrations/20260928000000_domain_package_01_effect57_05_db02_approved_apply.sql.draft": "a5ee1f303008e024a24fc2c2fb193b44687f255aa7e7d6dd7015b10e9ccc7cd0",
+    "supabase/migrations/20260928000000_domain_package_01_effect57_06_db02_apply_application_guard.sql.draft": "11d26072429291476a3a0bc1001661dfbc6df78a5647afe02e4b83566b71b118",
+    "supabase/migrations/20260928000000_domain_package_01_effect57_07_db02_apply_privilege_edges.sql.draft": "23915608c56661d5b0e186d22e6ded1854d0182af94663de3c87644e20d51c6f",
+    "supabase/migrations/20260928000000_domain_package_01_effect58_01_db02_review_apply_receipt_allowlist.sql.draft": "36175973f52916011bded790e3cbceb20d538602aac1dae88561cf7526d61b92",
+    "supabase/migrations/20260928000000_domain_package_01_effect58_02_db02_review_replay.sql.draft": "858d623084a942ff2bb979ce009cafb5debebbb2c4f5b3d6331f0498c1ce7fca",
+    "supabase/migrations/20260928000000_domain_package_01_effect58_03_db02_apply_replay.sql.draft": "99ceb2d2744e9d3236953f25ff0a08d447b1951b28faefd64c3c8efda7a6eae7",
+    "supabase/migrations/20260928000000_domain_package_01_effect58_04_db02_review_replay_entry.sql.draft": "476d8c338e45658244c1b0b1849d2dc564ddc4eb703615327ff9aaaf6d9f7820",
+    "supabase/migrations/20260928000000_domain_package_01_effect58_05_db02_apply_replay_entry.sql.draft": "21a7c512df3a4fa01ced58de217d05412b14511eb2326b86d2b30c9022c8879d",
+    "supabase/tests/domain/100_db02_t07_allocator_handoff.sql": "4acd2a3d75d10a280b93c63d0df30ddac0d66d3f2eb8bdee8ead78f3509bd4e6",
+    "supabase/tests/domain/101_db02_t08_privacy_acl_rls.sql": "5212b9cca0f9120f3a146bb71544cc4825b606b4fa750ede5997daa218155dd1",
+    "supabase/tests/domain/65_remaining_student_commands_fail_closed.sql": "c48ebd65f3fee44fbaec1793c3602a21526e150a7bec93279abac95d65b660d1",
+    "supabase/tests/domain/82_db02_school_reviewer_candidates.sql": "20cd7c35caaa791bcf0ce328d9a6113ea1ef4195fadfe5bd1fdbb49e98c23d7e",
+    "supabase/tests/domain/83_db02_roll_policy_source_preflight.sql": "3a90d2f00733d387564e197cd48fbb81d9eb97fbb1c31bb5778ec55159d1438d",
+    "supabase/tests/domain/84_db02_roll_policy_p1_version_selector.sql": "5bd0d62a73787836d1557d7ff80d5247dfa32341b56362f6dea60c9d431297ac",
+    "supabase/tests/domain/85_db02_school_actor_all_authority.sql": "ff40eab9be68fbcf041ccd6ab936337291fe511bbfb5c6ae86af55835d500e4a",
+    "supabase/tests/domain/86_db02_roll_policy_receipt_allowlist.sql": "59d27e5e384a15ff8e3e1d271c2df444e8524245c9483a43031da9e2a3a372af",
+    "supabase/tests/domain/89_db02_private_command_context.sql": "9ba0278297ef9d1458e2636ba4b246afd213fcd63c12903b30938d344d587069",
+    "supabase/tests/domain/90_db02_exact_p1_bound_version.sql": "04bef83bb50b58f2c6546a08da09198a125de85cfc460f06366e9d7e5e0da6f0",
+    "supabase/tests/domain/91_db02_locked_future_commitments.sql": "4e8a4de7c80c2b2778a07083ee73fde461248580f2b2d9a7c66757d22be402d3",
+    "supabase/tests/domain/92_db02_atomic_policy_revision_transition.sql": "0f6a3f9b694f1bcf46570a5c50a9a6af05336616e8eda842204bf9a226350ed8",
+    "supabase/tests/domain/93_db02_atomic_roll_allocator_pools.sql": "0bc5d82e673d51d3c0da1ca5556dfedf2b0ea7488cc8e5f521e15db74e26b460",
+    "supabase/tests/domain/94_db02_direct_evidence_replay.sql": "c98dd75c26014ca63047c7de87c177d16a4bd810378ee81d61513bfbc726c101",
+    "supabase/tests/domain/95_db02_authenticated_direct_entry.sql": "53ece46718cc1c8c8f31686c7c6fdffbd93d71d02a734241aa02d85997da91ed",
+    "supabase/tests/domain/96_db02_approval_submit_read.sql": "de62dce949bee5a8306e70d60f6d43cf6a67189899d218fb2c2e80b42d8a390f",
+    "supabase/tests/domain/97_db02_independent_review.sql": "0e8774d86d1870e66d2cf5ce9f1c22a5894093b46acd6b267c639925ecb410e9",
+    "supabase/tests/domain/98_db02_approved_policy_apply.sql": "dda3f56c41f20d0176729b452cbacd683e292ef48cb737aea1920453788aecd5",
+    "supabase/tests/domain/99_db02_shared_review_apply_receipts.sql": "313002551bc4533fa51eae5c8273191303bdfb2ea146c07fef864a7caf7b810c",
+    "tools/supabase/domain_business_ci.py": "ffd2a792ea5b9475cd5fb8e1b6a1bd7e5516b4b28e5bfc27417603e653972f65",
+    "tools/supabase/domain_local_ci.py": "a67d33ddb742adb2b8b39e2d791efb634541fa3636a29c4c2394981dde82edc0"
+  },
+  "release_authorized": false,
+  "hosted_enablement_authorized": false
+}
