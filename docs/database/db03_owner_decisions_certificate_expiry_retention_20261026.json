@@ -1,0 +1,21 @@
+{
+  "selected_on": "2026-10-26",
+  "owner": "yunusyosaf399",
+  "source": "Current conversation request_user_input answers",
+  "decisions": [
+    {
+      "id": "ADMISSION-MISSING-CERTIFICATE-DEADLINE",
+      "question": "If required certificates are still missing after the two-month deadline, what should happen?",
+      "selected_label": "Reject application",
+      "selected_description": "Record rejection and preserve its history when the deadline expires."
+    },
+    {
+      "id": "ADMISSION-CERTIFICATE-RETENTION",
+      "question": "How should uploaded admission certificates be retained?",
+      "selected_label": "Keep permanently",
+      "selected_description": "Keep admission certificates permanently, including rejected and withdrawn applications."
+    }
+  ],
+  "implementation_status": "Recorded product requirements. Deadline rejection and permanent byte retention are not yet implemented.",
+  "hosted_deployment_authorized": false
+}
