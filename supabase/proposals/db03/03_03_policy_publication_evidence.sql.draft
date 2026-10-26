@@ -38,7 +38,7 @@ CREATE FUNCTION app_private.db03_policy_publication_receipt(
  p_expected bigint,p_source uuid,p_write boolean)
 RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE ctx record; r record; p record; prior record; v_receipt uuid;
- config_hash text; summary jsonb; payload jsonb; correlation uuid;
+ config_hash text; summary jsonb; v_payload jsonb; correlation uuid;
 BEGIN
  SELECT * INTO ctx FROM app_private.db03_policy_publisher_context();
  IF ctx.actor_id IS DISTINCT FROM p_actor OR ctx.operation_id IS DISTINCT FROM p_operation
@@ -74,7 +74,7 @@ BEGIN
   v_receipt:=pg_catalog.gen_random_uuid(); correlation:=pg_catalog.gen_random_uuid();
   summary:=pg_catalog.jsonb_build_object('school_id',p.school_id,'policy_id',p_policy,'policy_version',p.version,
    'published_at',p.published_at,'published_row_version',p_expected+1,'source_policy_id',p_source,'configuration_hash',config_hash);
-  payload:=summary-ARRAY['published_row_version','configuration_hash'];
+  v_payload:=summary-ARRAY['published_row_version','configuration_hash'];
   INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,
    canonical_payload_hash,canonicalization_version,expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
   VALUES(v_receipt,p_actor,p_operation,'admission.policy.publish',p_key,p_hash,1,p_expected,'SUCCEEDED',
@@ -82,10 +82,10 @@ BEGIN
   INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
    target_kind,target_ref,command_receipt_id,source_kind,correlation_id,occurred_at,details,created_by)
   VALUES(p_actor,'INDIVIDUAL','SUCCEEDED',pg_catalog.jsonb_build_object('operation','admission.policy.publish'),
-   p_expected+1,'admission.policy.published','ADMISSION_POLICY',p_policy,v_receipt,'API',correlation,p.published_at,payload,p_actor);
+   p_expected+1,'admission.policy.published','ADMISSION_POLICY',p_policy,v_receipt,'API',correlation,p.published_at,v_payload,p_actor);
   INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,
    command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
-  VALUES('admission.policy.published','ADMISSION_POLICY',p_policy,p.version,v_receipt,1,correlation,p.published_at,payload,p_actor);
+  VALUES('admission.policy.published','ADMISSION_POLICY',p_policy,p.version,v_receipt,1,correlation,p.published_at,v_payload,p_actor);
   SELECT * INTO r FROM app_private.command_receipts WHERE id=v_receipt;
  END IF;
  IF r.command_kind<>'admission.policy.publish' OR r.state<>'SUCCEEDED'
@@ -101,16 +101,16 @@ BEGIN
   OR (r.result_summary->>'source_policy_id')::uuid IS DISTINCT FROM p_source
   OR r.result_summary->>'configuration_hash' IS DISTINCT FROM config_hash THEN
   RAISE EXCEPTION 'DB03 publication receipt proof invalid'; END IF;
- payload:=r.result_summary-ARRAY['published_row_version','configuration_hash'];
+ v_payload:=r.result_summary-ARRAY['published_row_version','configuration_hash'];
  IF (SELECT count(*) FROM app_private.audit_events a WHERE a.command_receipt_id=v_receipt
    AND a.event_type='admission.policy.published' AND a.actor_id=p_actor AND a.actor_kind='INDIVIDUAL'
    AND a.outcome='SUCCEEDED' AND a.target_ref=p_policy AND a.target_version=p_expected+1
-   AND a.details=payload AND a.created_by=p_actor AND a.source_kind='API'
+   AND a.details=v_payload AND a.created_by=p_actor AND a.source_kind='API'
    AND a.occurred_at=p.published_at
    AND a.authority_evidence=pg_catalog.jsonb_build_object('operation','admission.policy.publish'))<>1
   OR (SELECT count(*) FROM app_private.outbox_events e WHERE e.command_receipt_id=v_receipt
    AND e.event_type='admission.policy.published' AND e.schema_version=1 AND e.event_ordinal=1
-   AND e.aggregate_ref=p_policy AND e.aggregate_version=p.version AND e.payload=payload
+   AND e.aggregate_ref=p_policy AND e.aggregate_version=p.version AND e.payload=v_payload
    AND e.created_by=p_actor AND e.occurred_at=p.published_at AND e.causation_event_id IS NULL
    AND EXISTS(SELECT 1 FROM app_private.audit_events a WHERE a.command_receipt_id=v_receipt AND a.correlation_id=e.correlation_id))<>1 THEN
   RAISE EXCEPTION 'DB03 publication audit/event proof invalid'; END IF;

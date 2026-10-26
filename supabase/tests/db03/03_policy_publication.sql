@@ -50,7 +50,7 @@ BEGIN IF NEW.event_type='admission.policy.published' THEN RAISE EXCEPTION 'DB03 
 CREATE TRIGGER db03_test_outbox_failure BEFORE INSERT ON app_private.outbox_events
  FOR EACH ROW EXECUTE FUNCTION pg_temp.db03_test_outbox_failure();
 SET ROLE authenticated;
-SELECT throws_ok(format($q$SELECT * FROM app.publish_admission_policy('55555555-5555-4555-8555-555555555555',%s,NULL,'atomic-failure')$q$,:'version1'),'P0001'::char(5),NULL::text,'outbox failure aborts publication');
+SELECT throws_ok(format($q$SELECT * FROM app.publish_admission_policy('55555555-5555-4555-8555-555555555555',%s,NULL,'atomic-failure')$q$,:'version1'),'P0001'::char(5),'DB03 synthetic outbox failure'::text,'outbox failure aborts publication');
 RESET ROLE;
 SELECT ok((SELECT state='DRAFT' FROM app_private.admission_policy_versions WHERE id='55555555-5555-4555-8555-555555555555') AND (SELECT count(*) FROM app_private.command_receipts WHERE command_kind='admission.policy.publish')=0 AND (SELECT count(*) FROM app_private.admission_numbering_profiles WHERE state='PUBLISHED')=0,'failure leaves no policy/profile publication or partial receipt');
 ROLLBACK TO SAVEPOINT publication_failure;
