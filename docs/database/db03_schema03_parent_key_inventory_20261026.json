@@ -1,0 +1,1099 @@
+{
+  "format_version": 1,
+  "task": "DB03-SCHEMA-03",
+  "completed_on": "2026-10-26",
+  "status": "SOURCE_AND_DESIGN_PREFLIGHT_COMPLETE",
+  "runtime_implemented": false,
+  "database_tests_run": false,
+  "ddl_installed": false,
+  "hosted_writes": false,
+  "student_create_enabled": false,
+  "source_refs": {
+    "db03_pr": 102,
+    "db03_head": "d9995a47295a5b6e0ddecf127a47453081517d98",
+    "main": "df1c98d5c2d19424946986fc6ba7615202b0a443",
+    "accepted_db02_successor": "06c2be2412e1699f3fa8f2804969e9808eb16e09"
+  },
+  "scope": "Parent table declarations and complete source-chain key audit; Foundation source is executable/frozen, D1 Academic source remains inactive draft. No live DB03 catalog claim.",
+  "parent_defining_files_identical_to_accepted_successor": true,
+  "source_file_sha256": {
+    "supabase/migrations/20260924122445_foundation_identity_school_files.sql": "f846b41121d3e125be8de0a1f0e7fd6e48d2d812ad2330107a5ffca3ac229b5b",
+    "supabase/migrations/20260924122446_foundation_rbac_workflow.sql": "8245216fd8ac9e82d13c2f8d614010a41962b372bf16917e2f297caff8819351",
+    "supabase/migrations/20260924122448_foundation_receipts_events_settings.sql": "28f0b2a9b49b3245c292e16c9f67a468cb56d1e8aa8bc4cee12d8f8dd73ed795",
+    "supabase/migrations/20260928000000_domain_package_01.sql.draft": "1ba7b945e29c17b02e01c751baf6df1c8219644082d82dc26f6c2de0d735fead"
+  },
+  "frozen_foundation_files": [
+    {
+      "version": "20260924122442",
+      "file": "20260924122442_foundation_roles_schemas.sql",
+      "sha256": "f8793604a4b8b0b25392540bf81dfe39e43941729998bb76a9dc8506e7dd0d1d",
+      "git_blob": "cebf9710f019f591f6c4bda5189e49ca7002bbc5"
+    },
+    {
+      "version": "20260924122445",
+      "file": "20260924122445_foundation_identity_school_files.sql",
+      "sha256": "f846b41121d3e125be8de0a1f0e7fd6e48d2d812ad2330107a5ffca3ac229b5b",
+      "git_blob": "16e98bc39d19b33204d0576668e48ef2b4626148"
+    },
+    {
+      "version": "20260924122446",
+      "file": "20260924122446_foundation_rbac_workflow.sql",
+      "sha256": "8245216fd8ac9e82d13c2f8d614010a41962b372bf16917e2f297caff8819351",
+      "git_blob": "e8457f4fbe3c278c90cc706a05371cf3728ab7af"
+    },
+    {
+      "version": "20260924122448",
+      "file": "20260924122448_foundation_receipts_events_settings.sql",
+      "sha256": "28f0b2a9b49b3245c292e16c9f67a468cb56d1e8aa8bc4cee12d8f8dd73ed795",
+      "git_blob": "b7c5ab80e1bb84978d06f382efd599df5baa46f7"
+    },
+    {
+      "version": "20260924122450",
+      "file": "20260924122450_foundation_late_fks_indexes.sql",
+      "sha256": "89aff7d01c6293cced0be0d9f23b90826996690bb8a9a7cfc9a60b60de319447",
+      "git_blob": "41259c8439d041c0de913e119e773fb9981c4b57"
+    },
+    {
+      "version": "20260924122451",
+      "file": "20260924122451_foundation_structural_triggers.sql",
+      "sha256": "d5612f73f07102cad4ef41b1642db04a2afc061271f6c2158aad73ff0fb4c4fb",
+      "git_blob": "4ce4d54229067173ddfab88cacd481bc1657e811"
+    },
+    {
+      "version": "20260924122453",
+      "file": "20260924122453_foundation_authorization_rls.sql",
+      "sha256": "f8f8d3dda44a1685c82561cf7825a87d1d662e0480c8b8adcb0714cb4919e056",
+      "git_blob": "b992465d95597ae273363c611e729b295e268513"
+    },
+    {
+      "version": "20260924122455",
+      "file": "20260924122455_foundation_privilege_lockdown.sql",
+      "sha256": "330d583878ab6282f6a0b56e5665a25e87d3c6cae93b8dd0ded915b9fcaddff2",
+      "git_blob": "caaa791e957a05a1deb1656f87d5198506e1d4f1"
+    },
+    {
+      "version": "20260924183537",
+      "file": "20260924183537_foundation_auth_helper_schema_usage.sql",
+      "sha256": "3ecddebe953935724636dff14a2c15f27da86e804e2877a37396d85cebdf69c1",
+      "git_blob": "30f517d67087011c21aa3b6fb4aaa80d9689cb72"
+    }
+  ],
+  "external_parents": {
+    "app_private.people": {
+      "source_file": "supabase/migrations/20260924122445_foundation_identity_school_files.sql",
+      "declaration_sha256": "5e0cb4161bc36ebf8e028c299f188e65171b24e0acbf1eda2f4ce21ea6305e7c",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "display_name",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "row_version",
+          "type": "bigint",
+          "declared_not_null": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        }
+      ],
+      "keys": [
+        {
+          "constraint": "people_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ]
+        }
+      ]
+    },
+    "app_private.principals": {
+      "source_file": "supabase/migrations/20260924122445_foundation_identity_school_files.sql",
+      "declaration_sha256": "fbb1a71095e6e5b3b9e5c0feb257c867d230d5d52119f4fda9b0872d2f634454",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "person_id",
+          "type": "uuid",
+          "declared_not_null": false
+        },
+        {
+          "name": "label",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "system_purpose",
+          "type": "text",
+          "declared_not_null": false
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "row_version",
+          "type": "bigint",
+          "declared_not_null": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        }
+      ],
+      "keys": [
+        {
+          "constraint": "principals_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "constraint": "principals_id_kind_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "id",
+            "kind"
+          ]
+        }
+      ]
+    },
+    "app_private.school_profiles": {
+      "source_file": "supabase/migrations/20260924122445_foundation_identity_school_files.sql",
+      "declaration_sha256": "edbbcde256894217931d5f05ba01ff44c4a46209f0a478d9ad3271f0a61704a0",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "singleton",
+          "type": "boolean",
+          "declared_not_null": true
+        },
+        {
+          "name": "code",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "timezone",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "currency_code",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "locale",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "contact_details",
+          "type": "jsonb",
+          "declared_not_null": true
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "default_academic_year_id",
+          "type": "uuid",
+          "declared_not_null": false
+        },
+        {
+          "name": "logo_file_id",
+          "type": "uuid",
+          "declared_not_null": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "row_version",
+          "type": "bigint",
+          "declared_not_null": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        }
+      ],
+      "keys": [
+        {
+          "constraint": "school_profiles_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "constraint": "school_profiles_singleton_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "singleton"
+          ]
+        }
+      ]
+    },
+    "app.campuses": {
+      "source_file": "supabase/migrations/20260924122445_foundation_identity_school_files.sql",
+      "declaration_sha256": "45fb2cdc6f0a85842ac0043ef7f8771201042a0c26ffa83c6336bbb1fa5e7e6b",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "school_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "code",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "address",
+          "type": "text",
+          "declared_not_null": false
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "row_version",
+          "type": "bigint",
+          "declared_not_null": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        }
+      ],
+      "keys": [
+        {
+          "constraint": "campuses_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "constraint": "campuses_school_id_code_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "school_id",
+            "code"
+          ]
+        }
+      ]
+    },
+    "app.academic_years": {
+      "source_file": "supabase/migrations/20260924122445_foundation_identity_school_files.sql",
+      "declaration_sha256": "51fce64406206281b0e84d2e0d20971409cd2872fea761f2b8d722a40ab7062c",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "school_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "code",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "label",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "starts_on",
+          "type": "date",
+          "declared_not_null": true
+        },
+        {
+          "name": "ends_on",
+          "type": "date",
+          "declared_not_null": true
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "row_version",
+          "type": "bigint",
+          "declared_not_null": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        }
+      ],
+      "keys": [
+        {
+          "constraint": "academic_years_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "constraint": "academic_years_school_id_code_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "school_id",
+            "code"
+          ]
+        },
+        {
+          "constraint": "academic_years_id_school_id_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "id",
+            "school_id"
+          ]
+        }
+      ]
+    },
+    "app_private.approval_policy_versions": {
+      "source_file": "supabase/migrations/20260924122446_foundation_rbac_workflow.sql",
+      "declaration_sha256": "9374ff794c61d7ab2713f6cdb910d2fc3eb37669c2ee1c3f1b3678fc845ec9d1",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "policy_key",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "version",
+          "type": "integer",
+          "declared_not_null": true
+        },
+        {
+          "name": "operation_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "campus_id",
+          "type": "uuid",
+          "declared_not_null": false
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "effective_from",
+          "type": "timestamptz",
+          "declared_not_null": false
+        },
+        {
+          "name": "effective_until",
+          "type": "timestamptz",
+          "declared_not_null": false
+        },
+        {
+          "name": "activated_at",
+          "type": "timestamptz",
+          "declared_not_null": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "row_version",
+          "type": "bigint",
+          "declared_not_null": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        }
+      ],
+      "keys": [
+        {
+          "constraint": "approval_policy_versions_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "constraint": "approval_policy_versions_policy_key_version_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "policy_key",
+            "version"
+          ]
+        },
+        {
+          "constraint": "approval_policy_versions_id_operation_id_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "id",
+            "operation_id"
+          ]
+        }
+      ]
+    },
+    "app_private.command_receipts": {
+      "source_file": "supabase/migrations/20260924122448_foundation_receipts_events_settings.sql",
+      "declaration_sha256": "af4fc5bf81ceeffc42514bffced32248ad8d4430573951c60ebd72c728648fb2",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "principal_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "operation_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "command_kind",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "idempotency_key",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "canonicalization_version",
+          "type": "integer",
+          "declared_not_null": true
+        },
+        {
+          "name": "expected_target_version",
+          "type": "bigint",
+          "declared_not_null": false
+        },
+        {
+          "name": "request_id",
+          "type": "uuid",
+          "declared_not_null": false
+        },
+        {
+          "name": "expected_request_version",
+          "type": "bigint",
+          "declared_not_null": false
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "result_kind",
+          "type": "text",
+          "declared_not_null": false
+        },
+        {
+          "name": "result_ref",
+          "type": "uuid",
+          "declared_not_null": false
+        },
+        {
+          "name": "result_summary",
+          "type": "jsonb",
+          "declared_not_null": false
+        },
+        {
+          "name": "error_code",
+          "type": "text",
+          "declared_not_null": false
+        },
+        {
+          "name": "completed_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "declared_not_null": true
+        }
+      ],
+      "keys": [
+        {
+          "constraint": "command_receipts_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "constraint": "command_receipts_principal_id_operation_id_idempotency_key_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "principal_id",
+            "operation_id",
+            "idempotency_key"
+          ]
+        },
+        {
+          "constraint": "command_receipts_id_operation_id_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "id",
+            "operation_id"
+          ]
+        },
+        {
+          "constraint": "command_receipts_id_operation_id_request_id_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "id",
+            "operation_id",
+            "request_id"
+          ]
+        }
+      ]
+    },
+    "app_private.academic_classes": {
+      "source_file": "supabase/migrations/20260928000000_domain_package_01.sql.draft",
+      "declaration_sha256": "d5448a14cc0c07fe9b996d4ddc04658075685299340083fd514dec495d5a7e09",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "row_version",
+          "type": "bigint",
+          "declared_not_null": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "school_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "code",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "label",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "display_order",
+          "type": "integer",
+          "declared_not_null": true
+        },
+        {
+          "name": "stage_label",
+          "type": "text",
+          "declared_not_null": false
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "archived_at",
+          "type": "timestamptz",
+          "declared_not_null": false
+        },
+        {
+          "name": "archived_by",
+          "type": "uuid",
+          "declared_not_null": false
+        }
+      ],
+      "keys": [
+        {
+          "constraint": "d1_01_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "constraint": "d1_u01_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "school_id",
+            "code"
+          ]
+        },
+        {
+          "constraint": "d1_u02_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "id",
+            "school_id"
+          ]
+        }
+      ]
+    },
+    "app_private.class_offerings": {
+      "source_file": "supabase/migrations/20260928000000_domain_package_01.sql.draft",
+      "declaration_sha256": "a769ece042741a1706b6aa57011858131049c44150cef9ef8fc2da13c86f3745",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "row_version",
+          "type": "bigint",
+          "declared_not_null": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "school_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "class_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "campus_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "academic_year_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "capacity",
+          "type": "integer",
+          "declared_not_null": true
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "archived_at",
+          "type": "timestamptz",
+          "declared_not_null": false
+        },
+        {
+          "name": "archived_by",
+          "type": "uuid",
+          "declared_not_null": false
+        }
+      ],
+      "keys": [
+        {
+          "constraint": "d1_03_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "constraint": "d1_u04_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "campus_id",
+            "academic_year_id",
+            "class_id"
+          ]
+        },
+        {
+          "constraint": "d1_u05_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "id",
+            "campus_id"
+          ]
+        }
+      ]
+    },
+    "app_private.section_offerings": {
+      "source_file": "supabase/migrations/20260928000000_domain_package_01.sql.draft",
+      "declaration_sha256": "3ff903c19b0e799ca3a9d868b99345cd4a2619ab693d0d67b8dd044d7c36d784",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "created_by",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "row_version",
+          "type": "bigint",
+          "declared_not_null": true
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "declared_not_null": true
+        },
+        {
+          "name": "class_offering_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "campus_id",
+          "type": "uuid",
+          "declared_not_null": true
+        },
+        {
+          "name": "code",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "label",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "display_order",
+          "type": "integer",
+          "declared_not_null": true
+        },
+        {
+          "name": "capacity",
+          "type": "integer",
+          "declared_not_null": true
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "declared_not_null": true
+        },
+        {
+          "name": "archived_at",
+          "type": "timestamptz",
+          "declared_not_null": false
+        },
+        {
+          "name": "archived_by",
+          "type": "uuid",
+          "declared_not_null": false
+        }
+      ],
+      "keys": [
+        {
+          "constraint": "d1_04_pkey",
+          "kind": "PRIMARY KEY",
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "constraint": "d1_u06_key",
+          "kind": "UNIQUE",
+          "columns": [
+            "class_offering_id",
+            "code"
+          ]
+        }
+      ]
+    }
+  },
+  "reference_findings": [
+    {
+      "id": "KEY-01",
+      "finding": "Academic Year same-School composite FK has an actual parent key",
+      "actual_parent": "app.academic_years",
+      "columns": [
+        "id",
+        "school_id"
+      ]
+    },
+    {
+      "id": "KEY-02",
+      "finding": "Class Offering plus Campus composite FK has an actual parent key",
+      "actual_parent": "app_private.class_offerings",
+      "columns": [
+        "id",
+        "campus_id"
+      ]
+    },
+    {
+      "id": "KEY-03",
+      "finding": "Campus ID plus School composite is not an existing key in inspected source",
+      "required": "ID FK plus locked School comparison; no upstream schema edits"
+    },
+    {
+      "id": "KEY-04",
+      "finding": "Section ID plus Class Offering composite is not an existing key in inspected source",
+      "required": "ID FK plus locked exact ancestry comparison"
+    },
+    {
+      "id": "KEY-05",
+      "finding": "Person row_version is a mutable snapshot, not a referencable identity-verification key",
+      "required": "No FK or cascading update of saved Person version"
+    },
+    {
+      "id": "KEY-06",
+      "finding": "Same-School policy composite and same-app identity predecessor composite require new DB03-owned full UQs",
+      "proposed_parent_keys": [
+        {
+          "table": "app_private.admission_policy_versions",
+          "columns": [
+            "id",
+            "school_id"
+          ]
+        },
+        {
+          "table": "app_private.admission_identity_resolutions",
+          "columns": [
+            "id",
+            "application_id"
+          ]
+        }
+      ],
+      "installed": false
+    },
+    {
+      "id": "KEY-07",
+      "finding": "Optional reference with nonnull aggregate/School uses MATCH SIMPLE; row state/NOT NULL checks remain separate"
+    },
+    {
+      "id": "KEY-08",
+      "finding": "Document roster stage kind and published immutability need common locked parent checks; ID FK is insufficient"
+    },
+    {
+      "id": "KEY-09",
+      "finding": "No reverse application pointer to number/identity/handoff child is needed; derive protected current head"
+    },
+    {
+      "id": "KEY-10",
+      "finding": "Partial unique indexes cannot serve as FK parent keys; no cross-row source lookup in CHECK"
+    }
+  ],
+  "approved_product_choices_preserved": {
+    "P2-D01": "Person NULL only DRAFT; verified canonical Person before SUBMITTED",
+    "P3-D01": "Immutable per-published-policy required-document roster",
+    "finance": "Finance-authorizer clearance before READY even with waiver",
+    "test_skip": "Independent reviewed pending/unassessed-only ADMISSION_TEST skip, no FAILED bypass"
+  },
+  "unresolved_sources_and_choices": [
+    "P1-D01..D06 numbering/profile/publication material choices; global route and registrar",
+    "P2-D02 actual canonical Person verification/match/create authority and source",
+    "Unresolved DRAFT withdrawal versus approved NULL-only-DRAFT rule; no silent relaxation",
+    "P2-D03..D08 terminal/reapplication/corrections/authority/lock/privacy/stale-version details",
+    "P3 kind registry/purpose/retention/upload/verifier details beyond approved Option B",
+    "SC-06 signed integrated lock graph and real Finance reversal fence",
+    "P7/D1 genuine single-use handoff consumer and staged/upgrade acceptance"
+  ],
+  "proposed_install_order": [
+    [
+      "01_admission_numbering_profiles",
+      "02_admission_number_series"
+    ],
+    [
+      "04_admission_policy_versions",
+      "05_admission_policy_stages"
+    ],
+    [
+      "16_admission_policy_document_requirements"
+    ],
+    [
+      "06_admission_applications"
+    ],
+    [
+      "07_admission_identity_resolutions",
+      "13_admission_application_transitions"
+    ],
+    [
+      "03_admission_number_allocations"
+    ],
+    [
+      "later_P3_P7_and_D1_consumer"
+    ]
+  ],
+  "planned_database_cases": {
+    "count": 28,
+    "ids": "K01-K28",
+    "status": "NOT_RUN"
+  },
+  "planned_two_backend_races": {
+    "count": 6,
+    "ids": "R01-R06",
+    "status": "NOT_RUN"
+  },
+  "fk_action_proposal": {
+    "on_update": "RESTRICT",
+    "on_delete": "RESTRICT"
+  },
+  "details": "docs/database/db03_schema03_parent_keys_policy_person_preflight_20261026.md",
+  "primary_reference": "https://www.postgresql.org/docs/17/ddl-constraints.html"
+}

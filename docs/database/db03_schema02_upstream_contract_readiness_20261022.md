@@ -1,5 +1,7 @@
 # DB-03 SCHEMA-02 — Upstream Contract Reconciliation and Implementation Readiness
 
+> **SCHEMA-03 completed, 26 October 2026:** [Parent-key, published-policy/roster and verified-Person preflight](db03_schema03_parent_keys_policy_person_preflight_20261026.md) completes the documentation task proposed in section 7 below. Ten real external parent layouts and the P1/P2/#16 reference matrix are checked, with missing composite keys, historical Person-version semantics, the unresolved DRAFT terminal edge, acyclic install order and future acceptance cases recorded. DB02 source integration/contract freeze is now complete on its separate successor, but DB03 identity/Finance/lock and release gates remain open. No SQL or command is installed; older next-task statements below are historical.
+
 **Reviewed 2026-10-22. Status: DOCUMENTATION REVIEW COMPLETED, IMPLEMENTATION NOT AUTHORIZED.** Repository: `yunusyosaf399/edusync_saas_school_app`. Existing DB-03 draft [PR #102](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/102), HEAD `b2cce6440e11593285de68c578110e53d68cb200`. Inspected main `df1c98d5c2d19424946986fc6ba7615202b0a443`. **Scope: audit up-to-date source and identify safe DB-03 next work without changing another workstream's SQL or silently selecting owner decisions.**
 
 ## 1. Source checks and limits
