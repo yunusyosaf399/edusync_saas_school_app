@@ -186,6 +186,35 @@ def validate_principal_source() -> str:
     return test
 
 
+
+def validate_document_source() -> tuple[str, str, str]:
+    paths = sorted((ROOT / "supabase/proposals/db03").glob("07_*.sql.draft"))
+    if len(paths) != 5:
+        raise RuntimeError("DB03_DOCUMENT_FRAGMENT_COUNT")
+    sql = "\n".join(p.read_text() for p in paths)
+    if set(re.findall(r"(?mi)^CREATE TABLE app_private\.([a-z_]+)", sql)) != {
+        "admission_document_intakes", "admission_document_upload_intents", "admission_document_links", "admission_document_forwards"}:
+        raise RuntimeError("DB03_DOCUMENT_TABLE_SCOPE")
+    if re.findall(r"(?mi)^CREATE FUNCTION app\.([a-z_]+)", sql) != ["prepare_admission_documents", "forward_admission_to_principal", "read_admission_document_queue"]:
+        raise RuntimeError("DB03_DOCUMENT_PUBLIC_SCOPE")
+    outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
+    if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE)\b", outside):
+        raise RuntimeError("DB03_DOCUMENT_SEED_OR_ROLE")
+    test = (ROOT / "supabase/tests/db03/08_document_collection.sql").read_text()
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["25"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 25 or not test.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("DB03_DOCUMENT_TEST_PLAN")
+    fixtures = []
+    for name in ("policy_publication_actor", "intake_grace_actor", "document_collection_actor"):
+        fixture = (ROOT / ("supabase/tests/db03/fixtures/" + name + ".sql")).read_text()
+        anchor = "\\ir fixtures/" + name + ".sql"
+        if test.count(anchor) != 1:
+            raise RuntimeError("DB03_DOCUMENT_FIXTURE_SCOPE")
+        test = test.replace(anchor, fixture)
+        fixtures.append(fixture)
+    print("DB03_DOCUMENT_SOURCE_PASS fragments=5 assertions=25 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test, "\n".join(fixtures)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -198,6 +227,8 @@ def main() -> int:
     identity_sql, identity_test, identity_fixture = validate_identity_source()
     person_sql, person_test, person_fixture = validate_person_source()
     principal_test = validate_principal_source()
+    document_sql, document_test, document_fixture = validate_document_source()
+    subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
     # This runner never connects to a hosted service or reuses a user's stack.
@@ -333,6 +364,20 @@ def main() -> int:
                 raise RuntimeError("DB03_PERSON_DDL_ROLLBACK_INCOMPLETE")
             print("DB03_PERSON_DDL_ROLLBACK_PASS tables_entries_catalog_fence=0")
             local.run_psql(container, "BEGIN;\n" + person_sql + "\nCOMMIT;", "DB03_PERSON_INSTALL")
+            document_guard_before = local.run_psql(container, "SELECT md5(pg_get_functiondef('app_private.db03_guard_intake()'::regprocedure));", "DB03_DOCUMENT_GUARD_BEFORE", tuples=True).strip()
+            try:
+                local.run_psql(container, "BEGIN;\n" + document_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_DOCUMENT_FAILURE'; END $failure$;\nCOMMIT;", "DB03_DOCUMENT_DDL_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_DOCUMENT_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_DOCUMENT_DDL_FAILURE_ABSENT")
+            document_guard_after = local.run_psql(container, "SELECT md5(pg_get_functiondef('app_private.db03_guard_intake()'::regprocedure));", "DB03_DOCUMENT_GUARD_AFTER", tuples=True).strip()
+            absent = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_document_intakes','admission_document_upload_intents','admission_document_links','admission_document_forwards'))+(SELECT count(*) FROM pg_proc WHERE pronamespace='app'::regnamespace AND proname IN('prepare_admission_documents','forward_admission_to_principal','read_admission_document_queue'))+(SELECT count(*) FROM pg_trigger WHERE tgname IN('a0_db03_document_file_fence','a1_db03_retain_admission_file','a1_db03_retain_file_catalog'));", "DB03_DOCUMENT_DDL_ABSENT", tuples=True).strip()
+            if absent != "0" or document_guard_before != document_guard_after:
+                raise RuntimeError("DB03_DOCUMENT_DDL_ROLLBACK_INCOMPLETE")
+            print("DB03_DOCUMENT_DDL_ROLLBACK_PASS sources_entries_file_fences=0 prior_guard_restored=true")
+            local.run_psql(container, "BEGIN;\n" + document_sql + "\nCOMMIT;", "DB03_DOCUMENT_INSTALL")
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -419,9 +464,23 @@ def main() -> int:
             if remaining != "0":
                 raise RuntimeError("DB03_PRINCIPAL_FIXTURE_ROLLBACK_INCOMPLETE")
             print("DB03_PRINCIPAL_DATABASE_PASS 27/27; total_DB03=277/277; Foundation=220/220; fixtures_rolled_back=true")
+            try:
+                document_output = local.run_psql(container, document_test, "DB03_DOCUMENT_TEST")
+            except local.DomainLocalCIError:
+                local.run_psql(container, "\\o /dev/null\n" + document_test, "DB03_DOCUMENT_SQL_DIAGNOSTIC")
+                raise
+            lines = document_output.splitlines()
+            for i, line in enumerate(lines):
+                if re.match(r"\s*not ok\b", line):
+                    print("DB03_DOCUMENT_ASSERTION_DETAIL " + "\n".join(lines[max(0,i-1):i+12]))
+            parse_tap(document_output, 25)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_document_intakes)+(SELECT count(*) FROM app_private.admission_document_forwards)+(SELECT count(*) FROM app_private.principals)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_DOCUMENT_FIXTURE_CLEANUP", tuples=True).strip()
+            if remaining != "0":
+                raise RuntimeError("DB03_DOCUMENT_FIXTURE_ROLLBACK_INCOMPLETE")
+            print("DB03_DOCUMENT_DATABASE_PASS 25/25; total_DB03=302/302; Foundation=220/220; fixtures_rolled_back=true")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -431,6 +490,9 @@ def main() -> int:
             run_identity_races(local, fresh_publication_database, identity_fixture)
             from person_creation_races_ci import run_person_races
             run_person_races(local, fresh_publication_database, person_fixture)
+            sys.path.insert(0, str(ROOT))
+            from document_collection_ci import run_document_service
+            run_document_service(local, fresh_publication_database, document_fixture)
             return 0
     finally:
         if started:

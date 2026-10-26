@@ -18,6 +18,8 @@ The added suite contains 27 assertions: administrator intake success; administra
 
 Four new real PostgreSQL backend schedules cover principal-assignment revocation and principal-role retirement before S4 attestation and S5 creation. Each observes the blocking backend before committing revocation, then proves denied command and unchanged root/source. A fresh disposable catalog per additional schedule avoids reversing accepted revocations. Observed combined totals: 277 DB03 assertions, 220 frozen Foundation assertions, 24 observed-lock schedules. No frozen Foundation files/tests change.
 
+**Later S7 successor:** [private certificate collection and forwarding](db03_s7_certificate_collection_forwarding_20261026.md) implements those two dependency rows with measured private bytes and signed entitlement checks. The table below is the retained S6 boundary, not a claim that S7 is absent. Principal approval, automatic deadline rejection and D1 Student creation remain pending.
+
 ## Full requested workflow: current status
 
 | Requested behavior | Actual implementation status |

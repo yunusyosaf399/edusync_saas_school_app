@@ -1,0 +1,100 @@
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db03_document_receipts ON app_private.command_receipts FOR ALL TO schoolos_evidence_writer
+ USING(command_kind IN('admission.document.prepare','admission.document.upload','admission.document.forward'))
+ WITH CHECK(command_kind IN('admission.document.prepare','admission.document.upload','admission.document.forward'));
+CREATE POLICY db03_document_audit ON app_private.audit_events FOR ALL TO schoolos_evidence_writer
+ USING(event_type IN('admission.document.prepare','admission.document.upload','admission.document.forward') AND target_kind='ADMISSION_APPLICATION')
+ WITH CHECK(event_type IN('admission.document.prepare','admission.document.upload','admission.document.forward') AND target_kind='ADMISSION_APPLICATION');
+CREATE POLICY db03_document_outbox ON app_private.outbox_events FOR ALL TO schoolos_evidence_writer
+ USING(event_type IN('admission.document.prepare','admission.document.upload','admission.document.forward') AND aggregate_kind='ADMISSION_APPLICATION')
+ WITH CHECK(event_type IN('admission.document.prepare','admission.document.upload','admission.document.forward') AND aggregate_kind='ADMISSION_APPLICATION');
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.db03_document_receipt(p_code text,p_campus uuid,p_key text,p_hash bytea,p_expected bigint,
+ p_receipt uuid DEFAULT NULL,p_source uuid DEFAULT NULL) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; r app_private.command_receipts%ROWTYPE; h record; a app_private.admission_applications%ROWTYPE;
+ result_body jsonb; v_correlation uuid;
+BEGIN
+ IF p_code IS NULL OR p_code NOT IN('admission.document.prepare','admission.document.upload','admission.document.forward')
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 200 OR p_hash IS NULL OR octet_length(p_hash)<>32 OR p_expected IS NULL OR p_expected<1 THEN
+  RAISE EXCEPTION 'DB03 document receipt intent invalid'; END IF;
+ SELECT * INTO ctx FROM app_private.db03_document_actor_context(p_code,p_campus);
+ SELECT * INTO r FROM app_private.command_receipts WHERE principal_id=ctx.actor_id AND operation_id=ctx.operation_id AND idempotency_key=p_key;
+ IF FOUND THEN
+  IF r.canonical_payload_hash IS DISTINCT FROM p_hash OR r.expected_target_version IS DISTINCT FROM p_expected OR r.canonicalization_version<>1 THEN
+   RAISE EXCEPTION 'DB03 document idempotency conflict'; END IF;
+  p_source:=(r.result_summary->>'source_id')::uuid;
+ ELSIF p_receipt IS NULL THEN RETURN NULL;
+ END IF;
+ IF p_code='admission.document.prepare' THEN
+  SELECT id,application_id,application_version,command_receipt_id,occurred_at,created_by INTO h FROM app_private.admission_document_intakes WHERE id=p_source;
+ ELSIF p_code='admission.document.forward' THEN
+  SELECT id,application_id,application_version,command_receipt_id,occurred_at,created_by INTO h FROM app_private.admission_document_forwards WHERE id=p_source;
+ ELSE
+  SELECT id,application_id,application_version,command_receipt_id,occurred_at,created_by INTO h FROM app_private.admission_document_links WHERE id=p_source;
+ END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=h.application_id;
+ IF h.id IS NULL OR a.id IS NULL OR a.campus_id IS DISTINCT FROM p_campus OR h.created_by IS DISTINCT FROM ctx.actor_id
+  OR h.application_version<>p_expected+1 OR a.row_version<h.application_version
+  OR h.command_receipt_id IS DISTINCT FROM COALESCE(r.id,p_receipt) THEN RAISE EXCEPTION 'DB03 document source proof invalid'; END IF;
+ IF r.id IS NULL AND (a.state<>'DRAFT' OR a.row_version<>h.application_version) THEN RAISE EXCEPTION 'DB03 document new source stale'; END IF;
+ result_body:=jsonb_build_object('source_id',h.id,'application_id',a.id,'application_version',h.application_version);
+ IF r.id IS NULL THEN
+  v_correlation:=gen_random_uuid();
+  INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,
+   canonicalization_version,expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES(p_receipt,ctx.actor_id,ctx.operation_id,p_code,p_key,p_hash,1,p_expected,'SUCCEEDED','ADMISSION_DOCUMENT_EFFECT',a.id,result_body,clock_timestamp(),ctx.actor_id);
+  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+   campus_id,command_receipt_id,source_kind,correlation_id,occurred_at,details,created_by)
+  VALUES(ctx.actor_id,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation',p_code),h.application_version,p_code,'ADMISSION_APPLICATION',a.id,
+   p_campus,p_receipt,'API',v_correlation,h.occurred_at,result_body,ctx.actor_id);
+  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+   event_ordinal,correlation_id,occurred_at,payload,created_by)
+  VALUES(p_code,'ADMISSION_APPLICATION',a.id,h.application_version,p_receipt,1,v_correlation,h.occurred_at,result_body,ctx.actor_id);
+  SELECT * INTO r FROM app_private.command_receipts WHERE id=p_receipt;
+ END IF;
+ IF r.command_kind<>p_code OR r.state<>'SUCCEEDED' OR r.result_kind IS DISTINCT FROM 'ADMISSION_DOCUMENT_EFFECT'
+  OR r.result_ref<>a.id OR r.result_summary IS DISTINCT FROM result_body OR r.request_id IS NOT NULL
+  OR (SELECT count(*) FROM app_private.audit_events e WHERE e.command_receipt_id=r.id AND e.event_type=p_code
+   AND e.actor_id=ctx.actor_id AND e.actor_kind='INDIVIDUAL' AND e.outcome='SUCCEEDED' AND e.target_ref=a.id
+   AND e.target_kind='ADMISSION_APPLICATION' AND e.target_version=h.application_version AND e.campus_id=p_campus
+   AND e.details=result_body AND e.occurred_at=h.occurred_at AND e.created_by=ctx.actor_id AND e.source_kind='API'
+   AND e.authority_evidence=jsonb_build_object('operation',p_code))<>1
+  OR (SELECT count(*) FROM app_private.outbox_events e WHERE e.command_receipt_id=r.id AND e.event_type=p_code
+   AND e.aggregate_ref=a.id AND e.aggregate_kind='ADMISSION_APPLICATION' AND e.aggregate_version=h.application_version
+   AND e.schema_version=1 AND e.event_ordinal=1 AND e.payload=result_body AND e.occurred_at=h.occurred_at
+   AND e.created_by=ctx.actor_id AND e.causation_event_id IS NULL AND EXISTS(
+    SELECT 1 FROM app_private.audit_events x WHERE x.command_receipt_id=r.id AND x.correlation_id=e.correlation_id))<>1 THEN
+  RAISE EXCEPTION 'DB03 document immutable evidence invalid'; END IF;
+ RETURN result_body;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_document_receipt(text,uuid,text,bytea,bigint,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_document_receipt(text,uuid,text,bytea,bigint,uuid,uuid) TO schoolos_workflow_executor,schoolos_platform_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db03_document_entitlement_audit ON app_private.audit_events FOR INSERT TO schoolos_evidence_writer
+ WITH CHECK(event_type='admission.document.entitlement' AND target_kind='SCHOOL');
+RESET ROLE;
+GRANT EXECUTE ON FUNCTION app_private.db03_document_worker_actor() TO schoolos_evidence_writer;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.db03_audit_document_entitlement(p_school uuid,p_revision bigint,p_digest bytea,p_state text) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE worker uuid;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR p_revision IS NULL OR p_revision<1 OR p_digest IS NULL OR octet_length(p_digest)<>32
+  OR p_state IS NULL OR p_state NOT IN('ACTIVE','SUSPENDED','EXPIRED','CANCELLED') THEN RAISE EXCEPTION 'DB03 entitlement audit denied'; END IF;
+ worker:=app_private.db03_document_worker_actor();
+ IF NOT EXISTS(SELECT 1 FROM app_private.school_profiles WHERE id=p_school) THEN RAISE EXCEPTION 'DB03 entitlement School mismatch'; END IF;
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(worker,'SYSTEM','SUCCEEDED',jsonb_build_object('purpose','ADMISSION_DOCUMENT'),p_revision,'admission.document.entitlement','SCHOOL',p_school,
+  'WORKER',gen_random_uuid(),clock_timestamp(),jsonb_build_object('revision',p_revision,'snapshot_digest',encode(p_digest,'hex'),'subscription_state',p_state),worker);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_audit_document_entitlement(uuid,bigint,bytea,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_audit_document_entitlement(uuid,bigint,bytea,text) TO schoolos_file_login;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
