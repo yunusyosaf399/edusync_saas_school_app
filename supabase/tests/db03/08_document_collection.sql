@@ -1,12 +1,13 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(25);
+SELECT plan(28);
 SELECT is((SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_document_intakes','admission_document_upload_intents','admission_document_links','admission_document_forwards') AND relrowsecurity AND relforcerowsecurity),4::bigint,'four private document sources force RLS');
 SELECT is((SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_document_intakes','admission_document_upload_intents','admission_document_links','admission_document_forwards') AND has_table_privilege('authenticated',oid,'SELECT,INSERT,UPDATE,DELETE')),0::bigint,'no raw client document access');
 SELECT ok(NOT has_table_privilege('schoolos_file_login','app_private.file_objects','SELECT,INSERT,UPDATE,DELETE'),'file login has no general metadata DML');
 SELECT is((SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_allocate_document_upload','db03_finalize_document_upload','db03_audit_document_entitlement') AND has_function_privilege('authenticated',oid,'EXECUTE')),0::bigint,'clients cannot bypass entitlement-enforcing file service');
 SELECT is((SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_allocate_document_upload','db03_finalize_document_upload') AND has_function_privilege('service_role',oid,'EXECUTE')),0::bigint,'service_role has no worker shortcut');
+SELECT ok(NOT has_function_privilege('anon','app.list_admission_principal_queue(uuid,timestamptz,uuid,integer)','EXECUTE'),'anonymous users cannot enumerate principal queue');
 SELECT throws_ok($q$SELECT app_private.db03_finalize_document_upload('77777777-7777-4777-8777-777777777777',1,decode(repeat('ab',32),'hex'),clock_timestamp()+interval '1 minute')$q$,'P0001'::char(5),'DB03 purpose-bound file worker required'::text,'SQL owner cannot impersonate worker entry');
 \ir fixtures/policy_publication_actor.sql
 \ir fixtures/intake_grace_actor.sql
@@ -30,6 +31,8 @@ SELECT is((:'prepared_result'::jsonb->>'application_version')::bigint,2::bigint,
 SELECT is(app.prepare_admission_documents(:'a_application_id',1,'55555555-5555-4555-8555-555555555555','Private Previous School','prepare'),:'prepared_result'::jsonb,'configuration retry replays original source');
 SELECT throws_ok(format($q$SELECT app.prepare_admission_documents(%L,1,'55555555-5555-4555-8555-555555555555',NULL,'prepare')$q$,:'a_application_id'),'P0001'::char(5),'DB03 document idempotency conflict'::text,'changed transfer classification conflicts on same key');
 SELECT is(app.read_admission_document_queue(:'a_application_id')->>'status','PENDING_DOCUMENTS'::text,'missing certificates remain with administrator');
+SELECT throws_ok($q$SELECT * FROM app.list_admission_principal_queue('91919191-9191-4191-8191-919191919191',NULL,NULL,101)$q$,'P0001'::char(5),'DB03 document queue page invalid'::text,'principal queue page is bounded');
+SELECT throws_ok($q$SELECT * FROM app.list_admission_principal_queue('91919191-9191-4191-8191-919191919191',NULL,'77777777-7777-4777-8777-777777777777',50)$q$,'P0001'::char(5),'DB03 document queue page invalid'::text,'partial keyset cursor is denied');
 SELECT throws_ok(format($q$SELECT app.forward_admission_to_principal(%L,2,'missing')$q$,:'a_application_id'),'P0001'::char(5),'DB03 required documents missing or unavailable'::text,'configured transfer missing certificates cannot forward');
 RESET ROLE;
 SELECT ok((SELECT is_transfer AND previous_school_private='Private Previous School' FROM app_private.admission_document_intakes),'transfer derives from retained administrator attestation');

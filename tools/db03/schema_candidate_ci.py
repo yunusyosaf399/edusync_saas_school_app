@@ -195,13 +195,13 @@ def validate_document_source() -> tuple[str, str, str]:
     if set(re.findall(r"(?mi)^CREATE TABLE app_private\.([a-z_]+)", sql)) != {
         "admission_document_intakes", "admission_document_upload_intents", "admission_document_links", "admission_document_forwards"}:
         raise RuntimeError("DB03_DOCUMENT_TABLE_SCOPE")
-    if re.findall(r"(?mi)^CREATE FUNCTION app\.([a-z_]+)", sql) != ["prepare_admission_documents", "forward_admission_to_principal", "read_admission_document_queue"]:
+    if re.findall(r"(?mi)^CREATE FUNCTION app\.([a-z_]+)", sql) != ["prepare_admission_documents", "forward_admission_to_principal", "read_admission_document_queue", "list_admission_principal_queue"]:
         raise RuntimeError("DB03_DOCUMENT_PUBLIC_SCOPE")
     outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
     if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE)\b", outside):
         raise RuntimeError("DB03_DOCUMENT_SEED_OR_ROLE")
     test = (ROOT / "supabase/tests/db03/08_document_collection.sql").read_text()
-    if re.findall(r"SELECT plan\((\d+)\);", test) != ["25"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 25 or not test.rstrip().endswith("ROLLBACK;"):
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["28"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 28 or not test.rstrip().endswith("ROLLBACK;"):
         raise RuntimeError("DB03_DOCUMENT_TEST_PLAN")
     fixtures = []
     for name in ("policy_publication_actor", "intake_grace_actor", "document_collection_actor"):
@@ -211,7 +211,7 @@ def validate_document_source() -> tuple[str, str, str]:
             raise RuntimeError("DB03_DOCUMENT_FIXTURE_SCOPE")
         test = test.replace(anchor, fixture)
         fixtures.append(fixture)
-    print("DB03_DOCUMENT_SOURCE_PASS fragments=5 assertions=25 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    print("DB03_DOCUMENT_SOURCE_PASS fragments=5 assertions=28 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
     return sql, test, "\n".join(fixtures)
 
 
@@ -373,7 +373,7 @@ def main() -> int:
             else:
                 raise RuntimeError("DB03_EXPECTED_DOCUMENT_DDL_FAILURE_ABSENT")
             document_guard_after = local.run_psql(container, "SELECT md5(pg_get_functiondef('app_private.db03_guard_intake()'::regprocedure));", "DB03_DOCUMENT_GUARD_AFTER", tuples=True).strip()
-            absent = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_document_intakes','admission_document_upload_intents','admission_document_links','admission_document_forwards'))+(SELECT count(*) FROM pg_proc WHERE pronamespace='app'::regnamespace AND proname IN('prepare_admission_documents','forward_admission_to_principal','read_admission_document_queue'))+(SELECT count(*) FROM pg_trigger WHERE tgname IN('a0_db03_document_file_fence','a1_db03_retain_admission_file','a1_db03_retain_file_catalog'));", "DB03_DOCUMENT_DDL_ABSENT", tuples=True).strip()
+            absent = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_document_intakes','admission_document_upload_intents','admission_document_links','admission_document_forwards'))+(SELECT count(*) FROM pg_proc WHERE pronamespace='app'::regnamespace AND proname IN('prepare_admission_documents','forward_admission_to_principal','read_admission_document_queue','list_admission_principal_queue'))+(SELECT count(*) FROM pg_trigger WHERE tgname IN('a0_db03_document_file_fence','a1_db03_retain_admission_file','a1_db03_retain_file_catalog'));", "DB03_DOCUMENT_DDL_ABSENT", tuples=True).strip()
             if absent != "0" or document_guard_before != document_guard_after:
                 raise RuntimeError("DB03_DOCUMENT_DDL_ROLLBACK_INCOMPLETE")
             print("DB03_DOCUMENT_DDL_ROLLBACK_PASS sources_entries_file_fences=0 prior_guard_restored=true")
@@ -473,11 +473,11 @@ def main() -> int:
             for i, line in enumerate(lines):
                 if re.match(r"\s*not ok\b", line):
                     print("DB03_DOCUMENT_ASSERTION_DETAIL " + "\n".join(lines[max(0,i-1):i+12]))
-            parse_tap(document_output, 25)
+            parse_tap(document_output, 28)
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_document_intakes)+(SELECT count(*) FROM app_private.admission_document_forwards)+(SELECT count(*) FROM app_private.principals)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_DOCUMENT_FIXTURE_CLEANUP", tuples=True).strip()
             if remaining != "0":
                 raise RuntimeError("DB03_DOCUMENT_FIXTURE_ROLLBACK_INCOMPLETE")
-            print("DB03_DOCUMENT_DATABASE_PASS 25/25; total_DB03=302/302; Foundation=220/220; fixtures_rolled_back=true")
+            print("DB03_DOCUMENT_DATABASE_PASS 28/28; total_DB03=305/305; Foundation=220/220; fixtures_rolled_back=true")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
                 local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")

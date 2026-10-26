@@ -68,6 +68,18 @@ CREATE TABLE app_private.admission_document_forwards (
  created_by uuid NOT NULL REFERENCES app_private.principals(id),
  UNIQUE(application_id,revision), CHECK((revision=1)=(supersedes_id IS NULL))
 );
+-- Typed cross-application bindings remain constraints, not caller assertions.
+ALTER TABLE app_private.admission_document_intakes ADD UNIQUE(id,application_id),
+ ADD FOREIGN KEY(supersedes_id,application_id) REFERENCES app_private.admission_document_intakes(id,application_id);
+ALTER TABLE app_private.admission_document_upload_intents ADD UNIQUE(id,application_id,document_kind,file_id),
+ ADD FOREIGN KEY(intake_id,application_id) REFERENCES app_private.admission_document_intakes(id,application_id);
+ALTER TABLE app_private.admission_document_links ADD UNIQUE(id,application_id,document_kind),
+ ADD FOREIGN KEY(intent_id,application_id,document_kind,file_object_id) REFERENCES app_private.admission_document_upload_intents(id,application_id,document_kind,file_id),
+ ADD FOREIGN KEY(supersedes_id,application_id,document_kind) REFERENCES app_private.admission_document_links(id,application_id,document_kind);
+ALTER TABLE app_private.admission_document_forwards ADD UNIQUE(id,application_id),
+ ADD FOREIGN KEY(intake_id,application_id) REFERENCES app_private.admission_document_intakes(id,application_id),
+ ADD FOREIGN KEY(supersedes_id,application_id) REFERENCES app_private.admission_document_forwards(id,application_id);
+CREATE INDEX db03_document_forward_cursor ON app_private.admission_document_forwards(occurred_at,id,application_id);
 CREATE FUNCTION app_private.db03_document_history_guard() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
 BEGIN

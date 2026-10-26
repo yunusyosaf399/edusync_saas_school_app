@@ -124,7 +124,29 @@ BEGIN
  WHEN ready IS NOT NULL THEN 'READY_TO_FORWARD' ELSE 'PENDING_DOCUMENTS' END;
  RETURN jsonb_build_object('application_id',a.id,'application_version',a.row_version,'status',status);
 END $body$;
-REVOKE ALL ON FUNCTION app.prepare_admission_documents(uuid,bigint,uuid,text,text),app.forward_admission_to_principal(uuid,bigint,text),app.read_admission_document_queue(uuid) FROM PUBLIC,anon,authenticated,service_role;
-GRANT EXECUTE ON FUNCTION app.prepare_admission_documents(uuid,bigint,uuid,text,text),app.forward_admission_to_principal(uuid,bigint,text),app.read_admission_document_queue(uuid) TO authenticated;
+CREATE FUNCTION app.list_admission_principal_queue(p_campus_id uuid,p_after_time timestamptz DEFAULT NULL,p_after_id uuid DEFAULT NULL,p_limit integer DEFAULT 50)
+RETURNS TABLE(application_id uuid,application_version bigint,forward_id uuid,forwarded_at timestamptz)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE school uuid;
+BEGIN
+ IF p_campus_id IS NULL OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 100
+  OR (p_after_time IS NULL)<>(p_after_id IS NULL) OR (p_after_time IS NOT NULL AND NOT isfinite(p_after_time)) THEN
+  RAISE EXCEPTION 'DB03 document queue page invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ PERFORM app_private.db03_document_actor_context('admission.document.view',p_campus_id);
+ SELECT c.school_id INTO school FROM app.campuses c WHERE c.id=p_campus_id;
+ IF school IS NULL THEN RAISE EXCEPTION 'DB03 document Campus unavailable'; END IF;
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school FOR UPDATE;
+ PERFORM app_private.db03_document_actor_context('admission.document.view',p_campus_id);
+ RETURN QUERY SELECT a.id,a.row_version,f.id,f.occurred_at
+ FROM app_private.admission_document_forwards f JOIN app_private.admission_applications a ON a.id=f.application_id
+ WHERE a.campus_id=p_campus_id AND a.state='DRAFT'
+ AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_forwards n WHERE n.application_id=a.id AND n.revision>f.revision)
+ AND f.snapshot_hash=app_private.db03_document_snapshot(a.id)
+ AND (p_after_time IS NULL OR (f.occurred_at,f.id)>(p_after_time,p_after_id))
+ ORDER BY f.occurred_at,f.id LIMIT p_limit;
+END $body$;
+REVOKE ALL ON FUNCTION app.prepare_admission_documents(uuid,bigint,uuid,text,text),app.forward_admission_to_principal(uuid,bigint,text),app.read_admission_document_queue(uuid),app.list_admission_principal_queue(uuid,timestamptz,uuid,integer) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.prepare_admission_documents(uuid,bigint,uuid,text,text),app.forward_admission_to_principal(uuid,bigint,text),app.read_admission_document_queue(uuid),app.list_admission_principal_queue(uuid,timestamptz,uuid,integer) TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app_private,app FROM schoolos_workflow_executor;

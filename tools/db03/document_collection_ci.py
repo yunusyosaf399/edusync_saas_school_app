@@ -33,8 +33,15 @@ def run_document_service(local, fresh_database, fixture):
         'BEGIN;\n'+fixture+"\nUPDATE app_private.operation_contracts SET enabled=true WHERE code LIKE 'admission.%';\nCOMMIT;",'DB03_DOCUMENT_SERVICE_FIXTURE')
     def connection():
         return psycopg.connect(host='127.0.0.1',port=54322,dbname='postgres',user='postgres',password='postgres',autocommit=True)
+    # Provision a random credential only on this freshly reset loopback stack.
+    # A real LOGIN exercises the worker boundary; postgres is deliberately not
+    # a superuser and cannot SET SESSION AUTHORIZATION to another login.
+    worker_password=secrets.token_urlsafe(48)
+    from psycopg import sql
+    with connection() as root:
+        root.execute(sql.SQL('ALTER ROLE schoolos_file_login PASSWORD {}').format(sql.Literal(worker_password)))
     def worker():
-        conn=connection();conn.execute('SET SESSION AUTHORIZATION schoolos_file_login');return conn
+        return psycopg.connect(host='127.0.0.1',port=54322,dbname='postgres',user='schoolos_file_login',password=worker_password,autocommit=True)
     url,api_key=local_status()
     opener=urllib.request.build_opener(NoRedirect(),urllib.request.ProxyHandler({}))
     def request(method,path,body):
@@ -108,6 +115,7 @@ def run_document_service(local, fresh_database, fixture):
         check(queue(app)=='READY_TO_FORWARD','both required certificates collected')
         forwarded=api('SELECT app.forward_admission_to_principal(%s,4,%s)',(app,'forward'))
         check(queue(app)=='AWAITING_PRINCIPAL_REVIEW','forward creates real queue source')
+        check(api('SELECT count(*) FROM app.list_admission_principal_queue(%s,NULL,NULL,50)',(CAMPUS,))==1,'authorized paginated principal queue lists effective forward')
         check(api('SELECT app.forward_admission_to_principal(%s,4,%s)',(app,'forward'))==forwarded,'forward replay safe')
         denied(lambda:upload(app,5,'BIRTH_CERTIFICATE','edit-after-forward'),'already forwarded')
         with connection() as root:
@@ -120,6 +128,7 @@ def run_document_service(local, fresh_database, fixture):
             root.execute("UPDATE app_private.file_objects SET state='ARCHIVED' WHERE id=%s",(birth['file_id'],))
             denied(lambda:root.execute("UPDATE app_private.file_objects SET state='PURGED' WHERE id=%s",(birth['file_id'],)),'retained permanently')
         check(queue(app)=='PENDING_DOCUMENTS','archival invalidates effective forward')
+        check(api('SELECT count(*) FROM app.list_admission_principal_queue(%s,NULL,NULL,50)',(CAMPUS,))==0,'quarantined/archived source disappears from effective queue')
         check(len(list((directory/'archive').iterdir()))==2,'archival keeps actual bytes')
         first=make_app('first-time')
         upload(first,2,'BIRTH_CERTIFICATE','first-birth')
