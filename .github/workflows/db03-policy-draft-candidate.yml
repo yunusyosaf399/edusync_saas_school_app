@@ -1,0 +1,41 @@
+name: DB03 inactive policy draft schema
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/db03-policy-draft-candidate.yml'
+      - 'supabase/proposals/db03/**'
+      - 'supabase/tests/db03/**'
+      - 'tools/db03/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db03-policy-draft-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  db03-s1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 06c2be2412e1699f3fa8f2804969e9808eb16e09
+          path: .ci/db03-foundation
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: Pinned imports for the accepted disposable stack harness
+        run: python -m pip install 'psycopg[binary]==3.2.10' 'cryptography==46.0.4'
+      - name: DB03 source and rollback-only structural acceptance
+        run: python tools/db03/schema_candidate_ci.py --foundation-root .ci/db03-foundation

@@ -1,5 +1,7 @@
 # DB03 SCHEMA-03 — P1/P2 parent keys, published policy and verified Person preflight
 
+> **Follow-on owner decisions and S1 candidate, 26 October 2026:** [Three actual owner selections](db03_owner_decisions_identity_drafts_publication_20261026.md) now resolve the identity reviewer count, retained unresolved-DRAFT withdrawal and immediate publication. This supersedes the unresolved terminal-edge stop below in that narrow scope; exact verifier/source and other choices remain open. The [first inactive S1 draft-configuration schema](db03_s1_policy_draft_schema_candidate_20261026.md) is a separately tested proposal, not hosted installation or full Admissions implementation. This preflight and its inventory retain their original inspected-source snapshot.
+
 **Completed 26 October 2026 — source and schema-design preflight only.** This completes SCHEMA-02's recorded next task for draft PR #102. No Admissions schema, command, permission or positive runtime acceptance is installed by this document. Existing owner decisions remain binding; proposed relational keys below are engineering candidates for the later reviewed DDL.
 
 ## 1. Source identity and current dependency status
