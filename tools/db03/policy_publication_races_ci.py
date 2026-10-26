@@ -45,8 +45,18 @@ def run_publication_races(local, fresh_database, fixture):
 
     for case in ("publish_first_edit", "edit_first_publish", "revocation_first", "publish_first_revoke", "expiry_after_wait"):
         fresh_database()
+        case_fixture = fixture
+        if case == "expiry_after_wait":
+            # Foundation keeps the original grant interval immutable. Model
+            # natural expiry at INSERT, rather than rewriting valid_until.
+            case_fixture = case_fixture.replace(
+                "permission_family_safe,valid_from,created_by)",
+                "permission_family_safe,valid_from,valid_until,created_by)")
+            case_fixture = case_fixture.replace(
+                "false,clock_timestamp()-interval '1 hour','11111111",
+                "false,clock_timestamp()-interval '1 hour',clock_timestamp()+interval '8 seconds','11111111")
         local.run_psql("supabase_db_" + local.EXPECTED_PROJECT_ID,
-                       "BEGIN;\n" + fixture + "\nUPDATE app_private.operation_contracts SET enabled=true WHERE code='admission.policy.publish';\nCOMMIT;",
+                       "BEGIN;\n" + case_fixture + "\nUPDATE app_private.operation_contracts SET enabled=true WHERE code='admission.policy.publish';\nCOMMIT;",
                        "DB03_PUBLICATION_RACE_FIXTURE")
         a, b, control = connect(), connect(), connect()
         pool = ThreadPoolExecutor(max_workers=1)
@@ -86,7 +96,7 @@ def run_publication_races(local, fresh_database, fixture):
                     raise RuntimeError("DB03_PUBLICATION_RACE_WINNER_EVIDENCE")
             else:
                 if case == "expiry_after_wait":
-                    expiry = control.execute("UPDATE app_private.role_permission_grants SET valid_until=clock_timestamp()+interval '5 seconds' RETURNING valid_until").fetchone()[0]
+                    expiry = control.execute("SELECT valid_until FROM app_private.role_permission_grants").fetchone()[0]
                 a.execute("BEGIN")
                 a.execute("SET LOCAL ROLE schoolos_schema_owner")
                 if case == "revocation_first":
@@ -99,7 +109,7 @@ def run_publication_races(local, fresh_database, fixture):
                 future = pool.submit(lambda: b.execute(CALL, (POLICY, expected, case)).fetchone())
                 wait_blocked(control, b.info.backend_pid, a.info.backend_pid)
                 if case == "expiry_after_wait":
-                    deadline = time.monotonic() + 8
+                    deadline = time.monotonic() + 12
                     while not control.execute("SELECT clock_timestamp()>%s", (expiry,)).fetchone()[0]:
                         if time.monotonic() > deadline:
                             raise RuntimeError("DB03_EXPIRY_CLOCK_BOUND")
