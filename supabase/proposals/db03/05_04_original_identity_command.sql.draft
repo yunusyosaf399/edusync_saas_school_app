@@ -1,0 +1,59 @@
+GRANT USAGE,CREATE ON SCHEMA app TO schoolos_identity_executor;
+SET ROLE schoolos_identity_executor;
+CREATE FUNCTION app.attest_admission_original_identity(
+ p_application_id uuid,p_expected_application_version bigint,p_person_id uuid,p_expected_person_version bigint,
+ p_original_reference text,p_reason text,p_idempotency_key text)
+RETURNS TABLE(resolution_id uuid,application_id uuid,application_version bigint,person_version bigint)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; person app_private.people%ROWTYPE;
+ prior app_private.admission_identity_resolutions%ROWTYPE; ctx record; checked record;
+ v_intent bytea; v_result jsonb; v_version bigint; v_epoch bigint; v_history uuid; v_receipt uuid;
+BEGIN
+ IF p_application_id IS NULL OR p_person_id IS NULL OR p_expected_application_version IS NULL OR p_expected_application_version<1
+  OR p_expected_person_version IS NULL OR p_expected_person_version<1 OR p_original_reference IS NULL
+  OR pg_catalog.btrim(p_original_reference)='' OR pg_catalog.char_length(p_original_reference)>200
+  OR p_reason IS NULL OR pg_catalog.btrim(p_reason)='' OR pg_catalog.char_length(p_reason)>1000
+  OR p_idempotency_key IS NULL OR pg_catalog.char_length(p_idempotency_key) NOT BETWEEN 1 AND 200 THEN
+  RAISE EXCEPTION 'DB03 original identity typed attestation invalid'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application_id;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 identity application unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db03_identity_actor_context('admission.identity.attest',a.campus_id);
+ v_intent:=pg_catalog.sha256(pg_catalog.convert_to(pg_catalog.replace(pg_catalog.jsonb_build_array(
+  p_application_id::text,p_expected_application_version::text,p_person_id::text,p_expected_person_version::text,
+  pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p_original_reference,'UTF8')),'hex'),
+  pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p_reason,'UTF8')),'hex'))::text,', ',','),'UTF8'));
+ PERFORM pg_catalog.pg_advisory_xact_lock(71002,pg_catalog.hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':'||p_idempotency_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=a.school_id FOR UPDATE;
+ SELECT id,state,row_version INTO person.id,person.state,person.row_version FROM app_private.people WHERE id=p_person_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 identity Person unavailable or stale'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=a.campus_id AND school_id=a.school_id FOR UPDATE;
+ PERFORM 1 FROM app.academic_years WHERE id=a.academic_year_id AND school_id=a.school_id FOR UPDATE;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application_id FOR UPDATE;
+ SELECT * INTO checked FROM app_private.db03_identity_actor_context('admission.identity.attest',a.campus_id);
+ IF ctx.actor_id IS DISTINCT FROM checked.actor_id OR ctx.operation_id IS DISTINCT FROM checked.operation_id THEN
+  RAISE EXCEPTION 'DB03 identity authority changed'; END IF;
+ v_result:=app_private.db03_identity_receipt(a.campus_id,p_idempotency_key,v_intent,p_expected_application_version);
+ IF v_result IS NULL THEN
+  IF a.state<>'DRAFT' OR a.row_version<>p_expected_application_version THEN RAISE EXCEPTION 'DB03 identity draft version stale or withdrawn'; END IF;
+  IF person.state<>'ACTIVE' OR person.row_version<>p_expected_person_version THEN RAISE EXCEPTION 'DB03 identity Person unavailable or stale'; END IF;
+  IF a.person_id IS NOT NULL AND a.person_id<>p_person_id THEN RAISE EXCEPTION 'DB03 identity Person correction requires separate reviewed route'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM app_private.school_profiles WHERE id=a.school_id AND state IN('SETUP','ACTIVE'))
+   OR NOT EXISTS(SELECT 1 FROM app.campuses WHERE id=a.campus_id AND school_id=a.school_id AND state='ACTIVE')
+   OR NOT EXISTS(SELECT 1 FROM app.academic_years WHERE id=a.academic_year_id AND school_id=a.school_id AND state IN('PLANNED','ACTIVE')) THEN
+   RAISE EXCEPTION 'DB03 identity destination not open'; END IF;
+  SELECT * INTO prior FROM app_private.admission_identity_resolutions h WHERE h.application_id=a.id ORDER BY h.revision DESC LIMIT 1;
+  UPDATE app_private.admission_applications SET person_id=p_person_id,stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version,stage_epoch INTO v_version,v_epoch;
+  v_history:=pg_catalog.gen_random_uuid(); v_receipt:=pg_catalog.gen_random_uuid();
+  INSERT INTO app_private.admission_identity_resolutions(id,application_id,revision,supersedes_id,person_id,person_version,method,
+   original_reference_private,reason_private,application_version,stage_epoch,command_receipt_id,occurred_at,created_by)
+  VALUES(v_history,a.id,COALESCE(prior.revision,0)+1,prior.id,p_person_id,person.row_version,'ORIGINAL_BIRTH_CERTIFICATE_INSPECTION',
+   p_original_reference,p_reason,v_version,v_epoch,v_receipt,pg_catalog.clock_timestamp(),ctx.actor_id);
+  v_result:=app_private.db03_identity_receipt(a.campus_id,p_idempotency_key,v_intent,p_expected_application_version,v_receipt,v_history);
+ END IF;
+ RETURN QUERY SELECT (v_result->>'resolution_id')::uuid,(v_result->>'application_id')::uuid,
+  (v_result->>'application_version')::bigint,(v_result->>'person_version')::bigint;
+END $body$;
+REVOKE ALL ON FUNCTION app.attest_admission_original_identity(uuid,bigint,uuid,bigint,text,text,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.attest_admission_original_identity(uuid,bigint,uuid,bigint,text,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_identity_executor;

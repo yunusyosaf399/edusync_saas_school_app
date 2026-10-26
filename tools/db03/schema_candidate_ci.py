@@ -116,6 +116,32 @@ def validate_intake_source() -> tuple[str, str, str]:
     return sql, test, "\n".join(fixtures)
 
 
+
+def validate_identity_source() -> tuple[str, str, str]:
+    paths = sorted((ROOT / "supabase/proposals/db03").glob("05_*.sql.draft"))
+    if len(paths) != 4:
+        raise RuntimeError("DB03_IDENTITY_FRAGMENT_COUNT")
+    sql = "\n".join(path.read_text() for path in paths)
+    if re.findall(r"(?mi)^CREATE TABLE app_private\.([a-z_]+)", sql) != ["admission_identity_resolutions"] or re.findall(r"(?mi)^CREATE FUNCTION app\.([a-z_]+)", sql) != ["attest_admission_original_identity"]:
+        raise RuntimeError("DB03_IDENTITY_OBJECT_SCOPE")
+    outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
+    if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE)\b", outside):
+        raise RuntimeError("DB03_IDENTITY_SEED_OR_ROLE")
+    test = (ROOT / "supabase/tests/db03/05_original_identity.sql").read_text()
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["40"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 40 or not test.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("DB03_IDENTITY_TEST_PLAN")
+    fixtures = []
+    for name in ("policy_publication_actor", "intake_grace_actor", "original_identity_actor"):
+        fixture = (ROOT / ("supabase/tests/db03/fixtures/" + name + ".sql")).read_text()
+        anchor = "\\ir fixtures/" + name + ".sql"
+        if test.count(anchor) != 1:
+            raise RuntimeError("DB03_IDENTITY_FIXTURE_SCOPE")
+        test = test.replace(anchor, fixture)
+        fixtures.append(fixture)
+    print("DB03_IDENTITY_SOURCE_PASS fragments=4 assertions=40 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test, "\n".join(fixtures)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -125,6 +151,7 @@ def main() -> int:
     certificate_sql, certificate_test = validate_certificate_source()
     publication_sql, publication_test, publication_fixture = validate_publication_source()
     intake_sql, intake_test, intake_fixture = validate_intake_source()
+    identity_sql, identity_test, identity_fixture = validate_identity_source()
     if args.source_only:
         return 0
     # This runner never connects to a hosted service or reuses a user's stack.
@@ -234,6 +261,20 @@ def main() -> int:
                 raise RuntimeError("DB03_INTAKE_DDL_ROLLBACK_INCOMPLETE")
             print("DB03_INTAKE_DDL_ROLLBACK_PASS tables_view_entries=0")
             local.run_psql(container, "BEGIN;\n" + intake_sql + "\nCOMMIT;", "DB03_INTAKE_INSTALL")
+            identity_before_guard = local.run_psql(container, "SELECT md5(pg_get_functiondef('app_private.db03_guard_intake()'::regprocedure));", "DB03_IDENTITY_BEFORE_GUARD", tuples=True).strip()
+            try:
+                local.run_psql(container, "BEGIN;\n" + identity_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_IDENTITY_FAILURE'; END $failure$;\nCOMMIT;", "DB03_IDENTITY_DDL_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_IDENTITY_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_IDENTITY_DDL_FAILURE_ABSENT")
+            identity_after_guard = local.run_psql(container, "SELECT md5(pg_get_functiondef('app_private.db03_guard_intake()'::regprocedure));", "DB03_IDENTITY_AFTER_GUARD", tuples=True).strip()
+            absent = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_identity_resolutions','admission_identity_current'))+(SELECT count(*) FROM pg_proc WHERE pronamespace='app'::regnamespace AND proname='attest_admission_original_identity')+(SELECT count(*) FROM pg_attribute WHERE attrelid='app_private.admission_applications'::regclass AND attname='stage_epoch' AND NOT attisdropped);", "DB03_IDENTITY_ROLLBACK_PROBE", tuples=True).strip()
+            if absent != "0" or identity_before_guard != identity_after_guard:
+                raise RuntimeError("DB03_IDENTITY_DDL_ROLLBACK_INCOMPLETE")
+            print("DB03_IDENTITY_DDL_ROLLBACK_PASS tables_view_entry_epoch=0 prior_guard_restored=true")
+            local.run_psql(container, "BEGIN;\n" + identity_sql + "\nCOMMIT;", "DB03_IDENTITY_INSTALL")
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -278,14 +319,30 @@ def main() -> int:
             if remaining != "0":
                 raise RuntimeError("DB03_INTAKE_FIXTURE_ROLLBACK_INCOMPLETE")
             print("DB03_INTAKE_DATABASE_PASS 50/50; total_DB03=160/160; Foundation=220/220; fixtures_rolled_back=true")
+            try:
+                identity_output = local.run_psql(container, identity_test, "DB03_IDENTITY_TEST")
+            except local.DomainLocalCIError:
+                local.run_psql(container, "\\o /dev/null\n" + identity_test, "DB03_IDENTITY_SQL_DIAGNOSTIC")
+                raise
+            lines = identity_output.splitlines()
+            for i, line in enumerate(lines):
+                if re.match(r"\s*not ok\b", line):
+                    print("DB03_IDENTITY_ASSERTION_DETAIL " + "\n".join(lines[max(0,i-1):i+12]))
+            parse_tap(identity_output, 40)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_identity_resolutions)+(SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.school_profiles);", "DB03_IDENTITY_FIXTURE_CLEANUP", tuples=True).strip()
+            if remaining != "0":
+                raise RuntimeError("DB03_IDENTITY_FIXTURE_ROLLBACK_INCOMPLETE")
+            print("DB03_IDENTITY_DATABASE_PASS 40/40; total_DB03=200/200; Foundation=220/220; fixtures_rolled_back=true")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
             from intake_grace_races_ci import run_intake_races
             run_intake_races(local, fresh_publication_database, intake_fixture)
+            from original_identity_races_ci import run_identity_races
+            run_identity_races(local, fresh_publication_database, identity_fixture)
             return 0
     finally:
         if started:

@@ -1,5 +1,7 @@
 # DB03 S3 — opaque application drafts and retained certificate grace
 
+> **26 October follow-on:** [S4 original-document staff identity attestation](db03_s4_original_identity_attestation_20261026.md) and [exact owner selections](db03_owner_decisions_original_inspection_draft_files_20261026.json) supersede the unresolved evidence-source choice only for recorded original inspection against an existing canonical Person. Staff draft-file collection is selected; a different uploader/verifier is required for certificate review. Actual upload/file verification and canonical Person creation remain unfinished. Earlier open-gate descriptions below retain their original source snapshot.
+
 **Implementation candidate, 26 October 2026.** This follows tested S2 publication and implements the next prerequisite for the owner's certificate workflow. It adds real private intake drafts, retained withdrawal transitions, and application-wide certificate grace history. All files remain non-executable proposals under `supabase/proposals/db03/04_*.sql.draft`; disposable CI is the only installation target. No hosted change, operation registration, production acceptance or merge is implied.
 
 ## Implemented boundary
