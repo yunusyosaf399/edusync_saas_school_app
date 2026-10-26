@@ -108,6 +108,10 @@ def validate_intake_source() -> tuple[str, str, str]:
             raise RuntimeError("DB03_INTAKE_FIXTURE_SCOPE")
         test = test.replace(anchor, fixture)
         fixtures.append(fixture)
+    review_anchor = "-- DB03_REVIEWED_ROUTE_FIXTURE"
+    if test.count(review_anchor) != 1:
+        raise RuntimeError("DB03_INTAKE_REVIEW_FIXTURE_SCOPE")
+    test = test.replace(review_anchor, "\n".join(fixtures))
     print("DB03_INTAKE_SOURCE_PASS fragments=4 assertions=50 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
     return sql, test, "\n".join(fixtures)
 

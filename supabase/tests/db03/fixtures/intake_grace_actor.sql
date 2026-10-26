@@ -18,7 +18,10 @@ INSERT INTO app_private.permission_scope_contracts(id,permission_id,scope_kind,r
 INSERT INTO app_private.assignment_permission_scopes(id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,scope_kind,resolver_key,valid_from,created_by)
  SELECT md5(p.code||':assignment-scope')::uuid,'abababab-abab-4bab-8bab-abababababab',md5(p.code||':grant')::uuid,'dddddddd-dddd-4ddd-8ddd-dddddddddddd',p.id,md5(p.code||':scope')::uuid,'ALL','DIRECT',clock_timestamp()-interval '1 hour','11111111-1111-4111-8111-111111111111'
  FROM app_private.permissions p WHERE p.code IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace');
-INSERT INTO app_private.operation_contracts(code,handler_key,request_permission_id,created_by)
- SELECT p.code,p.code,p.id,'11111111-1111-4111-8111-111111111111' FROM app_private.permissions p
+INSERT INTO app_private.operation_contracts(code,handler_key,request_permission_id,created_by,requires_approval,review_permission_id)
+ SELECT p.code,p.code,p.id,'11111111-1111-4111-8111-111111111111',
+  COALESCE(current_setting('schoolos_test.intake_reviewed',true),'false')::boolean AND p.code='admission.draft.create',
+  CASE WHEN COALESCE(current_setting('schoolos_test.intake_reviewed',true),'false')::boolean AND p.code='admission.draft.create' THEN p.id ELSE NULL END
+ FROM app_private.permissions p
  WHERE p.code IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace');
 RESET ROLE;

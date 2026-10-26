@@ -6,6 +6,14 @@ SELECT is((SELECT count(*) FROM pg_class WHERE oid IN('app_private.admission_app
 SELECT ok(NOT has_table_privilege('authenticated','app_private.admission_applications','SELECT,INSERT,UPDATE,DELETE') AND NOT has_table_privilege('service_role','app_private.admission_certificate_grace_history','SELECT,INSERT,UPDATE,DELETE'),'clients have no raw intake/grace access');
 SELECT ok(NOT has_function_privilege('anon','app.create_admission_draft(uuid,uuid,text)','EXECUTE') AND NOT has_function_privilege('service_role','app.grant_admission_certificate_grace(uuid,bigint,text,date,text,text)','EXECUTE'),'anon/service role cannot invoke intake');
 SELECT is((SELECT count(*) FROM pg_proc p WHERE p.pronamespace='app_private'::regnamespace AND p.proname IN('db03_intake_effect','db03_intake_actor_context','db03_intake_receipt') AND has_function_privilege('authenticated',p.oid,'EXECUTE')),0::bigint,'private implementation cannot be called by client');
+SAVEPOINT reviewed_route;
+SELECT set_config('schoolos_test.intake_reviewed','true',true);
+-- DB03_REVIEWED_ROUTE_FIXTURE
+UPDATE app_private.operation_contracts SET enabled=true WHERE code='admission.draft.create';
+SET ROLE authenticated;
+SELECT throws_ok($q$SELECT * FROM app.create_admission_draft('91919191-9191-4191-8191-919191919191','93939393-9393-4393-8393-939393939393','review')$q$,'P0001'::char(5),'DB03 intake operation unavailable'::text,'configured reviewed operation cannot be bypassed by direct route');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT reviewed_route;
 \ir fixtures/policy_publication_actor.sql
 \ir fixtures/intake_grace_actor.sql
 SET ROLE authenticated;
@@ -29,12 +37,7 @@ SET ROLE authenticated;
 SELECT throws_ok($q$SELECT * FROM app.create_admission_draft('91919191-9191-4191-8191-919191919191','93939393-9393-4393-8393-939393939393','archived')$q$,'P0001'::char(5),'DB03 intake destination not open'::text,'archived Campus blocks new intake');
 RESET ROLE;
 ROLLBACK TO SAVEPOINT archived_parent;
-SAVEPOINT reviewed_route;
-UPDATE app_private.operation_contracts SET requires_approval=true,review_permission_id=request_permission_id WHERE code='admission.draft.create';
-SET ROLE authenticated;
-SELECT throws_ok($q$SELECT * FROM app.create_admission_draft('91919191-9191-4191-8191-919191919191','93939393-9393-4393-8393-939393939393','review')$q$,'P0001'::char(5),'DB03 intake operation unavailable'::text,'configured reviewed operation cannot be bypassed by direct route');
-RESET ROLE;
-ROLLBACK TO SAVEPOINT reviewed_route;
+
 SET ROLE authenticated;
 SELECT throws_ok($q$SELECT * FROM app.create_admission_draft('91919191-9191-4191-8191-919191919191','99999999-9999-4999-8999-999999999999','badyear')$q$,'P0001'::char(5),'DB03 intake academic year mismatch'::text,'unknown destination year denied');
 SELECT * FROM app.create_admission_draft('91919191-9191-4191-8191-919191919191','93939393-9393-4393-8393-939393939393','create-1') \gset a_
