@@ -37,6 +37,9 @@ BEGIN
    AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
    AND c.resolver_key=s.resolver_key AND c.enabled
    AND s.permission_id=permission AND r.state='ACTIVE'
+   -- Immutable deployment role code, never a display label or an unrelated
+   -- principal assignment combined with an administrator permission chain.
+   AND r.code='PRINCIPAL' AND NOT r.family_only
    AND s.resolver_key='DIRECT' AND ((s.scope_kind='ALL' AND s.campus_id IS NULL) OR (s.scope_kind='CAMPUS' AND s.campus_id=p_campus))
    AND a.valid_from<=checked_at AND (a.valid_until IS NULL OR checked_at<a.valid_until)
    AND (a.revoked_at IS NULL OR checked_at<a.revoked_at)

@@ -168,6 +168,24 @@ def validate_person_source() -> tuple[str, str, str]:
     return sql, test, "\n".join(fixtures)
 
 
+
+def validate_principal_source() -> str:
+    test = (ROOT / "supabase/tests/db03/07_principal_admission_authority.sql").read_text()
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["27"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 27 or not test.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("DB03_PRINCIPAL_TEST_PLAN")
+    for name in ("policy_publication_actor", "intake_grace_actor", "original_identity_actor", "person_creation_actor"):
+        anchor = "\\ir fixtures/" + name + ".sql"
+        if test.count(anchor) != 1:
+            raise RuntimeError("DB03_PRINCIPAL_FIXTURE_SCOPE")
+        test = test.replace(anchor, (ROOT / ("supabase/tests/db03/fixtures/" + name + ".sql")).read_text())
+    for name in ("05_02_original_identity_authority.sql.draft", "06_02_person_creation_authority.sql.draft"):
+        sql = (ROOT / "supabase/proposals/db03" / name).read_text()
+        if "AND r.code='PRINCIPAL' AND NOT r.family_only" not in sql:
+            raise RuntimeError("DB03_PRINCIPAL_SAME_CHAIN_REQUIRED")
+    print("DB03_PRINCIPAL_SOURCE_PASS assertions=27 immutable_role_code=PRINCIPAL same_chain=true")
+    return test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -179,6 +197,7 @@ def main() -> int:
     intake_sql, intake_test, intake_fixture = validate_intake_source()
     identity_sql, identity_test, identity_fixture = validate_identity_source()
     person_sql, person_test, person_fixture = validate_person_source()
+    principal_test = validate_principal_source()
     if args.source_only:
         return 0
     # This runner never connects to a hosted service or reuses a user's stack.
@@ -386,6 +405,20 @@ def main() -> int:
             if remaining != "0":
                 raise RuntimeError("DB03_PERSON_FIXTURE_ROLLBACK_INCOMPLETE")
             print("DB03_PERSON_DATABASE_PASS 50/50; total_DB03=250/250; Foundation=220/220; fixtures_rolled_back=true")
+            try:
+                principal_output = local.run_psql(container, principal_test, "DB03_PRINCIPAL_TEST")
+            except local.DomainLocalCIError:
+                local.run_psql(container, "\\o /dev/null\n" + principal_test, "DB03_PRINCIPAL_SQL_DIAGNOSTIC")
+                raise
+            lines = principal_output.splitlines()
+            for i, line in enumerate(lines):
+                if re.match(r"\s*not ok\b", line):
+                    print("DB03_PRINCIPAL_ASSERTION_DETAIL " + "\n".join(lines[max(0,i-1):i+12]))
+            parse_tap(principal_output, 27)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.people)+(SELECT count(*) FROM app_private.roles)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_PRINCIPAL_FIXTURE_CLEANUP", tuples=True).strip()
+            if remaining != "0":
+                raise RuntimeError("DB03_PRINCIPAL_FIXTURE_ROLLBACK_INCOMPLETE")
+            print("DB03_PRINCIPAL_DATABASE_PASS 27/27; total_DB03=277/277; Foundation=220/220; fixtures_rolled_back=true")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
                 local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")

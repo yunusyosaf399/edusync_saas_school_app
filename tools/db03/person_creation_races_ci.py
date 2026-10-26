@@ -38,7 +38,10 @@ def run_person_races(local, fresh_database, fixture):
 
     fresh_database()
     local.run_psql('supabase_db_' + local.EXPECTED_PROJECT_ID, 'BEGIN;\n' + fixture + "\nUPDATE app_private.operation_contracts SET enabled=true WHERE code IN('admission.draft.create','admission.person.check','admission.person.create');\nCOMMIT;", 'DB03_PERSON_RACE_FIXTURE')
-    for case, name in [('same_key','NaveedUnique'), ('same_name','ZafirUnique'), ('catalog_writer_first','UmairUnique'), ('creator_first_writer','ShahzebUnique'), ('revocation_first','JunaidUnique')]:
+    for case, name in [('same_key','NaveedUnique'), ('same_name','ZafirUnique'), ('catalog_writer_first','UmairUnique'), ('creator_first_writer','ShahzebUnique'), ('revocation_first','JunaidUnique'), ('principal_assignment_revoke_first','FahadUnique'), ('principal_role_retire_first','IrfanUnique')]:
+        if case.startswith('principal_'):
+            fresh_database()
+            local.run_psql('supabase_db_' + local.EXPECTED_PROJECT_ID, 'BEGIN;\n' + fixture + "\nUPDATE app_private.operation_contracts SET enabled=true WHERE code IN('admission.draft.create','admission.person.check','admission.person.create');\nCOMMIT;", 'DB03_PERSON_RACE_FIXTURE')
         a, b, control = connect(), connect(), connect()
         pool = ThreadPoolExecutor(max_workers=1)
         try:
@@ -53,11 +56,15 @@ def run_person_races(local, fresh_database, fixture):
                 second_check = a.execute('SELECT check_id FROM app.check_admission_person_candidates(%s,1,%s,%s)', (second_app, name, 'check-second-' + case)).fetchone()[0]
                 a.execute('COMMIT')
             before = control.execute('SELECT count(*) FROM app_private.people').fetchone()[0]
-            if case in ('catalog_writer_first','revocation_first'):
+            if case in ('catalog_writer_first','revocation_first','principal_assignment_revoke_first','principal_role_retire_first'):
                 a.execute('BEGIN')
                 a.execute('SET LOCAL ROLE schoolos_schema_owner')
                 if case == 'catalog_writer_first':
                     a.execute("UPDATE app_private.people SET display_name='Synthetic staff updated' WHERE id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'")
+                elif case == 'principal_assignment_revoke_first':
+                    a.execute("UPDATE app_private.principal_role_assignments SET revoked_at=clock_timestamp() WHERE id='abababab-abab-4bab-8bab-abababababab'")
+                elif case == 'principal_role_retire_first':
+                    a.execute("UPDATE app_private.roles SET state='RETIRED' WHERE code='PRINCIPAL'")
                 else:
                     a.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE permission_id=md5('admission.person.create:permission')::uuid")
                 actor(b)
@@ -105,4 +112,4 @@ def run_person_races(local, fresh_database, fixture):
             b.close()
             control.close()
             pool.shutdown(wait=True, cancel_futures=True)
-    print('DB03_PERSON_RACES_PASS 5 genuine PostgreSQL backend schedules')
+    print('DB03_PERSON_RACES_PASS 7 genuine PostgreSQL backend schedules')

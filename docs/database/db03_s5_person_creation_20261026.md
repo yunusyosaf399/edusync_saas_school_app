@@ -6,6 +6,8 @@ This implements real Foundation Person insertion and S4 original-birth-document 
 
 ## Two fixed APIs
 
+**Subsequent owner restriction (26 October 2026):** Admission verification and completion are principal-only; administrators prepare applications and collect certificates. The [S6 successor](db03_s6_principal_authority_20261026.md) restricts both S4 and S5 SQL authority to the exact current principal-role permission chain, while administrators retain unresolved intake. Earlier S5 test results do not demonstrate this successor restriction; use S6 evidence. See [latest decision](db03_owner_decision_principal_admission_authority_20261026.md).
+
 | Command | Exact operation and permission | Result |
 |---|---|---|
 | `app.check_admission_person_candidates(application_id uuid, expected_application_version bigint, display_name text, key text)` | `admission.person.check` | immutable check ID, full candidate count and up to 50 private candidate snapshots |

@@ -40,7 +40,9 @@ These are approved product/architecture decisions that Codex must treat as invar
 - Teacher access must derive from teaching/class responsibilities, not broad role name alone.
 - Campus admin is limited to assigned campus unless additional scope is granted.
 - Principal/Super Admin/Owner capabilities are permission-configured and audited.
+- Admission administrators prepare applications and collect certificates; only the school principal may verify admission details and authorize completion, with explicit current action permission and scope. Keep the independent uploader/verifier rule. This latest owner restriction supersedes generic staff-verifier eligibility; S6 restricts the S4/S5 SQL candidates; the final completion command remains pending. See [decision](../database/db03_owner_decision_principal_admission_authority_20261026.md).
 - Global search, reports, exports, AI and offline data obey authorization.
+- Missing required admission documents keep the application pending with the administrator and block forwarding for principal approval. After timely attachment of all required documents, the administrator forwards for review; only principal approval permits application submission and protected Student creation, subject to all applicable gates. Forwarding is not submission and does not create a Student. This latest sequence is recorded but not yet implemented.
 
 ## Finance
 

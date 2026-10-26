@@ -12,7 +12,7 @@ VALUES('cccccccc-cccc-4ccc-8ccc-cccccccccccc','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbb
 INSERT INTO app_private.school_profiles(id,code,name,timezone,currency_code,locale,created_by)
 VALUES('22222222-2222-4222-8222-222222222222','PUB-LOCAL','Synthetic School','Asia/Riyadh','SAR','en','11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.roles(id,code,label,state,created_by)
-VALUES('dddddddd-dddd-4ddd-8ddd-dddddddddddd','PUBLICATION_TEST','Synthetic authorized publisher','ACTIVE','11111111-1111-4111-8111-111111111111');
+VALUES('dddddddd-dddd-4ddd-8ddd-dddddddddddd','PRINCIPAL','Synthetic principal with explicit publication permission','ACTIVE','11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.permissions(id,code,state,family_safe,created_by)
 VALUES('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','admission.policy.publish','ENABLED',false,'11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.role_permission_grants(id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)

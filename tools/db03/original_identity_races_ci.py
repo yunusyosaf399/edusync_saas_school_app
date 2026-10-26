@@ -43,7 +43,12 @@ def run_identity_races(local, fresh_database, fixture):
     local.run_psql('supabase_db_' + local.EXPECTED_PROJECT_ID,
                    'BEGIN;\n' + fixture + "\nUPDATE app_private.operation_contracts SET enabled=true WHERE code IN('admission.draft.create','admission.identity.attest');\nCOMMIT;",
                    'DB03_IDENTITY_RACE_FIXTURE')
-    for case in ('same_key', 'competing_attestations', 'person_edit_first', 'attest_first_person_edit', 'revocation_first'):
+    for case in ('same_key', 'competing_attestations', 'person_edit_first', 'attest_first_person_edit', 'revocation_first', 'principal_assignment_revoke_first', 'principal_role_retire_first'):
+        if case.startswith('principal_'):
+            fresh_database()
+            local.run_psql('supabase_db_' + local.EXPECTED_PROJECT_ID,
+                           'BEGIN;\n' + fixture + "\nUPDATE app_private.operation_contracts SET enabled=true WHERE code IN('admission.draft.create','admission.identity.attest');\nCOMMIT;",
+                           'DB03_IDENTITY_RACE_FIXTURE')
         a, b, control = connect(), connect(), connect()
         pool = ThreadPoolExecutor(max_workers=1)
         try:
@@ -51,11 +56,15 @@ def run_identity_races(local, fresh_database, fixture):
             application = a.execute("SELECT application_id FROM app.create_admission_draft('91919191-9191-4191-8191-919191919191','93939393-9393-4393-8393-939393939393',%s)", ('create-' + case,)).fetchone()[0]
             a.execute('COMMIT')
             version = control.execute('SELECT row_version FROM app_private.people WHERE id=%s', (PERSON,)).fetchone()[0]
-            if case in ('person_edit_first', 'revocation_first'):
+            if case in ('person_edit_first', 'revocation_first', 'principal_assignment_revoke_first', 'principal_role_retire_first'):
                 a.execute('BEGIN')
                 a.execute('SET LOCAL ROLE schoolos_schema_owner')
                 if case == 'person_edit_first':
                     a.execute('UPDATE app_private.people SET display_name=%s WHERE id=%s', ('Synthetic changed before inspection', PERSON))
+                elif case == 'principal_assignment_revoke_first':
+                    a.execute("UPDATE app_private.principal_role_assignments SET revoked_at=clock_timestamp() WHERE id='abababab-abab-4bab-8bab-abababababab'")
+                elif case == 'principal_role_retire_first':
+                    a.execute("UPDATE app_private.roles SET state='RETIRED' WHERE code='PRINCIPAL'")
                 else:
                     a.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE permission_id=md5('admission.identity.attest:permission')::uuid")
                 actor(b)
@@ -100,4 +109,4 @@ def run_identity_races(local, fresh_database, fixture):
             b.close()
             control.close()
             pool.shutdown(wait=True, cancel_futures=True)
-    print('DB03_IDENTITY_RACES_PASS 5 genuine PostgreSQL backend schedules')
+    print('DB03_IDENTITY_RACES_PASS 7 genuine PostgreSQL backend schedules')
