@@ -1,4 +1,4 @@
-GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+GRANT USAGE,CREATE ON SCHEMA app TO schoolos_workflow_executor;
 SET ROLE schoolos_workflow_executor;
 CREATE FUNCTION app.publish_admission_policy(
  p_policy_id uuid,p_expected_version bigint,p_expected_current_policy_id uuid,p_idempotency_key text)
