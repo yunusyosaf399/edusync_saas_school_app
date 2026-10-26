@@ -1,0 +1,1967 @@
+{
+  "format_version": 1,
+  "prepared_on": "2026-10-26",
+  "gate": "DB02-G06",
+  "status": "PREPARATION_COMPLETE_DEPLOYMENT_BLOCKED",
+  "gate_complete": false,
+  "staging_deployment_authorized": false,
+  "operation_enablement_authorized": false,
+  "production_authorized": false,
+  "scope": "Reviewable non-executable release plan, not a deployment executor or acceptance result",
+  "candidate": {
+    "source_commit": "6351fdfc2cc5dda31950deb7d362af0fe620fc82",
+    "source_tree": "bee50b1b33a1122cf232f9fda057a0cb58a1f36a",
+    "tested_implementation_commit": "64ce0e6afe2915a6e899a1402217d0d87e66ebaa",
+    "draft_chain_sha256": "61362b17d094371e7b6ebaec8a9ca577fc3c6fbadb11bf9c903fd5721f57f809",
+    "draft_fragment_count": 291,
+    "business_suites": 112,
+    "business_assertions": 4292,
+    "foundation_assertions": 220,
+    "executable_migration_file": null,
+    "executable_migration_sha256": null
+  },
+  "staging_target": {
+    "environment": "staging",
+    "project_ref": "whwongqcgjakcfrzbvcg",
+    "project_name": "schoolos-staging-main",
+    "organization_id": "jyssocxpozqlditlaogq",
+    "region": "ap-northeast-2",
+    "foundation_id": "schoolos-foundation-v1",
+    "connection_name": "SchoolAgent"
+  },
+  "observed_baseline": {
+    "observed_on": "2026-10-26",
+    "method": [
+      "Supabase list_projects",
+      "Supabase list_migrations",
+      "BEGIN READ ONLY aggregate SQL"
+    ],
+    "project_status": "ACTIVE_HEALTHY",
+    "project_image_version": "17.6.1.166",
+    "sql_server_version": "17.6",
+    "application_tables": 33,
+    "forced_rls_tables": 33,
+    "school_rows": 0,
+    "principal_rows": 0,
+    "permission_rows": 0,
+    "operation_rows": 0,
+    "receipt_rows": 0,
+    "approval_rows": 0,
+    "audit_rows": 0,
+    "outbox_rows": 0,
+    "roll_policy_table_exists": false,
+    "migration_versions": [
+      "20260924122442",
+      "20260924122445",
+      "20260924122446",
+      "20260924122448",
+      "20260924122450",
+      "20260924122451",
+      "20260924122453",
+      "20260924122455",
+      "20260924183537"
+    ],
+    "hosted_mutations_performed": false,
+    "not_a_general_data_inventory": true
+  },
+  "prerequisites": [
+    {
+      "id": "PACKAGE_SCOPE",
+      "status": "OPEN",
+      "required": "Whole D1 package release acceptance or separately reviewed/tested split release"
+    },
+    {
+      "id": "DB01_10",
+      "status": "OPEN",
+      "issue": 140,
+      "required": "Installed DB03/DB04 handoffs and final cross-workstream release reconciliation"
+    },
+    {
+      "id": "DB01_11",
+      "status": "OPEN",
+      "issue": 140,
+      "required": "Workstream security/integration review; DB02 ADR-006 does not waive it"
+    },
+    {
+      "id": "DB03_HANDOFF",
+      "status": "DESIGN_ONLY",
+      "pr": 102,
+      "head": "d9995a47295a5b6e0ddecf127a47453081517d98"
+    },
+    {
+      "id": "DB04_HANDOFF",
+      "status": "DESIGN_ONLY",
+      "pr": 103,
+      "head": "98a2453e7314ee443dd09bb320cc474ef3fed168"
+    },
+    {
+      "id": "TRACKED_EXECUTABLE_MIGRATION",
+      "status": "NOT_CREATED"
+    },
+    {
+      "id": "D1_STAGING_CONTRACT_EXECUTOR",
+      "status": "NOT_IMPLEMENTED",
+      "existing_contract": "supabase/config/foundation_staging_contract.json",
+      "existing_foundation_only": true
+    },
+    {
+      "id": "POPULATED_FOUNDATION_UPGRADE",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PACKAGED_DDL_FAILURE_ROLLBACK",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "POSTCOMMIT_BACKUP_RESTORE",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "CONTROLLED_BOOTSTRAP_REGISTRATION_PERMISSIONS",
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "id": "STAGING_RELEASE_AUTHORIZATION",
+      "status": "NOT_OBTAINED"
+    },
+    {
+      "id": "STAGED_AUTHENTICATED_ACCEPTANCE",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "SEPARATE_PRODUCTION_AUTHORIZATION",
+      "status": "NOT_OBTAINED"
+    }
+  ],
+  "foundation_migration_order": [
+    {
+      "version": "20260924122442",
+      "file": "20260924122442_foundation_roles_schemas.sql",
+      "sha256": "f8793604a4b8b0b25392540bf81dfe39e43941729998bb76a9dc8506e7dd0d1d",
+      "git_blob": "cebf9710f019f591f6c4bda5189e49ca7002bbc5"
+    },
+    {
+      "version": "20260924122445",
+      "file": "20260924122445_foundation_identity_school_files.sql",
+      "sha256": "f846b41121d3e125be8de0a1f0e7fd6e48d2d812ad2330107a5ffca3ac229b5b",
+      "git_blob": "16e98bc39d19b33204d0576668e48ef2b4626148"
+    },
+    {
+      "version": "20260924122446",
+      "file": "20260924122446_foundation_rbac_workflow.sql",
+      "sha256": "8245216fd8ac9e82d13c2f8d614010a41962b372bf16917e2f297caff8819351",
+      "git_blob": "e8457f4fbe3c278c90cc706a05371cf3728ab7af"
+    },
+    {
+      "version": "20260924122448",
+      "file": "20260924122448_foundation_receipts_events_settings.sql",
+      "sha256": "28f0b2a9b49b3245c292e16c9f67a468cb56d1e8aa8bc4cee12d8f8dd73ed795",
+      "git_blob": "b7c5ab80e1bb84978d06f382efd599df5baa46f7"
+    },
+    {
+      "version": "20260924122450",
+      "file": "20260924122450_foundation_late_fks_indexes.sql",
+      "sha256": "89aff7d01c6293cced0be0d9f23b90826996690bb8a9a7cfc9a60b60de319447",
+      "git_blob": "41259c8439d041c0de913e119e773fb9981c4b57"
+    },
+    {
+      "version": "20260924122451",
+      "file": "20260924122451_foundation_structural_triggers.sql",
+      "sha256": "d5612f73f07102cad4ef41b1642db04a2afc061271f6c2158aad73ff0fb4c4fb",
+      "git_blob": "4ce4d54229067173ddfab88cacd481bc1657e811"
+    },
+    {
+      "version": "20260924122453",
+      "file": "20260924122453_foundation_authorization_rls.sql",
+      "sha256": "f8f8d3dda44a1685c82561cf7825a87d1d662e0480c8b8adcb0714cb4919e056",
+      "git_blob": "b992465d95597ae273363c611e729b295e268513"
+    },
+    {
+      "version": "20260924122455",
+      "file": "20260924122455_foundation_privilege_lockdown.sql",
+      "sha256": "330d583878ab6282f6a0b56e5665a25e87d3c6cae93b8dd0ded915b9fcaddff2",
+      "git_blob": "caaa791e957a05a1deb1656f87d5198506e1d4f1"
+    },
+    {
+      "version": "20260924183537",
+      "file": "20260924183537_foundation_auth_helper_schema_usage.sql",
+      "sha256": "3ecddebe953935724636dff14a2c15f27da86e804e2877a37396d85cebdf69c1",
+      "git_blob": "30f517d67087011c21aa3b6fb4aaa80d9689cb72"
+    }
+  ],
+  "draft_fragment_order": [
+    {
+      "ordinal": 1,
+      "path": "supabase/migrations/20260928000000_domain_package_01.sql.draft",
+      "bytes": 940202,
+      "sha256": "1ba7b945e29c17b02e01c751baf6df1c8219644082d82dc26f6c2de0d735fead"
+    },
+    {
+      "ordinal": 2,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_01_subject_assignment.sql.draft",
+      "bytes": 8633,
+      "sha256": "6980d80784a7f5318725b482c5d52830ee77c096ca93af2f83f9509d199d6f11"
+    },
+    {
+      "ordinal": 3,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_02_subject_assignment.sql.draft",
+      "bytes": 7973,
+      "sha256": "43d36d81431dd91c31dbcb00db96dd318d6661174d14b984160865d956b7b675"
+    },
+    {
+      "ordinal": 4,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_03_subject_assignment.sql.draft",
+      "bytes": 7952,
+      "sha256": "35fff971b711307400b8b917fa6a1cf82780dc4afb6b41d828e4709ccfe67f24"
+    },
+    {
+      "ordinal": 5,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_04_subject_assignment.sql.draft",
+      "bytes": 7940,
+      "sha256": "0de1ce06581aa62ceaf5252c91cabd3848c1fd10ae67222fbaeff4beeca33cea"
+    },
+    {
+      "ordinal": 6,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_05_subject_assignment.sql.draft",
+      "bytes": 7973,
+      "sha256": "eb98172a0412f443e53a0d29f6b4b35441d5179130c45ebc9967b3c87b3244ce"
+    },
+    {
+      "ordinal": 7,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_06_subject_assignment.sql.draft",
+      "bytes": 7999,
+      "sha256": "49fdebed71ba1dd680e198670a301d21d1e5e26bb9dba580c9385a712c1f7e3e"
+    },
+    {
+      "ordinal": 8,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_07_subject_assignment.sql.draft",
+      "bytes": 7941,
+      "sha256": "adf97683a7f4519cef9adf501001a7b24201a1e188d94c190fac09fc35cb5c93"
+    },
+    {
+      "ordinal": 9,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_08_subject_assignment.sql.draft",
+      "bytes": 8527,
+      "sha256": "3ff52db74c268de0d82e21829ddaf5666631ba75c3e94ffa52f6456e68025a30"
+    },
+    {
+      "ordinal": 10,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_09_subject_assignment.sql.draft",
+      "bytes": 7972,
+      "sha256": "7681139edd0280195be31c680dea6efdf655280da6224c228e28758e501e8577"
+    },
+    {
+      "ordinal": 11,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_10_subject_assignment.sql.draft",
+      "bytes": 8052,
+      "sha256": "6d4c5264eca6a961ae6383e519ff20b5fef0600877e3b5db21c244b64edd8b36"
+    },
+    {
+      "ordinal": 12,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_11_subject_assignment.sql.draft",
+      "bytes": 7958,
+      "sha256": "75217f8538ecf84de567d4b1de86ede9653b40057f6ee4c81dfbc1c131db3c61"
+    },
+    {
+      "ordinal": 13,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_12_subject_assignment.sql.draft",
+      "bytes": 8088,
+      "sha256": "fdb5ed8139832f132fd8baa4c8b175b4aca721328bcdc976afae1c71d83a1985"
+    },
+    {
+      "ordinal": 14,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_13_subject_assignment.sql.draft",
+      "bytes": 7936,
+      "sha256": "ba1011641466f2816531ab141a888da83124eb5fcb4f374a0ac9d9717323605c"
+    },
+    {
+      "ordinal": 15,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_14_subject_assignment.sql.draft",
+      "bytes": 169,
+      "sha256": "94d903fd21903957e3c5df4eefcd5b78d5928145a89d9fa522d8e23ebf56bc4a"
+    },
+    {
+      "ordinal": 16,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect17_15_subject_assignment_apply_correction.sql.draft",
+      "bytes": 10596,
+      "sha256": "6834255ad1bdf8846d967c14730d45bb65b6ebd668ca6575a69a7dcb58937589"
+    },
+    {
+      "ordinal": 17,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_01_employee_identity.sql.draft",
+      "bytes": 19777,
+      "sha256": "38675472fa364f651208c40cf4001a2f280041efbc83d79135641cc6325d37c3"
+    },
+    {
+      "ordinal": 18,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_02_employee_identity.sql.draft",
+      "bytes": 14509,
+      "sha256": "d777410c5e92b5066dc97327766552f9613ba809b8def7fba5f698c42306f509"
+    },
+    {
+      "ordinal": 19,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_03_employee_identity.sql.draft",
+      "bytes": 27001,
+      "sha256": "93b6d9336ba25b5c5ec62a23fe550b52fec5d33b5d9ab1ee708c692892c524dc"
+    },
+    {
+      "ordinal": 20,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_04_employee_identity_application_guard.sql.draft",
+      "bytes": 5818,
+      "sha256": "cb40f17f0bb5f56968ec8b9f11f89e1877dafdc3a120c496f2378f90d6094165"
+    },
+    {
+      "ordinal": 21,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_05_employee_identity_receipt_hardening.sql.draft",
+      "bytes": 4828,
+      "sha256": "e1a368a85b8ef4b57ef37f34375ccf94d550f3ec3a2fcd4a7c8c6896912cb27e"
+    },
+    {
+      "ordinal": 22,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_06_employee_identity_review_replay.sql.draft",
+      "bytes": 9323,
+      "sha256": "78732772ad62683ce088a284fe57e8a2dc758cd1e50acc4924adb8d5104a64ac"
+    },
+    {
+      "ordinal": 23,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_07_employee_identity_payload_parse.sql.draft",
+      "bytes": 3273,
+      "sha256": "34e7c3d908642f639f4673eaff68ef734e753ee638d6aa95c35811aa83a079f6"
+    },
+    {
+      "ordinal": 24,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_08_employee_identity_p2_contract.sql.draft",
+      "bytes": 4045,
+      "sha256": "b1a38031f7368a6e0cfea0260db807942b468bf3cbe8b3f4dfd293615f470d17"
+    },
+    {
+      "ordinal": 25,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_09_final_approver_participant_correction.sql.draft",
+      "bytes": 11040,
+      "sha256": "db7de2aa5ff8f7aeeb0d1430c37c1da2af157ab76ae751e978f4d9ca30d7948f"
+    },
+    {
+      "ordinal": 26,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_10_employee_identity_event_aggregate.sql.draft",
+      "bytes": 1949,
+      "sha256": "da5e9febdef235ddf5149639344bed99d98cd9fe07d12fd005a76cbc798d40af"
+    },
+    {
+      "ordinal": 27,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_11_final_approver_terminal_replay.sql.draft",
+      "bytes": 13113,
+      "sha256": "f0be7283ee3134387ca648998aa09fca149abc1642e61792e73bdda84a031fcc"
+    },
+    {
+      "ordinal": 28,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_12_employee_identity_p2_receipt_context.sql.draft",
+      "bytes": 29285,
+      "sha256": "42395a6e17af88cd0289b1c99dc1a1bbe09b1e485cf47d1057f2bcb7484832e3"
+    },
+    {
+      "ordinal": 29,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect18_13_employee_identity_review_replay_kind.sql.draft",
+      "bytes": 13067,
+      "sha256": "a8d4b74b543426ee2637c706eeed8089f357c13cf34e8f9bccd5102c190a0e22"
+    },
+    {
+      "ordinal": 30,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect19_01_qualification_auth.sql.draft",
+      "bytes": 10307,
+      "sha256": "fe76dd7516b6a272fd7c5580e243f625394718a6acddc53931105e59f42929e3"
+    },
+    {
+      "ordinal": 31,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect19_02_qualification_effect.sql.draft",
+      "bytes": 11354,
+      "sha256": "ca6e77ae4f48e508044f838b75dec3b3b65ac2b940a18add25bf254ba3fe92e2"
+    },
+    {
+      "ordinal": 32,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect19_03_qualification_evidence.sql.draft",
+      "bytes": 8822,
+      "sha256": "f10369fd3e3445da24a45c25a28285926a5c181c5fa6190a88d11f7476cf56ae"
+    },
+    {
+      "ordinal": 33,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect19_04_qualification_direct.sql.draft",
+      "bytes": 7109,
+      "sha256": "e2ab0f97e025ccc0a335d49f67055d1c9087ce3fedd218ecaa68542b406a0a0c"
+    },
+    {
+      "ordinal": 34,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect19_05_qualification_submit.sql.draft",
+      "bytes": 6274,
+      "sha256": "eff75fdb386cf7d77ebb4b09facf17dd6d4ca0cefc17ce1b8a586135086afcef"
+    },
+    {
+      "ordinal": 35,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect19_06_qualification_review.sql.draft",
+      "bytes": 7235,
+      "sha256": "7c52c53be32a9fbc10653d8e066bf3059b1bb0e7237207f78f4044716495053f"
+    },
+    {
+      "ordinal": 36,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect19_06a_role_reset.sql.draft",
+      "bytes": 391,
+      "sha256": "9a5f517e43bec799f1c5d7061ba87edfaad8090f566a428254e271fa02851f09"
+    },
+    {
+      "ordinal": 37,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect19_07_qualification_apply_read_guard.sql.draft",
+      "bytes": 19697,
+      "sha256": "6a71139a3ef1026b54238c7560ae64eb1d29eb25324269f034a24037fe7249e5"
+    },
+    {
+      "ordinal": 38,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect19_08_qualification_owner_acl.sql.draft",
+      "bytes": 1341,
+      "sha256": "85ebb10c44e3735da7dd353ef421ba171f0e6837171c2dc8a4c5119eb47aba05"
+    },
+    {
+      "ordinal": 39,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect20_01_experience_auth.sql.draft",
+      "bytes": 9955,
+      "sha256": "09c188e3894e4c3b266efe6c5c6bf8419a8953eabeb8bd73249d4be166a0c9f0"
+    },
+    {
+      "ordinal": 40,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect20_02_experience_effect_evidence.sql.draft",
+      "bytes": 19333,
+      "sha256": "ec12eda1b68e71e9feb4e804de6afe2a45572e4390e88c713071599d856abefc"
+    },
+    {
+      "ordinal": 41,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect20_02a_experience_intent_shape.sql.draft",
+      "bytes": 3900,
+      "sha256": "690c32139c6a5091b7f376b89cdcf9401955c6c41e739070ee8dfb49bf530669"
+    },
+    {
+      "ordinal": 42,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect20_03_experience_direct_submit.sql.draft",
+      "bytes": 12600,
+      "sha256": "e22ca3f349ee576f24443d50842c9079ba2f44667f61428adfbca8b959ef9619"
+    },
+    {
+      "ordinal": 43,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect20_04_experience_review_apply_read.sql.draft",
+      "bytes": 23033,
+      "sha256": "cbb265f2bf416e7ab9c84f5cb773a2d7c548556b502d8ea6e30af6d16a666e5b"
+    },
+    {
+      "ordinal": 44,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect20_05_experience_application_guard.sql.draft",
+      "bytes": 3259,
+      "sha256": "37cdc3026583d6a0d5d056335132e4a579733f9730615cdd7b6db9b6218ab07b"
+    },
+    {
+      "ordinal": 45,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect20_06_experience_reason_intent_binding.sql.draft",
+      "bytes": 11072,
+      "sha256": "5d4b371a224a9d3f83dbb03745c08e7e9bc523f8a3686b98bc3d50b59071f378"
+    },
+    {
+      "ordinal": 46,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect21_01_student_identity_core.sql.draft",
+      "bytes": 21824,
+      "sha256": "73ec0227b60adbfae8e88c29ef642296c36da0db7532b68df37385893f161ce8"
+    },
+    {
+      "ordinal": 47,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect21_02_student_identity_evidence.sql.draft",
+      "bytes": 13609,
+      "sha256": "84630e9e2676400fcbda6e4c467543895a0480e92c0977341a5edbe12ca03917"
+    },
+    {
+      "ordinal": 48,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect21_03_student_identity_workflow.sql.draft",
+      "bytes": 29099,
+      "sha256": "41a6d8efd9fa313bb6a258d31c088401082d4ce97122693efa1115a69c309ab2"
+    },
+    {
+      "ordinal": 49,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect21_04_student_identity_application_guard.sql.draft",
+      "bytes": 6416,
+      "sha256": "2bba2e713f88712f705d83574d3dd3377c5ccacd3b6b1ff5acc0af2e15e46604"
+    },
+    {
+      "ordinal": 50,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect21_05_student_identity_hardening.sql.draft",
+      "bytes": 13807,
+      "sha256": "1257663ae90a0d259d3e843dd198e40d0b0b3425254644076a62e0a655eebedf"
+    },
+    {
+      "ordinal": 51,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect22_01_student_special_core.sql.draft",
+      "bytes": 17995,
+      "sha256": "b884c0946619df940ba20b56e035bbf7e2c07dcb7be6ababcd827d84906750cb"
+    },
+    {
+      "ordinal": 52,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect22_02_student_special_evidence.sql.draft",
+      "bytes": 13651,
+      "sha256": "3af6815473ca553728cad102e3e9f837e709ccf4b7ca1fa23cc2c523e37d75ec"
+    },
+    {
+      "ordinal": 53,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect22_03a_student_special_submit.sql.draft",
+      "bytes": 7664,
+      "sha256": "bc0712e343c36f6f7b8812790d7073a849b360be5cb710e71a66697ee0ae26cf"
+    },
+    {
+      "ordinal": 54,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect22_03b_student_special_review.sql.draft",
+      "bytes": 8503,
+      "sha256": "f8b2a1093ff4456be574e0c6f6b11c9e0ea7a81a70b6a6d4f2bcfc055b04a82e"
+    },
+    {
+      "ordinal": 55,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect22_03c_student_special_apply.sql.draft",
+      "bytes": 8213,
+      "sha256": "690efb567bfbd5aeeca3df0165a6a328310667ec66cb8df7134187cd1bce932c"
+    },
+    {
+      "ordinal": 56,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect22_03d_student_special_read.sql.draft",
+      "bytes": 2531,
+      "sha256": "ebd4082d8d3e687255884324591c8f48b13442e8152d0d2f933516351f9159c6"
+    },
+    {
+      "ordinal": 57,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect22_04_student_special_guard.sql.draft",
+      "bytes": 4552,
+      "sha256": "d60a034df0b03eca68f8676830cee983fd07ebbbd8684a16dbc549b4ff7d1e06"
+    },
+    {
+      "ordinal": 58,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect23_01_student_status_core.sql.draft",
+      "bytes": 19032,
+      "sha256": "dde2f120e6f0ed8d5eed7acefe41d64b18bd330be31b3b832a9c95f8085b7ee7"
+    },
+    {
+      "ordinal": 59,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect23_02_student_status_effect_evidence.sql.draft",
+      "bytes": 10090,
+      "sha256": "c8c6a34a7bf63a6176dcf24249c710accf36f9a836117f45b9bb7804935cd050"
+    },
+    {
+      "ordinal": 60,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect23_03_student_status_direct_submit.sql.draft",
+      "bytes": 10072,
+      "sha256": "11e08cdbcfe2597df6435371ab6562c15ee4a6548f294549e4b4d1a5683aae99"
+    },
+    {
+      "ordinal": 61,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect23_04_student_status_review_apply.sql.draft",
+      "bytes": 16533,
+      "sha256": "108780287ba130cf7174dd00db67ee7ab8d4421bb36c2658c91fd83f5a1356cb"
+    },
+    {
+      "ordinal": 62,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect23_05_student_status_replay_read_guard.sql.draft",
+      "bytes": 12383,
+      "sha256": "aee00c25e3f771c3bc3582c55fee2bb1d24ffb91f940d6f8667cb2b6f412f242"
+    },
+    {
+      "ordinal": 63,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect23_06_student_status_replay_hardening.sql.draft",
+      "bytes": 16836,
+      "sha256": "021a8ec5f109224f89247aba69a68689a6482109f669bb06073280489fb35f29"
+    },
+    {
+      "ordinal": 64,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect23_07_student_status_audit_corrections.sql.draft",
+      "bytes": 17149,
+      "sha256": "af29e6326100dd606cf44bd3ef20e173ca1514d0538779e87d19b4f66a99e1eb"
+    },
+    {
+      "ordinal": 65,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect23_08_student_status_scope_hardening.sql.draft",
+      "bytes": 8428,
+      "sha256": "cbc2b58b7790ebb2ba151e876bf3bb83e1e2b1028f58ac14a9f6e72d0ad4107e"
+    },
+    {
+      "ordinal": 66,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect23_09_student_status_validation_hardening.sql.draft",
+      "bytes": 7414,
+      "sha256": "bb67e7d3abb3de51651ba53efbdd6d7343cc8458b87ba936f3325f7deb335e80"
+    },
+    {
+      "ordinal": 67,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_01_student_status_correct_core.sql.draft",
+      "bytes": 11383,
+      "sha256": "3350eb36887b284a851509b3197be64c78dd36c0eea6ddf3401c4398bdcd741d"
+    },
+    {
+      "ordinal": 68,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_01a_student_status_correct_shape_scope.sql.draft",
+      "bytes": 4263,
+      "sha256": "d9fff78070c28402df28d8822c878dbf77d5079f3b669149457a490aaf44b686"
+    },
+    {
+      "ordinal": 69,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_02_student_status_correct_effect.sql.draft",
+      "bytes": 10565,
+      "sha256": "b74d64bbb0db2ce746d992f00bd4158174cbb35286b02e998bcaf64be38812eb"
+    },
+    {
+      "ordinal": 70,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_03a_student_status_correct_receipt.sql.draft",
+      "bytes": 1979,
+      "sha256": "9656e07e07187c7e146ac5a079f5a9d6b21a311ef900b48091d4ed930b4db7ad"
+    },
+    {
+      "ordinal": 71,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_03b_student_status_correct_audit_event.sql.draft",
+      "bytes": 3113,
+      "sha256": "adeed6f7ea52a4156296e0772cc45613e7876058aa4132c83dad6560d8c91b58"
+    },
+    {
+      "ordinal": 72,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_04_student_status_correct_submit.sql.draft",
+      "bytes": 7407,
+      "sha256": "df389734f79040049ed5930d186db4f36df722e98066bdb5e9866fb0598ce112"
+    },
+    {
+      "ordinal": 73,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_05_student_status_correct_review_helpers.sql.draft",
+      "bytes": 6586,
+      "sha256": "202c759a3c7a796fd5651e8251f5496ca0308379cba096867d6cc71992b43aa6"
+    },
+    {
+      "ordinal": 74,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_06_student_status_correct_review.sql.draft",
+      "bytes": 7570,
+      "sha256": "0819e4e2a04933cf543256355c68e7668c0d3e07a1f028386d7ffd74bee21f5a"
+    },
+    {
+      "ordinal": 75,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_07_student_status_correct_apply_read.sql.draft",
+      "bytes": 9059,
+      "sha256": "b95f76132f302a40a5a911f3cb9a9388164f831a067a6c84d8ca4de5da641093"
+    },
+    {
+      "ordinal": 76,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_08_student_status_correct_apply_hardening.sql.draft",
+      "bytes": 7320,
+      "sha256": "c399f04e866c7ddfa18912e68e7b8e87e7493055ae228bd849360c1204c0a046"
+    },
+    {
+      "ordinal": 77,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_09_student_status_correct_application_guard.sql.draft",
+      "bytes": 4005,
+      "sha256": "6d08a4182329ce563a190f7e6fb305192ccd7846f25e4442d8c36bfd89a22630"
+    },
+    {
+      "ordinal": 78,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_10_student_status_correct_review_hardening.sql.draft",
+      "bytes": 8580,
+      "sha256": "cd6e5d74c95a6337128eef3ffce7b2709e56b53094eb62e0f5c895e0fa2c4ccb"
+    },
+    {
+      "ordinal": 79,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect24_11_student_status_correct_apply_lifecycle.sql.draft",
+      "bytes": 8004,
+      "sha256": "e8046272774a6e4d171888087d1f2478db3744f8ee7e130ee620799798de6dbf"
+    },
+    {
+      "ordinal": 80,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_01_enrollment_place_core.sql.draft",
+      "bytes": 11066,
+      "sha256": "5484725a7a790e8b8d958ec495faba091246c835d4212fdcd6978b4823cf919c"
+    },
+    {
+      "ordinal": 81,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_02_enrollment_place_capacity_roll.sql.draft",
+      "bytes": 7584,
+      "sha256": "52dde03621cd872a83cdcbb9b36a74519859a769a45eee2eee8acf94f413ee2b"
+    },
+    {
+      "ordinal": 82,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_03_enrollment_place_effect.sql.draft",
+      "bytes": 4519,
+      "sha256": "88d61fb97b4dcb8948c7c809892c180c3ea18225269bd3611de751c5722b3032"
+    },
+    {
+      "ordinal": 83,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_04_enrollment_place_evidence.sql.draft",
+      "bytes": 6198,
+      "sha256": "90fdf43103781f77faa23109521dc6994f19d2b991d567771ab6744a637a5fb5"
+    },
+    {
+      "ordinal": 84,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_05_enrollment_place_command.sql.draft",
+      "bytes": 7625,
+      "sha256": "e2c5fb9449043ab59637592e9bd4b83686a85b8a324184edc742134fe13d6a7d"
+    },
+    {
+      "ordinal": 85,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_06_enrollment_place_lock_hardening.sql.draft",
+      "bytes": 11250,
+      "sha256": "e8c28c7a37f4bf96c0186b1844820acfe362bc7d0463c2f801d0967326e3ebf4"
+    },
+    {
+      "ordinal": 86,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_07_enrollment_place_roll_lineage_hardening.sql.draft",
+      "bytes": 4634,
+      "sha256": "1b348c143b54be146ba1db078fccec1ca94c98ba63af943aad78f5c327aa31ef"
+    },
+    {
+      "ordinal": 87,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_08_enrollment_place_lock_privilege_hardening.sql.draft",
+      "bytes": 2961,
+      "sha256": "0c7050059ca2d20278496703558f7f1bfd44dba44b1ab15e036f9309daafa89d"
+    },
+    {
+      "ordinal": 88,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_09_enrollment_place_replay_hardening.sql.draft",
+      "bytes": 9638,
+      "sha256": "33c6bc520729df98a5eefb6252b1c94487d37cf4b785f84d1ac395f201d68b62"
+    },
+    {
+      "ordinal": 89,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_10_enrollment_place_execution_edge.sql.draft",
+      "bytes": 361,
+      "sha256": "41318880334703a52acee4fc62e5297ecfd84b491a2eabac7603ea6407a9cf59"
+    },
+    {
+      "ordinal": 90,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_11_enrollment_place_command_context.sql.draft",
+      "bytes": 3401,
+      "sha256": "bbee3693615b2ac746f89cdc316483e1f3cc37a2c09997cc7127baa1c05d16fa"
+    },
+    {
+      "ordinal": 91,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_12_enrollment_place_command_context_binding.sql.draft",
+      "bytes": 6732,
+      "sha256": "2dc22860836aac7588ee126314d30d4995be83f5e0273d3b4e1a673d89c7051d"
+    },
+    {
+      "ordinal": 92,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_13_enrollment_place_result_shape_hardening.sql.draft",
+      "bytes": 4770,
+      "sha256": "19d33a241b64492525ec8a9d0155d7ac1053881920bffc15c565b80407a16c16"
+    },
+    {
+      "ordinal": 93,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_14_enrollment_place_event_aggregate_hardening.sql.draft",
+      "bytes": 4164,
+      "sha256": "766dc90a893d93dd9bfb537b3d4fa38f7b1ff34e3edc92f44eedb6909b6d93c3"
+    },
+    {
+      "ordinal": 94,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_15_enrollment_place_event_binding.sql.draft",
+      "bytes": 6829,
+      "sha256": "1013b3bc8a6e745372634fb0c1b8b6855cd12f8b60102fc70c75e940e125c194"
+    },
+    {
+      "ordinal": 95,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_16_enrollment_place_academic_boundary.sql.draft",
+      "bytes": 2428,
+      "sha256": "73f889725d44108bf8fbfc14e514518be776ac375ce6d794c4b1257b3934e9ca"
+    },
+    {
+      "ordinal": 96,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_17_enrollment_place_academic_binding.sql.draft",
+      "bytes": 9898,
+      "sha256": "66354b2dedfa9065ebb8763ba7650fdd5eb9c05cddf4146c125cdb4e1d14fa3d"
+    },
+    {
+      "ordinal": 97,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_18_enrollment_place_academic_read_hardening.sql.draft",
+      "bytes": 11923,
+      "sha256": "4dce03d103612d9296540be40ffce891cde488b551ba504bd61f382daa155cd6"
+    },
+    {
+      "ordinal": 98,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_19_enrollment_place_school_anchor.sql.draft",
+      "bytes": 3980,
+      "sha256": "2f63dd21d2071ec1ebe4c5476548ea8e102639affd524726f1a1bb8568cc62c0"
+    },
+    {
+      "ordinal": 99,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_20_enrollment_place_effect_hardening.sql.draft",
+      "bytes": 4228,
+      "sha256": "a88fcf7b7664d3e3e7bfa9bffe67ca9a5238459d236a4c91bf3f4bdeb3b28150"
+    },
+    {
+      "ordinal": 100,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_21_enrollment_place_override_binding.sql.draft",
+      "bytes": 11680,
+      "sha256": "61d72e9e462276abb9eb7048b842db3a70404eb2679276990350b427fa078dd0"
+    },
+    {
+      "ordinal": 101,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_22_enrollment_place_entry_kind_hardening.sql.draft",
+      "bytes": 15786,
+      "sha256": "86d8d89d6da588bba1dd999d1c9e6e984a3b11dc880f90eba58511e736a7eb93"
+    },
+    {
+      "ordinal": 102,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect25_23_enrollment_place_persistent_lineage_binding.sql.draft",
+      "bytes": 5489,
+      "sha256": "05e53771808a395b711a61ed8e09dafa378239766aa59953437f4c95e1c3012b"
+    },
+    {
+      "ordinal": 103,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_01_enrollment_move_core.sql.draft",
+      "bytes": 13133,
+      "sha256": "e87d486d4d1e4a16390166a2bb9a12410a0021a4797262872761a29e2bbd5089"
+    },
+    {
+      "ordinal": 104,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_02_enrollment_move_context.sql.draft",
+      "bytes": 9999,
+      "sha256": "d3181d65d8f4ffa48c1b9011036aad944efcea5e757ba2331d50c0e46bf1c67e"
+    },
+    {
+      "ordinal": 105,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_03_enrollment_move_effect.sql.draft",
+      "bytes": 7031,
+      "sha256": "09d5ec50e9a9f3761375228995497241e45dacbdd4db27d5210e08436ccc927c"
+    },
+    {
+      "ordinal": 106,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_04_enrollment_move_evidence.sql.draft",
+      "bytes": 11533,
+      "sha256": "da64225564cc7a214c14d125afb6f7ec149c425bf4dc354bac2c27b91f0f1493"
+    },
+    {
+      "ordinal": 107,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_05_enrollment_move_direct_submit.sql.draft",
+      "bytes": 17752,
+      "sha256": "5f012a2c25b26a80b78f12c2f30667fbd2841aa417afc02f92a7576088a678ff"
+    },
+    {
+      "ordinal": 108,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_06_enrollment_move_review.sql.draft",
+      "bytes": 10401,
+      "sha256": "7af13d8ca04012489b06b1f1612e23fac54cfbf38d63148dba5be7dc3d3433de"
+    },
+    {
+      "ordinal": 109,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_07_enrollment_move_apply.sql.draft",
+      "bytes": 13285,
+      "sha256": "64a31b3e581c92551d5a1c07fc7c5ab4959264996decc8030b22ba8e56319ee4"
+    },
+    {
+      "ordinal": 110,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_08_enrollment_move_audit_hardening.sql.draft",
+      "bytes": 14708,
+      "sha256": "98a209654c280d954e1c8c3a8a39120df0c8e7a01255b3d4f1a9c44f221c191e"
+    },
+    {
+      "ordinal": 111,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_09_enrollment_move_apply_hardening.sql.draft",
+      "bytes": 20999,
+      "sha256": "89d0b64a21cceb16e35b0a5a9c850a6fba414880142d10174a43993d1501a765"
+    },
+    {
+      "ordinal": 112,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_10_enrollment_move_read_semantics.sql.draft",
+      "bytes": 7966,
+      "sha256": "649b44a4f9a24d55af288b70f436694ee8d7deb6e9d11047ba7936e65a1846aa"
+    },
+    {
+      "ordinal": 113,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect26_11_enrollment_move_packaging.sql.draft",
+      "bytes": 2365,
+      "sha256": "f68e68a980b94500ca4504ad614eabf6201352b3735a35ea607f93c77a09eba8"
+    },
+    {
+      "ordinal": 114,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect27_01_enrollment_end_core.sql.draft",
+      "bytes": 11165,
+      "sha256": "abae7c85e6936d35de8ece8d4bf1c57e196af7843cba3ca2041a8edf4d31e515"
+    },
+    {
+      "ordinal": 115,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect27_02_enrollment_end_context_effect.sql.draft",
+      "bytes": 10046,
+      "sha256": "260bcbc963a5b2dd62fda49e4741fb90fe5fe29833b7de312c427f987ce9cd06"
+    },
+    {
+      "ordinal": 116,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect27_03_enrollment_end_evidence.sql.draft",
+      "bytes": 8977,
+      "sha256": "edb846c86fc26463a67766d23c896001fa83136f032e080ff4c12b724e840989"
+    },
+    {
+      "ordinal": 117,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect27_04_enrollment_end_direct_submit.sql.draft",
+      "bytes": 12418,
+      "sha256": "677e90c3c5cced2fb086e124f2ddaf2d3f453aae8b0c77870dc0d18fde99e9d9"
+    },
+    {
+      "ordinal": 118,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect27_05_enrollment_end_review.sql.draft",
+      "bytes": 10656,
+      "sha256": "3d4193fba4763a6c13b12946b7474e87152ad760307e7b704690f3edc7cdee50"
+    },
+    {
+      "ordinal": 119,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect27_06_enrollment_end_apply.sql.draft",
+      "bytes": 10910,
+      "sha256": "d8dd4b255354bfbe2a230053eb0e290edc9f8e7b633c8da29853494894c7d4ca"
+    },
+    {
+      "ordinal": 120,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect27_07_enrollment_end_hardening.sql.draft",
+      "bytes": 29078,
+      "sha256": "f28b552798d88e96fe9211451385a9d3ab9c98fc984cfa75de8ec6e8702e2fc3"
+    },
+    {
+      "ordinal": 121,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_01_emergency_contact_core.sql.draft",
+      "bytes": 16409,
+      "sha256": "c76b7944cd4ec9404b823272dc606ded3d21c223d3b28100a10e21f45f9fd0ed"
+    },
+    {
+      "ordinal": 122,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_02_emergency_contact_context_evidence.sql.draft",
+      "bytes": 11070,
+      "sha256": "10fda0c6d94fdbc341e70ac3efb1e35eec2f7248c279dcb83ab07c6c5b137a9b"
+    },
+    {
+      "ordinal": 123,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_03_emergency_contact_direct_submit.sql.draft",
+      "bytes": 12276,
+      "sha256": "fdab610abf3ce15c6db0e80cc4cb2b69160045ab4a787b0c9ec3f5de601d34c4"
+    },
+    {
+      "ordinal": 124,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_04_emergency_contact_review.sql.draft",
+      "bytes": 9881,
+      "sha256": "6648821c19978686dbefa0bda1a1770c66a6b8b8918f2415095299639c7d2c1f"
+    },
+    {
+      "ordinal": 125,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_05_emergency_contact_apply.sql.draft",
+      "bytes": 11762,
+      "sha256": "7182235d9e6accc03dc3e08acca1b9b4a3dc7efe8b51bfe2e62d5683c4c8affa"
+    },
+    {
+      "ordinal": 126,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_06_emergency_contact_hardening.sql.draft",
+      "bytes": 16362,
+      "sha256": "584f996d8706225bda51532be3f845f8c93015c4c99814971411d0fa62612a94"
+    },
+    {
+      "ordinal": 127,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_07_emergency_contact_submit_hardening.sql.draft",
+      "bytes": 6302,
+      "sha256": "fd7cb39bd44303d6695799e52a101fbf2f17dc8057455f3d7428edfeb1ad4327"
+    },
+    {
+      "ordinal": 128,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_08_emergency_contact_integrity_guards.sql.draft",
+      "bytes": 6786,
+      "sha256": "9ee4e64aee40619c8ebed7272c58bf89468de6b63fb636b44299eccfaaceccf8"
+    },
+    {
+      "ordinal": 129,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_09_emergency_contact_scope_lock.sql.draft",
+      "bytes": 3052,
+      "sha256": "015195ed5b5bd655bc357cf456fb602cf696233e842da517a01e3b0183783b78"
+    },
+    {
+      "ordinal": 130,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_10_emergency_contact_direct_submit_scope.sql.draft",
+      "bytes": 11076,
+      "sha256": "93003012bb0e6019848274e8a10ae40dcdb947d9316c707a039011ae96fd8053"
+    },
+    {
+      "ordinal": 131,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_11_emergency_contact_direct_fix.sql.draft",
+      "bytes": 4511,
+      "sha256": "9123ce7575a01a85bf05bcd7b32e3261f3ff6871a1010ca598b541f293f3bb2f"
+    },
+    {
+      "ordinal": 132,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_12_emergency_contact_review_scope.sql.draft",
+      "bytes": 8470,
+      "sha256": "a1af3a59bd8b20795d4f19e872846c8b2ad0922807370b44f49072a989057413"
+    },
+    {
+      "ordinal": 133,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_13_emergency_contact_apply_scope.sql.draft",
+      "bytes": 12173,
+      "sha256": "def09eea3b5260ef3c2c02cc343a8a2b7a05a8e91104c5e2684a73add3b35c94"
+    },
+    {
+      "ordinal": 134,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_14_emergency_contact_interval_scope.sql.draft",
+      "bytes": 7344,
+      "sha256": "ff7de4f774e37028c574dc82ea1d3a06fd11e4820a53e424193a286d580ff1b5"
+    },
+    {
+      "ordinal": 135,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_15_emergency_contact_application_facts.sql.draft",
+      "bytes": 5497,
+      "sha256": "1304e1083e0c3d97e294d5bf4707f75ec3b2135aaf52e8eee14d456806bf8a1a"
+    },
+    {
+      "ordinal": 136,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_16_emergency_contact_reason_binding.sql.draft",
+      "bytes": 14272,
+      "sha256": "5e0ebe02dfbb3b77667863e422b81eb9f71c90a8a4165e8acbaea5a23c6f244b"
+    },
+    {
+      "ordinal": 137,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect28_17_emergency_contact_replay_history.sql.draft",
+      "bytes": 3132,
+      "sha256": "1e5d24b1df26987881f52f85b366aedf132f65fe83895ff9f896cf64d8fd3410"
+    },
+    {
+      "ordinal": 138,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect29_01_family_manage.sql.draft",
+      "bytes": 13168,
+      "sha256": "7c862810f46c99cf93c94290281041ce2ea5397bbd019988a88bf0736eed93ef"
+    },
+    {
+      "ordinal": 139,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect29_02_family_identity_lock.sql.draft",
+      "bytes": 401,
+      "sha256": "29d990f0b0d34c8ff5964ef930753860dcbeaf2841296c941fe02cad4d1ebec7"
+    },
+    {
+      "ordinal": 140,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_01_family_relationship_authority.sql.draft",
+      "bytes": 5192,
+      "sha256": "807419935ac062e82b91df34d0a23fb657b357702cbd61b481d473c05aefbb9e"
+    },
+    {
+      "ordinal": 141,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_02_family_relationship_policy.sql.draft",
+      "bytes": 3490,
+      "sha256": "f241682861f39ebd89955491816976ab73ef7e974518c8cfe3314ab5251e20af"
+    },
+    {
+      "ordinal": 142,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_03_family_relationship_access_gap.sql.draft",
+      "bytes": 1885,
+      "sha256": "2d11cb5db04d9efd33a802ccfecd234c29ec508902dfa6b5d7e6f6ff8b44164e"
+    },
+    {
+      "ordinal": 143,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_04_family_relationship_preflight.sql.draft",
+      "bytes": 9114,
+      "sha256": "7b11f6639fa1f5214311a4450db0ef7ec39a6513d611254eafa962f979ae2fba"
+    },
+    {
+      "ordinal": 144,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_05_family_relationship_effect.sql.draft",
+      "bytes": 6078,
+      "sha256": "b30e619ed7d4414bce66bccae3d696fc38e27f917a98ab898c9ed6f02d114c67"
+    },
+    {
+      "ordinal": 145,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_06_family_relationship_evidence.sql.draft",
+      "bytes": 9007,
+      "sha256": "b0348a2946e52640b21dce12503a53138f62f9fbf78ae8a82996c08f69c5ae3f"
+    },
+    {
+      "ordinal": 146,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_07_family_relationship_lock_order.sql.draft",
+      "bytes": 3413,
+      "sha256": "857ae9a71d52a226773351e77ae71c3fdbd3713001f1a42cc5b59d805d3e98ba"
+    },
+    {
+      "ordinal": 147,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_08_family_relationship_candidates.sql.draft",
+      "bytes": 1978,
+      "sha256": "7c9b94c8ba3c7169c9ef06c5915c8e82ded992b556d58468452179d79f4e8f5d"
+    },
+    {
+      "ordinal": 148,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_09_family_relationship_direct.sql.draft",
+      "bytes": 5903,
+      "sha256": "7153d4e5794b0faa46df6734dc7583a8b814f74e5a1a144e7c53a43c73a8b37d"
+    },
+    {
+      "ordinal": 149,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_10_family_relationship_submit.sql.draft",
+      "bytes": 7239,
+      "sha256": "a046db3bedbeee1c1a44f3c123ceda2c1b0723e343b380319abe81f6c9566d98"
+    },
+    {
+      "ordinal": 150,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_11_family_relationship_reviews_live.sql.draft",
+      "bytes": 2815,
+      "sha256": "c176357bcbf5ee1176fa59766453086f74038f61313d2a7a46b4902a272bd0b6"
+    },
+    {
+      "ordinal": 151,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_12_family_relationship_review.sql.draft",
+      "bytes": 9359,
+      "sha256": "68f170536dcd74ddf3595091dc4d5e660dcd128e558ced2462a22020afd02af9"
+    },
+    {
+      "ordinal": 152,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_13_family_relationship_apply.sql.draft",
+      "bytes": 13111,
+      "sha256": "12c5cd6593a327e48958b0a69c989b9c0a34948b17063a89e6a41478161c28e7"
+    },
+    {
+      "ordinal": 153,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_14_family_relationship_request_guard.sql.draft",
+      "bytes": 4198,
+      "sha256": "c73f0114348120d1f26cf43b9b3356edb5501d56f8b9ca3f6dc33c284618229b"
+    },
+    {
+      "ordinal": 154,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_15_family_relationship_application_guard.sql.draft",
+      "bytes": 3124,
+      "sha256": "2958340b085c7564cd889f076c56cb10a490f7685552a61367cc5d6500dc290f"
+    },
+    {
+      "ordinal": 155,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_16_family_relationship_effect_hardening.sql.draft",
+      "bytes": 6512,
+      "sha256": "d0eaa9707bdcdb970b262cf1018676e53c4dd46274685c7fa1b63654e3403cc2"
+    },
+    {
+      "ordinal": 156,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_17_family_relationship_replay_hardening.sql.draft",
+      "bytes": 4632,
+      "sha256": "d24a1a620ee7fc5bb7fdfba521b1742f1899c81d72bdada167d0ac11faf57925"
+    },
+    {
+      "ordinal": 157,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_18_family_relationship_primary_replacement.sql.draft",
+      "bytes": 10336,
+      "sha256": "e761c6085bf002687dd37dfc41621c3696a1b5cbefec1f65b234ffae90075148"
+    },
+    {
+      "ordinal": 158,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_19_family_relationship_replay_count.sql.draft",
+      "bytes": 4281,
+      "sha256": "3b8dd0b6886d09012f6c850e7c1efb36077f400dda00ab0e98dc4e9f7ecfd002"
+    },
+    {
+      "ordinal": 159,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_20_family_relationship_read.sql.draft",
+      "bytes": 5866,
+      "sha256": "47f66784e11c3f6205383a886b00ec3417ec12a777a2573cadd78381a2a32108"
+    },
+    {
+      "ordinal": 160,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_21_family_relationship_child_lock_order.sql.draft",
+      "bytes": 3343,
+      "sha256": "cecbcf5141a125affaa2ced4d6209ce6d41966943cfe5fb8519a3ff25f86ee30"
+    },
+    {
+      "ordinal": 161,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_22_family_relationship_dependent_lock_order.sql.draft",
+      "bytes": 6372,
+      "sha256": "7bfd4bc4864c7c2062ace9fafac5ce77a08b4ed18a1c8fed14f311530c286367"
+    },
+    {
+      "ordinal": 162,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_23_family_relationship_acl.sql.draft",
+      "bytes": 1371,
+      "sha256": "b6a6644bd2ce06a39e519ba7d6d70c4aa634ff45b25c796518915cac7581d5a6"
+    },
+    {
+      "ordinal": 163,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_24_family_relationship_interval_scope.sql.draft",
+      "bytes": 7785,
+      "sha256": "8042009ff423e2d5bcb8f0fbfae9c4c7ac926c32505780f1c797c78d9a23a904"
+    },
+    {
+      "ordinal": 164,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_25_family_relationship_ancestry_lock.sql.draft",
+      "bytes": 3985,
+      "sha256": "c8d4f3bd2eb06945d11e9f4d30647963ee7451a2067d3a45bb0839f1c54a093d"
+    },
+    {
+      "ordinal": 165,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_26_family_relationship_evidence_hardening.sql.draft",
+      "bytes": 8205,
+      "sha256": "47d7c71ca359b895ca8f04c63def14c3fa6b7ac285fbf14ec29f5b2e9d7ed33d"
+    },
+    {
+      "ordinal": 166,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_27_family_relationship_receipt_shape.sql.draft",
+      "bytes": 6216,
+      "sha256": "1bf2c8c57442df900e2c07bfcb203d755e902fc4cca265b9688ed4bcf2d4811e"
+    },
+    {
+      "ordinal": 167,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_28_family_relationship_review_contract.sql.draft",
+      "bytes": 3767,
+      "sha256": "6f8769e625e0c97b5313b5c1f2ba7623a1c6eb23f0127aea9c66fee1671a1664"
+    },
+    {
+      "ordinal": 168,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_29_family_relationship_null_hardening.sql.draft",
+      "bytes": 11367,
+      "sha256": "fa6d3f282602debb18f13d80c6aed35a326aaa5acba0a39503cb585fdb96b9f9"
+    },
+    {
+      "ordinal": 169,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_30_family_relationship_checked_read_acl.sql.draft",
+      "bytes": 7045,
+      "sha256": "14683bded149503fe2a4563547df1f9813c392d2ae768b8e4bdf7ec62ebdab25"
+    },
+    {
+      "ordinal": 170,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_31_enrollment_history_guard.sql.draft",
+      "bytes": 7851,
+      "sha256": "212ec870492cc5718987c3ea1cd221d2a1f752586bf9dc6d40bf4758ada13d4a"
+    },
+    {
+      "ordinal": 171,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_32_crossrow_campus_local_rename.sql.draft",
+      "bytes": 18333,
+      "sha256": "817275f739af5d1298c3b426289f4cbbd32c35256dea98a0ee3a8408e9844aab"
+    },
+    {
+      "ordinal": 172,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_33_qualification_experience_lineage_guard.sql.draft",
+      "bytes": 8129,
+      "sha256": "9cf43c406cb8dd0eab7c44dd6e3b0811006594dff04c0e4cd627ee3ba3d6a7bd"
+    },
+    {
+      "ordinal": 173,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect30_35_teacher_capability_year_acl.sql.draft",
+      "bytes": 923,
+      "sha256": "2adbd6157753d8daedaf1f440be884db4017920ddaf489c41b401af6f0a613fd"
+    },
+    {
+      "ordinal": 174,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_01_family_principal_membership_core.sql.draft",
+      "bytes": 10836,
+      "sha256": "75fb7d9807ec85b473baca0ba835c725fc35b59ea4d6417f2f6fb500107f285f"
+    },
+    {
+      "ordinal": 175,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_02_membership_policy_effect.sql.draft",
+      "bytes": 9062,
+      "sha256": "9aa35b09b6c79a72487251e6eff992ae3c36eb38c3c02b57fa50c0373c5df057"
+    },
+    {
+      "ordinal": 176,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_03_membership_evidence_reviewers.sql.draft",
+      "bytes": 13511,
+      "sha256": "a8432012b41c09f07517113c2d21e1bd74a9b49ce62f79071bd3d03fcc1a8778"
+    },
+    {
+      "ordinal": 177,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_04_membership_target_hardening.sql.draft",
+      "bytes": 8077,
+      "sha256": "8fdbe7c44553493518e7551d1a9d5e7feb634959850e502f6ebd543c6732f7ca"
+    },
+    {
+      "ordinal": 178,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_05_membership_direct_submit.sql.draft",
+      "bytes": 11677,
+      "sha256": "759248aedaab244c0e0d5eff1546c1093211a08e1c005c50bbb2f109963123c9"
+    },
+    {
+      "ordinal": 179,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_06_membership_review_apply.sql.draft",
+      "bytes": 21903,
+      "sha256": "536a2ce62b24238ae3e2344b4be9acdfeda8f53837e615d44ac52ac143cdc56c"
+    },
+    {
+      "ordinal": 180,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_07_membership_workflow_guards.sql.draft",
+      "bytes": 7556,
+      "sha256": "595c72837a0f49060d7e836ab79752e5c270fd7642209db7cf1419d593caee32"
+    },
+    {
+      "ordinal": 181,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_08_membership_read_acl.sql.draft",
+      "bytes": 6551,
+      "sha256": "dd6c5938a81eca0b9ce0e9d9976df1108860f6c80301f4cfbb2e1988191e85fc"
+    },
+    {
+      "ordinal": 182,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_09_membership_correction_semantics.sql.draft",
+      "bytes": 11924,
+      "sha256": "79a6ee24e54f832df4b6b5a59ad0ebf8e230300edfd48b3790d4c085e2ac22f5"
+    },
+    {
+      "ordinal": 183,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_10_membership_evidence_hardening.sql.draft",
+      "bytes": 13822,
+      "sha256": "3622d2609a0c7201dbbc24c50e367ae8d8c3783440396170ced93273f8f39048"
+    },
+    {
+      "ordinal": 184,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_11_membership_principal_privilege_hardening.sql.draft",
+      "bytes": 4923,
+      "sha256": "9a97fcb01c0629e2ad597ac193d746d4586bea3fbe8410537fdfbecc710f3f35"
+    },
+    {
+      "ordinal": 185,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_12_membership_policy_fail_closed.sql.draft",
+      "bytes": 2149,
+      "sha256": "7652df1e4c4dfa53b1970b65e9bda9ef9ed96de3d2a7af30eecf5543575b63e5"
+    },
+    {
+      "ordinal": 186,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_13_membership_family_scope_hardening.sql.draft",
+      "bytes": 2484,
+      "sha256": "6a8e3bcf568881a32a5d965dceca9d9c3add2775b24f4b7501be29921ac56d7e"
+    },
+    {
+      "ordinal": 187,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_14_membership_revoke_readiness.sql.draft",
+      "bytes": 5028,
+      "sha256": "3df18cd628044100a31b107e26fd5da3ca859cb7b9b75bacd8afe0e6fcd2b7d9"
+    },
+    {
+      "ordinal": 188,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_15_membership_overlap_hardening.sql.draft",
+      "bytes": 4814,
+      "sha256": "4471f5e987c1793f96294565ba9848dff419986e51b92f33afded193fbb77a08"
+    },
+    {
+      "ordinal": 189,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_16_membership_principal_lock_privilege.sql.draft",
+      "bytes": 442,
+      "sha256": "2c9cf650742c0ee7893a8fbfb4892673a4d99c9943c66597d39289fc39922589"
+    },
+    {
+      "ordinal": 190,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_17_membership_end_disabled_principal.sql.draft",
+      "bytes": 5537,
+      "sha256": "b66f5087877860dc6a54924651f38030f26a70a901e937c2bd5302bb624fb47b"
+    },
+    {
+      "ordinal": 191,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_18_membership_checked_read_execution.sql.draft",
+      "bytes": 6204,
+      "sha256": "ff726da3a39fcc58462ca1c0c98186bcff64ad77ef209e6a3db530cb571763c0"
+    },
+    {
+      "ordinal": 192,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect31_19_membership_pending_multistep_review.sql.draft",
+      "bytes": 9874,
+      "sha256": "73d3b321e215de2e85a3af065417aa1f2a068c4af3b39f371ad4b62b11d69cf2"
+    },
+    {
+      "ordinal": 193,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect32_01_child_access_core.sql.draft",
+      "bytes": 19514,
+      "sha256": "66da45fbf4bdb39ca3fff2173e0798c9adec200fbe9d95ab0718bda1e4248d2b"
+    },
+    {
+      "ordinal": 194,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect32_02_child_access_evidence_reviewers.sql.draft",
+      "bytes": 17566,
+      "sha256": "d5282de4ee10fc1f7c6feb3e3567052f5ec2af20c81d8bd17e34b5ca58f079b0"
+    },
+    {
+      "ordinal": 195,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect32_03_child_access_direct_submit.sql.draft",
+      "bytes": 11933,
+      "sha256": "e15251fb30b68f115a34344a9ef77f752eee657541e2d4617ea778645522bde4"
+    },
+    {
+      "ordinal": 196,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect32_04_child_access_review_apply.sql.draft",
+      "bytes": 19445,
+      "sha256": "c5d677fe6ba370710dbdf7d40b8ae4cf30ffbc4b04723bd9209c17a7d0bfb8b0"
+    },
+    {
+      "ordinal": 197,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect32_05_child_access_guards_read_acl.sql.draft",
+      "bytes": 13130,
+      "sha256": "33c650276506f672d2b59029971d53da893a0af486a842e50527ac626ced18ef"
+    },
+    {
+      "ordinal": 198,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect32_06_child_access_request_lock_order.sql.draft",
+      "bytes": 20940,
+      "sha256": "aadd9aea2a7d99963aebc71fda5305d3b9836aa9d129e9cc49191d7d0e844ccc"
+    },
+    {
+      "ordinal": 199,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect32_07_child_access_family_principal_lock.sql.draft",
+      "bytes": 3595,
+      "sha256": "1452a5bceeb91f9a2fe54649fbf8d20c132dd711ac37459175eabdd7f4cbb92e"
+    },
+    {
+      "ordinal": 200,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect33_01_primary_context_core.sql.draft",
+      "bytes": 15639,
+      "sha256": "b6420806a1ffef757c423f1272a2193bb4343b278240eb661b695362b85a395d"
+    },
+    {
+      "ordinal": 201,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect33_02_primary_context_effect_replay.sql.draft",
+      "bytes": 8701,
+      "sha256": "517c2fe1d8dc3444bc954eaca74cf74f7ae075ea52a84573841de0c884816408"
+    },
+    {
+      "ordinal": 202,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect33_03_primary_context_evidence.sql.draft",
+      "bytes": 7683,
+      "sha256": "b2c67ace70e34f4801c1ea63fed88da18638c472da536a139a488294ec0aae79"
+    },
+    {
+      "ordinal": 203,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect33_04_primary_context_direct_acl.sql.draft",
+      "bytes": 4941,
+      "sha256": "35ff07569e649296f5495dc8ec5737d1e0762411528f5f42ef39bd7005a4bf4e"
+    },
+    {
+      "ordinal": 204,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect33_05_primary_context_parent_version.sql.draft",
+      "bytes": 4253,
+      "sha256": "d7eae29fe82fb1fd9534df834d32268a50a3a82d304971bd3a6fdd4135a1d164"
+    },
+    {
+      "ordinal": 205,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect33_06_primary_context_transition_lineage.sql.draft",
+      "bytes": 8344,
+      "sha256": "62f2a2e9fb691525b9483079df1329260cab1d8ddf48956804d9bcff11126856"
+    },
+    {
+      "ordinal": 206,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect34_01_department_evidence_guard.sql.draft",
+      "bytes": 7337,
+      "sha256": "fe09fbd39156a8c79816fb0b8abbd54092d4b489d45719e989762b1e4a930834"
+    },
+    {
+      "ordinal": 207,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_01_designation_evidence_guard.sql.draft",
+      "bytes": 7370,
+      "sha256": "623011e58ec8c2a807a13ad4e665bd3102850f43ab1ddb4617eb0812c6658e5a"
+    },
+    {
+      "ordinal": 208,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_02_class_teacher_p2_application_guard_acl.sql.draft",
+      "bytes": 1106,
+      "sha256": "7960ee1fa33a775cd1a25b4fcd4b16537536c4f4fcb16b2dd069dbc40f59d1c3"
+    },
+    {
+      "ordinal": 209,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_03_student_unplaced_authorization.sql.draft",
+      "bytes": 21346,
+      "sha256": "5677b2566404815023fe1f5188e84039bcb6bb627b8c4e0214a56e12f021dac5"
+    },
+    {
+      "ordinal": 210,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_04_student_p2_receipt_phase_allowlist.sql.draft",
+      "bytes": 11340,
+      "sha256": "45bd901d747132365d32ae85f58fd4e29194d507023f2c4e57c7acfdb391a1f7"
+    },
+    {
+      "ordinal": 211,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_05_student_status_immutable_lock_acl.sql.draft",
+      "bytes": 3592,
+      "sha256": "cc3dde1f36f61e425f21a89d87b4c8a3205017bd6c88894781df7d226bf881fe"
+    },
+    {
+      "ordinal": 212,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_06_student_status_narrow_history_read.sql.draft",
+      "bytes": 3886,
+      "sha256": "9b3d467912cff7e871af8192298dd80619c42a5cd769b2378e95b8a9067e10f7"
+    },
+    {
+      "ordinal": 213,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_07_student_status_server_owned_version.sql.draft",
+      "bytes": 5707,
+      "sha256": "738f05cb635960aabee7b4558386fe53cf13f46de5894f431239a75e9415a905"
+    },
+    {
+      "ordinal": 214,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_08_student_status_replay_unplaced_scope.sql.draft",
+      "bytes": 4901,
+      "sha256": "79d6f95d5cfd3b11f061979d372f9164e4a015f689bb6be510d9396088f6c6be"
+    },
+    {
+      "ordinal": 215,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_09_student_p2_application_validator_acl.sql.draft",
+      "bytes": 1174,
+      "sha256": "4d547fb93e696fa35a31e31d8f9e59fb0a2e602d8602cc256c78d648b31b1f60"
+    },
+    {
+      "ordinal": 216,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_10_student_special_frozen_blood_code_check.sql.draft",
+      "bytes": 1522,
+      "sha256": "cf71017fe66311dc694881f87358ebb9b3705a5cf5c7957534e723396e8b71be"
+    },
+    {
+      "ordinal": 217,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_11_student_status_correct_preflight_immutable_read.sql.draft",
+      "bytes": 7101,
+      "sha256": "7732e1842988c1ae2454ee3d82ee94401b371ac6125807e90897269a8e5eb53e"
+    },
+    {
+      "ordinal": 218,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_12_student_status_correct_source_read_boundary.sql.draft",
+      "bytes": 8760,
+      "sha256": "957ca6625e0312da6b524f2a312bb7934574ab819d344d7d28a745d6d4069d04"
+    },
+    {
+      "ordinal": 219,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_13_student_status_correct_reviewer_authz_reads.sql.draft",
+      "bytes": 8229,
+      "sha256": "3364f84302b6e76d0ddf866e5de2f7814eb7d4312f9b489c65fa805586ec3ac8"
+    },
+    {
+      "ordinal": 220,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_14_student_status_correct_application_guard_owner.sql.draft",
+      "bytes": 1286,
+      "sha256": "4369c2a6d2de35deb896c1a9e6f718971fc72163b80633388b27bee5069e5a85"
+    },
+    {
+      "ordinal": 221,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_15_enrollment_place_allocator_server_version.sql.draft",
+      "bytes": 5944,
+      "sha256": "e93069c0967bfda15713a10f6b56896654548d1cdd99b67ee01195979827adcd"
+    },
+    {
+      "ordinal": 222,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_16_enrollment_place_academic_path_execution.sql.draft",
+      "bytes": 1104,
+      "sha256": "8d329334f16efc3d67fa22693f464a1133e0438365f01d0b2efc854cc397f6ce"
+    },
+    {
+      "ordinal": 223,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_17_enrollment_end_result_academic_projection.sql.draft",
+      "bytes": 4279,
+      "sha256": "b99a6b9acb67959b63c5c8cbb253ff7e9246ccda1cce5ac409143a0f19bbf59e"
+    },
+    {
+      "ordinal": 224,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_18_family_primary_context_receipt_intent_allowlist.sql.draft",
+      "bytes": 12390,
+      "sha256": "cc9f56a11ed5dfc774de5361608de5f9f5f9976194b38df6d7b06cebf5497235"
+    },
+    {
+      "ordinal": 225,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_19_student_profile_open_offering_binding.sql.draft",
+      "bytes": 6328,
+      "sha256": "76c3de607bf66c74d763842f41f4767d50672f064621c57f37cbd537b907d246"
+    },
+    {
+      "ordinal": 226,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_20_student_profile_p1_submit_record_guard.sql.draft",
+      "bytes": 10096,
+      "sha256": "4f5aa3877356fa36ce696e493a3c01eaa2c3fe865b2dd13bd099041ccb052e9a"
+    },
+    {
+      "ordinal": 227,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_21_student_profile_approval_candidate_open_offerings.sql.draft",
+      "bytes": 10883,
+      "sha256": "71d653d5f0611bbc2f6b56b0bce44eacb20fead311450713b1c8a416e038b496"
+    },
+    {
+      "ordinal": 228,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect35_22_profile_p1_historical_submission_receipt_lock.sql.draft",
+      "bytes": 10827,
+      "sha256": "3d47557d0331cbaa7566b80aaf32cbd566a4c05b02f5d211d11713c032dc5a76"
+    },
+    {
+      "ordinal": 229,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect37_01_db01_allocator_history.sql.draft",
+      "bytes": 5383,
+      "sha256": "ff25ddf7efe053b2e2640dbdf97909fec73f034c4c91e14ba8b8e60b309f1060"
+    },
+    {
+      "ordinal": 230,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect37_02_db01_end_source_prelock.sql.draft",
+      "bytes": 6011,
+      "sha256": "90b1d628f91716686c4c083e7b09e88291d78ba68d42a0c0294505d4f2da1724"
+    },
+    {
+      "ordinal": 231,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect38_01_db01_roll_lineage_nonself.sql.draft",
+      "bytes": 415,
+      "sha256": "da187c95269515eaef85ff647fd987badc5225e08b84394e50b059b5991971b7"
+    },
+    {
+      "ordinal": 232,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect38_02_db01_roll_correct_result_pair.sql.draft",
+      "bytes": 7644,
+      "sha256": "61ebed4846cb1f1148a9edaddcda8802a70337607affe6a0f55bc5436af3209b"
+    },
+    {
+      "ordinal": 233,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect38_03_db01_direct_receipt_provenance.sql.draft",
+      "bytes": 4788,
+      "sha256": "b760eb4413eaf417410a8acdfe82e87a2c42774a671de471bf3d552cb1edee84"
+    },
+    {
+      "ordinal": 234,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect38_04_db01_apply_application_receipt_guard.sql.draft",
+      "bytes": 8460,
+      "sha256": "520ef3f76da0263e97c3e7ea096caaa48e2339566f49fab1a661f72626496883"
+    },
+    {
+      "ordinal": 235,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect39_01_enrollment_move_roll_union.sql.draft",
+      "bytes": 5887,
+      "sha256": "aa256aaef63ef6e8c16db1e982e2561cb8ffb7a2afaa71f5169c3a1fee9274ba"
+    },
+    {
+      "ordinal": 236,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect39_02_enrollment_move_entry_order.sql.draft",
+      "bytes": 16017,
+      "sha256": "780c1cd810c48bd02acee17ca4e42caf5866a630ef5dbfc9efcee533ea26029d"
+    },
+    {
+      "ordinal": 237,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect39_03_enrollment_move_apply_order.sql.draft",
+      "bytes": 13805,
+      "sha256": "6aee8aea660328146d2d48aff7bde841934042071ffc1417f91ac370c1269b17"
+    },
+    {
+      "ordinal": 238,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect39_04_enrollment_move_workflow_prelock_acl.sql.draft",
+      "bytes": 392,
+      "sha256": "8c385f961168d906423b38f362d5a5f28b6160ee2229f42ef6bcb6924c96f684"
+    },
+    {
+      "ordinal": 239,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect39_05_enrollment_move_reviewer_projections.sql.draft",
+      "bytes": 5079,
+      "sha256": "b69e2eabf2822f0ebee9abbb80ab3947790a0bdee7bb1d56340ac9fa4431e8a5"
+    },
+    {
+      "ordinal": 240,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect39_06_enrollment_move_application_replay.sql.draft",
+      "bytes": 637,
+      "sha256": "ead3655252055c52e25141d499a03d4f371d9b275909a248a19efbabaaa9e587"
+    },
+    {
+      "ordinal": 241,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect40_01_school_local_roll_date.sql.draft",
+      "bytes": 1657,
+      "sha256": "0a059fce22f2af8d287541b6aa1a760d2db558b0895bcd6eb974092d06d6f525"
+    },
+    {
+      "ordinal": 242,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect40_02_school_local_roll_consumers.sql.draft",
+      "bytes": 10963,
+      "sha256": "b5810ee9de567be83c70020268a96f8bb7e7ba6b65f92659403bbc95af57950d"
+    },
+    {
+      "ordinal": 243,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect40_03_db01_apply_request_version.sql.draft",
+      "bytes": 8423,
+      "sha256": "0c7be7602fe61b165d14a1fdb39a79d4ade35bcf89324aca148975646416a398"
+    },
+    {
+      "ordinal": 244,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_01_db01_correct_source_prelock.sql.draft",
+      "bytes": 7790,
+      "sha256": "3e47de906de0159b0fa7461bc5ed2c15d0d111e131c4580b8358ddc9babf9c51"
+    },
+    {
+      "ordinal": 245,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_02_db01_correct_effect.sql.draft",
+      "bytes": 5859,
+      "sha256": "decb3b053bc765b4bb142cecce040677f61cfa11f23762738d078f34c878c36a"
+    },
+    {
+      "ordinal": 246,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_03_db01_roll_correct_private_authority_p1.sql.draft",
+      "bytes": 7776,
+      "sha256": "afc3df4a48640f6bca85980122f91efedfc97e2ec1a5589d89dd78b1e96fee28"
+    },
+    {
+      "ordinal": 247,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_04_db01_roll_correct_canonical_command_context.sql.draft",
+      "bytes": 6676,
+      "sha256": "a17e92fe9757341c47db211549c49282b4fc5868be37d3b31af89097d125f118"
+    },
+    {
+      "ordinal": 248,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_05_db01_roll_correct_direct_success_evidence.sql.draft",
+      "bytes": 7486,
+      "sha256": "0c45391a935c54cb0b8e8ad7c047ea32d06510af4d0f49e5f41fb2bce9b89d30"
+    },
+    {
+      "ordinal": 249,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_06_db01_direct_receipt_expected_version_guard.sql.draft",
+      "bytes": 3933,
+      "sha256": "8dcfd854a4e2000d18913aa87e58eb042fadcd02eb6df6b0b417c765685b604b"
+    },
+    {
+      "ordinal": 250,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_07_db01_roll_correct_direct_handler.sql.draft",
+      "bytes": 12272,
+      "sha256": "e60620c2be5c88cd4f36acd8dd4ce2a67308c758d10c72f55bc54f74924c44c1"
+    },
+    {
+      "ordinal": 251,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_08_db01_roll_correct_approval_submit.sql.draft",
+      "bytes": 22113,
+      "sha256": "e2cd3e58f5fc777381bd9b4202872c34848464e889efdfd735d05619c0906fa7"
+    },
+    {
+      "ordinal": 252,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_09_db01_roll_correct_review.sql.draft",
+      "bytes": 12357,
+      "sha256": "f275bb054d0646f1863cfeda1ce7f2244b9f1287b451bfcc5b66d0c22f646e7c"
+    },
+    {
+      "ordinal": 253,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_10_db01_roll_correct_approval_apply.sql.draft",
+      "bytes": 17418,
+      "sha256": "a17dc25deae04512c9edff8b3d62e9fbc69d8c9bd746e2ddc6806bb2b00f7ad5"
+    },
+    {
+      "ordinal": 254,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_11_db01_apply_guard_corrected_student_version.sql.draft",
+      "bytes": 9008,
+      "sha256": "6b0104880ea803991f1934b628b288285eec44545a1488dccabdd4c19a328fe6"
+    },
+    {
+      "ordinal": 255,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_12_db01_apply_replay_hardening.sql.draft",
+      "bytes": 18619,
+      "sha256": "932e9b14ad7c8d122d3575a77671c1ccb3f4ffa84ca94cc45d4f4c3ea2df09af"
+    },
+    {
+      "ordinal": 256,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_13_db01_apply_terminal_invalidation.sql.draft",
+      "bytes": 23743,
+      "sha256": "1cebaa4b1bd5e0d331b413978b4860db5ec1feabdb9b1f0e218f537af6343b4e"
+    },
+    {
+      "ordinal": 257,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect41_14_db01_checked_request_read.sql.draft",
+      "bytes": 9612,
+      "sha256": "0e595457de4df24512fc68162d046a35083c37ae6e2613a6cb78995b444ec62b"
+    },
+    {
+      "ordinal": 258,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect42_01_db02_school_reviewer_candidates.sql.draft",
+      "bytes": 13927,
+      "sha256": "feb02f4bd8eddb66ba783bac290eaa3d42c70b6a6293b1c0e1132a677f448262"
+    },
+    {
+      "ordinal": 259,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect43_01_db02_roll_policy_source_preflight.sql.draft",
+      "bytes": 6916,
+      "sha256": "e3b6fc56502a59a5e76d1dd4d5845fcf220be8c7b6d3a9e6bcb2616f3162e11c"
+    },
+    {
+      "ordinal": 260,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect44_01_db02_roll_policy_p1_version_selector.sql.draft",
+      "bytes": 4122,
+      "sha256": "4d21c7b7072a9800001b2f09d5e13d5762ad38dfb440b408f77123b79f7c54f5"
+    },
+    {
+      "ordinal": 261,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect45_01_db02_school_actor_all_authorization.sql.draft",
+      "bytes": 4146,
+      "sha256": "ea55d7feade31e52f97455604ebbb3c484f1b7530125a46b739667b44d7538e6"
+    },
+    {
+      "ordinal": 262,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect46_01_db02_roll_policy_receipt_allowlist.sql.draft",
+      "bytes": 14674,
+      "sha256": "a641270f02af751214c08f71657adf97e601082ebeb74df12485aaeb79e43347"
+    },
+    {
+      "ordinal": 263,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect47_01_db02_private_command_context.sql.draft",
+      "bytes": 6749,
+      "sha256": "b822f4118fb6bcda8dac97dde870ca84c69972791b7fa65dfb4ec62112c220b5"
+    },
+    {
+      "ordinal": 264,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect48_01_db02_bound_p1_version.sql.draft",
+      "bytes": 6978,
+      "sha256": "a531788d63b0bcaebcbfc4451e34fe7092bb1ba51188677b627846ec06f72b3e"
+    },
+    {
+      "ordinal": 265,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect49_01_db02_locked_future_source_preflight.sql.draft",
+      "bytes": 13776,
+      "sha256": "4f8bdc0fe07deec34f14fc7154273126180084c01b1342851838d5efbf5b5589"
+    },
+    {
+      "ordinal": 266,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect50_01_db02_policy_revision_transition.sql.draft",
+      "bytes": 3509,
+      "sha256": "a9387f2d36b5f854635469671fb3a9f8ed84a396b39899609e9f004a12efe94d"
+    },
+    {
+      "ordinal": 267,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect51_01_db02_atomic_policy_allocators.sql.draft",
+      "bytes": 9680,
+      "sha256": "c1e1c3e1b5423c7e7b10d7106327abeca085069fe004eab2de44441a1b6312c8"
+    },
+    {
+      "ordinal": 268,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect52_01_db02_direct_success_evidence.sql.draft",
+      "bytes": 8136,
+      "sha256": "e06e1e13a764079de57364f7a2bfc924ae364884ad161ffc3dcb9796bc123250"
+    },
+    {
+      "ordinal": 269,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect52_02_db02_direct_replay_proof.sql.draft",
+      "bytes": 8914,
+      "sha256": "9b274b3fca47accbc1c9290b37a303470fd7e5d78c3a7cbf7f39a9dcf7f66671"
+    },
+    {
+      "ordinal": 270,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect53_01_db02_direct_atomic_evidence.sql.draft",
+      "bytes": 11902,
+      "sha256": "f0fb8faaa454529492c93c9ce2f75baf62991787e8a4f961297e4aebda402a25"
+    },
+    {
+      "ordinal": 271,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect54_01_db02_authenticated_direct.sql.draft",
+      "bytes": 2271,
+      "sha256": "72a0de9a5a0f8173786c6e718a729f8eab20bb305df30a04efca1007d55c88b6"
+    },
+    {
+      "ordinal": 272,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect55_01_db02_submit_context.sql.draft",
+      "bytes": 9418,
+      "sha256": "a4bd88b3f00295a44408dda76b4b0df6d57d2c8525a448a29edf69e6a6f24009"
+    },
+    {
+      "ordinal": 273,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect55_02_db02_submit_evidence.sql.draft",
+      "bytes": 12561,
+      "sha256": "730d2f3f241a8a9aeacb5e34a6cd61b6b64bff872de7fd2031e7526fcbe936c1"
+    },
+    {
+      "ordinal": 274,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect55_03_db02_approval_submit.sql.draft",
+      "bytes": 7293,
+      "sha256": "f434b1fd25300cb43dceda784044f16c9a7e3b13dc7a16696f0b850227ea8d60"
+    },
+    {
+      "ordinal": 275,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect55_04_db02_approval_checked_read.sql.draft",
+      "bytes": 5532,
+      "sha256": "b6216622e3bab6e4531e1f5a99f39f0ff10333a13627b44b11670de001a951a4"
+    },
+    {
+      "ordinal": 276,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect56_01_db02_review_context.sql.draft",
+      "bytes": 4386,
+      "sha256": "53170b09ae191f6bfd454df24072b030718e2f1716a2dacf37866f01ec76ee3d"
+    },
+    {
+      "ordinal": 277,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect56_02_db02_review_evidence.sql.draft",
+      "bytes": 4995,
+      "sha256": "da684133ea0965e0de32403a0c9d5dd0452b35884e25bcb50a22c3bf833c951f"
+    },
+    {
+      "ordinal": 278,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect56_03_db02_independent_review.sql.draft",
+      "bytes": 8827,
+      "sha256": "b569c38a6f6a3d766eb735fa223b8b887ee0038a473ed16a0caa45bb47f2ebb4"
+    },
+    {
+      "ordinal": 279,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect57_01_db02_apply_live_authority.sql.draft",
+      "bytes": 8648,
+      "sha256": "508e9740d9d7053b8e7f51cf86b762ae51ba8d79a63088ed403ab0da424162b2"
+    },
+    {
+      "ordinal": 280,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect57_02_db02_apply_policy_effect.sql.draft",
+      "bytes": 3480,
+      "sha256": "68dcf5856481829a5704a9c545206715abf7e0f7f37b0bb806134502d1344fed"
+    },
+    {
+      "ordinal": 281,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect57_03_db02_apply_receipt_context.sql.draft",
+      "bytes": 4050,
+      "sha256": "08bd0046a11e1a3879c333769c004e7059a5871f0e7247d794a9f62ddde72d8e"
+    },
+    {
+      "ordinal": 282,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect57_04_db02_apply_evidence.sql.draft",
+      "bytes": 11321,
+      "sha256": "02e3bb6b2ab056b8cfdcbe438bfbfb151c4e407ef37db99d811bba11d0236821"
+    },
+    {
+      "ordinal": 283,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect57_05_db02_approved_apply.sql.draft",
+      "bytes": 11584,
+      "sha256": "a5ee1f303008e024a24fc2c2fb193b44687f255aa7e7d6dd7015b10e9ccc7cd0"
+    },
+    {
+      "ordinal": 284,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect57_06_db02_apply_application_guard.sql.draft",
+      "bytes": 3421,
+      "sha256": "11d26072429291476a3a0bc1001661dfbc6df78a5647afe02e4b83566b71b118"
+    },
+    {
+      "ordinal": 285,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect57_07_db02_apply_privilege_edges.sql.draft",
+      "bytes": 699,
+      "sha256": "23915608c56661d5b0e186d22e6ded1854d0182af94663de3c87644e20d51c6f"
+    },
+    {
+      "ordinal": 286,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect58_01_db02_review_apply_receipt_allowlist.sql.draft",
+      "bytes": 15649,
+      "sha256": "36175973f52916011bded790e3cbceb20d538602aac1dae88561cf7526d61b92"
+    },
+    {
+      "ordinal": 287,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect58_02_db02_review_replay.sql.draft",
+      "bytes": 6029,
+      "sha256": "858d623084a942ff2bb979ce009cafb5debebbb2c4f5b3d6331f0498c1ce7fca"
+    },
+    {
+      "ordinal": 288,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect58_03_db02_apply_replay.sql.draft",
+      "bytes": 9848,
+      "sha256": "99ceb2d2744e9d3236953f25ff0a08d447b1951b28faefd64c3c8efda7a6eae7"
+    },
+    {
+      "ordinal": 289,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect58_04_db02_review_replay_entry.sql.draft",
+      "bytes": 9841,
+      "sha256": "476d8c338e45658244c1b0b1849d2dc564ddc4eb703615327ff9aaaf6d9f7820"
+    },
+    {
+      "ordinal": 290,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect58_05_db02_apply_replay_entry.sql.draft",
+      "bytes": 11867,
+      "sha256": "21a7c512df3a4fa01ced58de217d05412b14511eb2326b86d2b30c9022c8879d"
+    },
+    {
+      "ordinal": 291,
+      "path": "supabase/migrations/20260928000000_domain_package_01_effect61_01_academic_roll_pool_hook.sql.draft",
+      "bytes": 9963,
+      "sha256": "958ca66fc39809d4c931ee26db805dedb107b0a7d330e523cb5429e13bb02d6f"
+    }
+  ],
+  "proposed_packaging": {
+    "one_tracked_atomic_migration_subject_to_rehearsal": true,
+    "preserve_exact_fragment_order": true,
+    "generate_filename_with_supabase_migration_new_only_after_readiness": true,
+    "migration_time_catalog_seed_forbidden": true,
+    "migration_time_system_principal_forbidden": true,
+    "post_bootstrap_registrar_requires_review": true,
+    "disable_unrelated_operations_and_workers": true
+  },
+  "recovery_policy": {
+    "precommit_failure": "Prove full data/catalog/role/ACL/history rollback at early/middle/final checkpoints",
+    "postcommit_incident": "Stop affected writers; preserve history; separately reviewed forward fix or tested restore with explicit recovery point",
+    "backup_artifact_ref": null,
+    "isolated_restore_evidence_ref": null,
+    "rto": null,
+    "rpo": null,
+    "automatic_project_reset_delete_restore_forbidden": true,
+    "database_backup_is_not_external_object_backup": true
+  },
+  "acceptance_runbook": "docs/deployment/db02_g06_release_packet_20261026.md",
+  "provider_references_reviewed_on": "2026-10-26",
+  "provider_references": [
+    "https://supabase.com/docs/guides/deployment/database-migrations",
+    "https://supabase.com/docs/guides/platform/backups",
+    "https://supabase.com/changelog/postgres-15-19-17-11-breaking-changes",
+    "https://supabase.com/changelog/cbc-tls-ciphers-deprecated"
+  ]
+}
