@@ -76,7 +76,9 @@ SELECT is((SELECT count(*) FROM app_private.admission_certificate_grace_current)
 SELECT is((SELECT due_on FROM app_private.admission_certificate_grace_history WHERE revision=1),:'tomorrow'::date,'original shorter deadline remains unchanged');
 SELECT throws_ok($q$UPDATE app_private.admission_certificate_grace_history SET due_on=due_on+1$q$,'P0001'::char(5),'DB03 intake history is immutable'::text,'grace history cannot be edited');
 SELECT throws_ok($q$DELETE FROM app_private.admission_certificate_grace_history$q$,'P0001'::char(5),'DB03 intake history is immutable'::text,'grace history cannot be deleted');
+SET CONSTRAINTS ALL IMMEDIATE;
 SELECT throws_ok($q$TRUNCATE app_private.admission_application_transitions$q$,'P0001'::char(5),'DB03 intake history is immutable'::text,'transitions cannot be truncated');
+SET CONSTRAINTS ALL DEFERRED;
 SELECT throws_ok(format($q$UPDATE app_private.admission_applications SET state='SUBMITTED' WHERE id=%L$q$,:'a_application_id'),'P0001'::char(5),'DB03 intake requires protected command'::text,'raw SQL cannot bypass unimplemented verified submission');
 SAVEPOINT outbox_failure;
 CREATE FUNCTION pg_temp.db03_intake_test_failure() RETURNS trigger LANGUAGE plpgsql AS $body$
