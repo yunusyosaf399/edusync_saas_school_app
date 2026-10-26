@@ -81,3 +81,7 @@ Do not turn every future idea into immediate schema complexity. Conversely, do n
 - offline implications addressed
 - deployment from clean project tested for foundational changes
 - documentation/ADR updated
+
+## DB02 sole-maintainer review policy
+
+[ADR-006](../decisions/ADR-006-db02-solo-maintainer-review.md) records the owner's accepted review mechanism for DB02 P03/G03: documented technical/security review, exact-source automated checks and subsequent explicit owner acceptance of the reviewed implementation commit. Record it as solo-maintainer acceptance, never independent non-author approval. Policy approval alone does not accept the implementation. Merge, final contract freeze and hosted activation keep their separate gates. Application business approval chains, different-Person requirements and other workstreams' acceptance gates are unchanged.
