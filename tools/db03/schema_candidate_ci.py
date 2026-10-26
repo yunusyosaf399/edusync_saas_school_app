@@ -200,7 +200,15 @@ def main() -> int:
             total_foundation = baseline + local.run_foundation_regression(contract)
             if total_foundation != 220:
                 raise RuntimeError("DB03_PUBLICATION_FOUNDATION_REGRESSION_COUNT")
-            parse_tap(local.run_psql(container, publication_test, "DB03_PUBLICATION_TEST"), 40)
+            try:
+                publication_output = local.run_psql(container, publication_test, "DB03_PUBLICATION_TEST")
+            except local.DomainLocalCIError:
+                # The pinned harness tails stderr+stdout together. A long TAP
+                # stdout can hide the real SQL error. Rehearse the rollback-only
+                # transaction silently so stderr remains visible on failure.
+                local.run_psql(container, "\\o /dev/null\n" + publication_test, "DB03_PUBLICATION_SQL_DIAGNOSTIC")
+                raise
+            parse_tap(publication_output, 40)
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.school_profiles)+(SELECT count(*) FROM app_private.principals)+(SELECT count(*) FROM app_private.operation_contracts)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_PUBLICATION_FIXTURE_CLEANUP", tuples=True).strip()
             if remaining != "0":
                 raise RuntimeError("DB03_PUBLICATION_FIXTURE_ROLLBACK_INCOMPLETE")
