@@ -2,10 +2,11 @@
 
 All commands execute only against the disposable local D1 PostgreSQL stack:
 two successive independent authenticated SUBMIT -> two REVIEWs -> APPLY.
-School-local UTC -> Pacific/Kiritimati advances the day between corrections.
+School-local UTC-10 -> Pacific/Kiritimati advances the day at every UTC hour.
 Backdated stored-zone and wrong-policy source probes must reject without effect.
 """
 from contextlib import closing
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,18 @@ from domain_enrollment_end_lock_prefix_ci import CONTAINER
 SCHOOL = "22222222-2222-4222-8222-222222222222"
 OUTSIDE_SCHOOL = "f1080000-0000-4000-8000-000000000001"
 OUTSIDE_POLICY = "f1080000-0000-4000-8000-000000000002"
+
+
+def _successive_date_fixture(source):
+    # UTC -> UTC+14 only advances the date after 10:00 UTC. A 24-hour
+    # west/east separation advances it at any wall-clock hour. Place R0 two
+    # UTC dates ago so it predates the first (possibly yesterday) School day.
+    anchor = "SET timezone='UTC'"
+    date_expression = r"CURRENT_DATE-1(?![0-9])"
+    _check(source.count(anchor) == 1 and re.search(date_expression, source),
+           "SUCCESSIVE_DATE_FIXTURE_DRIFT")
+    return re.sub(date_expression, "CURRENT_DATE-2",
+                  source.replace(anchor, "SET timezone='Etc/GMT+10'"))
 
 
 def _school_date(cur):
@@ -184,7 +197,8 @@ def _cross_school_probe(psycopg, student, latest):
 def run_db01_p1_successive_roll_date_boundaries(container,run_psql,root=ROOT):
     _check(container==CONTAINER,"DISPOSABLE_LOCAL_ONLY")
     import psycopg
-    student, first_req, start_version=_setup(container,run_psql,root,"r2")
+    student, first_req, start_version=_setup(
+        container,run_psql,root,"r2",fixture_transform=_successive_date_fixture)
     with closing(_local_connect(psycopg)) as reader:
         with reader.cursor() as cur:
             west=_school_date(cur)

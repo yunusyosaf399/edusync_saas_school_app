@@ -33,7 +33,7 @@ def _check(valid, label):
         raise RuntimeError("D1_DB01_P1_APPLY_RACE_" + label)
 
 
-def _setup(container, run_psql, root, case):
+def _setup(container, run_psql, root, case, *, fixture_transform=None):
     sp, rp = CASES[case]
     fixture=(Path(root)/FIXTURE.relative_to(ROOT)).read_text(encoding="utf-8")
     for anchor in ("d1020000", "d1920000", "db01-p1-review-race-submit",
@@ -43,6 +43,8 @@ def _setup(container, run_psql, root, case):
              .replace("db01-p1-review","db01-p1-apply-"+case)
              .replace("db01-p1-live-race-p0","db01-p1-apply-"+case+"-p0")
              .replace("DB01-P1-RACE","DB01-P1-APPLY-"+case.upper()))
+    if fixture_transform is not None:
+        fixture = fixture_transform(fixture)
     run_psql(container,"BEGIN;\n"+settings_sql()+"\nRESET ROLE;\n"+
              fixture+"\nCOMMIT;\n",
              "D1_DB01_P1_APPLY_SETUP_"+case.upper(),timeout=140)
