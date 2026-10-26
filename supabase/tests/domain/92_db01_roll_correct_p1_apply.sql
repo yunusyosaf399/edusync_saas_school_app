@@ -1,0 +1,1012 @@
+-- DB-01 P1 genuine authenticated SUBMIT -> two independent REVIEWs -> APPLY; rollback only.
+-- Creates a real authenticated P0 source; no Roll correction effect is allowed.
+BEGIN;
+CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
+SET LOCAL search_path=extensions,pg_catalog,public;
+SELECT plan(117);
+\ir fixtures/command_actor.sql
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.permissions SET state='ENABLED'
+ WHERE code='student.enrollment.place';
+UPDATE app_private.operation_contracts SET enabled=true WHERE code='student.enrollment.place';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.enrollment.place')
+ AND scope_kind='ALL' AND resolver_key='DIRECT';
+INSERT INTO app_private.role_permission_grants(id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
+SELECT 'b1000000-0000-4000-8000-000000000010','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,id,family_safe,
+ statement_timestamp()-interval '1 hour','11111111-1111-4111-8111-111111111111'
+ FROM app_private.permissions WHERE code='student.enrollment.place';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,scope_kind,resolver_key,valid_from,created_by)
+SELECT 'b1000000-0000-4000-8000-000000000011','ffffffff-ffff-4fff-8fff-ffffffffffff',g.id,g.role_id,g.permission_id,c.id,
+ 'ALL','DIRECT',statement_timestamp()-interval '1 hour','11111111-1111-4111-8111-111111111111'
+ FROM app_private.role_permission_grants g
+ JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+ WHERE g.id='b1000000-0000-4000-8000-000000000010' AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+
+INSERT INTO app_private.students(id,person_id,school_student_id,admission_number,admission_serial,admitted_on,current_status,created_by)
+VALUES ('b1000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001',
+ 'STUDENT-ACCEPT','STD-ACCEPT-100',100,CURRENT_DATE-20,'ACTIVE','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.student_status_transitions(
+ id,student_id,previous_status,new_status,effective_on,sequence_number,reason,created_by)
+VALUES ('b1000000-0000-4000-8000-000000000002','b1000000-0000-4000-8000-000000000001',
+ NULL,'ACTIVE',CURRENT_DATE-20,1,'Synthetic initial admitted ACTIVE status','11111111-1111-4111-8111-111111111111');
+
+-- INITIAL placement starts with no Enrollment: create the destination
+-- same-school Campus -> Academic Year -> Class -> Section ancestry only.
+INSERT INTO app.campuses(id,school_id,code,name,state,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000041','22222222-2222-4222-8222-222222222222',
+  'P0-STUDENT-CAMPUS','Student P0 acceptance campus','ACTIVE',
+  '11111111-1111-4111-8111-111111111111');
+INSERT INTO app.academic_years(id,school_id,code,label,starts_on,ends_on,state,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000042','22222222-2222-4222-8222-222222222222',
+  'P0-STUDENT-YEAR','Student P0 synthetic academic year',CURRENT_DATE-180,CURRENT_DATE+180,'ACTIVE',
+  '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.academic_classes(id,school_id,code,label,display_order,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000043','22222222-2222-4222-8222-222222222222',
+  'P0-STUDENT-CLASS','Student P0 synthetic grade',1,'11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.class_offerings(id,school_id,class_id,campus_id,academic_year_id,capacity,state,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000044','22222222-2222-4222-8222-222222222222',
+  'b1000000-0000-4000-8000-000000000043','b1000000-0000-4000-8000-000000000041',
+  'b1000000-0000-4000-8000-000000000042',30,'OPEN','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.section_offerings(
+ id,class_offering_id,campus_id,code,label,display_order,capacity,state,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000045',
+  'b1000000-0000-4000-8000-000000000044','b1000000-0000-4000-8000-000000000041',
+  'A','P0 student section',1,30,'OPEN','11111111-1111-4111-8111-111111111111');
+
+-- Both Class and Section initial capacity revisions are authoritative at placement date.
+-- Provide the effective policy and allocator, but no pre-seeded Enrollment or Roll.
+INSERT INTO app_private.capacity_revisions(
+ id,class_offering_id,section_offering_id,old_capacity,new_capacity,effective_on,reason,created_by) VALUES
+ ('b1000000-0000-4000-8000-000000000047',
+  'b1000000-0000-4000-8000-000000000044',NULL,NULL,30,CURRENT_DATE-20,
+  'P0 class initial capacity','11111111-1111-4111-8111-111111111111'),
+ ('b1000000-0000-4000-8000-000000000048',NULL,
+  'b1000000-0000-4000-8000-000000000045',NULL,30,CURRENT_DATE-20,
+  'P0 section initial capacity','11111111-1111-4111-8111-111111111111');
+
+
+-- The deferred Enrollment integrity guard requires pointwise roll coverage
+-- for the accepted PRIMARY interval. Supply the policy and allocator, but
+-- let the protected application produce the first actual roll allocation.
+INSERT INTO app_private.roll_policy_revisions(
+ id,school_id,revision,mode,start_value,effective_from,reason,created_by)
+VALUES ('b1000000-0000-4000-8000-000000000049',
+ '22222222-2222-4222-8222-222222222222',1,'PERSISTENT_STUDENT',12000,
+ CURRENT_DATE-30,'P0 synthetic Student persistent roll policy',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.roll_allocator_states(
+ id,policy_revision_id,class_offering_id,next_value,created_by)
+VALUES ('b1000000-0000-4000-8000-000000000050',
+ 'b1000000-0000-4000-8000-000000000049',NULL,12001,
+ '11111111-1111-4111-8111-111111111111');
+
+
+RESET ROLE;
+SET ROLE authenticated;
+SELECT * FROM app.d1_place_student_enrollment(
+ 'b1000000-0000-4000-8000-000000000001',1,'b1000000-0000-4000-8000-000000000045',
+ 'INITIAL',CURRENT_DATE-20,NULL,'DIRECT P0 fixture',NULL,'db01-direct-source') \gset placed_
+RESET ROLE;
+SELECT throws_ok(pg_catalog.format($fmt$SELECT * FROM app.d1_submit_student_roll_correction('b1000000-0000-4000-8000-000000000001'::uuid,1,
+ %L::uuid,'b1000000-0000-4000-8000-000000000045'::uuid,CURRENT_DATE-20,
+ %L::uuid,CURRENT_DATE-20,'b1000000-0000-4000-8000-000000000049'::uuid,
+ 12001,12009,'Requested exact reason ','db01-frozen-submit')$fmt$,
+ :'placed_enrollment_id',:'placed_roll_allocation_id'),
+ 'P0001'::char(5),NULL::text,'disabled frozen correction cannot submit');
+SELECT is((SELECT enabled FROM app_private.operation_contracts WHERE code='student.roll.correct'),false,'frozen operation disabled by default');
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.operation_contracts SET enabled=true WHERE code='student.roll.correct';
+UPDATE app_private.permissions SET state='ENABLED' WHERE code='student.roll.correct';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.roll.correct')
+ AND scope_kind='ALL' AND resolver_key='DIRECT';
+INSERT INTO app_private.role_permission_grants(
+ id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
+SELECT 'b1890000-0000-4000-8000-000000000010',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,id,family_safe,
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.permissions WHERE code='student.roll.correct';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+SELECT 'b1890000-0000-4000-8000-000000000011',
+ 'ffffffff-ffff-4fff-8fff-ffffffffffff',g.id,g.role_id,g.permission_id,c.id,
+ 'ALL','DIRECT',pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.role_permission_grants g
+ JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+ WHERE g.id='b1890000-0000-4000-8000-000000000010'
+ AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT throws_ok(pg_catalog.format($fmt$SELECT * FROM app.d1_submit_student_roll_correction('b1000000-0000-4000-8000-000000000001'::uuid,1,
+ %L::uuid,'b1000000-0000-4000-8000-000000000045'::uuid,CURRENT_DATE-20,
+ %L::uuid,CURRENT_DATE-20,'b1000000-0000-4000-8000-000000000049'::uuid,
+ 12001,12009,'Requested exact reason ','db01-no-policy')$fmt$,
+ :'placed_enrollment_id',:'placed_roll_allocation_id'),
+ 'P0001'::char(5),NULL::text,'APPROVAL submission denies missing P1 policy');
+SET ROLE schoolos_schema_owner;
+INSERT INTO app_private.approval_policy_versions(
+ id,policy_key,version,operation_id,campus_id,d1_route_mode,created_by)
+SELECT 'b1890000-0000-4000-8000-000000000059',
+ 'db01-approval-submit-test',1,id,
+ 'b1000000-0000-4000-8000-000000000041','APPROVAL',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.operation_contracts WHERE code='student.roll.correct';
+INSERT INTO app_private.approval_step_templates(
+ id,policy_id,step_number,reviewer_role_id,required_reviews,
+ selection_resolver_key,created_by)
+VALUES('b1890000-0000-4000-8000-000000000060',
+ 'b1890000-0000-4000-8000-000000000059',1,
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',1,'D1_REVIEWER_ROLE_SCOPE',
+ '11111111-1111-4111-8111-111111111111');
+-- Second configured independent review stage, before the immutable P1 policy activates.
+INSERT INTO app_private.approval_step_templates(
+ id,policy_id,step_number,reviewer_role_id,required_reviews,
+ selection_resolver_key,created_by)
+VALUES ('b1910000-0000-4000-8000-000000000061',
+ 'b1890000-0000-4000-8000-000000000059',2,
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',1,
+ 'D1_REVIEWER_ROLE_SCOPE',
+ '11111111-1111-4111-8111-111111111111');
+UPDATE app_private.approval_policy_versions SET state='ACTIVE',
+ effective_from=pg_catalog.statement_timestamp()-interval '1 hour',
+ activated_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000059';
+RESET ROLE;
+SELECT is((SELECT route_mode FROM app_private.d1_roll_correct_policy('b1000000-0000-4000-8000-000000000045')),'APPROVAL'::text,'source P1 selects APPROVAL');
+SELECT throws_ok(pg_catalog.format($fmt$SELECT * FROM app.d1_submit_student_roll_correction('b1000000-0000-4000-8000-000000000001'::uuid,1,
+ %L::uuid,'b1000000-0000-4000-8000-000000000045'::uuid,CURRENT_DATE-20,
+ %L::uuid,CURRENT_DATE-20,'b1000000-0000-4000-8000-000000000049'::uuid,
+ 12001,12009,'Requested exact reason ','db01-no-reviewer')$fmt$,
+ :'placed_enrollment_id',:'placed_roll_allocation_id'),
+ 'P0001'::char(5),NULL::text,'request with no independent reviewer cannot commit');
+SELECT is((SELECT count(*) FROM app_private.approval_requests WHERE operation_id=(SELECT id FROM app_private.operation_contracts WHERE code='student.roll.correct')),0::bigint,'no-reviewer submission rolls back request');
+-- Resolve a seeded Auth fixture as the trusted local test runner (postgres)
+-- BEFORE changing to the narrowly scoped application schema owner.
+SELECT id AS reviewer_auth_id FROM auth.users
+ WHERE email='foundation-own-001@example.invalid' \gset db01review_
+SET ROLE schoolos_schema_owner;
+INSERT INTO app_private.people(id,display_name,created_by) VALUES
+('b1890000-0000-4000-8000-000000000090','DB01 independent reviewer Person',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by) VALUES
+('b1890000-0000-4000-8000-000000000091','INDIVIDUAL',
+ 'b1890000-0000-4000-8000-000000000090','DB01 independent reviewer',
+ 'ACTIVE','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principal_auth_bindings(
+ id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
+VALUES('b1890000-0000-4000-8000-000000000092',
+ 'b1890000-0000-4000-8000-000000000091','INDIVIDUAL',
+ :'db01review_reviewer_auth_id'::uuid,
+ pg_catalog.clock_timestamp(),
+ pg_catalog.to_timestamp(pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp()))),
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principal_role_assignments(
+ id,principal_id,principal_kind,role_id,role_family_only,context_kind,valid_from,created_by)
+VALUES('b1890000-0000-4000-8000-000000000093',
+ 'b1890000-0000-4000-8000-000000000091','INDIVIDUAL',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,'INDIVIDUAL',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111');
+UPDATE app_private.permissions SET state='ENABLED' WHERE code='student.roll.approve';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.roll.approve')
+ AND scope_kind='ALL' AND resolver_key='DIRECT';
+INSERT INTO app_private.role_permission_grants(
+ id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
+SELECT 'b1890000-0000-4000-8000-000000000094',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,id,family_safe,
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.permissions WHERE code='student.roll.approve';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+SELECT 'b1890000-0000-4000-8000-000000000095',
+ 'b1890000-0000-4000-8000-000000000093',g.id,g.role_id,g.permission_id,c.id,
+ 'ALL','DIRECT',pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.role_permission_grants g
+ JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+ WHERE g.id='b1890000-0000-4000-8000-000000000094'
+ AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT is(app_private.d1_roll_correct_authorized('b1890000-0000-4000-8000-000000000091','student.roll.approve','b1000000-0000-4000-8000-000000000045','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),true,'independent reviewer has configured current Section role grant');
+SELECT is(app_private.d1_roll_correct_authorized('55555555-5555-4555-8555-555555555555','student.roll.approve','b1000000-0000-4000-8000-000000000045','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),false,'requester does not gain reviewer permission');
+SET ROLE authenticated;
+SELECT * FROM app.d1_submit_student_roll_correction('b1000000-0000-4000-8000-000000000001'::uuid,1,
+ :'placed_enrollment_id'::uuid,'b1000000-0000-4000-8000-000000000045'::uuid,CURRENT_DATE-20,
+ :'placed_roll_allocation_id'::uuid,CURRENT_DATE-20,'b1000000-0000-4000-8000-000000000049'::uuid,
+ 12001,12009,'Requested exact reason ','db01-approved-submit') \gset submitted_
+RESET ROLE;
+SELECT is((SELECT state FROM app_private.approval_requests WHERE id=:'submitted_request_id'::uuid),'PENDING'::text,'source request remains PENDING before review');
+-- DB01-05 checked read before any independent P1 review.
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REQUESTER'::text,'current Roll requester sees own typed request');
+SELECT is((SELECT request_state FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'PENDING'::text,'checked request read exposes current PENDING status');
+SELECT is((SELECT source_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),NULL::bigint,'requester without history grant sees no old Roll number');
+SELECT is((SELECT proposed_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),NULL::bigint,'requester without history grant sees no proposed Roll number');
+SELECT is((SELECT request_reason FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'Requested exact reason '::text,'requester sees typed reason only');
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ 'b1950000-0000-4000-8000-000000000099'::uuid)),0::bigint,'unknown request returns no metadata');
+RESET ROLE;
+SELECT ok(has_function_privilege('authenticated',
+ 'app.d1_read_student_roll_correction_request(uuid)','EXECUTE'),'typed checked read callable by authenticated');
+SELECT ok(NOT has_function_privilege('anon',
+ 'app.d1_read_student_roll_correction_request(uuid)','EXECUTE'),'anon cannot execute checked request read');
+SELECT ok(NOT has_function_privilege('service_role',
+ 'app.d1_read_student_roll_correction_request(uuid)','EXECUTE'),'service_role cannot execute checked read');
+SELECT ok(NOT has_function_privilege('authenticated',
+ 'app_private.d1_roll_correct_request_participant(uuid,uuid)','EXECUTE'),'client cannot call private participant resolver');
+SELECT ok(NOT has_column_privilege('authenticated',
+ 'app_private.approval_requests','old_snapshot','SELECT'),'client cannot fetch stored source snapshot directly');
+
+-- A terminal REJECTED request cannot be applied, even by the original
+-- authenticated requester. Preserve the PENDING original using savepoint.
+SAVEPOINT db01_apply_rejected_request;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.approval_requests SET state='REJECTED'
+ WHERE id=:'submitted_request_id'::uuid;
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-rejected-no-apply')$q$,
+ :'submitted_request_id',:'submitted_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'genuine request in terminal REJECTED state cannot APPLY');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_rejected_request;
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'submitted_request_id'::uuid),'PENDING'::text,
+ 'rejected APPLY attempt has no durable request or Roll effect');
+
+
+-- Snapshot requester identity before reviewer uses a truly different bound Person.
+SELECT pg_catalog.set_config('schoolos_test.roll_apply_origin_sub',current_setting('request.jwt.claim.sub'),true);
+SELECT pg_catalog.set_config('schoolos_test.roll_apply_origin_claims',current_setting('request.jwt.claims'),true);
+SELECT pg_catalog.set_config('request.jwt.claim.sub',:'db01review_reviewer_auth_id',true);
+SELECT pg_catalog.set_config('request.jwt.claims',
+ jsonb_build_object('sub',:'db01review_reviewer_auth_id','role','authenticated','iat',
+  (SELECT extract(epoch FROM tokens_valid_from)::bigint
+     FROM app_private.principal_auth_bindings
+    WHERE id='b1890000-0000-4000-8000-000000000092'),
+  'is_anonymous',false)::text,true);
+SELECT is(app_private.current_principal_id(),
+ 'b1890000-0000-4000-8000-000000000091'::uuid,
+ 'review is authenticated as independent Person');
+-- Reviewer must be a current nomination under a configured P1 role.
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REVIEWER'::text,'live nominated reviewer sees pending request');
+SELECT is((SELECT proposed_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),NULL::bigint,'reviewer nomination is not Roll history permission');
+RESET ROLE;
+
+-- DB01-06: Same Person, unbound Principal and caller impersonation guards.
+-- All identity/scope modifications are synthetic and rolled back; authenticated
+-- server Principal must always follow the trusted Auth binding, not a SQL arg.
+-- Foundation protects a Person from having multiple simultaneously live
+-- INDIVIDUAL Principals. A second active identity cannot bypass separation.
+-- The following expected constraint rejection is rollback-free.
+-- pgTAP is invoked by the trusted disposable postgres test runner: the
+-- schema-owner NOLOGIN role deliberately lacks access to the test helper.
+SELECT throws_ok(pg_catalog.format($q$INSERT INTO app_private.principals(
+ id,kind,person_id,label,state,created_by)
+VALUES('b1960000-0000-4000-8000-000000000001','INDIVIDUAL',
+ '44444444-4444-4444-8444-444444444444',
+ 'Forbidden second live requester identity','ACTIVE',
+ '11111111-1111-4111-8111-111111111111')$q$),
+ '23505'::char(5),NULL::text,
+ 'Foundation unique index forbids second live Principal of the requester Person');
+SELECT is((SELECT count(*) FROM app_private.principals p
+ WHERE p.person_id='44444444-4444-4444-8444-444444444444'
+ AND p.kind='INDIVIDUAL' AND p.state='ACTIVE'),1::bigint,
+ 'the requester Person retains exactly one active Principal');
+SELECT is((SELECT count(*) FROM app_private.d1_roll_correct_reviewer_candidates(
+ :'submitted_request_id'::uuid,
+ (SELECT s.id FROM app_private.approval_request_steps s
+ WHERE s.request_id=:'submitted_request_id'::uuid AND s.state='OPEN'
+ ORDER BY s.step_number LIMIT 1)) c
+ WHERE c.candidate_principal_id='55555555-5555-4555-8555-555555555555'),
+ 0::bigint,
+ 'requester Principal is excluded from genuine nominated reviewer candidates');
+
+-- Authenticated requester cannot turn their correction permission into
+-- student.roll.approve; return to the genuinely distinct bound reviewer.
+SELECT pg_catalog.set_config('request.jwt.claim.sub',
+ current_setting('schoolos_test.roll_apply_origin_sub'),true);
+SELECT pg_catalog.set_config('request.jwt.claims',
+ current_setting('schoolos_test.roll_apply_origin_claims'),true);
+SELECT is(app_private.current_principal_id(),
+ '55555555-5555-4555-8555-555555555555'::uuid,
+ 'self-review test uses the actual original authenticated requester');
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REQUESTER'::text,
+ 'requester remains a requester, never a reviewer');
+SELECT throws_ok(pg_catalog.format(
+ $q$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'self approval denied','db01-06-self-approval')$q$,
+ :'submitted_request_id',:'submitted_request_version'::bigint),
+ 'P0001'::char(5),NULL::text,
+ 'a requester cannot self-approve a P1 Roll-correction request');
+RESET ROLE;
+SELECT pg_catalog.set_config('request.jwt.claim.sub',:'db01review_reviewer_auth_id',true);
+SELECT pg_catalog.set_config('request.jwt.claims',pg_catalog.jsonb_build_object(
+ 'sub',:'db01review_reviewer_auth_id','role','authenticated','iat',
+ (SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings
+ WHERE id='b1890000-0000-4000-8000-000000000092'),
+ 'is_anonymous',false)::text,true);
+SELECT is(app_private.current_principal_id(),
+ 'b1890000-0000-4000-8000-000000000091'::uuid,
+ 'genuine independent reviewer binding restored after self-review denial');
+SELECT is(app_private.d1_roll_correct_request_participant(
+ :'submitted_request_id'::uuid,'55555555-5555-4555-8555-555555555555'::uuid),
+ NULL::text,'forged actor argument cannot override current authenticated Principal');
+
+-- Deliberately unbound Auth subject. These SET LOCAL simulations verify DB
+-- binding checks, not JWT cryptographic signature verification at the gateway.
+SELECT pg_catalog.set_config('schoolos_test.db01_06_reviewer_sub',
+ current_setting('request.jwt.claim.sub'),true);
+SELECT pg_catalog.set_config('schoolos_test.db01_06_reviewer_claims',
+ current_setting('request.jwt.claims'),true);
+SELECT pg_catalog.set_config('request.jwt.claim.sub',
+ 'b1960000-0000-4000-8000-000000000099',true);
+SELECT pg_catalog.set_config('request.jwt.claims',
+ pg_catalog.jsonb_build_object('sub',
+ 'b1960000-0000-4000-8000-000000000099','role','authenticated',
+ 'iat',extract(epoch FROM pg_catalog.clock_timestamp())::bigint,
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'unbound authenticated subject reveals no protected correction request');
+RESET ROLE;
+SELECT pg_catalog.set_config('request.jwt.claim.sub',
+ current_setting('schoolos_test.db01_06_reviewer_sub'),true);
+SELECT pg_catalog.set_config('request.jwt.claims',
+ current_setting('schoolos_test.db01_06_reviewer_claims'),true);
+SELECT is(app_private.current_principal_id(),
+ 'b1890000-0000-4000-8000-000000000091'::uuid,
+ 'trusted reviewer binding restored after unbound-subject test');
+
+-- Campus/Section scope tests use a genuine other Campus and other Section.
+-- A role assignment/grant by itself grants no access outside its typed scope.
+SET ROLE schoolos_schema_owner;
+INSERT INTO app.campuses(id,school_id,code,name,state,created_by)
+VALUES ('b1960000-0000-4000-8000-000000000041',
+ '22222222-2222-4222-8222-222222222222','DB01-06-OTHER',
+ 'DB01-06 unrelated Campus','ACTIVE',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.section_offerings(
+ id,class_offering_id,campus_id,code,label,display_order,capacity,state,created_by)
+VALUES('b1960000-0000-4000-8000-000000000045',
+ 'b1000000-0000-4000-8000-000000000044',
+ 'b1000000-0000-4000-8000-000000000041',
+ 'DB01-06-B','DB01-06 unrelated Section',2,30,'OPEN',
+ '11111111-1111-4111-8111-111111111111');
+-- Every live Section requires its own exactly matching effective capacity
+-- revision when the Foundation deferred capacity projection is checked.
+INSERT INTO app_private.capacity_revisions(
+ id,class_offering_id,section_offering_id,old_capacity,new_capacity,
+ effective_on,reason,created_by)
+VALUES ('b1960000-0000-4000-8000-000000000047',
+ NULL,'b1960000-0000-4000-8000-000000000045',
+ NULL,30,CURRENT_DATE-20,'DB01-06 synthetic alternate Section initial capacity',
+ '11111111-1111-4111-8111-111111111111');
+RESET ROLE;
+
+SAVEPOINT db01_06_wrong_campus;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000095';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.roll.approve')
+ AND scope_kind='CAMPUS' AND resolver_key='DIRECT';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,campus_id,valid_from,created_by)
+SELECT 'b1960000-0000-4000-8000-000000000051',
+ 'b1890000-0000-4000-8000-000000000093',g.id,g.role_id,g.permission_id,c.id,
+ 'CAMPUS','DIRECT','b1960000-0000-4000-8000-000000000041',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1890000-0000-4000-8000-000000000094'
+ AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT is(app_private.d1_roll_correct_authorized(
+ 'b1890000-0000-4000-8000-000000000091','student.roll.approve',
+ 'b1000000-0000-4000-8000-000000000045',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),false,
+ 'reviewer Campus grant for another Campus cannot approve this Section');
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'wrong-Campus reviewer cannot inspect protected P1 request');
+SELECT throws_ok(pg_catalog.format(
+ $q$SELECT * FROM app.d1_review_student_roll_correction(%L::uuid,'APPROVE',%s::bigint,'wrong Campus denied','db01-06-wrong-campus')$q$,
+ :'submitted_request_id',:'submitted_request_version'::bigint),
+ 'P0001'::char(5),NULL::text,
+ 'wrong-Campus reviewer cannot write approved review evidence');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_06_wrong_campus;
+
+SAVEPOINT db01_06_matching_campus;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000095';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.roll.approve')
+ AND scope_kind='CAMPUS' AND resolver_key='DIRECT';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,campus_id,valid_from,created_by)
+SELECT 'b1960000-0000-4000-8000-000000000052',
+ 'b1890000-0000-4000-8000-000000000093',g.id,g.role_id,g.permission_id,c.id,
+ 'CAMPUS','DIRECT','b1000000-0000-4000-8000-000000000041',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1890000-0000-4000-8000-000000000094'
+ AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT is(app_private.d1_roll_correct_authorized(
+ 'b1890000-0000-4000-8000-000000000091','student.roll.approve',
+ 'b1000000-0000-4000-8000-000000000045',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),true,
+ 'matching Campus-only grant permits current review scope');
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REVIEWER'::text,
+ 'matching Campus-only grant preserves legitimate nominee visibility');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_06_matching_campus;
+
+SAVEPOINT db01_06_wrong_section;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000095';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.roll.approve')
+ AND scope_kind='SECTION' AND resolver_key='DIRECT';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,section_offering_id,valid_from,created_by)
+SELECT 'b1960000-0000-4000-8000-000000000053',
+ 'b1890000-0000-4000-8000-000000000093',g.id,g.role_id,g.permission_id,c.id,
+ 'SECTION','DIRECT','b1960000-0000-4000-8000-000000000045',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1890000-0000-4000-8000-000000000094'
+ AND c.scope_kind='SECTION' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT is(app_private.d1_roll_correct_authorized(
+ 'b1890000-0000-4000-8000-000000000091','student.roll.approve',
+ 'b1000000-0000-4000-8000-000000000045',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),false,
+ 'other Section of same Class never grants review of source Section');
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'wrong-Section current reviewer cannot read source request');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_06_wrong_section;
+
+SAVEPOINT db01_06_matching_section;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000095';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions WHERE code='student.roll.approve')
+ AND scope_kind='SECTION' AND resolver_key='DIRECT';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,section_offering_id,valid_from,created_by)
+SELECT 'b1960000-0000-4000-8000-000000000054',
+ 'b1890000-0000-4000-8000-000000000093',g.id,g.role_id,g.permission_id,c.id,
+ 'SECTION','DIRECT','b1000000-0000-4000-8000-000000000045',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1890000-0000-4000-8000-000000000094'
+ AND c.scope_kind='SECTION' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT is(app_private.d1_roll_correct_authorized(
+ 'b1890000-0000-4000-8000-000000000091','student.roll.approve',
+ 'b1000000-0000-4000-8000-000000000045',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),true,
+ 'matching exact Section scope permits reviewer for source Section');
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REVIEWER'::text,
+ 'matching Section current role permits typed participant read');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_06_matching_section;
+SELECT is((SELECT count(*) FROM app_private.approval_reviews v
+ JOIN app_private.approval_request_steps s ON s.id=v.step_id
+ WHERE s.request_id=:'submitted_request_id'::uuid),0::bigint,
+ 'failed impersonation and cross-scope reviews create zero review rows');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid
+ AND command_kind='request.review'),0::bigint,
+ 'blocked scope/Person/subject attempts create zero review receipts');
+
+SET ROLE authenticated;
+SELECT * FROM app.d1_review_student_roll_correction(
+ :'submitted_request_id'::uuid,'APPROVE',:'submitted_request_version'::bigint,
+ 'Independent first reviewer accepted correction','db01-apply-review-step-1') \gset r1_
+SELECT * FROM app.d1_review_student_roll_correction(
+ :'submitted_request_id'::uuid,'APPROVE',:'r1_request_version'::bigint,
+ 'Independent second review approved correction','db01-apply-review-step-2') \gset r2_
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'REVIEWER'::text,'reviewer remains eligible after two genuine decisions');
+SELECT is((SELECT request_state FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'APPROVED'::text,'reviewer sees APPROVED without applying Roll');
+RESET ROLE;
+SAVEPOINT db01_read_review_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.role_permission_grants SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000094';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,'revoked reviewer role grant removes request visibility');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_read_review_revoked;
+
+SELECT is(:'r1_request_state'::text,'PENDING'::text,
+ 'first reviewer keeps request pending for next step');
+SELECT is(:'r2_request_state'::text,'APPROVED'::text,
+ 'second reviewer creates fully APPROVED and unapplied request');
+SELECT is(:'r2_request_version'::bigint,:'submitted_request_version'::bigint+2,
+ 'two review decisions each advance request version once');
+SELECT is((SELECT count(*) FROM app_private.approval_reviews rv
+ JOIN app_private.approval_request_steps st ON st.id=rv.step_id
+ WHERE st.request_id=:'submitted_request_id'::uuid AND rv.decision='APPROVE'),
+ 2::bigint,'both independent reviewer decisions are immutable');
+SET ROLE authenticated;
+SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-reviewer-cannot-apply')$f$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'reviewer cannot APPLY without the requesters current Roll authority');
+RESET ROLE;
+-- DB01-05: a separate genuine Person is a scoped administrator only after
+-- BOTH correction scope and independent Roll-history scope are current.
+SELECT id AS admin_auth_id FROM auth.users
+ WHERE email='foundation-own-002@example.invalid' \gset db01admin_
+SET ROLE schoolos_schema_owner;
+INSERT INTO app_private.people(id,display_name,created_by) VALUES
+ ('b1950000-0000-4000-8000-000000000001','DB01 admin Person',
+  '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by) VALUES
+ ('b1950000-0000-4000-8000-000000000002','INDIVIDUAL',
+  'b1950000-0000-4000-8000-000000000001','DB01 scoped admin',
+  'ACTIVE','11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principal_auth_bindings(
+ id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
+VALUES('b1950000-0000-4000-8000-000000000003',
+ 'b1950000-0000-4000-8000-000000000002','INDIVIDUAL',
+ :'db01admin_admin_auth_id'::uuid,pg_catalog.clock_timestamp(),
+ pg_catalog.to_timestamp(pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp()))),
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.principal_role_assignments(
+ id,principal_id,principal_kind,role_id,role_family_only,context_kind,valid_from,created_by)
+VALUES('b1950000-0000-4000-8000-000000000004',
+ 'b1950000-0000-4000-8000-000000000002','INDIVIDUAL',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,'INDIVIDUAL',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111');
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+SELECT 'b1950000-0000-4000-8000-000000000005',
+ 'b1950000-0000-4000-8000-000000000004',
+ g.id,g.role_id,g.permission_id,c.id,'ALL','DIRECT',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.role_permission_grants g
+JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+WHERE g.id='b1890000-0000-4000-8000-000000000010'
+ AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SELECT pg_catalog.set_config('request.jwt.claim.sub',:'db01admin_admin_auth_id',true);
+SELECT pg_catalog.set_config('request.jwt.claims',
+ pg_catalog.jsonb_build_object('sub',:'db01admin_admin_auth_id','role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+  FROM app_private.principal_auth_bindings
+  WHERE id='b1950000-0000-4000-8000-000000000003'),
+ 'is_anonymous',false)::text,true);
+SELECT is(app_private.current_principal_id(),
+ 'b1950000-0000-4000-8000-000000000002'::uuid,
+ 'scoped administrator authenticated under own independent Person');
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'correction privilege alone cannot inspect other Persons request');
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.permissions SET state='ENABLED' WHERE code='student.roll_history.view';
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE permission_id=(SELECT id FROM app_private.permissions
+ WHERE code='student.roll_history.view') AND scope_kind='ALL' AND resolver_key='DIRECT';
+INSERT INTO app_private.role_permission_grants(
+ id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
+SELECT 'b1950000-0000-4000-8000-000000000006',
+ 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',false,id,family_safe,
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.permissions WHERE code='student.roll_history.view';
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+SELECT 'b1950000-0000-4000-8000-000000000007',
+ 'b1950000-0000-4000-8000-000000000004',
+ g.id,g.role_id,g.permission_id,c.id,'ALL','DIRECT',
+ pg_catalog.statement_timestamp()-interval '1 hour',
+ '11111111-1111-4111-8111-111111111111'
+ FROM app_private.role_permission_grants g
+ JOIN app_private.permission_scope_contracts c ON c.permission_id=g.permission_id
+ WHERE g.id='b1950000-0000-4000-8000-000000000006'
+ AND c.scope_kind='ALL' AND c.resolver_key='DIRECT';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT participant_kind FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'AUTHORIZED_ADMIN'::text,
+ 'independent current two-permission staff may administer checked request');
+SELECT is((SELECT source_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),12001::bigint,
+ 'separate Roll-history authority unmasks source number only to eligible staff');
+SELECT is((SELECT proposed_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),12009::bigint,
+ 'separate Roll-history authority unmasks proposed number only to eligible staff');
+RESET ROLE;
+SAVEPOINT db01_read_admin_history_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1950000-0000-4000-8000-000000000007';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'history scope revocation removes independent admin viewing eligibility');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_read_admin_history_revoked;
+SAVEPOINT db01_read_admin_correct_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.assignment_permission_scopes SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1950000-0000-4000-8000-000000000005';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),0::bigint,
+ 'correction scope revocation denies admin despite active history grant');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_read_admin_correct_revoked;
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'),
+ 0::bigint,'request viewing never generates an APPLY receipt');
+
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.roll_apply_origin_sub'),true);
+SELECT set_config('request.jwt.claims',current_setting('schoolos_test.roll_apply_origin_claims'),true);
+SELECT is(app_private.current_principal_id(),
+ '55555555-5555-4555-8555-555555555555'::uuid,
+ 'APPLY is a separate command by the genuine authorized requester');
+
+-- DB01-04 terminal/authority/current-source denial. Each case uses a
+-- savepoint and genuine authenticated APPLY; no security guard bypass.
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-stale-approved-version')$q$,
+ :'submitted_request_id',:'r2_request_version'::bigint-1),'P0001'::char(5),NULL::text,
+ 'stale prior approved version cannot APPLY');
+RESET ROLE;
+
+SAVEPOINT db01_apply_previously_invalidated;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.approval_requests SET state='INVALIDATED'
+ WHERE id=:'submitted_request_id'::uuid;
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-terminal-invalidated-apply')$q$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'terminal INVALIDATED request cannot APPLY or mutate Roll');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_previously_invalidated;
+
+SAVEPOINT db01_apply_policy_retired;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.approval_policy_versions SET state='RETIRED'
+ WHERE id='b1890000-0000-4000-8000-000000000059';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-policy-retired-apply')$q$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'retired original P1 APPROVAL policy cannot authorize APPLY');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_policy_retired;
+
+SAVEPOINT db01_apply_reviewer_grant_revoked;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.role_permission_grants SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000094';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(pg_catalog.format($q$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-reviewer-revoked-apply')$q$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'revoked independent reviewer cannot authorize APPLY');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_reviewer_grant_revoked;
+
+-- Owner-selected DB01/DB02 boundary: a retained current Roll under a
+-- retired source revision cannot be corrected after School-local cutover.
+SAVEPOINT db01_apply_stored_roll_policy_retired;
+SET ROLE schoolos_academic_executor;
+SELECT app_private.d1_roll_business_date(
+ '22222222-2222-4222-8222-222222222222') AS cutover_date \gset db01_
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.roll_policy_revisions SET effective_until=:'db01_cutover_date'::date
+ WHERE id='b1000000-0000-4000-8000-000000000049';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_roll_correction(
+ :'submitted_request_id'::uuid,:'r2_request_version'::bigint,
+ 'db01-retired-stored-roll-policy') \gset retired_
+RESET ROLE;
+SELECT is(:'retired_request_state'::text,'INVALIDATED'::text,
+ 'retired stored Roll policy invalidates the approved correction');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'),1::bigint,
+ 'retired-policy denial retains R0 without a corrected successor');
+SELECT is((SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id=:'submitted_request_id'::uuid),0::bigint,
+ 'retired-policy denial creates no approval application');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'
+   AND state='SUCCEEDED'),0::bigint,
+ 'retired-policy denial cannot leave a successful APPLY receipt');
+ROLLBACK TO SAVEPOINT db01_apply_stored_roll_policy_retired;
+
+SAVEPOINT db01_apply_source_student_stale;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.students SET current_status='ACTIVE'
+ WHERE id='b1000000-0000-4000-8000-000000000001';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_roll_correction(
+ :'submitted_request_id'::uuid,:'r2_request_version'::bigint,
+ 'db01-source-stale-apply') \gset invalidated_
+RESET ROLE;
+SELECT is(:'invalidated_request_state'::text,'INVALIDATED'::text,
+ 'source-stale APPROVED APPLY records terminal INVALIDATED instead of Roll effect');
+SELECT is(:'invalidated_request_version'::bigint,:'r2_request_version'::bigint+1,
+ 'terminal invalidation advances request exactly one version');
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'submitted_request_id'::uuid),'INVALIDATED'::text,
+ 'source-stale request persists terminal INVALIDATED state');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'
+   AND state='REJECTED'),1::bigint,
+ 'one typed rejected APPLY receipt records source-stale invalidation');
+SELECT is((SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id=:'submitted_request_id'::uuid),0::bigint,
+ 'terminal invalidation writes no approval application');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'),1::bigint,
+ 'invalidation preserves original R0 and creates no successor');
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_roll_correction(
+ :'submitted_request_id'::uuid,:'r2_request_version'::bigint,
+ 'db01-source-stale-apply') \gset invalidated_replay_
+RESET ROLE;
+SELECT is(:'invalidated_replay_request_state'::text,'INVALIDATED'::text,
+ 'same-key replay returns the original terminal invalidation');
+SELECT is(:'invalidated_replay_request_version'::bigint,
+ :'invalidated_request_version'::bigint,
+ 'terminal invalidation replay preserves the version');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'),1::bigint,
+ 'invalidation replay cannot create a second rejected receipt');
+SELECT is((SELECT count(*) FROM app_private.audit_events
+ WHERE approval_request_id=:'submitted_request_id'::uuid AND outcome='REJECTED'
+   AND authority_evidence->>'phase'='APPLY'),1::bigint,
+ 'invalidation and replay retain precisely one REJECTED audit witness');
+ROLLBACK TO SAVEPOINT db01_apply_source_student_stale;
+
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'),
+ 0::bigint,'rejected/invalidated/stale/revoked APPLY attempts create no apply receipts');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'),1::bigint,
+ 'terminal and authority denial leave source Roll unchanged');
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'submitted_request_id'::uuid),'APPROVED'::text,
+ 'savepoint-isolated invalidation candidates do not alter approved source');
+
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_roll_correction(
+ :'submitted_request_id'::uuid,:'r2_request_version'::bigint,
+ 'db01-first-exact-p1-apply') \gset applied_
+RESET ROLE;
+SELECT is(:'applied_request_state'::text,'EXECUTED'::text,
+ 'authenticated APPLY terminalizes the approved request');
+SELECT is(:'applied_request_version'::bigint,:'r2_request_version'::bigint+1,
+ 'APPLY advances request through its server-owned transition exactly once');
+SELECT is(:'applied_student_version'::bigint,2::bigint,
+ 'Student optimistic version advances N to N+1');
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'submitted_request_id'::uuid),'EXECUTED'::text,
+ 'stored approved request becomes executed');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'),2::bigint,
+ 'original Roll retained plus exactly one corrected successor');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations r
+ WHERE r.id=:'applied_corrected_roll_allocation_id'::uuid
+   AND r.supersedes_id=:'placed_roll_allocation_id'::uuid
+   AND r.numeric_value=12009 AND r.effective_until IS NULL),1::bigint,
+ 'corrected Roll is current R1 and points to original R0');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE id=:'placed_roll_allocation_id'::uuid AND effective_until=:'applied_correction_effective_from'::date
+   AND ended_by='55555555-5555-4555-8555-555555555555'::uuid),1::bigint,
+ 'original Roll R0 closes exactly on verified School-local business date');
+SELECT is((SELECT row_version FROM app_private.students
+ WHERE id='b1000000-0000-4000-8000-000000000001'),2::bigint,
+ 'Student row version advanced once and source Enrollment unchanged');
+SELECT is((SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id=:'submitted_request_id'::uuid
+   AND result_ref=:'applied_corrected_roll_allocation_id'::uuid),1::bigint,
+ 'one protected approval application binds its corrected Roll');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid
+   AND command_kind='request.apply' AND state='SUCCEEDED'),1::bigint,
+ 'one canonical request.apply receipt proves completed correction');
+SELECT is((SELECT count(*) FROM app_private.audit_events
+ WHERE approval_request_id=:'submitted_request_id'::uuid
+   AND authority_evidence->>'phase'='APPLY'),1::bigint,
+ 'one typed audit row records the APPLY phase');
+SELECT is((SELECT count(*) FROM app_private.outbox_events o
+ JOIN app_private.command_receipts rc ON rc.id=o.command_receipt_id
+ WHERE rc.request_id=:'submitted_request_id'::uuid AND o.event_type='enrollment.roll_corrected'
+   AND NOT(o.payload ? 'new_numeric_value')),1::bigint,
+ 'one minimized correction outbox event without Roll number disclosure');
+-- DB01-06 real success evidence minimization. No display Roll number,
+-- private reason, or source history should leak into broad audit/outbox data.
+SELECT is((SELECT count(*) FROM app_private.audit_events a
+ WHERE a.approval_request_id=:'submitted_request_id'::uuid
+ AND a.authority_evidence->>'phase'='REVIEW'),2::bigint,
+ 'exactly two independent review audit witnesses are recorded');
+SELECT ok(NOT EXISTS (
+ SELECT 1 FROM app_private.audit_events a
+ WHERE a.approval_request_id=:'submitted_request_id'::uuid
+ AND (a.details::text LIKE '%Requested exact reason%'
+   OR a.details::text LIKE '%12001%' OR a.details::text LIKE '%12009%'
+   OR a.details ?| ARRAY['source_numeric_value','proposed_numeric_value',
+                         'old_numeric_value','new_numeric_value','correction_reason'])),
+ 'all review/APPLY broad audit details omit reason and numeric Roll identity');
+SELECT ok(NOT EXISTS (
+ SELECT 1 FROM app_private.outbox_events ev
+ JOIN app_private.command_receipts rc ON rc.id=ev.command_receipt_id
+ WHERE rc.request_id=:'submitted_request_id'::uuid
+ AND (ev.payload ?| ARRAY['source_numeric_value','proposed_numeric_value',
+                       'old_numeric_value','new_numeric_value','correction_reason',
+                       'request_reason']
+   OR ev.payload::text LIKE '%Requested exact reason%'
+   OR ev.payload::text LIKE '%12001%' OR ev.payload::text LIKE '%12009%')),
+ 'full Roll correction outbox payload omits source/proposed number and private reason');
+SELECT is((SELECT count(*) FROM app_private.outbox_events ev
+ JOIN app_private.command_receipts rc ON rc.id=ev.command_receipt_id
+ WHERE rc.request_id=:'submitted_request_id'::uuid
+ AND ev.event_type='enrollment.roll_corrected'),1::bigint,
+ 'approved Roll correction emits precisely one minimized event');
+SELECT ok(NOT EXISTS (
+ SELECT 1 FROM app_private.command_receipts rc
+ WHERE rc.request_id=:'submitted_request_id'::uuid
+ AND rc.command_kind='request.review'
+ AND (rc.result_summary ?| ARRAY['source_numeric_value','proposed_numeric_value',
+    'old_numeric_value','new_numeric_value','correction_reason','request_reason']
+ OR rc.result_summary::text LIKE '%Requested exact reason%')),
+ 'reviewer receipts disclose only typed decision/state and no Roll numbers');
+
+-- DB01-04: exact same-key, same request-version replay MUST return the
+-- original immutable result, never invoke the Roll effect for a second time.
+SET ROLE authenticated;
+SELECT * FROM app.d1_apply_student_roll_correction(
+ :'submitted_request_id'::uuid,:'r2_request_version'::bigint,
+ 'db01-first-exact-p1-apply') \gset replay_
+RESET ROLE;
+SELECT is(:'replay_request_state'::text,'EXECUTED'::text,
+ 'exact replay returns the terminal executed state');
+SELECT is(:'replay_request_version'::bigint,:'applied_request_version'::bigint,
+ 'exact replay returns the original terminal version');
+SELECT is(:'replay_corrected_roll_allocation_id'::uuid,
+ :'applied_corrected_roll_allocation_id'::uuid,
+ 'exact replay returns the same R1 UUID');
+SELECT is(:'replay_student_version'::bigint,:'applied_student_version'::bigint,
+ 'exact replay returns the same achieved Student version');
+SELECT is(:'replay_correction_effective_from'::date,
+ :'applied_correction_effective_from'::date,
+ 'exact replay returns the original School-local correction date');
+SET ROLE authenticated;
+SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-first-exact-p1-apply')$f$,
+ :'submitted_request_id',:'r2_request_version'::bigint+1),'P0001'::char(5),NULL::text,
+ 'changed expected version cannot reuse historical APPLY key');
+SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-second-apply-key')$f$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'new key cannot run APPLY against already EXECUTED request');
+RESET ROLE;
+SELECT is((SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id=:'submitted_request_id'::uuid),1::bigint,
+ 'duplicate replay and a distinct-key attempt create no second application');
+SELECT is((SELECT count(*) FROM app_private.roll_allocations
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'),2::bigint,
+ 'duplicate/rejected APPLY attempts never append another retained Roll');
+SELECT is((SELECT count(*) FROM app_private.command_receipts
+ WHERE request_id=:'submitted_request_id'::uuid AND command_kind='request.apply'),1::bigint,
+ 'exact replay returns original command receipt without duplicates');
+
+-- Current reviewer authority must still be valid even on exact historical
+-- replay: revoke the previously approved reviewer grant transactionally.
+SAVEPOINT db01_apply_replay_revoked_reviewer;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.role_permission_grants SET revoked_at=pg_catalog.statement_timestamp()
+ WHERE id='b1890000-0000-4000-8000-000000000094';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT throws_ok(format($f$SELECT * FROM app.d1_apply_student_roll_correction(%L::uuid,%s::bigint,'db01-first-exact-p1-apply')$f$,
+ :'submitted_request_id',:'r2_request_version'::bigint),'P0001'::char(5),NULL::text,
+ 'historical receipt cannot bypass revoked independent reviewer grant');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT db01_apply_replay_revoked_reviewer;
+SELECT is((SELECT count(*) FROM app_private.approval_applications
+ WHERE request_id=:'submitted_request_id'::uuid),1::bigint,
+ 'revoked historical replay leaves original application immutable');
+-- Original requester sees executed state but still has no numeric disclosure.
+SET ROLE authenticated;
+SELECT is((SELECT request_state FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),'EXECUTED'::text,'requester checked read sees terminal execution state');
+SELECT is((SELECT proposed_numeric_value FROM app.d1_read_student_roll_correction_request(
+ :'submitted_request_id'::uuid)),NULL::bigint,'requester did not inherit administrator history access');
+RESET ROLE;
+
+-- DB01-06 private EXECUTE matrix: all three client roles denied on the
+-- independent reviewer, protected APPLY, and evidence helper entrypoints.
+SELECT ok(NOT EXISTS (
+ SELECT 1 FROM unnest(ARRAY['anon','authenticated','service_role']) AS roles(role_name)
+ CROSS JOIN unnest(ARRAY[
+  'app_private.d1_roll_correct_authorized(uuid,text,uuid,uuid)',
+  'app_private.d1_roll_correct_policy(uuid)',
+  'app_private.d1_roll_correct_request_participant(uuid,uuid)',
+  'app_private.d1_roll_correct_reviewer_candidates(uuid,uuid)',
+  'app_private.d1_roll_correct_apply_invalidated_witness(uuid,uuid,uuid)',
+  'app_private.d1_roll_correct_apply_invalidated_receipt(uuid,uuid,text,bytea,uuid,bigint,bigint,bigint,uuid,uuid)'
+ ]) AS f(signature)
+ WHERE pg_catalog.has_function_privilege(roles.role_name,f.signature,'EXECUTE')),
+ 'anon/authenticated/service_role cannot EXECUTE any sampled private DB01 review, read, or APPLY helpers');
+SELECT ok(NOT EXISTS (
+ SELECT 1 FROM pg_catalog.pg_proc p
+ JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='app_private'
+ -- Match the exact D1 runtime-catalog guard: Foundation-private functions
+ -- outside this protected domain are not silently counted as DB01 grants.
+ AND (left(p.proname,3)='d1_' OR p.proname IN
+   ('guard_assignment_permission_scopes','guard_scope_interval'))
+ AND (pg_catalog.has_function_privilege('authenticated',p.oid,'EXECUTE')
+   OR pg_catalog.has_function_privilege('anon',p.oid,'EXECUTE')
+   OR pg_catalog.has_function_privilege('service_role',p.oid,'EXECUTE'))),
+ 'every domain D1 private function remains EXECUTE-denied to client roles');
+
+SET CONSTRAINTS ALL IMMEDIATE;
+SELECT * FROM finish();
+ROLLBACK;

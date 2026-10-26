@@ -14,14 +14,42 @@ DOMAIN_TESTS.extend([["75_db01_allocator_retained_history.sql",12],
                      ["77_db01_retained_result_pair_private_acl.sql",30],
                      ["78_db01_direct_receipt_provenance_private_acl.sql",24],
                      ["79_db01_approval_application_receipt_guard.sql",14],
-                     ["80_school_local_roll_business_date.sql",24]])
+                     ["80_school_local_roll_business_date.sql",24],
+                     ["81_db01_roll_correct_source_prelock.sql",20],
+                     ["82_db01_private_correct_effect.sql",21],
+                     ["83_db01_academic_cross_section_correct_effect.sql",22],
+                     ["84_db01_persistent_cross_revision_roll_correction.sql",12],
+                     ["85_db01_roll_correct_private_authority_p1.sql",22],
+                     ["86_db01_roll_correct_canonical_command_context.sql",30],
+                     ["87_db01_direct_atomic_success_evidence.sql",23],
+                     ["88_db01_roll_correct_direct_authenticated.sql",48],["89_db01_roll_correct_p1_approval_submit.sql",33],["90_db01_roll_correct_p1_review.sql",41],["91_db01_roll_correct_p1_live_multistep.sql",43],["92_db01_roll_correct_p1_apply.sql",117]])
 
-# DB-02 isolated non-activating reviewer acceptance. Preserve #1-80 and
-# DB-01 owner-managed #81 when its separate PR is integrated.
-DOMAIN_TESTS.append(["82_db02_school_reviewer_candidates.sql",10])
-DOMAIN_TESTS.append(["83_db02_roll_policy_source_preflight.sql",18])
-DOMAIN_TESTS.append(["84_db02_roll_policy_p1_version_selector.sql",20])
-DOMAIN_TESTS.append(["85_db02_school_actor_all_authority.sql",19])
+# DB01↔DB02 integration: preserve DB-02 independent School policy fixtures
+# by full filename, including its distinct "92_db02" suite beside "92_db01".
+DOMAIN_TESTS.extend([
+    ["82_db02_school_reviewer_candidates.sql",10],
+    ["83_db02_roll_policy_source_preflight.sql",18],
+    ["84_db02_roll_policy_p1_version_selector.sql",20],
+    ["85_db02_school_actor_all_authority.sql",19],
+    ["86_db02_roll_policy_receipt_allowlist.sql",27],
+    ["89_db02_private_command_context.sql",28],
+    ["90_db02_exact_p1_bound_version.sql",24],
+    ["91_db02_locked_future_commitments.sql",18],
+    ["92_db02_atomic_policy_revision_transition.sql",27],
+    ["93_db02_atomic_roll_allocator_pools.sql",29],
+])
+
+# Later DB-02 suites retain their complete filenames beside DB-01 #92.
+DOMAIN_TESTS.extend([
+    ["94_db02_direct_evidence_replay.sql",33],
+    ["95_db02_authenticated_direct_entry.sql",58],
+    ["96_db02_approval_submit_read.sql",37],
+    ["97_db02_independent_review.sql",34],
+    ["98_db02_approved_policy_apply.sql",79],
+    ["99_db02_shared_review_apply_receipts.sql",13],
+    ["100_db02_t07_allocator_handoff.sql",31],
+    ["101_db02_t08_privacy_acl_rls.sql",26],
+])
 
 def render_fixture(source: str,fixture: str) -> str:
     marker = chr(92)+"ir fixtures/command_actor.sql"
@@ -29,7 +57,51 @@ def render_fixture(source: str,fixture: str) -> str:
         raise RuntimeError("D1_BUSINESS_FIXTURE_MARKER")
     return source.replace(marker,fixture)
 
+TEST_OWNERS = frozenset({'db01', 'db02', 'db03', 'db04', 'academic'})
+SHARED_TEST_FILENAMES = frozenset({'80_school_local_roll_business_date.sql'})
+
+
+def validate_test_registry(root: Path, tests) -> None:
+    """Validate every full filename before starting any acceptance subprocess.
+
+    Numeric labels are unique within an owner, not across owners. Legacy
+    suites 01–74 and the frozen shared date suite retain their names.
+    """
+    directory = Path(root) / 'supabase/tests/domain'
+    filenames, identities = set(), set()
+    for filename, expected in tests:
+        match = re.fullmatch(r'([0-9]+)_([a-z][a-z0-9]*)(?:_[a-z0-9]+)*\.sql', filename)
+        if match is None:
+            raise RuntimeError('D1_BUSINESS_MANIFEST_NAME ' + str(filename))
+        if filename in filenames:
+            raise RuntimeError('D1_BUSINESS_MANIFEST_DUPLICATE ' + filename)
+        filenames.add(filename)
+        ordinal, owner = int(match[1]), match[2]
+        if ordinal < 1 or type(expected) is not int or expected < 1:
+            raise RuntimeError('D1_BUSINESS_MANIFEST_COUNT ' + filename)
+        if owner not in TEST_OWNERS:
+            if ordinal > 74 and filename not in SHARED_TEST_FILENAMES:
+                raise RuntimeError('D1_BUSINESS_MANIFEST_OWNER ' + filename)
+            owner = 'legacy'
+        identity = (ordinal, owner)
+        if identity in identities:
+            raise RuntimeError('D1_BUSINESS_OWNER_ORDINAL ' + filename)
+        identities.add(identity)
+        source = (directory / filename).read_text(encoding='utf-8')
+        if not source.startswith('--') or 'BEGIN;' not in source or not source.rstrip().endswith('ROLLBACK;'):
+            raise RuntimeError('D1_BUSINESS_TRANSACTION_BOUNDARY ' + filename)
+        plans = re.findall(r'(?mi)^\s*SELECT\s+plan\((\d+)\);', source)
+        if plans != [str(expected)]:
+            raise RuntimeError('D1_BUSINESS_MANIFEST_PLAN ' + filename)
+        if source.count(chr(92)+'ir fixtures/command_actor.sql') != 1:
+            raise RuntimeError('D1_BUSINESS_FIXTURE_MARKER ' + filename)
+    unregistered = {path.name for path in directory.glob('*.sql')} - filenames
+    if unregistered:
+        raise RuntimeError('D1_BUSINESS_SOURCE_UNREGISTERED ' + ','.join(sorted(unregistered)))
+
+
 def run_business_tests() -> int:
+    validate_test_registry(ROOT, DOMAIN_TESTS)
     total = 0
     for filename, expected in DOMAIN_TESTS:
         path = "supabase/tests/domain/" + filename
@@ -57,3 +129,6 @@ def run_business_tests() -> int:
         print("D1_BUSINESS_TEST_PASS " + filename + " " + str(count) + "/" + str(expected))
     print("D1_BUSINESS_PASS " + str(total) + " assertions; coverage is incremental")
     return total
+
+DOMAIN_TESTS.append(['102_academic_roll_pool_lifecycle.sql',59])
+DOMAIN_TESTS.append(['103_academic_roll_pool_reopen.sql',12])

@@ -1,0 +1,159 @@
+-- DB-02 I10 draft: current School-ALL authority for original requester
+-- and every independently deciding reviewer, after FINAL APPROVAL.
+-- Neither helper accepts a client-selected permission, role or scope.
+-- They do not inherit authority from stored historical decisions.
+GRANT SELECT(id,kind,person_id,state) ON app_private.principals TO schoolos_authz_reader;
+GRANT SELECT(principal_id,auth_user_id) ON app_private.principal_auth_bindings TO schoolos_authz_reader;
+GRANT SELECT(id,request_id,policy_id,template_id,step_number,state,required_reviews)
+ ON app_private.approval_request_steps TO schoolos_authz_reader;
+GRANT SELECT(id,operation_id,policy_id,requester_id,target_ref,state)
+ ON app_private.approval_requests TO schoolos_authz_reader;
+GRANT SELECT(id,step_id,reviewer_assignment_id,reviewer_id,decision,created_by)
+ ON app_private.approval_reviews TO schoolos_authz_reader;
+GRANT SELECT(id,step_id,reviewer_id,withdrawn_at,assignment_reason)
+ ON app_private.approval_step_reviewers TO schoolos_authz_reader;
+GRANT SELECT(id,policy_id,step_number,reviewer_role_id,required_reviews,selection_resolver_key)
+ ON app_private.approval_step_templates TO schoolos_authz_reader;
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db02_i10_authority_request ON app_private.approval_requests
+ FOR SELECT TO schoolos_authz_reader USING (EXISTS (
+   SELECT 1 FROM app_private.operation_contracts o
+    WHERE o.id=operation_id AND o.code='student.roll_policy.change'));
+CREATE POLICY db02_i10_authority_step ON app_private.approval_request_steps
+ FOR SELECT TO schoolos_authz_reader USING (EXISTS (
+   SELECT 1 FROM app_private.approval_requests q WHERE q.id=request_id));
+CREATE POLICY db02_i10_authority_review ON app_private.approval_reviews
+ FOR SELECT TO schoolos_authz_reader USING (EXISTS (
+   SELECT 1 FROM app_private.approval_request_steps s WHERE s.id=step_id));
+CREATE POLICY db02_i10_authority_assignment ON app_private.approval_step_reviewers
+ FOR SELECT TO schoolos_authz_reader USING (EXISTS (
+   SELECT 1 FROM app_private.approval_request_steps s WHERE s.id=step_id));
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+RESET ROLE;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.d1_roll_policy_apply_principal_live(
+ p_principal uuid,p_permission text,p_required_role uuid DEFAULT NULL)
+RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE t timestamptz:=pg_catalog.clock_timestamp();
+BEGIN
+ IF p_principal IS NULL
+   OR p_permission NOT IN ('student.roll_policy.change','student.roll_policy.approve')
+   OR NOT EXISTS (SELECT 1 FROM app_private.principals p
+        WHERE p.id=p_principal AND p.kind='INDIVIDUAL'
+          AND p.state='ACTIVE' AND p.person_id IS NOT NULL)
+   OR NOT EXISTS (SELECT 1 FROM app_private.principal_auth_bindings b
+        WHERE b.principal_id=p_principal AND b.auth_user_id IS NOT NULL)
+   OR NOT EXISTS (SELECT 1 FROM app_private.operation_contracts o
+        WHERE o.code='student.roll_policy.change' AND o.contract_version=1
+          AND o.enabled AND NOT o.requires_approval)
+ THEN RETURN false; END IF;
+ RETURN EXISTS (
+  SELECT 1 FROM app_private.assignment_permission_scopes sc
+  JOIN app_private.principal_role_assignments a
+    ON a.id=sc.assignment_id AND a.role_id=sc.role_id
+  JOIN app_private.role_permission_grants g
+    ON g.id=sc.grant_id AND g.role_id=sc.role_id
+       AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts c
+    ON c.id=sc.scope_contract_id AND c.permission_id=sc.permission_id
+       AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key
+  JOIN app_private.permissions p ON p.id=sc.permission_id
+  JOIN app_private.roles role_row ON role_row.id=sc.role_id
+  WHERE a.principal_id=p_principal AND a.principal_kind='INDIVIDUAL'
+    AND a.context_kind='INDIVIDUAL'
+    -- Reviewer role membership and review permission may come through
+    -- different complete live assignments. Match I09's candidate semantics.
+    AND (p_required_role IS NULL OR EXISTS (
+      SELECT 1 FROM app_private.principal_role_assignments reviewer_role
+      JOIN app_private.roles configured_role
+        ON configured_role.id=reviewer_role.role_id
+      WHERE reviewer_role.principal_id=p_principal
+        AND reviewer_role.principal_kind='INDIVIDUAL'
+        AND reviewer_role.context_kind='INDIVIDUAL'
+        AND reviewer_role.role_id=p_required_role
+        AND configured_role.state='ACTIVE'
+        AND NOT configured_role.family_only
+        AND reviewer_role.valid_from<=t
+        AND (reviewer_role.valid_until IS NULL OR t<reviewer_role.valid_until)
+        AND (reviewer_role.revoked_at IS NULL OR t<reviewer_role.revoked_at)
+    ))
+    AND p.code=p_permission AND p.state='ENABLED' AND NOT p.family_safe
+    AND c.enabled AND role_row.state='ACTIVE' AND NOT role_row.family_only
+    AND sc.scope_kind='ALL' AND sc.resolver_key='DIRECT'
+    AND sc.campus_id IS NULL AND sc.class_offering_id IS NULL
+    AND sc.section_offering_id IS NULL AND sc.subject_id IS NULL
+    AND a.valid_from<=t AND (a.valid_until IS NULL OR t<a.valid_until)
+    AND (a.revoked_at IS NULL OR t<a.revoked_at)
+    AND g.valid_from<=t AND (g.valid_until IS NULL OR t<g.valid_until)
+    AND (g.revoked_at IS NULL OR t<g.revoked_at)
+    AND sc.valid_from<=t AND (sc.valid_until IS NULL OR t<sc.valid_until)
+    AND (sc.revoked_at IS NULL OR t<sc.revoked_at)
+ );
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_apply_principal_live(uuid,text,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_apply_principal_live(uuid,text,uuid)
+ TO schoolos_workflow_executor;
+
+CREATE FUNCTION app_private.d1_roll_policy_apply_reviews_live(p_request uuid)
+RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE q record; s record; v record; n integer:=0; template_n integer;
+BEGIN
+ IF p_request IS NULL THEN RETURN false; END IF;
+ SELECT q0.id,q0.policy_id,q0.requester_id,q0.target_ref,q0.state,
+   req_person.person_id AS requester_person
+ INTO q FROM app_private.approval_requests q0
+ JOIN app_private.principals req_person ON req_person.id=q0.requester_id
+ JOIN app_private.operation_contracts op ON op.id=q0.operation_id
+ WHERE q0.id=p_request AND op.code='student.roll_policy.change'
+   AND op.contract_version=1 AND op.enabled;
+ IF NOT FOUND OR q.state NOT IN ('APPROVED','EXECUTED')
+   OR q.requester_person IS NULL THEN RETURN false; END IF;
+ SELECT count(*) INTO template_n FROM app_private.approval_step_templates
+ WHERE policy_id=q.policy_id;
+ IF template_n<1 THEN RETURN false; END IF;
+ FOR s IN
+  SELECT st.id,st.step_number,st.required_reviews,st.state,
+         tpl.reviewer_role_id,tpl.selection_resolver_key
+  FROM app_private.approval_request_steps st
+  JOIN app_private.approval_step_templates tpl
+   ON tpl.id=st.template_id AND tpl.policy_id=st.policy_id
+  WHERE st.request_id=p_request AND st.policy_id=q.policy_id
+  ORDER BY st.step_number
+ LOOP
+  n:=n+1;
+  IF s.step_number<>n OR s.required_reviews<>1 OR s.state<>'APPROVED'
+    OR s.selection_resolver_key IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'
+    OR s.reviewer_role_id IS NULL THEN RETURN false; END IF;
+  SELECT rev.reviewer_id,pa.reviewer_id AS assigned_id,
+         pa.withdrawn_at,pa.assignment_reason,
+         p.person_id AS reviewer_person,rev.created_by
+    INTO v
+  FROM app_private.approval_reviews rev
+  JOIN app_private.approval_step_reviewers pa
+    ON pa.id=rev.reviewer_assignment_id AND pa.step_id=rev.step_id
+  JOIN app_private.principals p ON p.id=rev.reviewer_id
+  WHERE rev.step_id=s.id AND rev.decision='APPROVE';
+  IF NOT FOUND OR v.reviewer_id IS DISTINCT FROM v.assigned_id
+    OR v.reviewer_id IS DISTINCT FROM v.created_by
+    OR v.withdrawn_at IS NOT NULL
+    OR v.assignment_reason IS DISTINCT FROM 'D1_REVIEWER_ROLE_SCOPE'
+    OR v.reviewer_person IS NULL OR v.reviewer_person=q.requester_person
+    OR (SELECT count(*) FROM app_private.approval_reviews
+        WHERE step_id=s.id)<>1
+    OR app_private.d1_roll_policy_apply_principal_live(
+       v.reviewer_id,'student.roll_policy.approve',s.reviewer_role_id)
+       IS DISTINCT FROM true THEN RETURN false; END IF;
+ END LOOP;
+ RETURN n=template_n;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_apply_reviews_live(uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_apply_reviews_live(uuid)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;

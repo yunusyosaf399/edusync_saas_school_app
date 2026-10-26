@@ -3459,5 +3459,36 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
              "single-consumption"])
 
 
+    def test_db02_shared_receipt_86_exact_allowlist_and_rollback(self):
+        from domain_business_ci import DOMAIN_TESTS, ROOT as root
+        previous=["85_db02_school_actor_all_authority.sql",19]
+        current=["86_db02_roll_policy_receipt_allowlist.sql",27]
+        self.assertEqual(DOMAIN_TESTS.count(current),1)
+        self.assertGreater(DOMAIN_TESTS.index(current),DOMAIN_TESTS.index(previous))
+        source=(root/"supabase/tests/domain"/current[0]).read_text(encoding="utf-8")
+        self.assertEqual(source.count(r"\ir fixtures/command_actor.sql"),1)
+        self.assertEqual(source.count("BEGIN;"),1)
+        self.assertEqual(source.count("ROLLBACK;"),1)
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+        self.assertIn("SELECT plan(27);",source)
+        self.assertEqual(len(re.findall(
+            r"SELECT (?:is|isnt|ok|throws_ok|lives_ok)\(",source)),27)
+        for marker in ("request.submit","request.review","request.apply",
+                       "D1 receipt operation phase or shape unsupported",
+                       "schoolos_evidence_writer","P1 version reference",
+                       "receipt lookup only obtains binding"):
+            self.assertIn(marker,source)
+        sql=(root/"supabase/migrations"/
+             "20260928000000_domain_package_01_effect46_01_db02_roll_policy_receipt_allowlist.sql.draft"
+             ).read_text(encoding="utf-8")
+        self.assertIn("p_operation_code='student.roll_policy.change'",sql)
+        self.assertIn("pg_catalog.jsonb_array_length(p_intent)=12",sql)
+        self.assertIn("p_command_kind IN ('student.roll_policy.change','request.submit')",sql)
+        self.assertIn("pg_catalog.pg_advisory_xact_lock_shared(71001,1)",sql)
+        self.assertIn("app_private.d1_jcs_typed(",sql)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTION app_private.d1_command_receipt_lookup",sql)
+        self.assertNotIn("CREATE OR REPLACE FUNCTION app.d1_change_student_roll_policy",sql)
+
+
 if __name__ == "__main__":
     unittest.main()

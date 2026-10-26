@@ -1,0 +1,75 @@
+-- DB-02 I04 private atomic policy-history transition; inactive SQL draft.
+-- No allocator pool/evidence writer yet (I05/I06); never grant public RPC.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_roll_policy_revision_transition(
+ p_school uuid,p_key text,p_action text,p_source uuid,
+ p_expected_revision integer,p_expected_mode text,p_expected_start bigint,
+ p_expected_from date,p_new_mode text,p_new_start bigint,p_reason text)
+RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+  actor uuid;
+  chosen record;
+  gate record;
+  new_id uuid;
+  cutover date;
+  new_revision integer;
+  changed integer;
+BEGIN
+  -- Enforce I01/I02 Foundation, receipt and School/ALL authorization prefix.
+  -- The protected route remains deliberately DIRECT-only and cannot replay.
+  SELECT c.actor_id INTO actor
+  FROM app_private.d1_roll_policy_command_context(
+    p_school,'DIRECT',p_key,p_action,p_source,p_expected_revision,
+    p_expected_mode,p_expected_start,p_expected_from,p_new_mode,
+    p_new_start,p_reason) AS c;
+  IF actor IS NULL OR p_new_start>=9223372036854775807 THEN
+    RAISE EXCEPTION 'D1 Roll Policy transition context invalid';
+  END IF;
+  -- I03 rechecks on the already acquired School lock in the same transaction.
+  SELECT * INTO gate FROM app_private.d1_roll_policy_change_preflight(
+    p_school,p_action,p_source,p_expected_revision,p_expected_mode,
+    p_expected_start,p_expected_from,NULL::date,p_new_mode,p_new_start);
+  IF NOT FOUND OR gate.error_code IS NOT NULL OR gate.business_date IS NULL THEN
+    RAISE EXCEPTION 'D1 Roll Policy transition preflight invalid';
+  END IF;
+  cutover:=gate.business_date;
+  IF p_action='INIT' THEN
+    new_revision:=1;
+  ELSIF p_action='REPLACE' THEN
+    new_revision:=gate.source_revision+1;
+    UPDATE app_private.roll_policy_revisions
+       SET effective_until=cutover,ended_at=pg_catalog.statement_timestamp(),
+           ended_by=actor
+     WHERE id=p_source AND school_id=p_school
+       AND revision=gate.source_revision AND mode=p_expected_mode
+       AND start_value=p_expected_start AND effective_from=p_expected_from
+       AND effective_until IS NULL
+       AND effective_from<cutover;
+    GET DIAGNOSTICS changed=ROW_COUNT;
+    IF changed<>1 THEN
+      RAISE EXCEPTION 'D1 Roll Policy source changed after locked preflight';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'D1 Roll Policy action invalid';
+  END IF;
+  -- No caller-controlled new revision UUID, predecessor or date.
+  INSERT INTO app_private.roll_policy_revisions(
+    school_id,revision,mode,start_value,effective_from,reason,
+    supersedes_id,created_by)
+  VALUES (p_school,new_revision,p_new_mode,p_new_start,cutover,
+          p_reason,CASE WHEN p_action='REPLACE' THEN p_source ELSE NULL END,
+          actor)
+  RETURNING id INTO new_id;
+  IF new_id IS NULL THEN RAISE EXCEPTION 'D1 Roll Policy insert failed'; END IF;
+  RETURN new_id;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_revision_transition(
+ uuid,text,text,uuid,integer,text,bigint,date,text,bigint,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+-- Ownership-only: no Student->Workflow or app/client grants. This is an
+-- unactivated intermediate, not the final command transaction. I05 allocator
+-- and I06 success evidence must be atomically composed before activation.
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;

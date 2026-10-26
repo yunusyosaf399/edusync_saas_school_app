@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 
 from _process import CommandFailure, run
+from local_stack_registry import start_disposable_stack
 from foundation_guard import ROOT, inspect_local_config, inspect_source, load_contract
 from prepare_local_auth_fixtures import local_status, prepare
 
@@ -98,8 +99,8 @@ def main():
             raise LocalCIError("DOCKER_LINUX_REQUIRED")
         print("DOCKER_LINUX_PASS")
         if not _stack_running():
-            run(["supabase", "start"], cwd=ROOT, timeout=900)
             started = True
+            start_disposable_stack(ROOT, "saas_OS_school_app", "FOUNDATION")
             print("LOCAL_STACK_STARTED")
         local_status()
         run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=ROOT, timeout=900)

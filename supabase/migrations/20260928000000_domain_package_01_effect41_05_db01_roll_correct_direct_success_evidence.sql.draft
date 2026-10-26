@@ -1,0 +1,131 @@
+-- DB-01 RC-07: atomic, receipt-bound DIRECT evidence for retained Roll correction.
+-- Still private and nonactivating. No public RPC, operation enablement or domain
+-- mutation is created in this fragment. The future protected DIRECT wrapper must
+-- perform verified ACS/P1/source preflight BEFORE the private effect and writer.
+GRANT CREATE ON SCHEMA app_private TO schoolos_student_executor;
+SET ROLE schoolos_student_executor;
+CREATE FUNCTION app_private.d1_roll_correct_reason_matches_exact(
+ p_source_roll uuid,p_successor_roll uuid,p_expected_reason text
+) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF p_source_roll IS NULL OR p_successor_roll IS NULL
+   OR p_source_roll=p_successor_roll OR p_expected_reason IS NULL
+   OR pg_catalog.length(pg_catalog.btrim(p_expected_reason))=0
+   OR pg_catalog.octet_length(p_expected_reason)>2048 THEN RETURN false; END IF;
+ RETURN EXISTS (SELECT 1 FROM app_private.roll_allocations source
+  JOIN app_private.roll_allocations dst ON dst.supersedes_id=source.id
+  WHERE source.id=p_source_roll AND dst.id=p_successor_roll
+    AND dst.correction_reason=p_expected_reason);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_correct_reason_matches_exact(uuid,uuid,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_reason_matches_exact(uuid,uuid,text)
+ TO schoolos_evidence_writer,schoolos_student_executor,schoolos_workflow_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_result_rows_match_exact(uuid,uuid,uuid,uuid,jsonb)
+ TO schoolos_evidence_writer;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_student_executor;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_roll_correct_direct_success_evidence(
+ p_actor uuid,p_key text,p_intent jsonb,p_summary jsonb,p_correlation uuid
+) RETURNS uuid
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; receipt uuid:=pg_catalog.gen_random_uuid();
+ student uuid; enrollment uuid; source_roll uuid; successor_roll uuid;
+ policy uuid; section uuid; original_start date; enrollment_start date;
+ old_num bigint; new_num bigint; expected_version bigint; achieved_version bigint;
+ correction_date date; reason text;
+BEGIN
+ -- Re-run exact original canonical input under the same transaction's
+ -- SHARED Foundation + receipt-key locks. A pre-existing receipt is REPLAY,
+ -- never evidence for a second effect.
+ SELECT * INTO ctx FROM app_private.d1_roll_correct_command_context(
+   'student.roll.correct',p_key,p_intent);
+ IF NOT FOUND OR ctx.actor_id IS DISTINCT FROM p_actor OR p_actor IS NULL
+    OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+    OR ctx.receipt_id IS NOT NULL OR ctx.intent_hash IS NULL
+    OR p_correlation IS NULL OR p_summary IS NULL
+    OR pg_catalog.jsonb_typeof(p_summary)<>'object'
+    OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(p_summary))<>12
+ THEN RAISE EXCEPTION 'D1 Roll correction DIRECT evidence intent denied'; END IF;
+ BEGIN
+   student:=(p_intent->>0)::uuid;
+   expected_version:=(p_intent->>1)::bigint;
+   enrollment:=(p_intent->>2)::uuid;
+   section:=(p_intent->>3)::uuid;
+   enrollment_start:=(p_intent->>4)::date;
+   source_roll:=(p_intent->>5)::uuid;
+   original_start:=(p_intent->>6)::date;
+   policy:=(p_intent->>7)::uuid;
+   old_num:=(p_intent->>8)::bigint;
+   new_num:=(p_intent->>9)::bigint;
+   reason:=p_intent->>10;
+   successor_roll:=NULLIF(p_summary->>'corrected_roll_allocation_id','')::uuid;
+   achieved_version:=NULLIF(p_summary->>'student_version','')::bigint;
+   correction_date:=NULLIF(p_summary->>'correction_effective_from','')::date;
+ EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+   RAISE EXCEPTION 'D1 Roll correction DIRECT evidence malformed';
+ END;
+ IF successor_roll IS NULL OR successor_roll=source_roll
+    OR achieved_version IS DISTINCT FROM expected_version+1
+    OR p_summary->>'student_id' IS DISTINCT FROM student::text
+    OR p_summary->>'enrollment_id' IS DISTINCT FROM enrollment::text
+    OR p_summary->>'source_roll_allocation_id' IS DISTINCT FROM source_roll::text
+    OR p_summary->>'source_policy_revision_id' IS DISTINCT FROM policy::text
+    OR p_summary->>'section_offering_id' IS DISTINCT FROM section::text
+    OR p_summary->>'source_roll_effective_from' IS DISTINCT FROM original_start::text
+    OR p_summary->>'source_enrollment_effective_from' IS DISTINCT FROM enrollment_start::text
+    OR p_summary->>'old_numeric_value' IS DISTINCT FROM old_num::text
+    OR p_summary->>'new_numeric_value' IS DISTINCT FROM new_num::text
+    OR correction_date IS NULL
+    OR app_private.d1_roll_correct_result_rows_match_exact(
+      student,enrollment,source_roll,successor_roll,p_summary) IS DISTINCT FROM true
+    OR app_private.d1_roll_correct_reason_matches_exact(
+      source_roll,successor_roll,reason) IS DISTINCT FROM true
+ THEN RAISE EXCEPTION 'D1 Roll correction DIRECT retained result invalid'; END IF;
+
+ -- Receipt, typed success audit and broad-minimized outbox are inserted in
+ -- one transaction. Any later failure aborts all of this evidence and effect.
+ INSERT INTO app_private.command_receipts(
+   id,principal_id,operation_id,command_kind,idempotency_key,
+   canonical_payload_hash,canonicalization_version,expected_target_version,
+   request_id,expected_request_version,state,result_kind,result_ref,
+   result_summary,completed_at,created_by)
+ VALUES (receipt,p_actor,ctx.operation_id,'student.roll.correct',p_key,
+   ctx.intent_hash,1,expected_version,NULL,NULL,'SUCCEEDED',
+   'D1_STUDENT_ROLL_CORRECT',successor_roll,p_summary,
+   pg_catalog.statement_timestamp(),p_actor);
+ INSERT INTO app_private.audit_events(
+   actor_id,actor_kind,outcome,authority_evidence,target_version,
+   event_type,target_kind,target_ref,command_receipt_id,
+   approval_request_id,source_kind,correlation_id,details,created_by)
+ VALUES (p_actor,'INDIVIDUAL','SUCCEEDED',
+   pg_catalog.jsonb_build_object('operation','student.roll.correct','phase','DIRECT'),
+   achieved_version,'student.roll.correct','STUDENT',student,receipt,
+   NULL,'API',p_correlation,
+   pg_catalog.jsonb_build_object('enrollment_id',enrollment,
+     'source_roll_allocation_id',source_roll,
+     'corrected_roll_allocation_id',successor_roll,
+     'section_offering_id',section,'correction_effective_from',correction_date),
+   p_actor);
+ INSERT INTO app_private.outbox_events(
+   event_type,aggregate_kind,aggregate_ref,aggregate_version,
+   command_receipt_id,event_ordinal,correlation_id,payload,created_by)
+ VALUES ('enrollment.roll_corrected','ENROLLMENT',enrollment,1,
+   receipt,1,p_correlation,
+   pg_catalog.jsonb_build_object('student_id',student,
+     'enrollment_id',enrollment,'source_roll_allocation_id',source_roll,
+     'corrected_roll_allocation_id',successor_roll,
+     'section_offering_id',section,'correction_effective_from',correction_date),
+   p_actor);
+ RETURN receipt;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_correct_direct_success_evidence(uuid,text,jsonb,jsonb,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_direct_success_evidence(uuid,text,jsonb,jsonb,uuid)
+ TO schoolos_student_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;

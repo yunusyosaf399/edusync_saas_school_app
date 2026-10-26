@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 import re
 import subprocess
@@ -10,6 +11,7 @@ import sys
 from pathlib import Path
 
 from _process import CommandFailure, run
+from local_stack_registry import start_disposable_stack
 from domain_business_ci import run_business_tests
 from domain_profile_history_candidate_ci import run_history_candidate
 from domain_student_photo_real_pg_handoff_ci import run_real_postgres_photo_handoff
@@ -51,9 +53,19 @@ FINAL_FUNCTION_OWNERS = (
 # DB-01 effect38_04 adds one operation-specific schema-owner trigger on
 # Foundation approval_applications (independent review issue #112).
 # Effect40_01 adds exactly one Academic-owned private School-date resolver.
-# DB-02 effect43_01 adds exactly one Student-owned private source preflight definer.
-# DB-02 effect44_01 adds one authz-reader-owned private policy version selector.
-# No public RPC or client grants; RLS/table-DML remains unchanged.
+# Effect41_01 adds exactly one Student-owned private nonactivating DB-01
+# School→stored policy→allocator→Student source-prelock helper (PR review).
+# Effect41_02 adds one Student-owned private atomic corrected-Roll effect with
+# fixed Student/allocator server versions; no new client grants.
+# Effect41_03 adds two authz-reader-owned PRIVATE P1 authority/route helpers.
+# These remain inactive and uncallable by clients, including authenticated.
+# Effect41_04 adds one evidence-writer-owned private canonical context prelock.
+# No protected command endpoint or client grant is added.
+# Effect41_05 adds Student-owned exact-reason proof and evidence-writer-owned
+# atomic DIRECT receipt + one audit + one outbox helper; still no public RPC.
+# Effect41_07 adds one dormant authenticated-only typed DIRECT Roll CORRECT RPC.
+# It leaves the frozen protected operation and permission disabled.
+# Do not allow public RPC/client grants or RLS/table-DML drift.
 EXPECTED_RUNTIME_METRICS = {
     "postgres_major": 17,
     "d1_tables": 34,
@@ -64,11 +76,11 @@ EXPECTED_RUNTIME_METRICS = {
     "full_unique_indexes": 21,
     "partial_unique_indexes": 3,
     "nonunique_indexes": 47,
-    "functions": 549,
-    "security_definers": 531,
-    "app_functions": 157,
-    "private_functions": 392,
-    "authenticated_app_execute": 157,
+    "functions": 599,
+    "security_definers": 581,
+    "app_functions": 167,
+    "private_functions": 432,
+    "authenticated_app_execute": 167,
     "authenticated_private_execute": 0,
     "anon_execute": 0,
     "service_role_execute": 0,
@@ -147,6 +159,15 @@ def _stack_running() -> bool:
 
 def _safe_tail(text: str, lines: int = 60) -> str:
     return "\n".join(text.splitlines()[-lines:])
+
+
+def _start_disposable_stack() -> None:
+    try:
+        start_disposable_stack(ROOT, EXPECTED_PROJECT_ID, "D1C2A")
+    except RuntimeError as exc:
+        # Preserve the D1 acceptance harness's established error contract.
+        # Shared registry diagnostics contain no raw CLI output.
+        raise DomainLocalCIError(str(exc)) from None
 
 
 def run_psql(container: str, sql: str, label: str, *, tuples: bool = False, timeout: int = 900) -> str:
@@ -373,8 +394,10 @@ def _main() -> int:
             raise DomainLocalCIError("DOCKER_LINUX_REQUIRED")
         project_id = local_project_id(ROOT)
         if not _stack_running():
-            run(["supabase", "start"], cwd=ROOT, timeout=900)
+            # Flag before starting so a partially initialized local stack is
+            # diagnosed and cleaned up on failure as well as on success.
             started = True
+            _start_disposable_stack()
             print("D1C2A_LOCAL_STACK_STARTED")
         local_status()
         image = run(["docker", "inspect", "--format", "{{.Config.Image}}",
@@ -446,6 +469,51 @@ def _main() -> int:
         run_enrollment_move_approval(container, run_psql, ROOT)
         from domain_roll_business_date_ci import run_roll_business_date
         run_roll_business_date(container, run_psql, ROOT)
+        from domain_db01_roll_correct_race_ci import run_db01_roll_correct_races
+        run_db01_roll_correct_races(container, run_psql, ROOT)
+        from domain_db01_protected_direct_race_ci import run_db01_protected_direct_races
+        run_db01_protected_direct_races(container, run_psql)
+        from domain_db01_replay_after_move_end_ci import run_db01_roll_replay_after_move_end
+        run_db01_roll_replay_after_move_end(container, run_psql)
+        from domain_db01_correct_vs_move_end_ci import run_db01_correct_vs_move_end_races
+        run_db01_correct_vs_move_end_races(container, run_psql)
+        from domain_db01_cross_campus_replay_ci import run_db01_cross_campus_roll_history_replay
+        run_db01_cross_campus_roll_history_replay(container, run_psql)
+        from domain_db01_p1_review_race_ci import run_db01_p1_review_live_races
+        run_db01_p1_review_live_races(container, run_psql, ROOT)
+        from domain_db01_p1_apply_race_ci import run_db01_p1_apply_live_races
+        run_db01_p1_apply_live_races(container, run_psql, ROOT)
+        from domain_db01_p1_apply_move_end_ci import run_db01_p1_apply_vs_move_end_races
+        run_db01_p1_apply_vs_move_end_races(container, run_psql, ROOT)
+        from domain_db01_p1_successive_roll_ci import run_db01_p1_successive_roll_date_boundaries
+        run_db01_p1_successive_roll_date_boundaries(container, run_psql, ROOT)
+        from domain_db01_p1_complete_integration_ci import run_db01_p1_complete_approve_reject_integration
+        run_db01_p1_complete_approve_reject_integration(container, run_psql, ROOT)
+        # Each T04 case starts from the frozen migrations and the same draft
+        # chain, preserving the singleton School and immutable prior evidence.
+        def fresh_db02_database() -> None:
+            run(["supabase", "db", "reset", "--local", "--no-seed"],
+                cwd=ROOT, timeout=900)
+            run_psql(container, sql, "DB02_T04_APPLY", timeout=1200)
+            fresh_url, fresh_key = local_status()
+            ensure_local_auth_route(fresh_url)
+            try:
+                if len(prepare(fresh_url, fresh_key)) != 5:
+                    raise DomainLocalCIError("DB02_T04_AUTH_FIXTURE_COUNT")
+            finally:
+                fresh_key = None
+        # Combined owner boundary: genuine APPROVED DB-01 APPLY contends with
+        # authenticated DB-02 REPLACE in both commit orders on fresh Schools.
+        from domain_db01_db02_policy_apply_race_ci import run_db01_db02_policy_apply_races
+        run_db01_db02_policy_apply_races(container, run_psql, fresh_db02_database)
+        from domain_academic_roll_pool_race_ci import run_academic_roll_pool_races
+        run_academic_roll_pool_races(container, run_psql, fresh_db02_database)
+        from domain_db02_policy_race_ci import run_db02_policy_races
+        run_db02_policy_races(container, run_psql, fresh_db02_database)
+        from domain_db02_enrollment_race_ci import run_db02_enrollment_races
+        run_db02_enrollment_races(container, run_psql, fresh_db02_database)
+        from domain_db02_authority_race_ci import run_db02_authority_races
+        run_db02_authority_races(container, run_psql, fresh_db02_database)
         local_status()
         print("D1C2A_PASS local-only runtime baseline; Migration 10 remains .sql.draft")
         return 0

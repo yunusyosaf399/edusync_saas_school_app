@@ -1,0 +1,90 @@
+-- DB-02 I11: immutable REVIEW proof. A current reviewer grant is separately
+-- checked by the public handler; this function proves the original decision.
+GRANT SELECT(row_version) ON app_private.approval_requests TO schoolos_evidence_writer;
+GRANT SELECT(policy_id,request_id,template_id) ON app_private.approval_request_steps TO schoolos_evidence_writer;
+GRANT SELECT(reviewer_id,withdrawn_at) ON app_private.approval_step_reviewers TO schoolos_evidence_writer;
+GRANT SELECT(command_receipt_id,to_state) ON app_private.approval_transitions TO schoolos_evidence_writer;
+GRANT SELECT(id,person_id) ON app_private.principals TO schoolos_evidence_writer;
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db02_i11_evidence_principal ON app_private.principals
+ FOR SELECT TO schoolos_evidence_writer USING (true);
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.d1_roll_policy_review_replay(
+ p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_request uuid,
+ p_expected bigint,p_decision text,p_reason text)
+RETURNS TABLE(result_version bigint,result_state text)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE r app_private.command_receipts%ROWTYPE; q record;
+        v_step uuid; v_assignment uuid;
+        n bigint; audit_n bigint; transition_n bigint;
+BEGIN
+ IF p_actor IS NULL OR p_actor IS DISTINCT FROM app_private.current_principal_id()
+    OR p_request IS NULL OR p_expected<3 OR p_decision NOT IN ('APPROVE','REJECT')
+    OR p_reason IS NULL OR pg_catalog.btrim(p_reason)=''
+    OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32 THEN RETURN; END IF;
+ SELECT * INTO r FROM app_private.command_receipts
+ WHERE principal_id=p_actor AND operation_id=p_operation AND idempotency_key=p_key;
+ IF NOT FOUND OR r.command_kind IS DISTINCT FROM 'request.review'
+   OR r.state IS DISTINCT FROM 'SUCCEEDED' OR r.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_POLICY_REVIEW'
+   OR r.result_ref IS DISTINCT FROM p_request OR r.request_id IS DISTINCT FROM p_request
+   OR r.expected_request_version IS DISTINCT FROM p_expected
+   OR r.canonicalization_version IS DISTINCT FROM 1
+   OR r.canonical_payload_hash IS DISTINCT FROM p_hash
+   OR r.created_by IS DISTINCT FROM p_actor OR r.completed_at IS NULL OR r.error_code IS NOT NULL
+   OR pg_catalog.jsonb_typeof(r.result_summary) IS DISTINCT FROM 'object'
+   OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(r.result_summary))<>2
+   OR NOT (r.result_summary ?& ARRAY['request_version','state'])
+   OR pg_catalog.jsonb_typeof(r.result_summary->'request_version') IS DISTINCT FROM 'number'
+   OR pg_catalog.jsonb_typeof(r.result_summary->'state') IS DISTINCT FROM 'string'
+   OR r.result_summary->>'request_version' IS DISTINCT FROM (p_expected+1)::text
+   OR r.result_summary->>'state' NOT IN ('PENDING','APPROVED','REJECTED') THEN RETURN; END IF;
+ SELECT operation_id,policy_id,target_ref,requester_id,state,row_version
+ INTO q FROM app_private.approval_requests WHERE id=p_request;
+ IF NOT FOUND OR q.operation_id IS DISTINCT FROM p_operation OR q.target_ref IS NULL
+   OR q.policy_id IS NULL OR q.requester_id IS NULL OR q.row_version<p_expected+1 THEN RETURN; END IF;
+ SELECT count(*),min(v0.step_id::text)::uuid AS step_id,
+   min(v0.reviewer_assignment_id::text)::uuid AS assignment_id
+ INTO n,v_step,v_assignment
+ FROM app_private.approval_reviews v0
+ JOIN app_private.approval_request_steps s ON s.id=v0.step_id
+ JOIN app_private.approval_step_reviewers a ON a.id=v0.reviewer_assignment_id AND a.step_id=s.id
+ WHERE s.request_id=p_request AND s.policy_id=q.policy_id
+   AND v0.reviewer_id=p_actor AND v0.created_by=p_actor AND a.reviewer_id=p_actor
+   AND v0.decision=p_decision AND v0.reason=p_reason
+   AND v0.expected_request_version=p_expected;
+ IF n<>1 OR v_step IS NULL OR v_assignment IS NULL
+   OR EXISTS (SELECT 1 FROM app_private.principals x
+      JOIN app_private.principals y ON y.id=q.requester_id
+      WHERE x.id=p_actor AND x.person_id=y.person_id) THEN RETURN; END IF;
+ IF (p_decision='REJECT' AND r.result_summary->>'state'<>'REJECTED')
+   OR (p_decision='APPROVE' AND r.result_summary->>'state'='REJECTED') THEN RETURN; END IF;
+ SELECT count(*) INTO audit_n FROM app_private.audit_events a
+ WHERE a.command_receipt_id=r.id AND a.actor_id=p_actor AND a.created_by=p_actor
+   AND a.outcome='SUCCEEDED' AND a.event_type='student.roll_policy.change'
+   AND a.target_kind='SCHOOL' AND a.target_ref=q.target_ref
+   AND a.approval_request_id=p_request AND a.actor_kind='INDIVIDUAL'
+   AND a.source_kind='API'
+   AND a.authority_evidence=pg_catalog.jsonb_build_object(
+     'operation','student.roll_policy.change','phase','REVIEW',
+     'selected_p1_version_id',q.policy_id)
+   AND a.details=pg_catalog.jsonb_build_object('decision',p_decision,'request_id',p_request);
+ IF audit_n<>1 OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=r.id)<>1
+   OR EXISTS (SELECT 1 FROM app_private.outbox_events WHERE command_receipt_id=r.id) THEN RETURN; END IF;
+ SELECT count(*) INTO transition_n FROM app_private.approval_transitions t
+ WHERE t.command_receipt_id=r.id AND t.request_id=p_request
+   AND t.from_state='PENDING' AND t.to_state=r.result_summary->>'state'
+   AND t.created_by=p_actor;
+ IF (r.result_summary->>'state'='PENDING' AND transition_n<>0)
+   OR (r.result_summary->>'state'<>'PENDING' AND transition_n<>1)
+   OR (SELECT count(*) FROM app_private.approval_transitions WHERE command_receipt_id=r.id)<>transition_n
+ THEN RETURN; END IF;
+ RETURN QUERY SELECT (p_expected+1),r.result_summary->>'state';
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_policy_review_replay(uuid,uuid,text,bytea,uuid,bigint,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_policy_review_replay(uuid,uuid,text,bytea,uuid,bigint,text,text)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
