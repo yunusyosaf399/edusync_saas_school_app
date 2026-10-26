@@ -741,6 +741,8 @@ Application
 
 However, each stage is optional. A school can skip document verification, test, interview, or other steps depending on its policy.
 
+**Owner clarification — 26 October 2026:** Admission completion requires an administrator-submitted, verified birth certificate for every applicant and a school-leaving certificate for applicants transferring from a previous school. These minimum certificate obligations cannot be removed by a policy's optional-stage configuration. An authorized admission administrator may allow up to two months to arrange missing certificates; the application remains pending and final admission/enrollment waits for verification. First-time applicants do not need a previous-school certificate. Keep the application and grace history; grace does not mark missing documents complete or permit provisional enrollment. See the [recorded requirement and owner selections](../database/db03_required_certificates_two_month_grace_20261026.md) for the bounded calendar interpretation and implementation status.
+
 The admission process can generate:
 
 - Application number

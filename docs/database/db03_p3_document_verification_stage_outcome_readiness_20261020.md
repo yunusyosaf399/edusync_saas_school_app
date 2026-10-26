@@ -1,5 +1,7 @@
 # DB-03 P3 — Admissions document verification, private evidence and stage-outcome SQL readiness
 
+> **Latest owner requirement — 26 October 2026:** [Mandatory certificates and bounded grace](db03_required_certificates_two_month_grace_20261026.md) supersede earlier optional-stage wording that could waive birth certificates for all or school-leaving certificates for transfers. Administrators may allow at most two months while admission/enrollment remains pending. Grace is not VERIFIED, PASSED or SKIPPED; the publication and P3/P7 commands must enforce this core minimum. Additional policy document requirements remain configurable.
+
 > **SCHEMA-01 stage evidence implementation handoff, 21 October 2026:** [P3/P4/P5 exact constraint and FK packet](db03_p4_p5_sql_constraint_protected_handoff_20261021.md) defines two-phase #10 base stage outcomes then real #09 composite FK for `assessment_id` plus typed evidence validation; P6 Finance FK still deferred. The old `approval_application_id→approval_applications` target is not installed Foundation SQL—use the real `app_private.approval_requests` *only after* approving the matching workflow evidence contract. Independent approved-but-not-EXECUTED test-skip requests must never satisfy required test stage; no SQL installed.
 
 

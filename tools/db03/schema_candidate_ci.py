@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPENDENCY_SHA = "06c2be2412e1699f3fa8f2804969e9808eb16e09"
 CANDIDATE = "supabase/proposals/db03/01_policy_draft_schema.sql.draft"
 TEST = "supabase/tests/db03/01_policy_draft_schema.sql"
+CERTIFICATE_CANDIDATE = "supabase/proposals/db03/02_required_certificates_grace.sql.draft"
+CERTIFICATE_TEST = "supabase/tests/db03/02_required_certificates_grace.sql"
 TABLES = {
     "admission_numbering_profiles", "admission_policy_versions",
     "admission_policy_stages", "admission_policy_document_requirements",
@@ -38,12 +40,30 @@ def validate_source() -> tuple[str, str]:
     return sql, test
 
 
+def validate_certificate_source() -> tuple[str, str]:
+    sql = (ROOT / CERTIFICATE_CANDIDATE).read_text()
+    test = (ROOT / CERTIFICATE_TEST).read_text()
+    names = re.findall(r"(?mi)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(", sql)
+    if len(names) != 3 or set(names) != {
+        "db03_guard_required_certificates", "db03_required_certificate_roster_valid",
+        "db03_certificate_grace_due_on",
+    } or re.search(r"(?mi)^\s*(CREATE TABLE|CREATE ROLE|INSERT INTO|GRANT )", sql):
+        raise RuntimeError("DB03_CERTIFICATE_SCOPE")
+    if not test.rstrip().endswith("ROLLBACK;") or re.findall(r"SELECT plan\((\d+)\);", test) != ["30"]:
+        raise RuntimeError("DB03_CERTIFICATE_TEST_PLAN")
+    if len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 30:
+        raise RuntimeError("DB03_CERTIFICATE_ASSERTION_COUNT")
+    print("DB03_CERTIFICATE_SOURCE_PASS assertions=30 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
     parser.add_argument("--source-only", action="store_true")
     args = parser.parse_args()
     sql, test = validate_source()
+    certificate_sql, certificate_test = validate_certificate_source()
     if args.source_only:
         return 0
     # This runner never connects to a hosted service or reuses a user's stack.
@@ -109,6 +129,23 @@ def main() -> int:
             if remaining != "0":
                 raise RuntimeError("DB03_FIXTURE_ROLLBACK_INCOMPLETE")
             print("DB03_S1_DATABASE_PASS 40/40; frozen_Foundation_catalog=44/44; fixtures_rolled_back=true; publication=unavailable")
+            try:
+                local.run_psql(container, "BEGIN;\n" + certificate_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_CERTIFICATE_FAILURE'; END $failure$;\nCOMMIT;", "DB03_CERTIFICATE_FAILURE_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_CERTIFICATE_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_CERTIFICATE_FAILURE_ABSENT")
+            alteration_absence = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid='app_private.admission_policy_document_requirements'::regclass AND attname='applicability' AND NOT attisdropped)+(SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN ('db03_guard_required_certificates','db03_required_certificate_roster_valid','db03_certificate_grace_due_on'));", "DB03_CERTIFICATE_ROLLBACK_PROBE", tuples=True).strip()
+            if alteration_absence != "0":
+                raise RuntimeError("DB03_CERTIFICATE_ROLLBACK_LEFT_OBJECTS")
+            print("DB03_CERTIFICATE_FAILED_INSTALL_ROLLBACK_PASS columns=0 functions=0")
+            local.run_psql(container, "BEGIN;\n" + certificate_sql + "\nCOMMIT;", "DB03_CERTIFICATE_INSTALL")
+            parse_tap(local.run_psql(container, certificate_test, "DB03_CERTIFICATE_TEST"), 30)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.school_profiles)+(SELECT count(*) FROM app_private.principals)+(SELECT count(*) FROM app_private.operation_contracts)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_CERTIFICATE_FIXTURE_CLEANUP", tuples=True).strip()
+            if remaining != "0":
+                raise RuntimeError("DB03_CERTIFICATE_FIXTURE_ROLLBACK_INCOMPLETE")
+            print("DB03_CERTIFICATE_DATABASE_PASS 30/30; total_DB03=70/70; fixtures_rolled_back=true; admission_completion=unavailable")
             return 0
     finally:
         if started:

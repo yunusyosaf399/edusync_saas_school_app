@@ -1,5 +1,7 @@
 # DB-03 Owner Decision — P3-D01 configurable admission document requirements (2026-10-20)
 
+> **Mandatory minimum added by owner, 26 October 2026:** [Birth/previous-school certificates and maximum two-month grace](db03_required_certificates_two_month_grace_20261026.md) now require a birth certificate for all applicants and a school-leaving certificate for transfers. Policy configurability remains for additional documents; it cannot waive these applicable core certificates or skip their verification. During an authorized grace period admission/enrollment remains pending, not complete. The original Option B selection below is preserved as history.
+
 **APPROVED BY PRODUCT OWNER in this DB-03 conversation: Option B.** Each School can configure which document categories are mandatory for a given **published Admissions policy**. Examples: Grade 1 policy requires a birth certificate; Grade 10 policy requires a transfer certificate. The selected policy's exact document requirements, not one global fixed checklist, determine completion of DOCUMENT_VERIFICATION.
 
 ## Contract consequences (design-approved direction, NOT installed DDL)
