@@ -1,0 +1,124 @@
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_policy_configuration_hash(p_policy uuid)
+RETURNS bytea LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT pg_catalog.sha256(pg_catalog.convert_to(pg_catalog.jsonb_build_object(
+  'policy',pg_catalog.jsonb_build_array(p.id,p.school_id,p.policy_key,p.version,
+    p.application_numbering_profile_id,p.admission_numbering_profile_id),
+  'profiles',(SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(n.id,n.school_id,n.profile_key,n.version,
+    n.number_kind,n.prefix,n.separator,n.session_format,n.digits,n.start_value) ORDER BY n.id)
+    FROM app_private.admission_numbering_profiles n WHERE n.id IN(p.application_numbering_profile_id,p.admission_numbering_profile_id)),
+  'stages',(SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(s.id,s.ordinal,s.stage_kind,s.requirement,s.label) ORDER BY s.id)
+    FROM app_private.admission_policy_stages s WHERE s.policy_version_id=p.id),
+  'documents',(SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(d.id,d.policy_stage_id,d.document_kind,
+    d.requirement,d.applicability,d.ordinal) ORDER BY d.id)
+    FROM app_private.admission_policy_document_requirements d JOIN app_private.admission_policy_stages s ON s.id=d.policy_stage_id
+    WHERE s.policy_version_id=p.id))::text,'UTF8'))
+ FROM app_private.admission_policy_versions p WHERE p.id=p_policy
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_policy_configuration_hash(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_policy_configuration_hash(uuid) TO schoolos_workflow_executor,schoolos_evidence_writer;
+GRANT SELECT,INSERT ON app_private.command_receipts,app_private.audit_events,app_private.outbox_events TO schoolos_evidence_writer;
+CREATE POLICY db03_publication_receipts ON app_private.command_receipts
+ FOR ALL TO schoolos_evidence_writer
+ USING(command_kind='admission.policy.publish') WITH CHECK(command_kind='admission.policy.publish');
+CREATE POLICY db03_publication_audit ON app_private.audit_events
+ FOR ALL TO schoolos_evidence_writer
+ USING(event_type='admission.policy.published' AND target_kind='ADMISSION_POLICY')
+ WITH CHECK(event_type='admission.policy.published' AND target_kind='ADMISSION_POLICY');
+CREATE POLICY db03_publication_outbox ON app_private.outbox_events
+ FOR ALL TO schoolos_evidence_writer
+ USING(event_type='admission.policy.published' AND aggregate_kind='ADMISSION_POLICY')
+ WITH CHECK(event_type='admission.policy.published' AND aggregate_kind='ADMISSION_POLICY');
+RESET ROLE;
+GRANT EXECUTE ON FUNCTION app_private.db03_policy_publisher_context() TO schoolos_evidence_writer;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.db03_policy_publication_receipt(
+ p_actor uuid,p_operation uuid,p_key text,p_hash bytea,p_policy uuid,
+ p_expected bigint,p_source uuid,p_write boolean)
+RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; r record; p record; prior record; v_receipt uuid;
+ config_hash text; summary jsonb; payload jsonb; correlation uuid;
+BEGIN
+ SELECT * INTO ctx FROM app_private.db03_policy_publisher_context();
+ IF ctx.actor_id IS DISTINCT FROM p_actor OR ctx.operation_id IS DISTINCT FROM p_operation
+  OR p_policy IS NULL OR p_expected IS NULL OR p_expected<1 OR p_write IS NULL
+  OR p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200
+  OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32 THEN
+  RAISE EXCEPTION 'DB03 publication receipt context invalid'; END IF;
+ SELECT * INTO r FROM app_private.command_receipts
+  WHERE principal_id=p_actor AND operation_id=p_operation AND idempotency_key=p_key;
+ IF FOUND THEN
+  IF r.canonical_payload_hash IS DISTINCT FROM p_hash OR r.canonicalization_version<>1
+   OR r.expected_target_version IS DISTINCT FROM p_expected THEN
+   RAISE EXCEPTION 'DB03 publication idempotency conflict'; END IF;
+  v_receipt:=r.id;
+ ELSIF NOT p_write THEN RETURN NULL;
+ END IF;
+ SELECT * INTO p FROM app_private.admission_policy_versions WHERE id=p_policy;
+ IF NOT FOUND OR p.state NOT IN('PUBLISHED','RETIRED') OR p.published_at IS NULL
+  OR p.published_by IS DISTINCT FROM p_actor OR p.row_version<p_expected+1
+  OR (p_write AND p.row_version<>p_expected+1) THEN
+  RAISE EXCEPTION 'DB03 publication retained policy proof invalid'; END IF;
+ IF p_source IS NULL THEN
+  IF p.version<>1 THEN RAISE EXCEPTION 'DB03 publication initial source proof invalid'; END IF;
+ ELSE
+  SELECT * INTO prior FROM app_private.admission_policy_versions WHERE id=p_source;
+  IF NOT FOUND OR prior.school_id IS DISTINCT FROM p.school_id
+   OR prior.policy_key IS DISTINCT FROM p.policy_key OR prior.version<>p.version-1
+   OR prior.state<>'RETIRED' OR prior.effective_until IS DISTINCT FROM p.effective_from THEN
+   RAISE EXCEPTION 'DB03 publication predecessor proof invalid'; END IF;
+ END IF;
+ config_hash:=pg_catalog.encode(app_private.db03_policy_configuration_hash(p_policy),'hex');
+ IF v_receipt IS NULL THEN
+  v_receipt:=pg_catalog.gen_random_uuid(); correlation:=pg_catalog.gen_random_uuid();
+  summary:=pg_catalog.jsonb_build_object('school_id',p.school_id,'policy_id',p_policy,'policy_version',p.version,
+   'published_at',p.published_at,'published_row_version',p_expected+1,'source_policy_id',p_source,'configuration_hash',config_hash);
+  payload:=summary-ARRAY['published_row_version','configuration_hash'];
+  INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,
+   canonical_payload_hash,canonicalization_version,expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES(v_receipt,p_actor,p_operation,'admission.policy.publish',p_key,p_hash,1,p_expected,'SUCCEEDED',
+   'ADMISSION_POLICY_PUBLICATION',p_policy,summary,pg_catalog.clock_timestamp(),p_actor);
+  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
+   target_kind,target_ref,command_receipt_id,source_kind,correlation_id,occurred_at,details,created_by)
+  VALUES(p_actor,'INDIVIDUAL','SUCCEEDED',pg_catalog.jsonb_build_object('operation','admission.policy.publish'),
+   p_expected+1,'admission.policy.published','ADMISSION_POLICY',p_policy,v_receipt,'API',correlation,p.published_at,payload,p_actor);
+  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,
+   command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+  VALUES('admission.policy.published','ADMISSION_POLICY',p_policy,p.version,v_receipt,1,correlation,p.published_at,payload,p_actor);
+  SELECT * INTO r FROM app_private.command_receipts WHERE id=v_receipt;
+ END IF;
+ IF r.command_kind<>'admission.policy.publish' OR r.state<>'SUCCEEDED'
+  OR r.result_kind IS DISTINCT FROM 'ADMISSION_POLICY_PUBLICATION' OR r.result_ref IS DISTINCT FROM p_policy
+  OR r.created_by IS DISTINCT FROM p_actor OR r.request_id IS NOT NULL
+  OR r.result_summary IS NULL OR pg_catalog.jsonb_typeof(r.result_summary)<>'object'
+  OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(r.result_summary))<>7
+  OR (r.result_summary->>'school_id')::uuid IS DISTINCT FROM p.school_id
+  OR (r.result_summary->>'policy_id')::uuid IS DISTINCT FROM p_policy
+  OR (r.result_summary->>'policy_version')::integer IS DISTINCT FROM p.version
+  OR (r.result_summary->>'published_at')::timestamptz IS DISTINCT FROM p.published_at
+  OR (r.result_summary->>'published_row_version')::bigint IS DISTINCT FROM p_expected+1
+  OR (r.result_summary->>'source_policy_id')::uuid IS DISTINCT FROM p_source
+  OR r.result_summary->>'configuration_hash' IS DISTINCT FROM config_hash THEN
+  RAISE EXCEPTION 'DB03 publication receipt proof invalid'; END IF;
+ payload:=r.result_summary-ARRAY['published_row_version','configuration_hash'];
+ IF (SELECT count(*) FROM app_private.audit_events a WHERE a.command_receipt_id=v_receipt
+   AND a.event_type='admission.policy.published' AND a.actor_id=p_actor AND a.actor_kind='INDIVIDUAL'
+   AND a.outcome='SUCCEEDED' AND a.target_ref=p_policy AND a.target_version=p_expected+1
+   AND a.details=payload AND a.created_by=p_actor AND a.source_kind='API'
+   AND a.occurred_at=p.published_at
+   AND a.authority_evidence=pg_catalog.jsonb_build_object('operation','admission.policy.publish'))<>1
+  OR (SELECT count(*) FROM app_private.outbox_events e WHERE e.command_receipt_id=v_receipt
+   AND e.event_type='admission.policy.published' AND e.schema_version=1 AND e.event_ordinal=1
+   AND e.aggregate_ref=p_policy AND e.aggregate_version=p.version AND e.payload=payload
+   AND e.created_by=p_actor AND e.occurred_at=p.published_at AND e.causation_event_id IS NULL
+   AND EXISTS(SELECT 1 FROM app_private.audit_events a WHERE a.command_receipt_id=v_receipt AND a.correlation_id=e.correlation_id))<>1 THEN
+  RAISE EXCEPTION 'DB03 publication audit/event proof invalid'; END IF;
+ RETURN v_receipt;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_policy_publication_receipt(uuid,uuid,text,bytea,uuid,bigint,uuid,boolean)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_policy_publication_receipt(uuid,uuid,text,bytea,uuid,bigint,uuid,boolean)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;

@@ -1,5 +1,7 @@
 # Admissions certificates — mandatory documents and bounded grace
 
+> **Publication follow-on, 26 October 2026:** [S2 protected policy publication](db03_s2_policy_publication_20261026.md) integrates this mandatory-roster validator. The earlier pause is resolved for the implementation candidate; actual upload/grace history and final admission remain separate. Exact runtime acceptance is recorded in PR #102 after testing.
+
 **Owner requirement and follow-up selections, 26 October 2026.** Existing documents mention birth/transfer certificates and per-policy document rosters. A bounded search of the master requirements, DB03 design and candidate SQL/tests found no mandatory-certificate plus two-month grace implementation. This increment adds the requirement and an inactive tested schema/helper slice; it does not claim a completed upload or admission workflow.
 
 | Rule | Selected behavior |

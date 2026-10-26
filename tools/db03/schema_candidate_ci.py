@@ -16,6 +16,8 @@ CANDIDATE = "supabase/proposals/db03/01_policy_draft_schema.sql.draft"
 TEST = "supabase/tests/db03/01_policy_draft_schema.sql"
 CERTIFICATE_CANDIDATE = "supabase/proposals/db03/02_required_certificates_grace.sql.draft"
 CERTIFICATE_TEST = "supabase/tests/db03/02_required_certificates_grace.sql"
+PUBLICATION_TEST = "supabase/tests/db03/03_policy_publication.sql"
+PUBLICATION_FIXTURE = "supabase/tests/db03/fixtures/policy_publication_actor.sql"
 TABLES = {
     "admission_numbering_profiles", "admission_policy_versions",
     "admission_policy_stages", "admission_policy_document_requirements",
@@ -57,6 +59,29 @@ def validate_certificate_source() -> tuple[str, str]:
     return sql, test
 
 
+def validate_publication_source() -> tuple[str, str, str]:
+    paths = sorted((ROOT / "supabase/proposals/db03").glob("03_*.sql.draft"))
+    if len(paths) != 4:
+        raise RuntimeError("DB03_PUBLICATION_FRAGMENT_COUNT")
+    sql = "\n".join(path.read_text() for path in paths)
+    declarations = re.findall(r"(?mi)^CREATE(?: OR REPLACE)? FUNCTION ((?:app|app_private)\.[a-z0-9_]+)\(", sql)
+    if len(declarations) != 7 or [name for name in declarations if name.startswith("app.")] != ["app.publish_admission_policy"]:
+        raise RuntimeError("DB03_PUBLICATION_FUNCTION_SCOPE")
+    # Reject deployment-time data/catalog insertion, ignoring function bodies.
+    outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
+    if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE TABLE)\b", outside):
+        raise RuntimeError("DB03_PUBLICATION_SEED_OR_ENTITY_SCOPE")
+    test = (ROOT / PUBLICATION_TEST).read_text()
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["40"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 40:
+        raise RuntimeError("DB03_PUBLICATION_ASSERTIONS")
+    anchor = "\\ir fixtures/policy_publication_actor.sql"
+    if test.count(anchor) != 1 or not test.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("DB03_PUBLICATION_TEST_BOUNDARY")
+    fixture = (ROOT / PUBLICATION_FIXTURE).read_text()
+    print("DB03_PUBLICATION_SOURCE_PASS fragments=4 assertions=40 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test.replace(anchor, fixture), fixture
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -64,6 +89,7 @@ def main() -> int:
     args = parser.parse_args()
     sql, test = validate_source()
     certificate_sql, certificate_test = validate_certificate_source()
+    publication_sql, publication_test, publication_fixture = validate_publication_source()
     if args.source_only:
         return 0
     # This runner never connects to a hosted service or reuses a user's stack.
@@ -146,6 +172,45 @@ def main() -> int:
             if remaining != "0":
                 raise RuntimeError("DB03_CERTIFICATE_FIXTURE_ROLLBACK_INCOMPLETE")
             print("DB03_CERTIFICATE_DATABASE_PASS 30/30; total_DB03=70/70; fixtures_rolled_back=true; admission_completion=unavailable")
+            before_guard = local.run_psql(container, "SELECT md5(pg_catalog.pg_get_functiondef('app_private.db03_guard_draft_configuration()'::regprocedure));", "DB03_BEFORE_PUBLICATION_GUARD", tuples=True).strip()
+            try:
+                local.run_psql(container, "BEGIN;\n" + publication_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PUBLICATION_FAILURE'; END $failure$;\nCOMMIT;", "DB03_PUBLICATION_FAILURE_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_PUBLICATION_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_PUBLICATION_FAILURE_ABSENT")
+            after_guard = local.run_psql(container, "SELECT md5(pg_catalog.pg_get_functiondef('app_private.db03_guard_draft_configuration()'::regprocedure));", "DB03_AFTER_PUBLICATION_GUARD", tuples=True).strip()
+            absent = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid='app_private.admission_policy_versions'::regclass AND attname='published_at' AND NOT attisdropped)+(SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='app'::regnamespace AND proname='publish_admission_policy')+(SELECT count(*) FROM pg_catalog.pg_trigger WHERE tgname='a0_db03_publication_auth_fence');", "DB03_PUBLICATION_ROLLBACK_PROBE", tuples=True).strip()
+            if before_guard != after_guard or absent != "0":
+                raise RuntimeError("DB03_PUBLICATION_ROLLBACK_INCOMPLETE")
+            print("DB03_PUBLICATION_DDL_ROLLBACK_PASS original_guard_restored=true new_columns_entries_fences=0")
+            local.run_psql(container, "BEGIN;\n" + publication_sql + "\nCOMMIT;", "DB03_PUBLICATION_INSTALL")
+            from foundation_local_ci import ensure_local_auth_route
+            from prepare_local_auth_fixtures import local_status, prepare
+            def prepare_auth():
+                url, key = local_status()
+                ensure_local_auth_route(url)
+                try:
+                    if len(prepare(url, key)) != 5:
+                        raise RuntimeError("DB03_PUBLICATION_AUTH_FIXTURES")
+                finally:
+                    key = None
+            prepare_auth()
+            total_foundation = baseline + local.run_foundation_regression(contract)
+            if total_foundation != 220:
+                raise RuntimeError("DB03_PUBLICATION_FOUNDATION_REGRESSION_COUNT")
+            parse_tap(local.run_psql(container, publication_test, "DB03_PUBLICATION_TEST"), 40)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.school_profiles)+(SELECT count(*) FROM app_private.principals)+(SELECT count(*) FROM app_private.operation_contracts)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_PUBLICATION_FIXTURE_CLEANUP", tuples=True).strip()
+            if remaining != "0":
+                raise RuntimeError("DB03_PUBLICATION_FIXTURE_ROLLBACK_INCOMPLETE")
+            print("DB03_PUBLICATION_DATABASE_PASS 40/40; total_DB03=110/110; Foundation=220/220; SQL_fixtures_rolled_back=true")
+            def fresh_publication_database():
+                run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                prepare_auth()
+            from policy_publication_races_ci import run_publication_races
+            run_publication_races(local, fresh_publication_database, publication_fixture)
             return 0
     finally:
         if started:
