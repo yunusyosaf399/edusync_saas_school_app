@@ -1,0 +1,24 @@
+{
+  "selected_on": "2026-10-26",
+  "owner": "yunusyosaf399",
+  "source": "Current conversation repeated request_user_input answers (earlier unanswered prompt was aborted)",
+  "decisions": [
+    {
+      "id": "PERSON-CREATE-AUTHORITY",
+      "question": "Who should be allowed to create a new Person record after checking original documents?",
+      "selected_label": "School-wide identity staff (Recommended)",
+      "selected_description": "Only qualified staff with explicit school-wide permission may create identities across campuses."
+    },
+    {
+      "id": "PERSON-POSSIBLE-DUPLICATES",
+      "question": "What should happen when existing records contain a possible matching child?",
+      "selected_label": "Stop for review (Recommended)",
+      "selected_description": "Block creation until staff resolve the possible match; never merge or create another identity automatically."
+    }
+  ],
+  "documented_override_selected": false,
+  "original_inspection_choice_unchanged": true,
+  "independent_certificate_verifier_choice_unchanged": true,
+  "hosted_deployment_authorized": false,
+  "independent_code_acceptance": false
+}

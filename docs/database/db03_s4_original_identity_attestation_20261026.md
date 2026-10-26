@@ -1,5 +1,7 @@
 # DB03 S4 — recorded inspection of original identity documents
 
+> **S5 follow-on, 26 October 2026:** [School-wide checked Person creation](db03_s5_person_creation_20261026.md) implements the separately selected creation authority and stop-on-possible-match rule. The earlier existing-Person-only scope below retains its original snapshot; private certificate upload/review and final admission remain unfinished.
+
 **Implementation candidate, 26 October 2026.** The owner selected original-document staff inspection, staff-only certificate attachment during unresolved drafts, and a different authorized verifier from the certificate uploader. Exact questions/answers are in [the decision record](db03_owner_decisions_original_inspection_draft_files_20261026.json). The earlier one-staff identity-verifier choice remains. These are product choices, not deployment or code acceptance.
 
 This slice implements the manual original-inspection source for an **existing canonical Foundation Person**. It does not create/merge People, automatically match names, claim government verification, upload files or mark a certificate authentic/VERIFIED. File collection and independent digital-document verification remain a distinct next integration. The manual source can be recorded before a digital copy exists; the later mandatory-certificate completion gate must still require administrator submission and independent file review. The database cannot establish that a human actually saw a physical original; it records the accountable staff attestation and its precise meaning.

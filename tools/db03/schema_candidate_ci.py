@@ -142,6 +142,32 @@ def validate_identity_source() -> tuple[str, str, str]:
     return sql, test, "\n".join(fixtures)
 
 
+
+def validate_person_source() -> tuple[str, str, str]:
+    paths = sorted((ROOT / "supabase/proposals/db03").glob("06_*.sql.draft"))
+    if len(paths) != 4:
+        raise RuntimeError("DB03_PERSON_FRAGMENT_COUNT")
+    sql = "\n".join(path.read_text() for path in paths)
+    if re.findall(r"(?mi)^CREATE TABLE app_private\.([a-z_]+)", sql) != ["admission_person_checks", "admission_person_creations"] or re.findall(r"(?mi)^CREATE FUNCTION app\.([a-z_]+)", sql) != ["check_admission_person_candidates", "create_admission_person"]:
+        raise RuntimeError("DB03_PERSON_OBJECT_SCOPE")
+    outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
+    if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE)\b", outside):
+        raise RuntimeError("DB03_PERSON_SEED_OR_ROLE")
+    test = (ROOT / "supabase/tests/db03/06_person_creation.sql").read_text()
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["50"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 50 or not test.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("DB03_PERSON_TEST_PLAN")
+    fixtures = []
+    for name in ("policy_publication_actor", "intake_grace_actor", "original_identity_actor", "person_creation_actor"):
+        fixture = (ROOT / ("supabase/tests/db03/fixtures/" + name + ".sql")).read_text()
+        anchor = "\\ir fixtures/" + name + ".sql"
+        if test.count(anchor) != 1:
+            raise RuntimeError("DB03_PERSON_FIXTURE_SCOPE")
+        test = test.replace(anchor, fixture)
+        fixtures.append(fixture)
+    print("DB03_PERSON_SOURCE_PASS fragments=4 assertions=50 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test, "\n".join(fixtures)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -152,6 +178,7 @@ def main() -> int:
     publication_sql, publication_test, publication_fixture = validate_publication_source()
     intake_sql, intake_test, intake_fixture = validate_intake_source()
     identity_sql, identity_test, identity_fixture = validate_identity_source()
+    person_sql, person_test, person_fixture = validate_person_source()
     if args.source_only:
         return 0
     # This runner never connects to a hosted service or reuses a user's stack.
@@ -275,6 +302,18 @@ def main() -> int:
                 raise RuntimeError("DB03_IDENTITY_DDL_ROLLBACK_INCOMPLETE")
             print("DB03_IDENTITY_DDL_ROLLBACK_PASS tables_view_entry_epoch=0 prior_guard_restored=true")
             local.run_psql(container, "BEGIN;\n" + identity_sql + "\nCOMMIT;", "DB03_IDENTITY_INSTALL")
+            try:
+                local.run_psql(container, "BEGIN;\n" + person_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PERSON_FAILURE'; END $failure$;\nCOMMIT;", "DB03_PERSON_DDL_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_PERSON_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_PERSON_DDL_FAILURE_ABSENT")
+            absent = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_person_checks','admission_person_creations'))+(SELECT count(*) FROM pg_proc WHERE pronamespace='app'::regnamespace AND proname IN('check_admission_person_candidates','create_admission_person'))+(SELECT count(*) FROM pg_trigger WHERE tgname='a0_db03_person_catalog_fence');", "DB03_PERSON_ROLLBACK_PROBE", tuples=True).strip()
+            if absent != "0":
+                raise RuntimeError("DB03_PERSON_DDL_ROLLBACK_INCOMPLETE")
+            print("DB03_PERSON_DDL_ROLLBACK_PASS tables_entries_catalog_fence=0")
+            local.run_psql(container, "BEGIN;\n" + person_sql + "\nCOMMIT;", "DB03_PERSON_INSTALL")
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -333,9 +372,23 @@ def main() -> int:
             if remaining != "0":
                 raise RuntimeError("DB03_IDENTITY_FIXTURE_ROLLBACK_INCOMPLETE")
             print("DB03_IDENTITY_DATABASE_PASS 40/40; total_DB03=200/200; Foundation=220/220; fixtures_rolled_back=true")
+            try:
+                person_output = local.run_psql(container, person_test, "DB03_PERSON_TEST")
+            except local.DomainLocalCIError:
+                local.run_psql(container, "\\o /dev/null\n" + person_test, "DB03_PERSON_SQL_DIAGNOSTIC")
+                raise
+            lines = person_output.splitlines()
+            for i, line in enumerate(lines):
+                if re.match(r"\s*not ok\b", line):
+                    print("DB03_PERSON_ASSERTION_DETAIL " + "\n".join(lines[max(0,i-1):i+12]))
+            parse_tap(person_output, 50)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_person_checks)+(SELECT count(*) FROM app_private.admission_person_creations)+(SELECT count(*) FROM app_private.people)+(SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_PERSON_FIXTURE_CLEANUP", tuples=True).strip()
+            if remaining != "0":
+                raise RuntimeError("DB03_PERSON_FIXTURE_ROLLBACK_INCOMPLETE")
+            print("DB03_PERSON_DATABASE_PASS 50/50; total_DB03=250/250; Foundation=220/220; fixtures_rolled_back=true")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -343,6 +396,8 @@ def main() -> int:
             run_intake_races(local, fresh_publication_database, intake_fixture)
             from original_identity_races_ci import run_identity_races
             run_identity_races(local, fresh_publication_database, identity_fixture)
+            from person_creation_races_ci import run_person_races
+            run_person_races(local, fresh_publication_database, person_fixture)
             return 0
     finally:
         if started:

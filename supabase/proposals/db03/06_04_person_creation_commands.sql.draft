@@ -1,0 +1,96 @@
+GRANT CREATE ON SCHEMA app_private,app TO schoolos_identity_executor;
+SET ROLE schoolos_identity_executor;
+CREATE FUNCTION app_private.db03_person_effect(p_code text,p_application uuid,p_expected bigint,p_name text,
+ p_check uuid,p_reference text,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; c app_private.admission_person_checks%ROWTYPE;
+ ctx record; checked record; v_intent bytea; v_result jsonb; v_receipt uuid; v_check uuid; v_creation uuid;
+ v_person uuid; v_resolution uuid; v_version bigint; v_epoch bigint; v_now timestamptz; v_count bigint;
+BEGIN
+ IF p_code IS NULL OR p_code NOT IN('admission.person.check','admission.person.create') OR p_application IS NULL
+  OR p_expected IS NULL OR p_expected<1 OR p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200 THEN
+  RAISE EXCEPTION 'DB03 Person typed intent invalid'; END IF;
+ IF p_code='admission.person.check' THEN
+  IF p_name IS NULL OR pg_catalog.char_length(p_name)>200 OR p_name ~ '[[:cntrl:]]'
+   OR app_private.db03_person_name_key(p_name)='' OR p_check IS NOT NULL OR p_reference IS NOT NULL OR p_reason IS NOT NULL THEN
+   RAISE EXCEPTION 'DB03 Person name check invalid'; END IF;
+ ELSE
+  IF p_check IS NULL OR p_name IS NOT NULL OR p_reference IS NULL OR pg_catalog.btrim(p_reference)='' OR pg_catalog.char_length(p_reference)>200
+   OR p_reason IS NULL OR pg_catalog.btrim(p_reason)='' OR pg_catalog.char_length(p_reason)>1000 THEN
+   RAISE EXCEPTION 'DB03 Person original inspection required'; END IF;
+ END IF;
+ -- Exclusive from the start. Person mutation triggers use the SAME namespace,
+ -- so no catalog phantom or shared-lock upgrade can cross this transaction.
+ PERFORM pg_catalog.pg_advisory_xact_lock(71001,1);
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 Person application unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db03_person_actor_context(p_code,a.campus_id);
+ v_intent:=pg_catalog.sha256(pg_catalog.convert_to(pg_catalog.replace(pg_catalog.jsonb_build_array(
+  p_application::text,p_expected::text,
+  CASE WHEN p_name IS NULL THEN NULL ELSE pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p_name,'UTF8')),'hex') END,
+  p_check::text,
+  CASE WHEN p_reference IS NULL THEN NULL ELSE pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p_reference,'UTF8')),'hex') END,
+  CASE WHEN p_reason IS NULL THEN NULL ELSE pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p_reason,'UTF8')),'hex') END)::text,', ',','),'UTF8'));
+ PERFORM pg_catalog.pg_advisory_xact_lock(71002,pg_catalog.hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=a.school_id FOR UPDATE;
+ PERFORM 1 FROM app.campuses WHERE id=a.campus_id AND school_id=a.school_id FOR UPDATE;
+ PERFORM 1 FROM app.academic_years WHERE id=a.academic_year_id AND school_id=a.school_id FOR UPDATE;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application FOR UPDATE;
+ SELECT * INTO checked FROM app_private.db03_person_actor_context(p_code,a.campus_id);
+ IF checked.actor_id IS DISTINCT FROM ctx.actor_id OR checked.operation_id IS DISTINCT FROM ctx.operation_id THEN
+  RAISE EXCEPTION 'DB03 Person authority changed'; END IF;
+ v_result:=app_private.db03_person_receipt(p_code,a.campus_id,p_key,v_intent,p_expected);
+ IF v_result IS NULL THEN
+  IF a.state<>'DRAFT' OR a.person_id IS NOT NULL OR a.row_version<>p_expected THEN RAISE EXCEPTION 'DB03 Person unbound draft version stale or withdrawn'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM app_private.school_profiles WHERE id=a.school_id AND state IN('SETUP','ACTIVE'))
+   OR NOT EXISTS(SELECT 1 FROM app.campuses WHERE id=a.campus_id AND state='ACTIVE')
+   OR NOT EXISTS(SELECT 1 FROM app.academic_years WHERE id=a.academic_year_id AND state IN('PLANNED','ACTIVE')) THEN
+   RAISE EXCEPTION 'DB03 Person destination not open'; END IF;
+  v_receipt:=pg_catalog.gen_random_uuid(); v_now:=pg_catalog.clock_timestamp();
+  IF p_code='admission.person.check' THEN
+   SELECT count(*) INTO v_count FROM app_private.people p WHERE app_private.db03_person_possible_match(p.display_name,p_name);
+   INSERT INTO app_private.admission_person_checks(application_id,expected_application_version,display_name_private,name_key_private,normalization_version,
+    catalog_hash,candidate_count,candidate_snapshot_private,command_receipt_id,occurred_at,created_by)
+   VALUES(a.id,p_expected,pg_catalog.btrim(p_name),app_private.db03_person_name_key(p_name),1,
+    app_private.db03_person_catalog_hash(),v_count,app_private.db03_person_candidate_snapshot(p_name),v_receipt,v_now,ctx.actor_id) RETURNING id INTO v_check;
+   v_result:=app_private.db03_person_receipt(p_code,a.campus_id,p_key,v_intent,p_expected,v_receipt,v_check,NULL);
+  ELSE
+   SELECT * INTO c FROM app_private.admission_person_checks WHERE id=p_check;
+   IF NOT FOUND OR c.application_id<>a.id OR c.created_by<>ctx.actor_id OR c.expected_application_version<>p_expected THEN
+    RAISE EXCEPTION 'DB03 Person check not valid for this actor and draft'; END IF;
+   IF c.candidate_count>0 THEN RAISE EXCEPTION 'DB03 possible Person match requires review'; END IF;
+   IF c.catalog_hash IS DISTINCT FROM app_private.db03_person_catalog_hash() THEN RAISE EXCEPTION 'DB03 Person catalog changed; perform a new check'; END IF;
+   INSERT INTO app_private.people(display_name,created_by) VALUES(c.display_name_private,ctx.actor_id) RETURNING id INTO v_person;
+   UPDATE app_private.admission_applications SET person_id=v_person,stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version,stage_epoch INTO v_version,v_epoch;
+   v_resolution:=pg_catalog.gen_random_uuid(); v_creation:=pg_catalog.gen_random_uuid();
+   INSERT INTO app_private.admission_identity_resolutions(id,application_id,revision,person_id,person_version,method,original_reference_private,reason_private,
+    application_version,stage_epoch,command_receipt_id,occurred_at,created_by)
+   VALUES(v_resolution,a.id,1,v_person,1,'ORIGINAL_BIRTH_CERTIFICATE_INSPECTION',p_reference,p_reason,v_version,v_epoch,v_receipt,v_now,ctx.actor_id);
+   INSERT INTO app_private.admission_person_creations(id,check_id,application_id,person_id,resolution_id,application_version,command_receipt_id,occurred_at,created_by)
+   VALUES(v_creation,c.id,a.id,v_person,v_resolution,v_version,v_receipt,v_now,ctx.actor_id);
+   v_result:=app_private.db03_person_receipt(p_code,a.campus_id,p_key,v_intent,p_expected,v_receipt,c.id,v_creation);
+  END IF;
+ END IF;
+ IF p_code='admission.person.check' THEN
+  SELECT * INTO c FROM app_private.admission_person_checks WHERE id=(v_result->>'check_id')::uuid;
+  RETURN v_result||pg_catalog.jsonb_build_object('candidates',c.candidate_snapshot_private);
+ END IF;
+ RETURN v_result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_person_effect(text,uuid,bigint,text,uuid,text,text,text) FROM PUBLIC,anon,authenticated,service_role;
+CREATE FUNCTION app.check_admission_person_candidates(p_application_id uuid,p_expected_application_version bigint,p_display_name text,p_idempotency_key text)
+RETURNS TABLE(check_id uuid,candidate_count bigint,candidates jsonb)
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT (r->>'check_id')::uuid,(r->>'candidate_count')::bigint,r->'candidates'
+ FROM (SELECT app_private.db03_person_effect('admission.person.check',p_application_id,p_expected_application_version,p_display_name,NULL,NULL,NULL,p_idempotency_key) r) q
+$body$;
+CREATE FUNCTION app.create_admission_person(p_application_id uuid,p_expected_application_version bigint,p_check_id uuid,p_original_reference text,p_reason text,p_idempotency_key text)
+RETURNS TABLE(creation_id uuid,person_id uuid,resolution_id uuid,application_version bigint)
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT (r->>'creation_id')::uuid,(r->>'person_id')::uuid,(r->>'resolution_id')::uuid,(r->>'application_version')::bigint
+ FROM (SELECT app_private.db03_person_effect('admission.person.create',p_application_id,p_expected_application_version,NULL,p_check_id,p_original_reference,p_reason,p_idempotency_key) r) q
+$body$;
+REVOKE ALL ON FUNCTION app.check_admission_person_candidates(uuid,bigint,text,text),app.create_admission_person(uuid,bigint,uuid,text,text,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.check_admission_person_candidates(uuid,bigint,text,text),app.create_admission_person(uuid,bigint,uuid,text,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private,app FROM schoolos_identity_executor;
