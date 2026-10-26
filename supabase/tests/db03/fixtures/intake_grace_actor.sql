@@ -20,8 +20,8 @@ INSERT INTO app_private.assignment_permission_scopes(id,assignment_id,grant_id,r
  FROM app_private.permissions p WHERE p.code IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace');
 INSERT INTO app_private.operation_contracts(code,handler_key,request_permission_id,created_by,requires_approval,review_permission_id)
  SELECT p.code,p.code,p.id,'11111111-1111-4111-8111-111111111111',
-  COALESCE(current_setting('schoolos_test.intake_reviewed',true),'false')::boolean AND p.code='admission.draft.create',
-  CASE WHEN COALESCE(current_setting('schoolos_test.intake_reviewed',true),'false')::boolean AND p.code='admission.draft.create' THEN p.id ELSE NULL END
+  COALESCE(NULLIF(current_setting('schoolos_test.intake_reviewed',true),''),'false')::boolean AND p.code='admission.draft.create',
+  CASE WHEN COALESCE(NULLIF(current_setting('schoolos_test.intake_reviewed',true),''),'false')::boolean AND p.code='admission.draft.create' THEN p.id ELSE NULL END
  FROM app_private.permissions p
  WHERE p.code IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace');
 RESET ROLE;
