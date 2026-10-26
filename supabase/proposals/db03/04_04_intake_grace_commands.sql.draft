@@ -7,7 +7,8 @@ CREATE FUNCTION app_private.db03_intake_effect(
  p_kind text,p_due date,p_reason text,p_key text)
 RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
 SET search_path=pg_catalog,pg_temp SET datestyle='ISO,YMD' AS $body$
-DECLARE ctx record; checked record; a record; prior record; school record;
+DECLARE ctx record; checked record; a app_private.admission_applications%ROWTYPE;
+ prior app_private.admission_certificate_grace_history%ROWTYPE; school record;
  v_school uuid; v_campus uuid; v_year uuid; v_application uuid; v_version bigint;
  v_receipt uuid; v_history uuid; v_result jsonb; v_intent bytea;
  v_now timestamptz; v_today date; v_anchor date; v_due date; v_revision bigint;
