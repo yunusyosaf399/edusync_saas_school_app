@@ -1,8 +1,8 @@
 # DB02 solo-maintainer technical review — 26 October 2026
 
-**Outcome: READY FOR OWNER ACCEPTANCE.** The scoped review identified no blocking defect in the reviewed DB02 composition. Owner acceptance of the implementation remains pending. This review was performed by Codex, the implementation assistant; it is not independent non-author approval.
+**Outcome: OWNER ACCEPTED FOR DB02 DEVELOPMENT on 26 October 2026.** The scoped review identified no blocking defect. After the report was presented, the owner explicitly replied “Yes” to accepting PR #168 at `f472f2ab`, including the documented DB01/Academic compatibility. This records implementation acceptance separately from the earlier policy approval. This review was performed by Codex, the implementation assistant; it is not independent non-author approval.
 
-Policy: accepted [ADR-006](../decisions/ADR-006-db02-solo-maintainer-review.md). Target: [PR #168](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/168), exact implementation commit `f472f2abf3303ffef10d4744a4dd6af5735acc5e`. PR #168 still has that head and remains draft/unmerged. The owner's approval of the new review policy is recorded separately from acceptance of this implementation version.
+Policy: accepted [ADR-006](../decisions/ADR-006-db02-solo-maintainer-review.md). Target: [PR #168](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/168), exact implementation commit `f472f2abf3303ffef10d4744a4dd6af5735acc5e`. PR #168 still has that head and remains draft/unmerged. The policy approval and subsequent implementation acceptance are separately recorded in the structured review record.
 
 ## Scope and inspected evidence
 
@@ -44,8 +44,8 @@ No SQL, suite, role/grant, runtime code or registry changed for this policy/revi
 2. Academic/DB02: accepted Offering CREATE/UPDATE creates a missing eligible current academic pool in the same transaction. Existing counters survive reopen/replay/archive. Both Offering CREATE versus REPLACE lock orders result in the exact required pool while preserving the prior persistent counter.
 3. DB03/DB04: installed Admissions/Finance Student creation and Curriculum consumer handoffs remain outside this tested composition and are still required for full DB01 closure.
 
-## Owner decision still required
+## Owner decision recorded
 
-The reviewed implementation is **PR #168 at `f472f2abf3303ffef10d4744a4dd6af5735acc5e`**. To close G03 under ADR-006, the sole maintainer must explicitly accept this version and the compatibility facts above after seeing this report. Record the actual instruction, accepted SHA, owner and date in [the review record](db02_solo_maintainer_review_record_20261026.json). Policy approval alone has not filled those fields.
+The sole maintainer `yunusyosaf399` accepted **PR #168 at `f472f2abf3303ffef10d4744a4dd6af5735acc5e`** on 26 October 2026. The question explicitly covered the reviewed version and documented DB01/Academic compatibility for DB02 development acceptance; the actual response was **“Yes”**. The [review record](db02_solo_maintainer_review_record_20261026.json) records the exact question, response, owner, date, SHA and compatibility scope. G03 is satisfied under ADR-006. This is owner acceptance, with independent review recorded as false and merge/activation authorization still false.
 
 G04 merge/integration approval, G05 final accepted-contract freeze and G06 hosted upgrade/rollback and activation remain separate. The review does not establish populated hosted upgrade/rollback acceptance, independent security assurance, installed DB03/DB04 handoffs, or production readiness. No GitHub self-approval is submitted.

@@ -7,7 +7,7 @@
   "policy_approval_evidence": "Owner confirmed sole development, then replied \"Okay do it\" to the explicit solo-maintainer P03/G03 review-policy proposal.",
   "implementation_pr": 168,
   "implementation_sha": "f472f2abf3303ffef10d4744a4dd6af5735acc5e",
-  "technical_review_status": "READY_FOR_OWNER_ACCEPTANCE",
+  "technical_review_status": "COMPLETED_OWNER_ACCEPTED",
   "technical_review_performed_by": "Codex implementation assistant",
   "technical_review_date": "2026-10-26",
   "independent_review": false,
@@ -35,13 +35,15 @@
     "status": "ALL_SUCCESS"
   },
   "owner_implementation_acceptance": {
-    "status": "PENDING",
+    "status": "ACCEPTED",
     "owner_login": "yunusyosaf399",
-    "accepted_sha": null,
-    "accepted_on": null,
-    "actual_instruction": null,
-    "db01_enrollment_compatibility_accepted": null,
-    "academic_db02_compatibility_accepted": null
+    "accepted_sha": "f472f2abf3303ffef10d4744a4dd6af5735acc5e",
+    "accepted_on": "2026-10-26",
+    "actual_instruction": "Yes",
+    "db01_enrollment_compatibility_accepted": true,
+    "academic_db02_compatibility_accepted": true,
+    "acceptance_prompt": "Do you accept PR #168, commit f472f2ab, including its documented DB01/Academic compatibility, for DB02 development acceptance?",
+    "scope": "DB02 development acceptance under ADR-006; merge and deployment remain separate."
   },
   "independent_signoff_recorded": false,
   "merge_authorized": false,
