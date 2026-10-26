@@ -165,6 +165,7 @@ CREATE POLICY db03_document_grace_read ON app_private.admission_certificate_grac
 CREATE POLICY db03_document_policy_read ON app_private.admission_policy_versions FOR SELECT TO schoolos_platform_executor USING(true);
 CREATE POLICY db03_document_policy_read ON app_private.admission_policy_stages FOR SELECT TO schoolos_platform_executor USING(true);
 CREATE POLICY db03_document_policy_read ON app_private.admission_policy_document_requirements FOR SELECT TO schoolos_platform_executor USING(true);
+GRANT USAGE ON SCHEMA app TO schoolos_platform_executor;
 GRANT SELECT ON app_private.school_profiles,app.campuses,app.academic_years TO schoolos_platform_executor;
 GRANT UPDATE(id) ON app_private.school_profiles,app.campuses,app.academic_years TO schoolos_platform_executor;
 CREATE POLICY db03_document_school_read ON app_private.school_profiles FOR SELECT TO schoolos_platform_executor USING(true);
