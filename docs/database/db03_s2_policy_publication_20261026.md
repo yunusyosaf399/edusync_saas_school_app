@@ -1,5 +1,7 @@
 # DB03 S2 — protected immediate policy publication
 
+> **S3 follow-on, 26 October 2026:** [Opaque application drafts and retained certificate grace](db03_s3_intake_certificate_grace_20261026.md) implements protected draft/create/withdraw and original-window grace history as a separately tested inactive candidate. Earlier remaining-work statements below are historical for this narrow slice; real identity, upload verification, submitted applications and final completion remain open.
+
 **Implementation candidate, 26 October 2026.** The owner explicitly selected **one authorized administrator** to publish admission rules. The selected description was: “One administrator with the current publishing permission can publish; every change is recorded and published versions are locked.” This is a product choice, not code-review or hosted-deployment approval. Earlier selections require immediate publication for new submissions and preservation of old submitted policy snapshots.
 
 ## Entry and exact authority

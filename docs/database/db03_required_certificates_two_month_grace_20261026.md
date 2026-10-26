@@ -1,5 +1,7 @@
 # Admissions certificates — mandatory documents and bounded grace
 
+> **S3 follow-on, 26 October 2026:** [Opaque application drafts and retained certificate grace](db03_s3_intake_certificate_grace_20261026.md) implements protected draft/create/withdraw and original-window grace history as a separately tested inactive candidate. Earlier remaining-work statements below are historical for this narrow slice; real identity, upload verification, submitted applications and final completion remain open.
+
 > **Publication follow-on, 26 October 2026:** [S2 protected policy publication](db03_s2_policy_publication_20261026.md) integrates this mandatory-roster validator. The earlier pause is resolved for the implementation candidate; actual upload/grace history and final admission remain separate. Exact runtime acceptance is recorded in PR #102 after testing.
 
 **Owner requirement and follow-up selections, 26 October 2026.** Existing documents mention birth/transfer certificates and per-policy document rosters. A bounded search of the master requirements, DB03 design and candidate SQL/tests found no mandatory-certificate plus two-month grace implementation. This increment adds the requirement and an inactive tested schema/helper slice; it does not claim a completed upload or admission workflow.

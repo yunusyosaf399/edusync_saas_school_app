@@ -1,0 +1,115 @@
+GRANT CREATE ON SCHEMA app_private,app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+-- Private fixed three-operation implementation. Public wrappers cannot choose
+-- an acting Principal, state, anchor, history revision, result or receipt.
+CREATE FUNCTION app_private.db03_intake_effect(
+ p_code text,p_campus uuid,p_year uuid,p_application uuid,p_expected bigint,
+ p_kind text,p_due date,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp SET datestyle='ISO,YMD' AS $body$
+DECLARE ctx record; checked record; a record; prior record; school record;
+ v_school uuid; v_campus uuid; v_year uuid; v_application uuid; v_version bigint;
+ v_receipt uuid; v_history uuid; v_result jsonb; v_intent bytea;
+ v_now timestamptz; v_today date; v_anchor date; v_due date; v_revision bigint;
+BEGIN
+ IF p_code IS NULL OR p_code NOT IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace')
+  OR p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200 THEN RAISE EXCEPTION 'DB03 intake typed intent invalid'; END IF;
+ IF p_code='admission.draft.create' THEN
+  IF p_campus IS NULL OR p_year IS NULL OR p_application IS NOT NULL OR p_expected IS NOT NULL
+   OR p_kind IS NOT NULL OR p_due IS NOT NULL OR p_reason IS NOT NULL THEN RAISE EXCEPTION 'DB03 create intent invalid'; END IF;
+  SELECT school_id INTO v_school FROM app.campuses WHERE id=p_campus;
+  v_campus:=p_campus; v_year:=p_year;
+ ELSE
+  IF p_application IS NULL OR p_expected IS NULL OR p_expected<1 OR p_campus IS NOT NULL OR p_year IS NOT NULL
+   OR p_reason IS NULL OR pg_catalog.btrim(p_reason)='' OR pg_catalog.char_length(p_reason)>1000 THEN
+   RAISE EXCEPTION 'DB03 amendment intent invalid'; END IF;
+  IF (p_code='admission.certificate.grace' AND (p_kind IS NULL OR p_kind NOT IN('BIRTH_CERTIFICATE','SCHOOL_LEAVING_CERTIFICATE') OR (p_due IS NOT NULL AND NOT pg_catalog.isfinite(p_due))))
+   OR (p_code='admission.draft.withdraw' AND (p_kind IS NOT NULL OR p_due IS NOT NULL)) THEN RAISE EXCEPTION 'DB03 certificate intent invalid'; END IF;
+  SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+  v_school:=a.school_id; v_campus:=a.campus_id; v_year:=a.academic_year_id;
+ END IF;
+ IF v_school IS NULL THEN RAISE EXCEPTION 'DB03 intake destination unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db03_intake_actor_context(p_code,v_campus);
+ -- All array elements are safe controlled ASCII or UUID/date/integer/digest
+ -- strings. Removing separator spaces produces a fixed JCS array; private
+ -- reasons are represented only by their SHA-256, never included in evidence.
+ v_intent:=pg_catalog.sha256(pg_catalog.convert_to(pg_catalog.replace(pg_catalog.jsonb_build_array(
+  p_code,p_campus::text,p_year::text,p_application::text,p_expected::text,p_kind,p_due::text,
+  CASE WHEN p_reason IS NULL THEN NULL ELSE pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p_reason,'UTF8')),'hex') END)::text,', ',','),'UTF8'));
+ PERFORM pg_catalog.pg_advisory_xact_lock(71002,pg_catalog.hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':'||p_key));
+ SELECT id,state,timezone INTO school FROM app_private.school_profiles WHERE id=v_school FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 intake School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=v_campus AND school_id=v_school FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 intake Campus mismatch'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=v_year AND school_id=v_school FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 intake academic year mismatch'; END IF;
+ IF p_application IS NOT NULL THEN
+  SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application FOR UPDATE;
+ END IF;
+ SELECT * INTO checked FROM app_private.db03_intake_actor_context(p_code,v_campus);
+ IF ctx.actor_id IS DISTINCT FROM checked.actor_id OR ctx.operation_id IS DISTINCT FROM checked.operation_id THEN
+  RAISE EXCEPTION 'DB03 intake authority changed'; END IF;
+ v_result:=app_private.db03_intake_receipt(p_code,v_campus,p_key,v_intent,p_expected);
+ IF v_result IS NOT NULL THEN RETURN v_result; END IF;
+ -- Historical retries retain their original result after withdrawal or parent
+ -- archival. New effects require live parents, current state and reviewed CAS.
+ IF school.state NOT IN('SETUP','ACTIVE') OR NOT EXISTS(SELECT 1 FROM app.campuses WHERE id=v_campus AND state='ACTIVE')
+  OR NOT EXISTS(SELECT 1 FROM app.academic_years WHERE id=v_year AND state IN('PLANNED','ACTIVE')) THEN
+  RAISE EXCEPTION 'DB03 intake destination not open'; END IF;
+ IF p_application IS NOT NULL AND (a.state<>'DRAFT' OR a.row_version<>p_expected) THEN
+  RAISE EXCEPTION 'DB03 intake draft version stale or withdrawn'; END IF;
+ v_now:=pg_catalog.clock_timestamp(); v_today:=(v_now AT TIME ZONE school.timezone)::date;
+ v_receipt:=pg_catalog.gen_random_uuid(); v_history:=pg_catalog.gen_random_uuid();
+ IF p_code='admission.draft.create' THEN
+  INSERT INTO app_private.admission_applications(school_id,campus_id,academic_year_id,created_by)
+   VALUES(v_school,v_campus,v_year,ctx.actor_id) RETURNING id,row_version INTO v_application,v_version;
+  INSERT INTO app_private.admission_application_transitions(id,application_id,sequence_number,from_state,to_state,
+   application_version,command_receipt_id,occurred_at,created_by)
+   VALUES(v_history,v_application,1,NULL,'DRAFT',v_version,v_receipt,v_now,ctx.actor_id);
+ ELSE
+  v_application:=a.id;
+  IF p_code='admission.draft.withdraw' THEN
+   UPDATE app_private.admission_applications SET state='WITHDRAWN' WHERE id=a.id RETURNING row_version INTO v_version;
+   INSERT INTO app_private.admission_application_transitions(id,application_id,sequence_number,from_state,to_state,
+    application_version,reason_private,command_receipt_id,occurred_at,created_by)
+    VALUES(v_history,a.id,2,'DRAFT','WITHDRAWN',v_version,p_reason,v_receipt,v_now,ctx.actor_id);
+  ELSE
+   SELECT * INTO prior FROM app_private.admission_certificate_grace_history WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+   v_anchor:=COALESCE(prior.first_granted_on,v_today); v_revision:=COALESCE(prior.revision,0)+1;
+   v_due:=app_private.db03_certificate_grace_due_on(p_kind,v_anchor,p_due);
+   IF v_due<v_today OR v_today<v_anchor THEN RAISE EXCEPTION 'DB03 grace original window expired or School clock regressed'; END IF;
+   UPDATE app_private.admission_applications SET updated_at=updated_at WHERE id=a.id RETURNING row_version INTO v_version;
+   INSERT INTO app_private.admission_certificate_grace_history(id,application_id,revision,supersedes_id,document_kind,
+    first_granted_on,recorded_on,due_on,application_version,reason_private,command_receipt_id,occurred_at,created_by)
+    VALUES(v_history,a.id,v_revision,prior.id,p_kind,v_anchor,v_today,v_due,v_version,p_reason,v_receipt,v_now,ctx.actor_id);
+  END IF;
+ END IF;
+ v_result:=app_private.db03_intake_receipt(p_code,v_campus,p_key,v_intent,p_expected,v_receipt,v_application,v_history);
+ IF v_result IS NULL THEN RAISE EXCEPTION 'DB03 intake receipt missing'; END IF;
+ RETURN v_result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_intake_effect(text,uuid,uuid,uuid,bigint,text,date,text,text) FROM PUBLIC,anon,authenticated,service_role;
+CREATE FUNCTION app.create_admission_draft(p_campus_id uuid,p_academic_year_id uuid,p_idempotency_key text)
+RETURNS TABLE(application_id uuid,application_version bigint)
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT (r->>'application_id')::uuid,(r->>'application_version')::bigint FROM
+ (SELECT app_private.db03_intake_effect('admission.draft.create',p_campus_id,p_academic_year_id,NULL,NULL,NULL,NULL,NULL,p_idempotency_key) r) q
+$body$;
+CREATE FUNCTION app.withdraw_admission_draft(p_application_id uuid,p_expected_version bigint,p_reason text,p_idempotency_key text)
+RETURNS TABLE(application_id uuid,application_version bigint)
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT (r->>'application_id')::uuid,(r->>'application_version')::bigint FROM
+ (SELECT app_private.db03_intake_effect('admission.draft.withdraw',NULL,NULL,p_application_id,p_expected_version,NULL,NULL,p_reason,p_idempotency_key) r) q
+$body$;
+CREATE FUNCTION app.grant_admission_certificate_grace(p_application_id uuid,p_expected_version bigint,p_document_kind text,p_due_on date,p_reason text,p_idempotency_key text)
+RETURNS TABLE(application_id uuid,application_version bigint,due_on date)
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT (r->>'application_id')::uuid,(r->>'application_version')::bigint,(r->>'grace_due_on')::date FROM
+ (SELECT app_private.db03_intake_effect('admission.certificate.grace',NULL,NULL,p_application_id,p_expected_version,p_document_kind,p_due_on,p_reason,p_idempotency_key) r) q
+$body$;
+REVOKE ALL ON FUNCTION app.create_admission_draft(uuid,uuid,text),app.withdraw_admission_draft(uuid,bigint,text,text),
+ app.grant_admission_certificate_grace(uuid,bigint,text,date,text,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.create_admission_draft(uuid,uuid,text),app.withdraw_admission_draft(uuid,bigint,text,text),
+ app.grant_admission_certificate_grace(uuid,bigint,text,date,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private,app FROM schoolos_workflow_executor;

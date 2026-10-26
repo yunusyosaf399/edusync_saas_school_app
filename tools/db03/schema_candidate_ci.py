@@ -82,6 +82,36 @@ def validate_publication_source() -> tuple[str, str, str]:
     return sql, test.replace(anchor, fixture), fixture
 
 
+
+def validate_intake_source() -> tuple[str, str, str]:
+    paths = sorted((ROOT / "supabase/proposals/db03").glob("04_*.sql.draft"))
+    if len(paths) != 4:
+        raise RuntimeError("DB03_INTAKE_FRAGMENT_COUNT")
+    sql = "\n".join(path.read_text() for path in paths)
+    if re.findall(r"(?mi)^CREATE TABLE app_private\.([a-z_]+)", sql) != [
+        "admission_applications", "admission_application_transitions", "admission_certificate_grace_history"]:
+        raise RuntimeError("DB03_INTAKE_TABLE_SCOPE")
+    if re.findall(r"(?mi)^CREATE FUNCTION app\.([a-z_]+)", sql) != [
+        "create_admission_draft", "withdraw_admission_draft", "grant_admission_certificate_grace"]:
+        raise RuntimeError("DB03_INTAKE_ENTRY_SCOPE")
+    outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
+    if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE)\b", outside):
+        raise RuntimeError("DB03_INTAKE_SEED_OR_ROLE")
+    test = (ROOT / "supabase/tests/db03/04_intake_grace.sql").read_text()
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["50"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 50 or not test.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("DB03_INTAKE_TEST_PLAN")
+    fixtures = []
+    for name in ("policy_publication_actor", "intake_grace_actor"):
+        fixture = (ROOT / ("supabase/tests/db03/fixtures/" + name + ".sql")).read_text()
+        anchor = "\\ir fixtures/" + name + ".sql"
+        if test.count(anchor) != 1:
+            raise RuntimeError("DB03_INTAKE_FIXTURE_SCOPE")
+        test = test.replace(anchor, fixture)
+        fixtures.append(fixture)
+    print("DB03_INTAKE_SOURCE_PASS fragments=4 assertions=50 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test, "\n".join(fixtures)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -90,6 +120,7 @@ def main() -> int:
     sql, test = validate_source()
     certificate_sql, certificate_test = validate_certificate_source()
     publication_sql, publication_test, publication_fixture = validate_publication_source()
+    intake_sql, intake_test, intake_fixture = validate_intake_source()
     if args.source_only:
         return 0
     # This runner never connects to a hosted service or reuses a user's stack.
@@ -186,6 +217,19 @@ def main() -> int:
                 raise RuntimeError("DB03_PUBLICATION_ROLLBACK_INCOMPLETE")
             print("DB03_PUBLICATION_DDL_ROLLBACK_PASS original_guard_restored=true new_columns_entries_fences=0")
             local.run_psql(container, "BEGIN;\n" + publication_sql + "\nCOMMIT;", "DB03_PUBLICATION_INSTALL")
+            try:
+                local.run_psql(container, "BEGIN;\n" + intake_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_INTAKE_FAILURE'; END $failure$;\nCOMMIT;", "DB03_INTAKE_DDL_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_INTAKE_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_INTAKE_DDL_FAILURE_ABSENT")
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_catalog.pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_applications','admission_application_transitions','admission_certificate_grace_history','admission_certificate_grace_current');", "DB03_INTAKE_DDL_ROLLBACK", tuples=True).strip()
+            entry_absent = local.run_psql(container, "SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='app'::regnamespace AND proname IN('create_admission_draft','withdraw_admission_draft','grant_admission_certificate_grace');", "DB03_INTAKE_ENTRY_ROLLBACK", tuples=True).strip()
+            if absent != "0" or entry_absent != "0":
+                raise RuntimeError("DB03_INTAKE_DDL_ROLLBACK_INCOMPLETE")
+            print("DB03_INTAKE_DDL_ROLLBACK_PASS tables_view_entries=0")
+            local.run_psql(container, "BEGIN;\n" + intake_sql + "\nCOMMIT;", "DB03_INTAKE_INSTALL")
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -213,12 +257,24 @@ def main() -> int:
             if remaining != "0":
                 raise RuntimeError("DB03_PUBLICATION_FIXTURE_ROLLBACK_INCOMPLETE")
             print("DB03_PUBLICATION_DATABASE_PASS 40/40; total_DB03=110/110; Foundation=220/220; SQL_fixtures_rolled_back=true")
+            try:
+                intake_output = local.run_psql(container, intake_test, "DB03_INTAKE_TEST")
+            except local.DomainLocalCIError:
+                local.run_psql(container, "\\o /dev/null\n" + intake_test, "DB03_INTAKE_SQL_DIAGNOSTIC")
+                raise
+            parse_tap(intake_output, 50)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.admission_application_transitions)+(SELECT count(*) FROM app_private.admission_certificate_grace_history)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.school_profiles);", "DB03_INTAKE_FIXTURE_CLEANUP", tuples=True).strip()
+            if remaining != "0":
+                raise RuntimeError("DB03_INTAKE_FIXTURE_ROLLBACK_INCOMPLETE")
+            print("DB03_INTAKE_DATABASE_PASS 50/50; total_DB03=160/160; Foundation=220/220; fixtures_rolled_back=true")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
+            from intake_grace_races_ci import run_intake_races
+            run_intake_races(local, fresh_publication_database, intake_fixture)
             return 0
     finally:
         if started:
