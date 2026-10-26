@@ -1,0 +1,21 @@
+{
+  "status": "AWAITING_REVIEWER",
+  "review_target_pr": 168,
+  "review_target_sha": "f472f2abf3303ffef10d4744a4dd6af5735acc5e",
+  "pr_author": "yunusyosaf399",
+  "reviewer_login": null,
+  "reviewer_authorization_evidence": null,
+  "reviewer_non_author_evidence": null,
+  "submitted_review_url": null,
+  "submitted_review_commit_sha": null,
+  "decision": null,
+  "reviewed_at": null,
+  "findings": [],
+  "db01_enrollment_compatibility_acknowledgment": null,
+  "academic_db02_compatibility_acknowledgment": null,
+  "source_changed_after_review": null,
+  "retested_commit_sha": null,
+  "independent_signoff_recorded": false,
+  "merge_authorized": false,
+  "activation_authorized": false
+}
