@@ -102,7 +102,7 @@ BEGIN
  SELECT * INTO fee FROM app_private.finance_fee_rules WHERE id=p_rule;
  SELECT * INTO price FROM app_private.finance_fee_rule_revisions WHERE id=p_revision AND rule_id=p_rule;
  SELECT * INTO pub FROM app_private.finance_fee_publications WHERE rule_id=p_rule
-  ORDER BY revision DESC LIMIT 1;
+  AND revision_id=p_revision;
  PERFORM app_private.db08_fee_actor('finance.charge.assess',campus);
  IF fee.id IS NULL OR fee.school_id<>school OR fee.campus_id<>campus OR fee.academic_year_id<>yr
    OR school_row.id IS NULL OR school_row.state<>'ACTIVE'
@@ -114,8 +114,10 @@ BEGIN
         AND u.currency_code=school_row.currency_code)
    OR price.id IS NULL OR pub.id IS NULL OR pub.revision_id<>price.id
    OR pub.state<>'PUBLISHED' OR price.revision<>pub.revision
-   OR EXISTS(SELECT 1 FROM app_private.finance_fee_rule_revisions newer
-      WHERE newer.rule_id=p_rule AND newer.revision>price.revision)
+   OR EXISTS(SELECT 1 FROM app_private.finance_fee_publications newer_pub
+      JOIN app_private.finance_fee_rule_revisions newer ON newer.id=newer_pub.revision_id
+      WHERE newer_pub.rule_id=p_rule AND newer_pub.state='PUBLISHED'
+        AND newer.revision>price.revision AND newer.valid_from<=p_period_end)
    OR p_period_start<price.valid_from OR p_period_end>price.valid_through
    OR p_period_start<year_row.starts_on OR p_period_end>year_row.ends_on THEN
   RAISE EXCEPTION 'DB08 current full-price assessment source unavailable'; END IF;

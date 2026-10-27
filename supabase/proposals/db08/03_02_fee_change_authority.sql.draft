@@ -1,0 +1,164 @@
+-- A fee change always uses a policy requiring approval; review is distinct
+-- from request and bound to the step's configured reviewer role.
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db08_change_operation_read ON app_private.operation_contracts
+ FOR SELECT TO schoolos_authz_reader USING(code='finance.fee.change' AND contract_version=1);
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.db08_change_actor(p_phase text,p_campus uuid,p_role uuid DEFAULT NULL)
+RETURNS TABLE(actor_id uuid,operation_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; operation uuid; permission uuid; checked_at timestamptz;
+ claims jsonb; exp_text text;
+BEGIN
+ IF p_phase NOT IN('REQUEST','REVIEW') OR p_phase IS NULL OR p_campus IS NULL
+  OR pg_catalog.current_setting('transaction_isolation')<>'read committed' THEN
+  RAISE EXCEPTION 'DB08 fee change operation unavailable'; END IF;
+ claims:=NULLIF(pg_catalog.current_setting('request.jwt.claims',true),'')::jsonb;
+ exp_text:=claims->>'exp';
+ IF exp_text IS NULL OR exp_text !~ '^[0-9]{1,12}$'
+  OR pg_catalog.to_timestamp(exp_text::bigint)<=pg_catalog.clock_timestamp() THEN
+  RAISE EXCEPTION 'DB08 fee change authentication expired'; END IF;
+ actor:=app_private.current_principal_id();
+ IF actor IS NULL OR NOT EXISTS(SELECT 1 FROM app_private.principals p
+    WHERE p.id=actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE') THEN
+    RAISE EXCEPTION 'DB08 active individual staff required'; END IF;
+ SELECT o.id,CASE WHEN p_phase='REQUEST' THEN o.request_permission_id ELSE o.review_permission_id END
+ INTO operation,permission FROM app_private.operation_contracts o
+ WHERE o.code='finance.fee.change' AND o.contract_version=1 AND o.handler_key=o.code
+   AND o.payload_schema_version=1 AND o.enabled AND o.requires_approval
+   AND o.review_permission_id IS NOT NULL;
+ IF operation IS NULL OR NOT EXISTS(SELECT 1 FROM app_private.permissions p
+  WHERE p.id=permission AND p.code=CASE WHEN p_phase='REQUEST' THEN 'finance.fee.change'
+    ELSE 'finance.fee.change.review' END AND p.state='ENABLED' AND NOT p.family_safe) THEN
+  RAISE EXCEPTION 'DB08 fee change operation disabled'; END IF;
+ checked_at:=pg_catalog.clock_timestamp();
+ IF NOT EXISTS(
+  SELECT 1 FROM app_private.assignment_permission_scopes s
+  JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+  JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+  JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+  JOIN app_private.roles r ON r.id=s.role_id
+  WHERE a.principal_id=actor AND a.principal_kind='INDIVIDUAL'
+   AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+   AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+   AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+   AND c.resolver_key=s.resolver_key AND c.enabled
+   AND s.permission_id=permission AND r.state='ACTIVE' AND NOT r.family_only
+   AND (p_role IS NULL OR s.role_id=p_role)
+   AND s.resolver_key='DIRECT' AND s.scope_kind='ALL' AND s.campus_id IS NULL
+   AND a.valid_from<=checked_at AND (a.valid_until IS NULL OR checked_at<a.valid_until)
+   AND (a.revoked_at IS NULL OR checked_at<a.revoked_at)
+   AND g.valid_from<=checked_at AND (g.valid_until IS NULL OR checked_at<g.valid_until)
+   AND (g.revoked_at IS NULL OR checked_at<g.revoked_at)
+   AND s.valid_from<=checked_at AND (s.valid_until IS NULL OR checked_at<s.valid_until)
+   AND (s.revoked_at IS NULL OR checked_at<s.revoked_at)) THEN
+   RAISE EXCEPTION 'DB08 fee change School-wide authority denied'; END IF;
+ RETURN QUERY SELECT actor,operation;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_change_actor(text,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_change_actor(text,uuid,uuid)
+ TO schoolos_workflow_executor;
+CREATE FUNCTION app_private.db08_change_reviewer_candidate(p_reviewer uuid,p_role uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT EXISTS(
+  SELECT 1 FROM app_private.operation_contracts o
+  JOIN app_private.permissions p ON p.id=o.review_permission_id
+  JOIN app_private.assignment_permission_scopes s ON s.permission_id=p.id
+  JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+  JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+  JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+  JOIN app_private.roles r ON r.id=s.role_id
+  JOIN app_private.principals principal ON principal.id=a.principal_id
+  WHERE o.code='finance.fee.change' AND o.contract_version=1 AND o.enabled AND o.requires_approval
+   AND p.code='finance.fee.change.review' AND p.state='ENABLED' AND NOT p.family_safe
+   AND a.principal_id=p_reviewer AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+   AND principal.kind='INDIVIDUAL' AND principal.state='ACTIVE'
+   AND s.role_id=p_role AND a.role_id=s.role_id AND g.role_id=s.role_id AND g.permission_id=p.id
+   AND c.permission_id=p.id AND c.scope_kind=s.scope_kind AND c.resolver_key=s.resolver_key AND c.enabled
+   AND r.id=p_role AND r.state='ACTIVE' AND NOT r.family_only
+   AND s.scope_kind='ALL' AND s.resolver_key='DIRECT' AND s.campus_id IS NULL
+   AND a.valid_from<=clock_timestamp() AND (a.valid_until IS NULL OR clock_timestamp()<a.valid_until)
+   AND (a.revoked_at IS NULL OR clock_timestamp()<a.revoked_at)
+   AND g.valid_from<=clock_timestamp() AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND s.valid_from<=clock_timestamp() AND (s.valid_until IS NULL OR clock_timestamp()<s.valid_until)
+   AND (s.revoked_at IS NULL OR clock_timestamp()<s.revoked_at));
+$body$;
+REVOKE ALL ON FUNCTION app_private.db08_change_reviewer_candidate(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_change_reviewer_candidate(uuid,uuid)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app_private.db08_change_receipt(p_phase text,p_campus uuid,p_key text,p_hash bytea,
+ p_request uuid DEFAULT NULL,p_state text DEFAULT NULL,p_version bigint DEFAULT NULL,
+ p_publication uuid DEFAULT NULL,p_receipt uuid DEFAULT NULL)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE r app_private.command_receipts%ROWTYPE; ctx record; q app_private.approval_requests%ROWTYPE;
+ result jsonb; code text; kind text; correlation uuid; receipt uuid;
+BEGIN
+ IF p_phase NOT IN('REQUEST','REVIEW') OR p_phase IS NULL OR p_key IS NULL
+   OR length(p_key) NOT BETWEEN 1 AND 200 OR p_hash IS NULL OR octet_length(p_hash)<>32 THEN
+   RAISE EXCEPTION 'DB08 fee change receipt invalid'; END IF;
+ code:=CASE WHEN p_phase='REQUEST' THEN 'finance.fee.change.request'
+   ELSE 'finance.fee.change.review' END;
+ SELECT * INTO ctx FROM app_private.db08_change_actor(p_phase,p_campus,NULL);
+ SELECT * INTO r FROM app_private.command_receipts
+ WHERE principal_id=ctx.actor_id AND operation_id=ctx.operation_id AND idempotency_key=code||':'||p_key;
+ IF FOUND THEN
+  IF r.command_kind<>code OR r.canonical_payload_hash IS DISTINCT FROM p_hash
+   OR r.canonicalization_version<>1 OR r.state<>'SUCCEEDED'
+   OR r.request_id IS NOT NULL OR r.expected_target_version IS NOT NULL
+   OR r.result_kind<>'FINANCE_FEE_CHANGE' OR r.result_ref IS NULL
+   OR r.result_summary->>'request_id' IS DISTINCT FROM r.result_ref::text
+   OR (SELECT count(*) FROM app_private.audit_events x WHERE x.command_receipt_id=r.id
+      AND x.event_type=code AND x.target_ref=r.result_ref AND x.actor_id=ctx.actor_id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events x WHERE x.command_receipt_id=r.id
+      AND x.event_type=code AND x.aggregate_ref=r.result_ref)<>1
+   OR NOT EXISTS(SELECT 1 FROM app_private.finance_fee_change_intents i
+     WHERE i.request_id=r.result_ref) THEN
+   RAISE EXCEPTION 'DB08 fee change idempotency/source conflict'; END IF;
+  RETURN r.result_summary;
+ END IF;
+ IF p_request IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO q FROM app_private.approval_requests WHERE id=p_request
+   AND operation_id=ctx.operation_id AND campus_id=p_campus;
+ IF q.id IS NULL OR q.row_version<>p_version OR q.state<>p_state
+   OR (p_phase='REQUEST' AND (p_state<>'PENDING' OR q.requester_id<>ctx.actor_id))
+   OR (p_phase='REVIEW' AND (p_state NOT IN('EXECUTED','REJECTED') OR q.requester_id=ctx.actor_id
+     OR NOT EXISTS(SELECT 1 FROM app_private.approval_reviews v
+       JOIN app_private.approval_request_steps s ON s.id=v.step_id
+       WHERE s.request_id=p_request AND v.reviewer_id=ctx.actor_id)))
+   OR NOT EXISTS(SELECT 1 FROM app_private.finance_fee_change_intents i
+      WHERE i.request_id=q.id AND i.rule_id=q.target_ref AND i.reason=q.reason)
+   OR (p_state='EXECUTED' AND NOT EXISTS(SELECT 1 FROM app_private.finance_fee_publications x
+      WHERE x.id=p_publication AND x.approval_request_id=q.id AND x.state='PUBLISHED'))
+   OR (p_state<>'EXECUTED' AND p_publication IS NOT NULL) THEN
+  RAISE EXCEPTION 'DB08 fee change evidence source invalid'; END IF;
+ result:=jsonb_build_object('request_id',p_request,'state',p_state,'request_version',p_version);
+ IF p_publication IS NOT NULL THEN result:=result||jsonb_build_object('publication_id',p_publication); END IF;
+ receipt:=COALESCE(p_receipt,gen_random_uuid()); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,
+   canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(receipt,ctx.actor_id,ctx.operation_id,code,code||':'||p_key,p_hash,1,'SUCCEEDED',
+   'FINANCE_FEE_CHANGE',p_request,result,clock_timestamp(),ctx.actor_id);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,
+   event_type,target_kind,target_ref,campus_id,command_receipt_id,source_kind,correlation_id,
+   occurred_at,details,created_by)
+ VALUES(ctx.actor_id,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation',code),p_version,
+   code,'FINANCE_FEE_CHANGE',p_request,p_campus,receipt,'API',correlation,clock_timestamp(),result,ctx.actor_id);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,
+   command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES(code,'FINANCE_FEE_CHANGE',p_request,p_version,receipt,1,correlation,clock_timestamp(),result,ctx.actor_id);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_change_receipt(text,uuid,text,bytea,uuid,text,bigint,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_workflow_executor;

@@ -1,0 +1,86 @@
+-- F3: typed immutable price-change intent and successor publication.
+-- The generic Foundation request/step/review ledger records the decision.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.finance_fee_publications
+ DROP CONSTRAINT finance_fee_publications_revision_check,
+ DROP CONSTRAINT finance_fee_publications_rule_id_key,
+ ADD COLUMN previous_publication_id uuid,
+ ADD COLUMN previous_revision bigint,
+ ADD COLUMN approval_request_id uuid UNIQUE REFERENCES app_private.approval_requests(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ADD CONSTRAINT db08_publication_revision_positive CHECK(revision>0),
+ ADD CONSTRAINT db08_publication_predecessor CHECK(
+   (revision=1 AND previous_publication_id IS NULL AND previous_revision IS NULL AND approval_request_id IS NULL)
+   OR (revision>1 AND previous_publication_id IS NOT NULL AND previous_revision=revision-1
+     AND approval_request_id IS NOT NULL)),
+ ADD CONSTRAINT db08_publication_rule_revision UNIQUE(rule_id,revision),
+ ADD CONSTRAINT db08_publication_id_rule_revision UNIQUE(id,rule_id,revision),
+ ADD CONSTRAINT db08_publication_predecessor_fk
+   FOREIGN KEY(previous_publication_id,rule_id,previous_revision)
+   REFERENCES app_private.finance_fee_publications(id,rule_id,revision)
+   ON UPDATE RESTRICT ON DELETE RESTRICT;
+
+CREATE TABLE app_private.finance_fee_change_intents (
+ request_id uuid PRIMARY KEY REFERENCES app_private.approval_requests(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ rule_id uuid NOT NULL REFERENCES app_private.finance_fee_rules(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ previous_publication_id uuid NOT NULL,
+ previous_revision bigint NOT NULL CHECK(previous_revision>0),
+ previous_price_id uuid NOT NULL,
+ gross_amount_minor numeric NOT NULL CHECK(gross_amount_minor>=0 AND gross_amount_minor<1000000000000000000000000 AND gross_amount_minor=trunc(gross_amount_minor)),
+ valid_from date NOT NULL CHECK(isfinite(valid_from)),
+ valid_through date NOT NULL CHECK(isfinite(valid_through) AND valid_through>=valid_from),
+ reason text NOT NULL CHECK(length(btrim(reason)) BETWEEN 1 AND 1000),
+ requested_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ FOREIGN KEY(previous_publication_id,rule_id,previous_revision)
+  REFERENCES app_private.finance_fee_publications(id,rule_id,revision) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(previous_price_id,rule_id,previous_revision)
+  REFERENCES app_private.finance_fee_rule_revisions(id,rule_id,revision) ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE INDEX db08_change_rule ON app_private.finance_fee_change_intents(rule_id,created_at);
+ALTER TABLE app_private.finance_fee_change_intents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_fee_change_intents FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_change_owner ON app_private.finance_fee_change_intents
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db08_change_read ON app_private.finance_fee_change_intents
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_change_insert ON app_private.finance_fee_change_intents
+ FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT,INSERT ON app_private.finance_fee_change_intents TO schoolos_workflow_executor;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_fee_change_intents
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+
+-- All generic writes are confined to the no-login executor. The only public
+-- entry points are fixed request/review RPCs with per-statement authorization.
+CREATE POLICY db08_change_policy_read ON app_private.approval_policy_versions
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_change_template_read ON app_private.approval_step_templates
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_change_request_access ON app_private.approval_requests
+ FOR ALL TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+CREATE POLICY db08_change_step_access ON app_private.approval_request_steps
+ FOR ALL TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+CREATE POLICY db08_change_reviewer_access ON app_private.approval_step_reviewers
+ FOR ALL TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+CREATE POLICY db08_change_review_access ON app_private.approval_reviews
+ FOR ALL TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+GRANT SELECT ON app_private.approval_policy_versions,app_private.approval_step_templates TO schoolos_workflow_executor;
+GRANT SELECT,INSERT,UPDATE ON app_private.approval_requests,app_private.approval_request_steps,
+ app_private.approval_step_reviewers TO schoolos_workflow_executor;
+GRANT SELECT,INSERT ON app_private.approval_reviews TO schoolos_workflow_executor;
+
+CREATE POLICY db08_change_evidence_receipt ON app_private.command_receipts
+ FOR ALL TO schoolos_workflow_executor
+ USING(command_kind IN('finance.fee.change.request','finance.fee.change.review'))
+ WITH CHECK(command_kind IN('finance.fee.change.request','finance.fee.change.review'));
+CREATE POLICY db08_change_evidence_audit ON app_private.audit_events
+ FOR ALL TO schoolos_workflow_executor
+ USING(event_type IN('finance.fee.change.request','finance.fee.change.review') AND target_kind='FINANCE_FEE_CHANGE')
+ WITH CHECK(event_type IN('finance.fee.change.request','finance.fee.change.review') AND target_kind='FINANCE_FEE_CHANGE');
+CREATE POLICY db08_change_evidence_outbox ON app_private.outbox_events
+ FOR ALL TO schoolos_workflow_executor
+ USING(event_type IN('finance.fee.change.request','finance.fee.change.review') AND aggregate_kind='FINANCE_FEE_CHANGE')
+ WITH CHECK(event_type IN('finance.fee.change.request','finance.fee.change.review') AND aggregate_kind='FINANCE_FEE_CHANGE');
+GRANT SELECT,INSERT ON app_private.command_receipts,app_private.audit_events,app_private.outbox_events
+ TO schoolos_workflow_executor;
+RESET ROLE;

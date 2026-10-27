@@ -61,6 +61,27 @@ def validate_workflow_source():
     return sql, test, expected
 
 
+def validate_change_source():
+    paths = sorted((ROOT / 'supabase/proposals/db08').glob('03_*.sql.draft'))
+    if len(paths) != 3:
+        raise RuntimeError('DB08_F3_FRAGMENT_SCOPE')
+    sql = '\n'.join(path.read_text() for path in paths)
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)', sql) != ['finance_fee_change_intents']:
+        raise RuntimeError('DB08_F3_TABLE_SCOPE')
+    if re.findall(r'(?m)^CREATE FUNCTION app\.([a-z_]+)', sql) != ['request_finance_fee_change', 'review_finance_fee_change']:
+        raise RuntimeError('DB08_F3_PUBLIC_COMMAND_SCOPE')
+    test = (ROOT / 'supabase/tests/db08/03_fee_change.sql').read_text()
+    expected = 28
+    if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB08_F3_TEST_PLAN')
+    for name in ('fixture_commands.sql', 'fixture_change.sql'):
+        if test.count('\\ir ' + name) != 1:
+            raise RuntimeError('DB08_F3_FIXTURE_SCOPE')
+        test = test.replace('\\ir ' + name, (ROOT / 'supabase/tests/db08' / name).read_text())
+    print(f'DB08_F3_SOURCE_PASS fragments=3 assertions={expected} sha256=' + hashlib.sha256(sql.encode()).hexdigest(), flush=True)
+    return sql, test, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--foundation-root', type=Path)
@@ -68,6 +89,7 @@ def main():
     args = parser.parse_args()
     sql, test = validate_source()
     workflow_sql, workflow_test, workflow_assertions = validate_workflow_source()
+    change_sql, change_test, change_assertions = validate_change_source()
     if args.source_only:
         return 0
     if os.environ.get('GITHUB_ACTIONS') != 'true' or args.foundation_root is None:
@@ -160,6 +182,29 @@ def main():
             if remaining != '0':
                 raise RuntimeError('DB08_F2_FIXTURE_ROLLBACK_INCOMPLETE')
             print(f'DB08_F2_DATABASE_PASS {workflow_assertions}/{workflow_assertions}; frozen_Foundation=220/220; fixtures_rolled_back=true; financial_clearance=false', flush=True)
+            try:
+                local.run_psql(container, 'BEGIN;\n' + change_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB08_INJECTED_F3_FAILURE'; END $failure$;\nCOMMIT;", 'DB08_F3_FAILED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB08_INJECTED_F3_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB08_F3_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='finance_fee_change_intents')+(SELECT count(*) FROM pg_proc WHERE proname IN('db08_change_actor','db08_change_reviewer_candidate','db08_change_receipt','request_finance_fee_change','review_finance_fee_change') AND pronamespace IN('app_private'::regnamespace,'app'::regnamespace));", 'DB08_F3_ROLLBACK_ABSENCE', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB08_F3_PARTIAL_INSTALL_SURVIVED')
+            print('DB08_F3_DDL_ROLLBACK_PASS intent=0 functions=0', flush=True)
+            local.run_psql(container, 'BEGIN;\n' + change_sql + '\nCOMMIT;', 'DB08_F3_INSTALL')
+            try:
+                output = local.run_psql(container, change_test, 'DB08_F3_COMMAND_TEST')
+                print(output, flush=True)
+                parse_tap(output, change_assertions)
+            except local.DomainLocalCIError:
+                local.run_psql(container, '\\o /dev/null\n' + change_test, 'DB08_F3_SQL_DIAGNOSTIC')
+                raise
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_fee_change_intents)+(SELECT count(*) FROM app_private.finance_fee_publications)+(SELECT count(*) FROM app_private.approval_requests)+(SELECT count(*) FROM app_private.approval_reviews)+(SELECT count(*) FROM app_private.finance_fee_obligations)+(SELECT count(*) FROM app_private.command_receipts);", 'DB08_F3_FIXTURE_CLEANUP', tuples=True).strip()
+            if remaining != '0':
+                raise RuntimeError('DB08_F3_FIXTURE_ROLLBACK_INCOMPLETE')
+            print(f'DB08_F3_DATABASE_PASS {change_assertions}/{change_assertions}; fixtures_rolled_back=true; financial_clearance=false', flush=True)
             # Persist only in the disposable stack to exercise real Auth/Data API
             # and independent PostgreSQL backends with observable blocking.
             fixture = (ROOT / 'supabase/tests/db08/fixture_commands.sql').read_text()

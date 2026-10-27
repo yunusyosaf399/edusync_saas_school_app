@@ -1,0 +1,180 @@
+-- F3 permits one explicitly configured review step. Unsupported chain shapes
+-- fail closed; no direct edit or automatic price activation exists.
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.request_finance_fee_change(p_rule uuid,p_previous_revision uuid,
+ p_gross_minor numeric,p_valid_from date,p_valid_through date,p_policy uuid,
+ p_reviewer uuid,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE fee app_private.finance_fee_rules%ROWTYPE; previous app_private.finance_fee_rule_revisions%ROWTYPE;
+ pub app_private.finance_fee_publications%ROWTYPE; policy app_private.approval_policy_versions%ROWTYPE;
+ template app_private.approval_step_templates%ROWTYPE; yr app.academic_years%ROWTYPE;
+ school app_private.school_profiles%ROWTYPE; campus app.campuses%ROWTYPE;
+ ctx record; request uuid; step uuid; version bigint; v_hash bytea; result jsonb;
+BEGIN
+ IF p_rule IS NULL OR p_previous_revision IS NULL OR p_policy IS NULL OR p_reviewer IS NULL
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180
+  OR p_gross_minor IS NULL OR p_gross_minor<0 OR p_gross_minor>=1000000000000000000000000
+  OR p_gross_minor<>trunc(p_gross_minor) OR p_valid_from IS NULL OR NOT isfinite(p_valid_from)
+  OR p_valid_through IS NULL OR NOT isfinite(p_valid_through) OR p_valid_through<p_valid_from
+  OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000 THEN
+  RAISE EXCEPTION 'DB08 fee change request invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO fee FROM app_private.finance_fee_rules WHERE id=p_rule;
+ IF fee.id IS NULL THEN RAISE EXCEPTION 'DB08 fee unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db08_change_actor('REQUEST',fee.campus_id,NULL);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':request:'||p_key));
+ PERFORM pg_advisory_xact_lock(71003,hashtext(fee.school_id::text));
+ SELECT * INTO fee FROM app_private.finance_fee_rules WHERE id=p_rule;
+ SELECT * INTO pub FROM app_private.finance_fee_publications WHERE rule_id=p_rule ORDER BY revision DESC LIMIT 1;
+ SELECT * INTO previous FROM app_private.finance_fee_rule_revisions WHERE id=p_previous_revision AND rule_id=p_rule;
+ SELECT * INTO yr FROM app.academic_years WHERE id=fee.academic_year_id;
+ SELECT * INTO campus FROM app.campuses WHERE id=fee.campus_id;
+ SELECT * INTO school FROM app_private.school_profiles WHERE id=fee.school_id;
+ PERFORM app_private.db08_change_actor('REQUEST',fee.campus_id,NULL);
+ v_hash:=sha256(convert_to(jsonb_build_array('finance.fee.change.request',p_rule,p_previous_revision,
+  p_gross_minor::text,p_valid_from,p_valid_through,p_policy,p_reviewer,p_reason)::text,'UTF8'));
+ result:=app_private.db08_change_receipt('REQUEST',fee.campus_id,p_key,v_hash);
+ IF result IS NOT NULL THEN RETURN result; END IF;
+ IF school.id IS NULL OR school.state<>'ACTIVE' OR campus.id IS NULL OR campus.state<>'ACTIVE'
+  OR yr.id IS NULL OR yr.school_id<>fee.school_id OR yr.state<>'ACTIVE'
+  OR previous.id IS NULL OR pub.id IS NULL OR pub.revision_id<>previous.id
+  OR p_valid_from<=CURRENT_DATE OR p_valid_from<=previous.valid_from
+  OR p_valid_from<yr.starts_on OR p_valid_through>yr.ends_on
+  OR EXISTS(SELECT 1 FROM app_private.finance_fee_obligations x
+    WHERE x.rule_id=p_rule AND x.period_end>=p_valid_from)
+  OR EXISTS(SELECT 1 FROM app_private.finance_fee_change_intents i
+    JOIN app_private.approval_requests q ON q.id=i.request_id
+    WHERE i.rule_id=p_rule AND q.state IN('DRAFT','SUBMITTED','PENDING','APPROVED')) THEN
+  RAISE EXCEPTION 'DB08 current fee price/change context unavailable'; END IF;
+ SELECT * INTO policy FROM app_private.approval_policy_versions WHERE id=p_policy
+  AND operation_id=ctx.operation_id AND state='ACTIVE'
+  AND (campus_id IS NULL OR campus_id=fee.campus_id)
+  AND effective_from<=clock_timestamp()
+  AND (effective_until IS NULL OR clock_timestamp()<effective_until);
+ SELECT * INTO template FROM app_private.approval_step_templates WHERE policy_id=p_policy AND step_number=1;
+ IF policy.id IS NULL OR template.id IS NULL OR template.required_reviews<>1
+  OR template.selection_resolver_key<>'DIRECT_ROLE'
+  OR EXISTS(SELECT 1 FROM app_private.approval_step_templates t WHERE t.policy_id=p_policy AND t.step_number<>1)
+  OR p_reviewer=ctx.actor_id
+  OR NOT app_private.db08_change_reviewer_candidate(p_reviewer,template.reviewer_role_id) THEN
+  RAISE EXCEPTION 'DB08 fee change independent review policy unavailable'; END IF;
+ request:=gen_random_uuid(); step:=gen_random_uuid();
+ INSERT INTO app_private.approval_requests(id,operation_id,payload_schema_version,policy_id,
+  requester_id,campus_id,target_ref,expected_target_version,reason,old_snapshot,requested_payload,created_by)
+ VALUES(request,ctx.operation_id,1,p_policy,ctx.actor_id,fee.campus_id,p_rule,pub.revision,p_reason,
+  jsonb_build_object('publication_id',pub.id,'revision_id',previous.id,'revision',pub.revision,
+    'gross_minor',previous.gross_amount_minor),
+  jsonb_build_object('gross_minor',p_gross_minor,'valid_from',p_valid_from,'valid_through',p_valid_through),ctx.actor_id);
+ INSERT INTO app_private.finance_fee_change_intents(request_id,rule_id,previous_publication_id,
+  previous_revision,previous_price_id,gross_amount_minor,valid_from,valid_through,reason,requested_by)
+ VALUES(request,p_rule,pub.id,pub.revision,previous.id,p_gross_minor,p_valid_from,p_valid_through,p_reason,ctx.actor_id);
+ UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=statement_timestamp() WHERE id=request;
+ INSERT INTO app_private.approval_request_steps(id,request_id,policy_id,template_id,
+  step_number,required_reviews,created_by)
+ VALUES(step,request,p_policy,template.id,1,1,ctx.actor_id);
+ INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+ VALUES(step,p_reviewer,'DB08_CONFIGURED_DIRECT_ROLE',ctx.actor_id);
+ UPDATE app_private.approval_requests SET state='PENDING' WHERE id=request RETURNING row_version INTO version;
+ UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=statement_timestamp() WHERE id=step;
+ RETURN app_private.db08_change_receipt('REQUEST',fee.campus_id,p_key,v_hash,request,'PENDING',version);
+END $body$;
+
+CREATE FUNCTION app.review_finance_fee_change(p_request uuid,p_decision text,
+ p_expected_version bigint,p_note text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE q app_private.approval_requests%ROWTYPE; intent app_private.finance_fee_change_intents%ROWTYPE;
+ step app_private.approval_request_steps%ROWTYPE; template app_private.approval_step_templates%ROWTYPE;
+ policy app_private.approval_policy_versions%ROWTYPE; assignment app_private.approval_step_reviewers%ROWTYPE;
+ pub app_private.finance_fee_publications%ROWTYPE; fee app_private.finance_fee_rules%ROWTYPE;
+ school app_private.school_profiles%ROWTYPE; campus app.campuses%ROWTYPE; yr app.academic_years%ROWTYPE;
+ ctx record; v_hash bytea; result jsonb; version bigint; revision uuid; publication uuid; receipt uuid;
+BEGIN
+ IF p_request IS NULL OR p_decision NOT IN('APPROVE','REJECT') OR p_decision IS NULL
+  OR p_expected_version IS NULL OR p_expected_version<1 OR p_note IS NULL
+  OR length(btrim(p_note)) NOT BETWEEN 1 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB08 fee change review invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO q FROM app_private.approval_requests WHERE id=p_request;
+ SELECT * INTO intent FROM app_private.finance_fee_change_intents WHERE request_id=p_request;
+ IF q.id IS NULL OR intent.request_id IS NULL THEN RAISE EXCEPTION 'DB08 fee change request unavailable'; END IF;
+ SELECT * INTO fee FROM app_private.finance_fee_rules WHERE id=intent.rule_id;
+ IF fee.id IS NULL OR q.campus_id<>fee.campus_id THEN RAISE EXCEPTION 'DB08 fee change context unavailable'; END IF;
+ SELECT * INTO step FROM app_private.approval_request_steps WHERE request_id=p_request;
+ SELECT * INTO template FROM app_private.approval_step_templates WHERE id=step.template_id;
+ SELECT * INTO ctx FROM app_private.db08_change_actor('REVIEW',fee.campus_id,template.reviewer_role_id);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':review:'||p_key));
+ PERFORM pg_advisory_xact_lock(71003,hashtext(fee.school_id::text));
+ SELECT * INTO q FROM app_private.approval_requests WHERE id=p_request FOR UPDATE;
+ SELECT * INTO step FROM app_private.approval_request_steps WHERE request_id=p_request;
+ SELECT * INTO template FROM app_private.approval_step_templates WHERE id=step.template_id;
+ PERFORM app_private.db08_change_actor('REVIEW',fee.campus_id,template.reviewer_role_id);
+ IF NOT EXISTS(SELECT 1 FROM app_private.approval_step_reviewers a WHERE a.step_id=step.id
+  AND a.reviewer_id=ctx.actor_id AND a.withdrawn_at IS NULL
+  AND a.assignment_reason='DB08_CONFIGURED_DIRECT_ROLE') THEN
+  RAISE EXCEPTION 'DB08 fee change reviewer assignment unavailable'; END IF;
+ v_hash:=sha256(convert_to(jsonb_build_array('finance.fee.change.review',p_request,p_decision,
+   p_expected_version,p_note)::text,'UTF8'));
+ result:=app_private.db08_change_receipt('REVIEW',fee.campus_id,p_key,v_hash);
+ IF result IS NOT NULL THEN RETURN result; END IF;
+ SELECT * INTO policy FROM app_private.approval_policy_versions WHERE id=q.policy_id;
+ SELECT * INTO assignment FROM app_private.approval_step_reviewers
+   WHERE step_id=step.id AND reviewer_id=ctx.actor_id AND withdrawn_at IS NULL;
+ SELECT * INTO pub FROM app_private.finance_fee_publications WHERE rule_id=fee.id ORDER BY revision DESC LIMIT 1;
+ SELECT * INTO school FROM app_private.school_profiles WHERE id=fee.school_id;
+ SELECT * INTO campus FROM app.campuses WHERE id=fee.campus_id;
+ SELECT * INTO yr FROM app.academic_years WHERE id=fee.academic_year_id;
+ IF q.state<>'PENDING' OR q.row_version<>p_expected_version OR q.requester_id=ctx.actor_id
+  OR q.operation_id<>ctx.operation_id OR q.target_ref<>intent.rule_id
+  OR q.expected_target_version<>intent.previous_revision OR q.reason<>intent.reason
+  OR q.old_snapshot->>'publication_id' IS DISTINCT FROM intent.previous_publication_id::text
+  OR q.requested_payload->>'gross_minor' IS DISTINCT FROM intent.gross_amount_minor::text
+  OR step.id IS NULL OR step.state<>'OPEN' OR step.step_number<>1
+  OR template.id IS NULL OR template.policy_id<>q.policy_id
+  OR template.required_reviews<>1 OR template.selection_resolver_key<>'DIRECT_ROLE'
+  OR EXISTS(SELECT 1 FROM app_private.approval_request_steps x WHERE x.request_id=p_request AND x.id<>step.id)
+  OR assignment.id IS NULL OR assignment.assignment_reason<>'DB08_CONFIGURED_DIRECT_ROLE'
+  OR NOT app_private.db08_change_reviewer_candidate(ctx.actor_id,template.reviewer_role_id)
+  OR policy.id IS NULL OR policy.operation_id<>ctx.operation_id OR policy.state<>'ACTIVE'
+  OR (policy.campus_id IS NOT NULL AND policy.campus_id<>fee.campus_id)
+  OR policy.effective_from>clock_timestamp() OR (policy.effective_until IS NOT NULL AND clock_timestamp()>=policy.effective_until)
+  OR school.id IS NULL OR school.state<>'ACTIVE' OR campus.id IS NULL OR campus.state<>'ACTIVE'
+  OR yr.id IS NULL OR yr.state<>'ACTIVE' THEN
+  RAISE EXCEPTION 'DB08 fee change review state/authority changed'; END IF;
+ IF p_decision='APPROVE' AND (pub.id<>intent.previous_publication_id
+  OR pub.revision<>intent.previous_revision OR pub.revision_id<>intent.previous_price_id
+  OR intent.valid_from<=CURRENT_DATE OR intent.valid_from<yr.starts_on
+  OR intent.valid_through>yr.ends_on OR EXISTS(SELECT 1 FROM app_private.finance_fee_obligations x
+     WHERE x.rule_id=fee.id AND x.period_end>=intent.valid_from)) THEN
+  RAISE EXCEPTION 'DB08 stale fee change cannot publish'; END IF;
+ INSERT INTO app_private.approval_reviews(reviewer_assignment_id,step_id,reviewer_id,decision,reason,
+   expected_request_version,created_by)
+ VALUES(assignment.id,step.id,ctx.actor_id,p_decision,p_note,p_expected_version,ctx.actor_id);
+ UPDATE app_private.approval_request_steps SET state=CASE WHEN p_decision='APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+  closed_at=statement_timestamp() WHERE id=step.id;
+ IF p_decision='APPROVE' THEN
+  UPDATE app_private.approval_requests SET state='APPROVED' WHERE id=q.id;
+  INSERT INTO app_private.finance_fee_rule_revisions(rule_id,revision,previous_revision,previous_id,
+   gross_amount_minor,frequency,valid_from,valid_through,reason,created_by)
+  VALUES(fee.id,pub.revision+1,pub.revision,pub.revision_id,intent.gross_amount_minor,
+   fee.frequency,intent.valid_from,intent.valid_through,intent.reason,ctx.actor_id) RETURNING id INTO revision;
+  receipt:=gen_random_uuid();
+  INSERT INTO app_private.finance_fee_publications(school_id,rule_id,revision_id,revision,state,
+   command_receipt_id,created_by,previous_publication_id,previous_revision,approval_request_id)
+  VALUES(fee.school_id,fee.id,revision,pub.revision+1,'PUBLISHED',receipt,ctx.actor_id,
+   pub.id,pub.revision,q.id) RETURNING id INTO publication;
+  UPDATE app_private.approval_requests SET state='EXECUTED' WHERE id=q.id RETURNING row_version INTO version;
+  RETURN app_private.db08_change_receipt('REVIEW',fee.campus_id,p_key,v_hash,q.id,'EXECUTED',version,publication,receipt);
+ ELSE
+  UPDATE app_private.approval_requests SET state='REJECTED' WHERE id=q.id RETURNING row_version INTO version;
+  RETURN app_private.db08_change_receipt('REVIEW',fee.campus_id,p_key,v_hash,q.id,'REJECTED',version);
+ END IF;
+END $body$;
+REVOKE ALL ON FUNCTION app.request_finance_fee_change(uuid,uuid,numeric,date,date,uuid,uuid,text,text),
+ app.review_finance_fee_change(uuid,text,bigint,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.request_finance_fee_change(uuid,uuid,numeric,date,date,uuid,uuid,text,text),
+ app.review_finance_fee_change(uuid,text,bigint,text,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
