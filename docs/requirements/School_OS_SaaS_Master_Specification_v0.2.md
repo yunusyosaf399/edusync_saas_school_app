@@ -749,6 +749,8 @@ However, each stage is optional. A school can skip document verification, test, 
 
 **Owner confirmation — 27 October 2026:** Admission certificates may also be supplied as PDF, alongside PNG/JPEG. All formats use the same private collection, 1 MiB size limit, permanent source retention and principal-review requirements. The [PDF support candidate](../database/db03_s7_pdf_support_20261027.md) validates PDF bytes server-side without rewriting the original; accepting the format does not verify certificate authenticity or approve admission.
 
+**Finance rule reconciliation — 27 October 2026:** The approved 21 October school-led Finance clarification requires current **Finance-authorizer clearance in every final admission case**, including an approved fee waiver or zero/no-obligation outcome. A waiver affects Finance-owned terms; it is not an alternative to Finance authorization. Payment evidence, document approval, a skipped fee stage and client paid/waived flags cannot authorize final admission. The S10 inactive candidate provides an explicit unavailable-source status and internal denial boundary while the real Finance obligation/clearance/reversal package is absent. It implements no positive clearance or waiver issuer. See the [owner decision](../database/db03_owner_decision_school_offers_test_skip_finance_changes_20261021.md) and [S10 boundary and remaining prerequisites](../database/db03_s10_finance_gate_boundary_20261027.md).
+
 The admission process can generate:
 
 - Application number

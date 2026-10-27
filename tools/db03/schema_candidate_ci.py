@@ -252,6 +252,29 @@ def validate_deadline_source() -> tuple[str, str]:
     return sql, fixture
 
 
+
+def validate_finance_boundary_source() -> tuple[str, str]:
+    paths = sorted((ROOT / "supabase/proposals/db03").glob("10_*.sql.draft"))
+    if len(paths) != 1:
+        raise RuntimeError("DB03_FINANCE_BOUNDARY_FRAGMENT_COUNT")
+    sql = paths[0].read_text()
+    if re.findall(r"(?mi)^CREATE FUNCTION app\.([a-z_]+)", sql) != ["read_admission_finance_gate"] or re.findall(r"(?mi)^CREATE FUNCTION app_private\.([a-z0-9_]+)", sql) != ["db03_assert_admission_finance_clearance"]:
+        raise RuntimeError("DB03_FINANCE_BOUNDARY_FUNCTION_SCOPE")
+    outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
+    if re.search(r"(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|CREATE ROLE|ALTER ROLE|CREATE EXTENSION)\b", outside):
+        raise RuntimeError("DB03_FINANCE_BOUNDARY_NO_FAKE_SOURCE")
+    test = (ROOT / "supabase/tests/db03/10_finance_gate_boundary.sql").read_text()
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["20"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 20 or not test.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("DB03_FINANCE_BOUNDARY_TEST_PLAN")
+    for name in ("policy_publication_actor", "intake_grace_actor", "document_collection_actor"):
+        anchor = "\\ir fixtures/" + name + ".sql"
+        if test.count(anchor) != 1:
+            raise RuntimeError("DB03_FINANCE_BOUNDARY_FIXTURE_SCOPE")
+        test = test.replace(anchor, (ROOT / ("supabase/tests/db03/fixtures/" + name + ".sql")).read_text())
+    print("DB03_FINANCE_BOUNDARY_SOURCE_PASS assertions=20 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -267,6 +290,7 @@ def main() -> int:
     document_sql, document_test, document_fixture = validate_document_source()
     review_sql, review_fixture = validate_review_source()
     deadline_sql, deadline_fixture = validate_deadline_source()
+    finance_boundary_sql, finance_boundary_test = validate_finance_boundary_source()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -446,6 +470,18 @@ def main() -> int:
                 raise RuntimeError("DB03_DEADLINE_DDL_ROLLBACK_INCOMPLETE")
             print("DB03_DEADLINE_DDL_ROLLBACK_PASS source=0 prior_guard_queue_view_restored=true")
             local.run_psql(container, "BEGIN;\n" + deadline_sql + "\nCOMMIT;", "DB03_DEADLINE_INSTALL")
+            try:
+                local.run_psql(container, "BEGIN;\n" + finance_boundary_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_FINANCE_BOUNDARY_FAILURE'; END $failure$;\nCOMMIT;", "DB03_FINANCE_BOUNDARY_DDL_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_FINANCE_BOUNDARY_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_FINANCE_BOUNDARY_DDL_FAILURE_ABSENT")
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_proc WHERE proname IN('read_admission_finance_gate','db03_assert_admission_finance_clearance') AND pronamespace IN('app'::regnamespace,'app_private'::regnamespace);", "DB03_FINANCE_BOUNDARY_ABSENT", tuples=True).strip()
+            if absent != "0":
+                raise RuntimeError("DB03_FINANCE_BOUNDARY_ROLLBACK_INCOMPLETE")
+            print("DB03_FINANCE_BOUNDARY_DDL_ROLLBACK_PASS functions=0 no_Finance_source=true")
+            local.run_psql(container, "BEGIN;\n" + finance_boundary_sql + "\nCOMMIT;", "DB03_FINANCE_BOUNDARY_INSTALL")
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -546,9 +582,23 @@ def main() -> int:
             if remaining != "0":
                 raise RuntimeError("DB03_DOCUMENT_FIXTURE_ROLLBACK_INCOMPLETE")
             print("DB03_DOCUMENT_DATABASE_PASS 28/28; total_DB03=305/305; Foundation=220/220; fixtures_rolled_back=true")
+            try:
+                finance_output = local.run_psql(container, finance_boundary_test, "DB03_FINANCE_BOUNDARY_TEST")
+            except local.DomainLocalCIError:
+                local.run_psql(container, "\\o /dev/null\n" + finance_boundary_test, "DB03_FINANCE_BOUNDARY_SQL_DIAGNOSTIC")
+                raise
+            lines = finance_output.splitlines()
+            for i, line in enumerate(lines):
+                if re.match(r"\s*not ok\b", line):
+                    print("DB03_FINANCE_BOUNDARY_ASSERTION_DETAIL " + "\n".join(lines[max(0,i-1):i+12]))
+            parse_tap(finance_output, 20)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.principals);", "DB03_FINANCE_BOUNDARY_CLEANUP", tuples=True).strip()
+            if remaining != "0":
+                raise RuntimeError("DB03_FINANCE_BOUNDARY_FIXTURE_ROLLBACK_INCOMPLETE")
+            print("DB03_FINANCE_BOUNDARY_DATABASE_PASS 20/20; total_DB03=325/325; Foundation=220/220; positive_Finance_clearance=unimplemented")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -565,6 +615,8 @@ def main() -> int:
             run_document_review(local, fresh_publication_database, document_fixture + "\n" + review_fixture)
             from certificate_deadline_ci import run_certificate_deadline
             run_certificate_deadline(local, fresh_publication_database, document_fixture + "\n" + review_fixture + "\n" + deadline_fixture)
+            from finance_boundary_ci import run_finance_boundary
+            run_finance_boundary(local, fresh_publication_database, document_fixture + "\n" + review_fixture)
             return 0
     finally:
         if started:
