@@ -93,7 +93,9 @@ def main():
             print('DB08_F1_DDL_ROLLBACK_PASS tables=0 functions=0', flush=True)
             local.run_psql(container, 'BEGIN;\n' + sql + '\nCOMMIT;', 'DB08_INSTALL')
             try:
-                parse_tap(local.run_psql(container, test, 'DB08_STRUCTURE_TEST'), ASSERTIONS)
+                output = local.run_psql(container, test, 'DB08_STRUCTURE_TEST')
+                print(output, flush=True)
+                parse_tap(output, ASSERTIONS)
             except local.DomainLocalCIError:
                 local.run_psql(container, '\\o /dev/null\n' + test, 'DB08_STRUCTURE_SQL_DIAGNOSTIC')
                 raise
