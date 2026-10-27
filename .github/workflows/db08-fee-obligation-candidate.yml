@@ -1,0 +1,41 @@
+name: DB08 inactive fee and obligation schema
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/db08-fee-obligation-candidate.yml'
+      - 'supabase/proposals/db08/**'
+      - 'supabase/tests/db08/**'
+      - 'tools/db08/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db08-fee-obligation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  db08-f1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 06c2be2412e1699f3fa8f2804969e9808eb16e09
+          path: .ci/db08-foundation
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: Pinned imports for the accepted disposable stack harness
+        run: python -m pip install -r tools/db08/requirements.txt
+      - name: DB08 source, install rollback, Finance constraints and frozen Foundation acceptance
+        run: python tools/db08/schema_candidate_ci.py --foundation-root .ci/db08-foundation
