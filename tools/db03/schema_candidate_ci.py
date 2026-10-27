@@ -215,6 +215,25 @@ def validate_document_source() -> tuple[str, str, str]:
     return sql, test, "\n".join(fixtures)
 
 
+
+def validate_review_source() -> tuple[str, str]:
+    paths = sorted((ROOT / "supabase/proposals/db03").glob("08_*.sql.draft"))
+    if len(paths) != 5:
+        raise RuntimeError("DB03_REVIEW_FRAGMENT_COUNT")
+    sql = "\n".join(p.read_text() for p in paths)
+    if set(re.findall(r"(?mi)^CREATE TABLE app_private\.([a-z_]+)", sql)) != {
+        "admission_document_accesses", "admission_document_reviews", "admission_document_clearances"}:
+        raise RuntimeError("DB03_REVIEW_TABLE_SCOPE")
+    if re.findall(r"(?mi)^CREATE FUNCTION app\.([a-z_]+)", sql) != ["review_admission_document", "approve_admission_documents", "read_admission_principal_checklist", "read_admission_document_feedback"]:
+        raise RuntimeError("DB03_REVIEW_PUBLIC_SCOPE")
+    outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
+    if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE)\b", outside):
+        raise RuntimeError("DB03_REVIEW_SEED_OR_ROLE")
+    fixture = (ROOT / "supabase/tests/db03/fixtures/document_review_actor.sql").read_text()
+    print("DB03_REVIEW_SOURCE_PASS fragments=5 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, fixture
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -228,6 +247,7 @@ def main() -> int:
     person_sql, person_test, person_fixture = validate_person_source()
     principal_test = validate_principal_source()
     document_sql, document_test, document_fixture = validate_document_source()
+    review_sql, review_fixture = validate_review_source()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -378,6 +398,20 @@ def main() -> int:
                 raise RuntimeError("DB03_DOCUMENT_DDL_ROLLBACK_INCOMPLETE")
             print("DB03_DOCUMENT_DDL_ROLLBACK_PASS sources_entries_file_fences=0 prior_guard_restored=true")
             local.run_psql(container, "BEGIN;\n" + document_sql + "\nCOMMIT;", "DB03_DOCUMENT_INSTALL")
+            review_before = local.run_psql(container, "SELECT md5(pg_get_functiondef('app_private.db03_document_snapshot(uuid)'::regprocedure));", "DB03_REVIEW_BEFORE", tuples=True).strip()
+            try:
+                local.run_psql(container, "BEGIN;\n" + review_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_REVIEW_FAILURE'; END $failure$;\nCOMMIT;", "DB03_REVIEW_DDL_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_REVIEW_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_REVIEW_DDL_FAILURE_ABSENT")
+            review_after = local.run_psql(container, "SELECT md5(pg_get_functiondef('app_private.db03_document_snapshot(uuid)'::regprocedure));", "DB03_REVIEW_AFTER", tuples=True).strip()
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_document_accesses','admission_document_reviews','admission_document_clearances');", "DB03_REVIEW_ABSENT", tuples=True).strip()
+            if review_before != review_after or absent != "0":
+                raise RuntimeError("DB03_REVIEW_DDL_ROLLBACK_INCOMPLETE")
+            print("DB03_REVIEW_DDL_ROLLBACK_PASS sources=0 prior_snapshot_restored=true")
+            local.run_psql(container, "BEGIN;\n" + review_sql + "\nCOMMIT;", "DB03_REVIEW_INSTALL")
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -480,7 +514,7 @@ def main() -> int:
             print("DB03_DOCUMENT_DATABASE_PASS 28/28; total_DB03=305/305; Foundation=220/220; fixtures_rolled_back=true")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -493,6 +527,8 @@ def main() -> int:
             sys.path.insert(0, str(ROOT))
             from document_collection_ci import run_document_service
             run_document_service(local, fresh_publication_database, document_fixture)
+            from document_review_ci import run_document_review
+            run_document_review(local, fresh_publication_database, document_fixture + "\n" + review_fixture)
             return 0
     finally:
         if started:

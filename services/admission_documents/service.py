@@ -6,7 +6,7 @@ No client field supplies actor, storage location, purpose or measured metadata.
 """
 from __future__ import annotations
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import base64
 import hashlib
 from io import BytesIO
@@ -224,6 +224,13 @@ def measure_certificate(data: bytes) -> tuple[str, bytes]:
     return 'application/pdf', hashlib.sha256(data).digest()
 
 
+@dataclass(frozen=True)
+class CertificateRead:
+    access_id: str
+    content_type: str
+    data: bytes = field(repr=False)
+
+
 class AdmissionDocumentService:
     """Application service wired to trusted authentication and worker connections.
 
@@ -235,12 +242,13 @@ class AdmissionDocumentService:
     """
     def __init__(self, *, connect, authenticate, entitlements: Entitlements,
                  locations: dict[str, PermanentPrivateObjects], upload_location: str,
-                 intent_lifetime: int, clock=time.time):
+                 intent_lifetime: int, clock=time.time, read_gate=None):
         if upload_location not in locations or type(intent_lifetime) is not int or intent_lifetime <= 0:
             raise ValueError('Explicit storage and finite intent lifetime required')
         self.connect, self.authenticate, self.entitlements = connect, authenticate, entitlements
         self.locations, self.location = locations, upload_location
         self.lifetime, self.clock = intent_lifetime, clock
+        self.read_gate = read_gate
 
     def _rpc(self, claims, sql, params):
         with self.connect() as conn:
@@ -278,3 +286,30 @@ class AdmissionDocumentService:
         with self.entitlements.current() as (revision, snapshot_digest, valid_until):
             return self._rpc(claims, 'SELECT app_private.db03_finalize_document_upload(%s,%s,%s,%s)',
                              (intent['intent_id'], revision, snapshot_digest, datetime.fromtimestamp(valid_until, timezone.utc)))
+
+    def read_certificate(self, token: str, *, forward_id: str, link_id: str) -> CertificateRead:
+        """Return original private bytes after checks before and after external I/O.
+
+        read_gate is a trusted server policy callback for current account read
+        access, independently configured from paid upload capability. No default
+        commercial suspension policy is invented; an unwired gate denies access.
+        A confirmed read proves server validation, not human viewing/delivery.
+        """
+        claims = self.authenticate(token)
+        if not isinstance(claims, VerifiedClaims):
+            raise Denied('Verified authentication required')
+        if self.read_gate is None:
+            raise Denied('Private certificate read policy required')
+        self.read_gate(self.entitlements.school)
+        descriptor = self._rpc(claims, 'SELECT app_private.db03_describe_document_read(%s,%s)', (forward_id, link_id))
+        if str(descriptor['school_id']) != self.entitlements.school or descriptor['storage_location_key'] not in self.locations:
+            raise Denied('Stored read location or School mismatch')
+        data = self.locations[descriptor['storage_location_key']].read(descriptor['object_key'], MAX_BYTES)
+        content_type, digest = measure_certificate(data)
+        if content_type != descriptor['content_type'] or len(data) != descriptor['byte_size'] or digest.hex() != descriptor['content_hash']:
+            raise Denied('Stored certificate validation failed')
+        self.read_gate(self.entitlements.school)
+        result = self._rpc(claims, 'SELECT app_private.db03_confirm_document_read(%s,%s,%s,%s,%s)',
+                           (forward_id, link_id, descriptor['application_version'], descriptor['file_version'], bytes.fromhex(descriptor['authority_hash'])))
+        self.read_gate(self.entitlements.school)
+        return CertificateRead(str(result['source_id']), content_type, data)
