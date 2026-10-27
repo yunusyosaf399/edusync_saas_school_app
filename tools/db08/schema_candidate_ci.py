@@ -326,7 +326,15 @@ def main():
                 local.run_psql(container, '\\o /dev/null\n' + selection_test,
                                'DB08_F5_SQL_DIAGNOSTIC')
                 raise
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_fee_applicabilities)+(SELECT count(*) FROM app_private.finance_fee_assessment_selections)+(SELECT count(*) FROM app_private.finance_fee_obligations)+(SELECT count(*) FROM app_private.students)+(SELECT count(*) FROM app_private.enrollments)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.school_profiles);", 'DB08_F5_FIXTURE_CLEANUP', tuples=True).strip()
+            if remaining != '0':
+                raise RuntimeError('DB08_F5_FIXTURE_ROLLBACK_INCOMPLETE')
             print(f'DB08_F5_DATABASE_PASS {selection_assertions}/{selection_assertions}; fixtures_rolled_back=true; discounts=false', flush=True)
+            from tools.db08.selection_runtime_ci import run_selection_runtime
+            run_selection_runtime(local_status, ROOT)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_fee_applicabilities)+(SELECT count(*) FROM app_private.finance_fee_assessment_selections)+(SELECT count(*) FROM app_private.finance_fee_obligations)+(SELECT count(*) FROM app_private.students)+(SELECT count(*) FROM app_private.enrollments)+(SELECT count(*) FROM app_private.school_profiles);", 'DB08_F5_REAL_AUTH_CLEANUP', tuples=True).strip()
+            if remaining != '0':
+                raise RuntimeError('DB08_F5_REAL_AUTH_ROLLBACK_INCOMPLETE')
             return 0
     finally:
         if started:
