@@ -39,7 +39,8 @@ BEGIN
  IF school.id IS NULL OR school.state<>'ACTIVE' OR campus.id IS NULL OR campus.state<>'ACTIVE'
   OR yr.id IS NULL OR yr.school_id<>fee.school_id OR yr.state<>'ACTIVE'
   OR previous.id IS NULL OR pub.id IS NULL OR pub.revision_id<>previous.id
-  OR p_valid_from<=CURRENT_DATE OR p_valid_from<=previous.valid_from
+  OR p_valid_from<=(clock_timestamp() AT TIME ZONE school.timezone)::date
+  OR p_valid_from<=previous.valid_from
   OR p_valid_from<yr.starts_on OR p_valid_through>yr.ends_on
   OR EXISTS(SELECT 1 FROM app_private.finance_fee_obligations x
     WHERE x.rule_id=p_rule AND x.period_end>=p_valid_from)
@@ -144,7 +145,8 @@ BEGIN
   RAISE EXCEPTION 'DB08 fee change review state/authority changed'; END IF;
  IF p_decision='APPROVE' AND (pub.id<>intent.previous_publication_id
   OR pub.revision<>intent.previous_revision OR pub.revision_id<>intent.previous_price_id
-  OR intent.valid_from<=CURRENT_DATE OR intent.valid_from<yr.starts_on
+  OR intent.valid_from<=(clock_timestamp() AT TIME ZONE school.timezone)::date
+  OR intent.valid_from<yr.starts_on
   OR intent.valid_through>yr.ends_on OR EXISTS(SELECT 1 FROM app_private.finance_fee_obligations x
      WHERE x.rule_id=fee.id AND x.period_end>=intent.valid_from)) THEN
   RAISE EXCEPTION 'DB08 stale fee change cannot publish'; END IF;

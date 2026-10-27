@@ -62,7 +62,7 @@ REVOKE ALL ON FUNCTION app_private.db08_change_actor(text,uuid,uuid)
 GRANT EXECUTE ON FUNCTION app_private.db08_change_actor(text,uuid,uuid)
  TO schoolos_workflow_executor;
 CREATE FUNCTION app_private.db08_change_reviewer_candidate(p_reviewer uuid,p_role uuid)
-RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+RETURNS boolean LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
  SELECT EXISTS(
   SELECT 1 FROM app_private.operation_contracts o
   JOIN app_private.permissions p ON p.id=o.review_permission_id
