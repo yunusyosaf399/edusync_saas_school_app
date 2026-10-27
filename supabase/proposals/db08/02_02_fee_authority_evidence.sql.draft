@@ -17,6 +17,8 @@ GRANT SELECT,INSERT ON app_private.command_receipts,app_private.audit_events,app
 RESET ROLE;
 
 GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+GRANT USAGE ON SCHEMA auth TO schoolos_authz_reader;
+GRANT EXECUTE ON FUNCTION auth.jwt() TO schoolos_authz_reader;
 SET ROLE schoolos_authz_reader;
 CREATE FUNCTION app_private.db08_fee_actor(p_code text,p_campus uuid)
 RETURNS TABLE(actor_id uuid,operation_id uuid)
