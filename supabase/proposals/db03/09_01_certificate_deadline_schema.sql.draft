@@ -35,9 +35,9 @@ ALTER TABLE app_private.admission_deadline_rejections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_private.admission_deadline_rejections FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON app_private.admission_deadline_rejections FROM PUBLIC,anon,authenticated,service_role;
 CREATE POLICY db03_deadline_owner ON app_private.admission_deadline_rejections TO schoolos_schema_owner USING(true) WITH CHECK(true);
-CREATE POLICY db03_deadline_read ON app_private.admission_deadline_rejections FOR SELECT TO schoolos_platform_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_deadline_read ON app_private.admission_deadline_rejections FOR SELECT TO schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer USING(true);
 CREATE POLICY db03_deadline_insert ON app_private.admission_deadline_rejections FOR INSERT TO schoolos_platform_executor WITH CHECK(true);
-GRANT SELECT ON app_private.admission_deadline_rejections TO schoolos_platform_executor,schoolos_evidence_writer;
+GRANT SELECT ON app_private.admission_deadline_rejections TO schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
 GRANT INSERT ON app_private.admission_deadline_rejections TO schoolos_platform_executor;
 CREATE FUNCTION app_private.db03_deadline_history_guard() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$

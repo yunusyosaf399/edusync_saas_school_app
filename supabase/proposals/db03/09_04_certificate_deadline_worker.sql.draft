@@ -94,6 +94,23 @@ CREATE OR REPLACE VIEW app_private.admission_certificate_grace_current WITH(secu
 RESET ROLE;
 GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
 SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.read_admission_deadline_rejection(p_application_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; h app_private.admission_deadline_rejections%ROWTYPE;
+BEGIN
+ a:=app_private.db03_document_lock(p_application_id,'admission.document.view','deadline-history');
+ IF COALESCE(current_setting('request.jwt.claims',true)::jsonb->>'exp','') !~ '^[0-9]{1,12}$' THEN
+  RAISE EXCEPTION 'DB03 deadline history authentication expired'; END IF;
+ IF to_timestamp((current_setting('request.jwt.claims',true)::jsonb->>'exp')::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 deadline history authentication expired'; END IF;
+ SELECT * INTO h FROM app_private.admission_deadline_rejections WHERE application_id=a.id;
+ IF h.id IS NULL THEN RETURN NULL; END IF;
+ RETURN jsonb_build_object('application_id',a.id,'application_version',h.application_version,'source_id',h.id,
+ 'reason_code','MISSING_REQUIRED_CERTIFICATE_DEADLINE','document_kind',h.document_kind,'due_on',h.due_on,
+ 'evaluated_on',h.evaluated_on,'school_timezone',h.school_timezone,'occurred_at',h.occurred_at);
+END $body$;
+REVOKE ALL ON FUNCTION app.read_admission_deadline_rejection(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.read_admission_deadline_rejection(uuid) TO authenticated;
 CREATE OR REPLACE FUNCTION app.read_admission_document_queue(p_application_id uuid) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE a app_private.admission_applications%ROWTYPE; ready bytea; status text;

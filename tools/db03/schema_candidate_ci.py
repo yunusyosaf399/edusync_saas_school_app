@@ -242,7 +242,7 @@ def validate_deadline_source() -> tuple[str, str]:
     sql = "\n".join(p.read_text() for p in paths)
     if re.findall(r"(?mi)^CREATE TABLE app_private\.([a-z_]+)", sql) != ["admission_deadline_rejections"]:
         raise RuntimeError("DB03_DEADLINE_TABLE_SCOPE")
-    if re.search(r"(?mi)^CREATE FUNCTION app\.", sql):
+    if re.findall(r"(?mi)^CREATE FUNCTION app\.([a-z_]+)", sql) != ["read_admission_deadline_rejection"]:
         raise RuntimeError("DB03_DEADLINE_PUBLIC_SCOPE")
     outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
     if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE EXTENSION|SELECT cron\.)\b", outside):

@@ -193,6 +193,20 @@ def run_certificate_deadline(local, fresh_database, fixture):
         result=expire(missing)
         check(result['status']=='REJECTED' and queue(missing)=='REJECTED','overdue missing certificate rejects the application')
         check(expire(missing)==result,'repeat delivery returns the one retained rejection')
+        history=api('SELECT app.read_admission_deadline_rejection(%s)',(missing,))
+        check(history['reason_code']=='MISSING_REQUIRED_CERTIFICATE_DEADLINE' and history['document_kind']=='BIRTH_CERTIFICATE' and history['source_id']==result['source_id'],'administrator can read the scoped retained rejection basis')
+        denied(lambda:rapi('SELECT app.read_admission_deadline_rejection(%s)',(missing,)),'authority denied')
+        with connection() as root:root.execute("UPDATE app_private.permission_scope_contracts SET enabled=false WHERE id=md5('admission.document.view:doc-contract')::uuid")
+        denied(lambda:api('SELECT app.read_admission_deadline_rejection(%s)',(missing,)),'authority denied')
+        with connection() as root:root.execute("UPDATE app_private.permission_scope_contracts SET enabled=true WHERE id=md5('admission.document.view:doc-contract')::uuid")
+        check(api('SELECT app.read_admission_deadline_rejection(%s)',(timely,)) is None,'timely application has no fabricated rejection history')
+        with connection() as conn:
+            conn.execute('BEGIN')
+            expired=dict(claims.database_claims());expired['exp']=int(time.time())-1
+            conn.execute("SELECT set_config('request.jwt.claim.sub',%s,true)",(claims.subject,))
+            conn.execute("SELECT set_config('request.jwt.claims',%s,true)",(json.dumps(expired),));conn.execute('SET LOCAL ROLE authenticated')
+            denied(lambda:conn.execute('SELECT app.read_admission_deadline_rejection(%s)',(missing,)),'authentication expired')
+            conn.execute('ROLLBACK')
         check(expire(transfer)['status']=='REJECTED','missing transfer leaving certificate rejects despite uploaded birth certificate')
         with connection() as root:
             check(root.execute('SELECT document_kind FROM app_private.admission_deadline_rejections WHERE application_id=%s',(transfer,)).fetchone()[0]=='SCHOOL_LEAVING_CERTIFICATE','precise triggering required kind retained')

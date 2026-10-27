@@ -41,8 +41,8 @@ BEGIN
   SELECT * INTO r FROM app_private.command_receipts WHERE id=h.command_receipt_id;
  END IF;
  IF r.principal_id<>h.created_by OR r.created_by<>h.created_by OR r.operation_id<>ctx.operation_id OR r.command_kind<>'admission.certificate.expire'
- OR r.canonical_payload_hash<>v_hash OR r.idempotency_key<>v_key OR r.expected_target_version<>h.application_version-1 OR r.canonicalization_version<>1
- OR r.state<>'SUCCEEDED' OR r.result_kind IS DISTINCT FROM 'ADMISSION_DEADLINE_REJECTION' OR r.result_ref<>a.id OR r.result_summary IS DISTINCT FROM body
+ OR r.canonical_payload_hash<>v_hash OR r.idempotency_key<>v_key OR r.expected_target_version IS DISTINCT FROM h.application_version-1 OR r.canonicalization_version<>1
+ OR r.state<>'SUCCEEDED' OR r.result_kind IS DISTINCT FROM 'ADMISSION_DEADLINE_REJECTION' OR r.result_ref IS DISTINCT FROM a.id OR r.result_summary IS DISTINCT FROM body
  OR r.request_id IS NOT NULL
  OR (SELECT count(*) FROM app_private.audit_events e WHERE e.command_receipt_id=r.id AND e.event_type='admission.certificate.expire' AND e.actor_id=h.created_by
  AND e.actor_kind='SYSTEM' AND e.outcome='SUCCEEDED' AND e.target_ref=a.id AND e.target_kind='ADMISSION_APPLICATION' AND e.target_version=h.application_version
