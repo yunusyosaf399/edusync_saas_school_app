@@ -102,6 +102,9 @@ def run_finance_runtime(local_status):
     same = http('POST', '/rest/v1/rpc/configure_finance_fee',
                 configure('SERVICE_FEE', 'service-fee'), admin_key, token, profile='app')
     check(same == fee, 'HTTP exact retry')
+    # Prepare F4 before the F2 race revokes fee configuration authority.
+    chain_fee = http('POST', '/rest/v1/rpc/configure_finance_fee',
+                     configure('CHAIN_SERVICE_FEE', 'real-f4-fee'), admin_key, token, profile='app')
     with connect() as root:
         revision = root.execute('SELECT id::text FROM app_private.finance_fee_rule_revisions WHERE rule_id=%s AND revision=1',
                                 (fee['resource_id'],)).fetchone()[0]
@@ -176,13 +179,13 @@ def run_finance_runtime(local_status):
         pool.shutdown(wait=True, cancel_futures=True)
 
     with connect() as root:
-        check(root.execute("SELECT count(*) FROM app_private.finance_fee_publications").fetchone()[0] == 2,
-              'only two real publications')
+        check(root.execute("SELECT count(*) FROM app_private.finance_fee_publications").fetchone()[0] == 3,
+              'three real publications including F4 setup')
         check(root.execute("SELECT count(*) FROM app_private.finance_fee_obligations").fetchone()[0] == 2,
               'only two real charges')
-        check(root.execute("SELECT count(*) FROM app_private.command_receipts WHERE command_kind LIKE 'finance.%'").fetchone()[0] == 4,
-              'four exact receipts')
-    print('DB08_REAL_AUTH_RACES_PASS three observed backend schedules; receipts=4; no_overlap=true', flush=True)
+        check(root.execute("SELECT count(*) FROM app_private.command_receipts WHERE command_kind LIKE 'finance.%'").fetchone()[0] == 5,
+              'five exact receipts including F4 setup')
+    print('DB08_REAL_AUTH_RACES_PASS three observed backend schedules; receipts=5; no_overlap=true', flush=True)
 
     with connect() as root:
         reviewer_subject = root.execute("SELECT auth_user_id::text FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000022'").fetchone()[0]
@@ -255,8 +258,6 @@ def run_finance_runtime(local_status):
                         admin_key, admin_key)['access_token']
     second_password = None
     second_claims = SupabaseAuthenticator(url, admin_key, allow_local_test=True)(second_token)
-    chain_fee = http('POST', '/rest/v1/rpc/configure_finance_fee',
-                     configure('CHAIN_SERVICE_FEE', 'real-f4-fee'), admin_key, token, profile='app')
     with connect() as root:
         chain_revision = root.execute('SELECT id::text FROM app_private.finance_fee_rule_revisions WHERE rule_id=%s AND revision=1',
                                       (chain_fee['resource_id'],)).fetchone()[0]
