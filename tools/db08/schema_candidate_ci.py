@@ -128,6 +128,36 @@ def validate_selection_source():
     return sql, test, expected
 
 
+def validate_discount_source():
+    paths = sorted((ROOT / 'supabase/proposals/db08').glob('06_*.sql.draft'))
+    if len(paths) != 5:
+        raise RuntimeError('DB08_F6_FRAGMENT_SCOPE')
+    sql = '\n'.join(path.read_text() for path in paths)
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)', sql) != [
+        'finance_discount_intents', 'finance_discount_adjustments'
+    ]:
+        raise RuntimeError('DB08_F6_TABLE_SCOPE')
+    if re.findall(r'(?m)^CREATE FUNCTION app\.([a-z_]+)', sql) != [
+        'request_finance_discount', 'review_finance_discount',
+        'apply_finance_discount', 'assess_discounted_finance_fee'
+    ]:
+        raise RuntimeError('DB08_F6_COMMAND_SCOPE')
+    test = (ROOT / 'supabase/tests/db08/06_student_discounts.sql').read_text()
+    expected = 24
+    if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB08_F6_TEST_PLAN')
+    for name in ('fixture_commands.sql', 'fixture_change.sql',
+                 'fixture_selection.sql', 'fixture_discount.sql'):
+        if test.count('\\ir ' + name) != 1:
+            raise RuntimeError('DB08_F6_FIXTURE_SCOPE')
+        test = test.replace('\\ir ' + name,
+                            (ROOT / 'supabase/tests/db08' / name).read_text())
+    print(f'DB08_F6_SOURCE_PASS fragments=5 assertions={expected} sha256=' +
+          hashlib.sha256(sql.encode()).hexdigest(), flush=True)
+    return sql, test, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--foundation-root', type=Path)
@@ -138,6 +168,7 @@ def main():
     change_sql, change_test, change_assertions = validate_change_source()
     chain_sql, chain_test, chain_assertions = validate_chain_source()
     selection_sql, selection_test, selection_assertions = validate_selection_source()
+    discount_sql, discount_test, discount_assertions = validate_discount_source()
     if args.source_only:
         return 0
     if os.environ.get('GITHUB_ACTIONS') != 'true' or args.foundation_root is None:
@@ -335,6 +366,32 @@ def main():
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_fee_applicabilities)+(SELECT count(*) FROM app_private.finance_fee_assessment_selections)+(SELECT count(*) FROM app_private.finance_fee_obligations)+(SELECT count(*) FROM app_private.students)+(SELECT count(*) FROM app_private.enrollments)+(SELECT count(*) FROM app_private.school_profiles);", 'DB08_F5_REAL_AUTH_CLEANUP', tuples=True).strip()
             if remaining != '0':
                 raise RuntimeError('DB08_F5_REAL_AUTH_ROLLBACK_INCOMPLETE')
+            try:
+                local.run_psql(container, 'BEGIN;\n' + discount_sql +
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB08_INJECTED_F6_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB08_F6_FAILED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB08_INJECTED_F6_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB08_F6_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('finance_discount_intents','finance_discount_adjustments');", 'DB08_F6_ROLLBACK_ABSENCE', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB08_F6_PARTIAL_INSTALL_SURVIVED')
+            print('DB08_F6_DDL_ROLLBACK_PASS tables=0', flush=True)
+            local.run_psql(container, 'BEGIN;\n' + discount_sql + '\nCOMMIT;', 'DB08_F6_INSTALL')
+            try:
+                output = local.run_psql(container, discount_test, 'DB08_F6_DISCOUNT_TEST')
+                print(output, flush=True)
+                parse_tap(output, discount_assertions)
+            except local.DomainLocalCIError:
+                local.run_psql(container, '\\o /dev/null\n' + discount_test,
+                               'DB08_F6_SQL_DIAGNOSTIC')
+                raise
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_discount_intents)+(SELECT count(*) FROM app_private.finance_discount_adjustments)+(SELECT count(*) FROM app_private.finance_fee_obligations)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.school_profiles);", 'DB08_F6_FIXTURE_CLEANUP', tuples=True).strip()
+            if remaining != '0':
+                raise RuntimeError('DB08_F6_FIXTURE_ROLLBACK_INCOMPLETE')
+            print(f'DB08_F6_DATABASE_PASS {discount_assertions}/{discount_assertions}; fixtures_rolled_back=true; money_scale=2; independent_review=true', flush=True)
             return 0
     finally:
         if started:

@@ -1,0 +1,169 @@
+-- Every discount enters the configured Foundation approval workflow.
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.request_finance_discount(
+ p_student uuid,p_campus uuid,p_scope text,p_type text,p_value numeric,
+ p_valid_from date,p_valid_through date,p_charge uuid,
+ p_policy uuid,p_reviewer uuid,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; policy app_private.approval_policy_versions%ROWTYPE;
+ template app_private.approval_step_templates%ROWTYPE; charge app_private.finance_fee_obligations%ROWTYPE;
+ school app_private.school_profiles%ROWTYPE; currency app_private.finance_currency_units%ROWTYPE;
+ request uuid; step uuid; version bigint; minor numeric; hundredths integer;
+ v_hash bytea; receipt app_private.command_receipts%ROWTYPE; result jsonb; evidence uuid; correlation uuid;
+BEGIN
+ IF p_student IS NULL OR p_campus IS NULL OR p_scope NOT IN('MONTHLY_TUITION','SPECIFIC_CHARGE')
+  OR p_type NOT IN('FIXED','PERCENT') OR p_value IS NULL OR p_value<=0
+  OR p_policy IS NULL OR p_reviewer IS NULL OR p_reason IS NULL
+  OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180
+  OR (p_scope='MONTHLY_TUITION' AND (p_charge IS NOT NULL
+      OR p_valid_from IS NULL OR NOT isfinite(p_valid_from)
+      OR p_valid_through IS NULL OR NOT isfinite(p_valid_through)
+      OR p_valid_through<p_valid_from))
+  OR (p_scope='SPECIFIC_CHARGE' AND (p_charge IS NULL
+      OR p_valid_from IS NOT NULL OR p_valid_through IS NOT NULL)) THEN
+  RAISE EXCEPTION 'DB08 discount request invalid'; END IF;
+ IF p_type='FIXED' THEN
+  minor:=p_value*100;
+  IF minor<>trunc(minor) OR minor>=1000000000000000000000000 THEN
+   RAISE EXCEPTION 'DB08 fixed discount precision invalid'; END IF;
+ ELSE
+  IF p_value>100 OR p_value*100<>trunc(p_value*100) THEN
+   RAISE EXCEPTION 'DB08 percentage precision invalid'; END IF;
+  hundredths:=(p_value*100)::integer;
+ END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO school FROM app_private.school_profiles WHERE id=
+   (SELECT school_id FROM app.campuses WHERE id=p_campus);
+ IF school.id IS NULL THEN RAISE EXCEPTION 'DB08 discount School unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db08_discount_actor('REQUEST',p_campus,NULL);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':discount:'||p_key));
+ PERFORM pg_advisory_xact_lock(71003,hashtext(school.id::text));
+ PERFORM app_private.db08_discount_actor('REQUEST',p_campus,NULL);
+ v_hash:=sha256(convert_to(jsonb_build_array('finance.discount.request',p_student,p_campus,
+   p_scope,p_type,p_value::text,p_valid_from,p_valid_through,p_charge,p_policy,p_reviewer,p_reason)::text,'UTF8'));
+ SELECT * INTO receipt FROM app_private.command_receipts
+ WHERE principal_id=ctx.actor_id AND operation_id=ctx.operation_id
+   AND idempotency_key='discount:request:'||p_key;
+ IF receipt.id IS NOT NULL THEN
+  IF receipt.canonical_payload_hash IS DISTINCT FROM v_hash
+   OR receipt.command_kind<>'finance.discount.request' OR receipt.state<>'SUCCEEDED'
+   OR receipt.result_kind<>'FINANCE_DISCOUNT'
+   OR NOT EXISTS(SELECT 1 FROM app_private.finance_discount_intents i
+       WHERE i.request_id=receipt.result_ref)
+   OR (SELECT count(*) FROM app_private.audit_events a WHERE a.command_receipt_id=receipt.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events e WHERE e.command_receipt_id=receipt.id)<>1 THEN
+   RAISE EXCEPTION 'DB08 discount request key conflict'; END IF;
+  RETURN receipt.result_summary;
+ END IF;
+ SELECT * INTO currency FROM app_private.finance_currency_units
+ WHERE school_id=school.id AND currency_code=school.currency_code;
+ IF school.state<>'ACTIVE' OR currency.id IS NULL OR currency.minor_unit_scale<>2
+  OR NOT EXISTS(SELECT 1 FROM app.campuses c WHERE c.id=p_campus
+    AND c.school_id=school.id AND c.state='ACTIVE')
+  OR NOT EXISTS(SELECT 1 FROM app_private.students s WHERE s.id=p_student AND s.current_status='ACTIVE')
+  OR (p_scope='MONTHLY_TUITION' AND
+    (p_valid_from<=(clock_timestamp() AT TIME ZONE school.timezone)::date
+     OR NOT EXISTS(SELECT 1 FROM app_private.enrollments e
+       JOIN app_private.section_offerings sec ON sec.id=e.section_offering_id
+       JOIN app_private.class_offerings co ON co.id=sec.class_offering_id
+       WHERE e.student_id=p_student AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+        AND sec.state='OPEN' AND co.state='OPEN' AND co.school_id=school.id
+        AND co.campus_id=p_campus AND e.effective_from<=p_valid_from
+        AND (e.effective_until IS NULL OR e.effective_until>=p_valid_through))
+     OR EXISTS(SELECT 1 FROM app_private.finance_fee_obligations o
+       JOIN app_private.finance_fee_assessment_selections x ON x.obligation_id=o.id
+       JOIN app_private.finance_fee_rules f ON f.id=o.rule_id
+       JOIN app_private.finance_fee_categories c ON c.id=f.category_id
+       WHERE x.student_id=p_student AND o.school_id=school.id AND o.campus_id=p_campus
+        AND o.frequency='MONTHLY' AND c.code='TUITION'
+        AND daterange(o.period_start,o.period_end,'[]') &&
+            daterange(p_valid_from,p_valid_through,'[]'))))
+  THEN RAISE EXCEPTION 'DB08 discount Student/context unavailable'; END IF;
+ IF p_scope='SPECIFIC_CHARGE' THEN
+  SELECT o.* INTO charge FROM app_private.finance_fee_obligations o
+   JOIN app_private.finance_fee_assessment_selections x ON x.obligation_id=o.id
+  WHERE o.id=p_charge AND x.student_id=p_student AND o.school_id=school.id
+   AND o.campus_id=p_campus;
+  IF charge.id IS NULL OR (p_type='FIXED' AND minor>charge.gross_amount_minor)
+   OR EXISTS(SELECT 1 FROM app_private.finance_discount_adjustments a
+     WHERE a.obligation_id=p_charge) THEN
+   RAISE EXCEPTION 'DB08 target charge unavailable'; END IF;
+ END IF;
+ IF EXISTS(
+  SELECT 1 FROM app_private.finance_discount_intents i
+   JOIN app_private.approval_requests q ON q.id=i.request_id
+  WHERE i.student_id=p_student AND i.school_id=school.id
+   AND q.state IN('DRAFT','SUBMITTED','PENDING','APPROVED','EXECUTED')
+   AND ((p_scope='SPECIFIC_CHARGE' AND
+       (i.target_obligation_id=p_charge OR
+        (i.application_scope='MONTHLY_TUITION' AND charge.frequency='MONTHLY'
+         AND EXISTS(SELECT 1 FROM app_private.finance_fee_categories c
+           JOIN app_private.finance_fee_rules f ON f.category_id=c.id
+           WHERE f.id=charge.rule_id AND c.code='TUITION')
+         AND i.valid_from<=charge.period_start AND i.valid_through>=charge.period_end)))
+    OR (p_scope='MONTHLY_TUITION' AND
+       ((i.application_scope='MONTHLY_TUITION'
+          AND daterange(i.valid_from,i.valid_through,'[]') &&
+              daterange(p_valid_from,p_valid_through,'[]'))
+        OR (i.application_scope='SPECIFIC_CHARGE' AND EXISTS(
+          SELECT 1 FROM app_private.finance_fee_obligations o
+          WHERE o.id=i.target_obligation_id AND o.frequency='MONTHLY'
+           AND o.period_start>=p_valid_from AND o.period_end<=p_valid_through)))))) THEN
+  RAISE EXCEPTION 'DB08 overlapping Student discount denied'; END IF;
+ SELECT * INTO policy FROM app_private.approval_policy_versions
+ WHERE id=p_policy AND operation_id=ctx.operation_id AND state='ACTIVE'
+  AND (campus_id IS NULL OR campus_id=p_campus) AND effective_from<=clock_timestamp()
+  AND (effective_until IS NULL OR clock_timestamp()<effective_until);
+ SELECT * INTO template FROM app_private.approval_step_templates
+ WHERE policy_id=p_policy AND step_number=1;
+ IF policy.id IS NULL OR template.id IS NULL OR template.required_reviews<>1
+  OR template.selection_resolver_key<>'DIRECT_ROLE'
+  OR EXISTS(SELECT 1 FROM app_private.approval_step_templates t WHERE t.policy_id=p_policy AND t.id<>template.id)
+  OR p_reviewer=ctx.actor_id
+  OR NOT app_private.db08_discount_reviewer_candidate(p_reviewer,template.reviewer_role_id) THEN
+  RAISE EXCEPTION 'DB08 independent discount review policy unavailable'; END IF;
+ request:=gen_random_uuid(); step:=gen_random_uuid();
+ INSERT INTO app_private.approval_requests(id,operation_id,payload_schema_version,policy_id,
+  requester_id,campus_id,target_ref,reason,old_snapshot,requested_payload,created_by)
+ VALUES(request,ctx.operation_id,1,p_policy,ctx.actor_id,p_campus,p_student,p_reason,
+  jsonb_build_object('target_charge',p_charge),
+  jsonb_build_object('scope',p_scope,'value_type',p_type,'value',p_value,
+    'valid_from',p_valid_from,'valid_through',p_valid_through),ctx.actor_id);
+ INSERT INTO app_private.finance_discount_intents(request_id,school_id,campus_id,student_id,
+  currency_unit_id,application_scope,value_type,fixed_minor,percent_hundredths,
+  valid_from,valid_through,target_obligation_id,reason,requested_by)
+ VALUES(request,school.id,p_campus,p_student,currency.id,p_scope,p_type,minor,hundredths,
+  p_valid_from,p_valid_through,p_charge,p_reason,ctx.actor_id);
+ UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=statement_timestamp() WHERE id=request;
+ INSERT INTO app_private.approval_request_steps(id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+ VALUES(step,request,p_policy,template.id,1,1,ctx.actor_id);
+ INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+ VALUES(step,p_reviewer,'DB08_DISCOUNT_DIRECT_ROLE',ctx.actor_id);
+ UPDATE app_private.approval_requests SET state='PENDING' WHERE id=request RETURNING row_version INTO version;
+ UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=statement_timestamp() WHERE id=step;
+ result:=jsonb_build_object('request_id',request,'state','PENDING','request_version',version);
+ evidence:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,
+  canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(evidence,ctx.actor_id,ctx.operation_id,'finance.discount.request','discount:request:'||p_key,
+  v_hash,1,'SUCCEEDED','FINANCE_DISCOUNT',request,result,clock_timestamp(),ctx.actor_id);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,
+  event_type,target_kind,target_ref,campus_id,command_receipt_id,source_kind,correlation_id,
+  occurred_at,details,created_by)
+ VALUES(ctx.actor_id,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation','finance.discount.request'),
+  version,'finance.discount.request','FINANCE_DISCOUNT',request,p_campus,evidence,'API',
+  correlation,clock_timestamp(),result,ctx.actor_id);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,
+  command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES('finance.discount.request','FINANCE_DISCOUNT',request,version,evidence,1,
+  correlation,clock_timestamp(),result,ctx.actor_id);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app.request_finance_discount(uuid,uuid,text,text,numeric,date,date,uuid,uuid,uuid,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.request_finance_discount(uuid,uuid,text,text,numeric,date,date,uuid,uuid,uuid,text,text)
+ TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;

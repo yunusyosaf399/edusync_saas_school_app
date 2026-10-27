@@ -1,0 +1,99 @@
+-- F6: approval-linked Student discount instructions and retained charge adjustments.
+-- Requires F1–F5 and D1. No payment/clearance or destructive financial correction.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_discount_intents (
+ request_id uuid PRIMARY KEY REFERENCES app_private.approval_requests(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ campus_id uuid NOT NULL REFERENCES app.campuses(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ student_id uuid NOT NULL REFERENCES app_private.students(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ currency_unit_id uuid NOT NULL,
+ application_scope text NOT NULL CHECK(application_scope IN('MONTHLY_TUITION','SPECIFIC_CHARGE')),
+ value_type text NOT NULL CHECK(value_type IN('FIXED','PERCENT')),
+ fixed_minor numeric,
+ percent_hundredths integer,
+ valid_from date,
+ valid_through date,
+ target_obligation_id uuid UNIQUE REFERENCES app_private.finance_fee_obligations(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ reason text NOT NULL CHECK(length(btrim(reason)) BETWEEN 1 AND 1000),
+ requested_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ FOREIGN KEY(currency_unit_id,school_id) REFERENCES app_private.finance_currency_units(id,school_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CHECK((value_type='FIXED' AND fixed_minor IS NOT NULL AND fixed_minor>0
+   AND fixed_minor<1000000000000000000000000 AND fixed_minor=trunc(fixed_minor)
+   AND percent_hundredths IS NULL)
+  OR (value_type='PERCENT' AND fixed_minor IS NULL
+   AND percent_hundredths BETWEEN 1 AND 10000)),
+ CHECK((application_scope='MONTHLY_TUITION' AND valid_from IS NOT NULL AND valid_through IS NOT NULL
+   AND isfinite(valid_from) AND isfinite(valid_through) AND valid_from<=valid_through
+   AND target_obligation_id IS NULL)
+  OR (application_scope='SPECIFIC_CHARGE' AND valid_from IS NULL
+   AND valid_through IS NULL AND target_obligation_id IS NOT NULL))
+);
+CREATE INDEX db08_discount_student ON app_private.finance_discount_intents(student_id,application_scope,valid_from,valid_through);
+CREATE TABLE app_private.finance_discount_adjustments (
+ obligation_id uuid PRIMARY KEY REFERENCES app_private.finance_fee_obligations(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ request_id uuid NOT NULL REFERENCES app_private.finance_discount_intents(request_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ gross_minor numeric NOT NULL CHECK(gross_minor>=0 AND gross_minor=trunc(gross_minor)),
+ discount_minor numeric NOT NULL CHECK(discount_minor>0 AND discount_minor=trunc(discount_minor)),
+ net_minor numeric NOT NULL CHECK(net_minor>=0 AND net_minor=trunc(net_minor)),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ CHECK(discount_minor<=gross_minor AND net_minor=gross_minor-discount_minor)
+);
+CREATE INDEX db08_discount_request_adjustments ON app_private.finance_discount_adjustments(request_id);
+ALTER TABLE app_private.finance_discount_intents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_discount_intents FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_discount_adjustments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_discount_adjustments FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_f6_owner ON app_private.finance_discount_intents
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db08_f6_workflow_read ON app_private.finance_discount_intents
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_f6_workflow_insert ON app_private.finance_discount_intents
+ FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+CREATE POLICY db08_f6_owner ON app_private.finance_discount_adjustments
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db08_f6_workflow_read ON app_private.finance_discount_adjustments
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_f6_workflow_insert ON app_private.finance_discount_adjustments
+ FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT,INSERT ON app_private.finance_discount_intents,app_private.finance_discount_adjustments
+ TO schoolos_workflow_executor;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_discount_intents
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_discount_adjustments
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+
+CREATE POLICY db08_f6_operation_read ON app_private.operation_contracts
+ FOR SELECT TO schoolos_authz_reader
+ USING(code='finance.discount' AND contract_version=1);
+CREATE POLICY db08_f6_operation_workflow ON app_private.operation_contracts
+ FOR SELECT TO schoolos_workflow_executor
+ USING(code='finance.discount' AND contract_version=1);
+CREATE POLICY db08_f6_policy_read ON app_private.approval_policy_versions
+ FOR SELECT TO schoolos_workflow_executor
+ USING(operation_id IN(SELECT id FROM app_private.operation_contracts
+   WHERE code='finance.discount' AND contract_version=1));
+CREATE POLICY db08_f6_request_access ON app_private.approval_requests
+ FOR ALL TO schoolos_workflow_executor
+ USING(operation_id IN(SELECT id FROM app_private.operation_contracts
+   WHERE code='finance.discount' AND contract_version=1))
+ WITH CHECK(operation_id IN(SELECT id FROM app_private.operation_contracts
+   WHERE code='finance.discount' AND contract_version=1));
+CREATE POLICY db08_f6_receipt ON app_private.command_receipts
+ FOR ALL TO schoolos_workflow_executor
+ USING(command_kind IN('finance.discount.request','finance.discount.review','finance.discount.apply'))
+ WITH CHECK(command_kind IN('finance.discount.request','finance.discount.review','finance.discount.apply'));
+CREATE POLICY db08_f6_audit ON app_private.audit_events
+ FOR ALL TO schoolos_workflow_executor
+ USING(event_type IN('finance.discount.request','finance.discount.review','finance.discount.apply')
+   AND target_kind IN('FINANCE_DISCOUNT','FINANCE_DISCOUNT_ADJUSTMENT'))
+ WITH CHECK(event_type IN('finance.discount.request','finance.discount.review','finance.discount.apply')
+   AND target_kind IN('FINANCE_DISCOUNT','FINANCE_DISCOUNT_ADJUSTMENT'));
+CREATE POLICY db08_f6_outbox ON app_private.outbox_events
+ FOR ALL TO schoolos_workflow_executor
+ USING(event_type IN('finance.discount.request','finance.discount.review','finance.discount.apply')
+   AND aggregate_kind IN('FINANCE_DISCOUNT','FINANCE_DISCOUNT_ADJUSTMENT'))
+ WITH CHECK(event_type IN('finance.discount.request','finance.discount.review','finance.discount.apply')
+   AND aggregate_kind IN('FINANCE_DISCOUNT','FINANCE_DISCOUNT_ADJUSTMENT'));
+RESET ROLE;

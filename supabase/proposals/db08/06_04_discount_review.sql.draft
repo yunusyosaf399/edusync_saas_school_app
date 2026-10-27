@@ -1,0 +1,127 @@
+-- Independent reviewer activates or rejects a retained Student instruction.
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.review_finance_discount(p_request uuid,p_decision text,
+ p_expected_version bigint,p_note text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE q app_private.approval_requests%ROWTYPE; intent app_private.finance_discount_intents%ROWTYPE;
+ step app_private.approval_request_steps%ROWTYPE; template app_private.approval_step_templates%ROWTYPE;
+ policy app_private.approval_policy_versions%ROWTYPE; assignment app_private.approval_step_reviewers%ROWTYPE;
+ ctx record; v_hash bytea; receipt app_private.command_receipts%ROWTYPE;
+ result jsonb; evidence uuid; correlation uuid; version bigint;
+BEGIN
+ IF p_request IS NULL OR p_decision NOT IN('APPROVE','REJECT')
+  OR p_expected_version IS NULL OR p_expected_version<1
+  OR p_note IS NULL OR length(btrim(p_note)) NOT BETWEEN 1 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB08 discount review invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO intent FROM app_private.finance_discount_intents WHERE request_id=p_request;
+ IF intent.request_id IS NULL THEN RAISE EXCEPTION 'DB08 discount request unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db08_discount_actor('REVIEW',intent.campus_id,NULL);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':discount:review:'||p_key));
+ PERFORM pg_advisory_xact_lock(71003,hashtext(intent.school_id::text));
+ PERFORM app_private.db08_discount_actor('REVIEW',intent.campus_id,NULL);
+ v_hash:=sha256(convert_to(jsonb_build_array('finance.discount.review',p_request,p_decision,
+    p_expected_version,p_note)::text,'UTF8'));
+ SELECT * INTO receipt FROM app_private.command_receipts
+ WHERE principal_id=ctx.actor_id AND operation_id=ctx.operation_id
+   AND idempotency_key='discount:review:'||p_key;
+ IF receipt.id IS NOT NULL THEN
+  IF receipt.canonical_payload_hash IS DISTINCT FROM v_hash
+   OR receipt.command_kind<>'finance.discount.review' OR receipt.state<>'SUCCEEDED'
+   OR receipt.result_kind<>'FINANCE_DISCOUNT' OR receipt.result_ref<>p_request
+   OR (SELECT count(*) FROM app_private.audit_events a WHERE a.command_receipt_id=receipt.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events e WHERE e.command_receipt_id=receipt.id)<>1 THEN
+   RAISE EXCEPTION 'DB08 discount review key conflict'; END IF;
+  RETURN receipt.result_summary;
+ END IF;
+ SELECT * INTO q FROM app_private.approval_requests WHERE id=p_request FOR UPDATE;
+ SELECT * INTO step FROM app_private.approval_request_steps WHERE request_id=p_request;
+ SELECT * INTO template FROM app_private.approval_step_templates WHERE id=step.template_id;
+ SELECT * INTO policy FROM app_private.approval_policy_versions WHERE id=q.policy_id;
+ SELECT * INTO assignment FROM app_private.approval_step_reviewers
+   WHERE step_id=step.id AND reviewer_id=ctx.actor_id AND withdrawn_at IS NULL;
+ PERFORM app_private.db08_discount_actor('REVIEW',intent.campus_id,template.reviewer_role_id);
+ IF q.id IS NULL OR q.state<>'PENDING' OR q.row_version<>p_expected_version
+  OR q.operation_id<>ctx.operation_id OR q.target_ref<>intent.student_id
+  OR q.campus_id<>intent.campus_id OR q.requester_id<>intent.requested_by
+  OR q.requester_id=ctx.actor_id OR q.reason<>intent.reason
+  OR q.requested_payload->>'scope' IS DISTINCT FROM intent.application_scope
+  OR q.requested_payload->>'value_type' IS DISTINCT FROM intent.value_type
+  OR step.id IS NULL OR step.state<>'OPEN' OR step.step_number<>1
+  OR EXISTS(SELECT 1 FROM app_private.approval_request_steps x
+      WHERE x.request_id=p_request AND x.id<>step.id)
+  OR template.id IS NULL OR template.policy_id<>q.policy_id
+  OR template.required_reviews<>1 OR template.selection_resolver_key<>'DIRECT_ROLE'
+  OR assignment.id IS NULL OR assignment.assignment_reason<>'DB08_DISCOUNT_DIRECT_ROLE'
+  OR NOT app_private.db08_discount_reviewer_candidate(ctx.actor_id,template.reviewer_role_id)
+  OR policy.id IS NULL OR policy.operation_id<>ctx.operation_id OR policy.state<>'ACTIVE'
+  OR (policy.campus_id IS NOT NULL AND policy.campus_id<>intent.campus_id)
+  OR policy.effective_from>clock_timestamp()
+  OR (policy.effective_until IS NOT NULL AND clock_timestamp()>=policy.effective_until)
+  OR NOT EXISTS(SELECT 1 FROM app_private.school_profiles s WHERE s.id=intent.school_id AND s.state='ACTIVE')
+  OR NOT EXISTS(SELECT 1 FROM app.campuses c WHERE c.id=intent.campus_id
+     AND c.school_id=intent.school_id AND c.state='ACTIVE')
+  OR NOT EXISTS(SELECT 1 FROM app_private.students s WHERE s.id=intent.student_id AND s.current_status='ACTIVE')
+  THEN RAISE EXCEPTION 'DB08 discount review authority/state changed'; END IF;
+ IF p_decision='APPROVE' THEN
+  IF (intent.application_scope='MONTHLY_TUITION'
+       AND intent.valid_from<=(clock_timestamp() AT TIME ZONE
+           (SELECT timezone FROM app_private.school_profiles WHERE id=intent.school_id))::date)
+    OR EXISTS(SELECT 1 FROM app_private.finance_discount_intents i
+      JOIN app_private.approval_requests x ON x.id=i.request_id
+      WHERE i.request_id<>p_request AND i.student_id=intent.student_id
+       AND i.school_id=intent.school_id AND x.state='EXECUTED'
+       AND ((intent.application_scope='SPECIFIC_CHARGE'
+              AND i.target_obligation_id=intent.target_obligation_id)
+         OR (intent.application_scope='MONTHLY_TUITION'
+              AND i.application_scope='MONTHLY_TUITION'
+              AND daterange(i.valid_from,i.valid_through,'[]') &&
+                  daterange(intent.valid_from,intent.valid_through,'[]'))))
+    OR (intent.application_scope='SPECIFIC_CHARGE' AND
+        EXISTS(SELECT 1 FROM app_private.finance_discount_adjustments a
+          WHERE a.obligation_id=intent.target_obligation_id)) THEN
+    RAISE EXCEPTION 'DB08 discount approval now conflicts'; END IF;
+ END IF;
+ INSERT INTO app_private.approval_reviews(reviewer_assignment_id,step_id,reviewer_id,decision,reason,
+   expected_request_version,created_by)
+ VALUES(assignment.id,step.id,ctx.actor_id,p_decision,p_note,p_expected_version,ctx.actor_id);
+ UPDATE app_private.approval_request_steps SET
+   state=CASE WHEN p_decision='APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+   closed_at=statement_timestamp() WHERE id=step.id;
+ UPDATE app_private.approval_requests SET state=
+   CASE WHEN p_decision='APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END
+   WHERE id=q.id;
+ IF p_decision='APPROVE' THEN
+  UPDATE app_private.approval_requests SET state='EXECUTED'
+   WHERE id=q.id RETURNING row_version INTO version;
+ ELSE
+  SELECT row_version INTO version FROM app_private.approval_requests WHERE id=q.id;
+ END IF;
+ result:=jsonb_build_object('request_id',p_request,'state',
+   CASE WHEN p_decision='APPROVE' THEN 'EXECUTED' ELSE 'REJECTED' END,
+   'request_version',version);
+ evidence:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,
+  canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(evidence,ctx.actor_id,ctx.operation_id,'finance.discount.review','discount:review:'||p_key,
+  v_hash,1,'SUCCEEDED','FINANCE_DISCOUNT',p_request,result,clock_timestamp(),ctx.actor_id);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,
+  event_type,target_kind,target_ref,campus_id,command_receipt_id,source_kind,correlation_id,
+  occurred_at,details,created_by)
+ VALUES(ctx.actor_id,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation','finance.discount.review'),
+  version,'finance.discount.review','FINANCE_DISCOUNT',p_request,intent.campus_id,evidence,'API',
+  correlation,clock_timestamp(),result,ctx.actor_id);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,
+  command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES('finance.discount.review','FINANCE_DISCOUNT',p_request,version,evidence,1,
+  correlation,clock_timestamp(),result,ctx.actor_id);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app.review_finance_discount(uuid,text,bigint,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.review_finance_discount(uuid,text,bigint,text,text)
+ TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;

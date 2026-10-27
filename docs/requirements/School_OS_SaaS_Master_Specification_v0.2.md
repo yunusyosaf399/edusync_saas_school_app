@@ -1193,6 +1193,8 @@ Discounts can be long-term/recurring or one-time. Sensitive or large adjustments
 
 **Student discount choice — 27 October 2026:** The school may choose either a fixed discount amount or a percentage of the Student's selected full fee. For each assignment it may choose recurring application to monthly tuition or application to one specified charge. The choices are independent, and the selected gross fee remains retained separately from the discount. This owner decision does not set percentage rounding, approval thresholds, discount stacking or payment/clearance behavior. See [DB08 F6 design gate](../database/db08_f6_student_discount_choice_20261027.md).
 
+**F6 precision and review clarification — 27 October 2026:** Money is displayed with two digits after the decimal point (for example 9,999.34). Percentage discounts round to the nearest 0.01 of currency with exact halves rounded upward. Every Student discount needs an independent approval before it can take effect. The F6 first increment rejects incompatible currency precision and overlapping discounts; payment and admission clearance remain separate.
+
 ---
 
 # 32. Invoices

@@ -1,0 +1,124 @@
+-- Apply one independently approved Student discount without altering gross.
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.apply_finance_discount(p_charge uuid,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE charge app_private.finance_fee_obligations%ROWTYPE;
+ selection app_private.finance_fee_assessment_selections%ROWTYPE;
+ intent app_private.finance_discount_intents%ROWTYPE;
+ adjustment app_private.finance_discount_adjustments%ROWTYPE;
+ ctx record; candidate_count integer; amount numeric; result jsonb; v_hash bytea;
+ receipt app_private.command_receipts%ROWTYPE; evidence uuid; correlation uuid;
+BEGIN
+ IF p_charge IS NULL OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB08 discount application invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO charge FROM app_private.finance_fee_obligations WHERE id=p_charge;
+ SELECT * INTO selection FROM app_private.finance_fee_assessment_selections WHERE obligation_id=p_charge;
+ IF charge.id IS NULL OR selection.obligation_id IS NULL THEN
+  RAISE EXCEPTION 'DB08 selected charge unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db08_fee_actor('finance.charge.assess',charge.campus_id);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':discount:apply:'||p_key));
+ PERFORM pg_advisory_xact_lock(71003,hashtext(charge.school_id::text));
+ PERFORM app_private.db08_fee_actor('finance.charge.assess',charge.campus_id);
+ v_hash:=sha256(convert_to(jsonb_build_array('finance.discount.apply',p_charge)::text,'UTF8'));
+ SELECT * INTO receipt FROM app_private.command_receipts WHERE principal_id=ctx.actor_id
+   AND operation_id=ctx.operation_id AND idempotency_key='discount:apply:'||p_key;
+ IF receipt.id IS NOT NULL THEN
+  IF receipt.canonical_payload_hash IS DISTINCT FROM v_hash OR receipt.state<>'SUCCEEDED'
+   OR receipt.command_kind<>'finance.discount.apply'
+   OR receipt.result_kind<>'FINANCE_DISCOUNT_ADJUSTMENT'
+   OR receipt.result_ref<>p_charge
+   OR NOT EXISTS(SELECT 1 FROM app_private.finance_discount_adjustments a WHERE a.obligation_id=p_charge)
+   OR (SELECT count(*) FROM app_private.audit_events a WHERE a.command_receipt_id=receipt.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events e WHERE e.command_receipt_id=receipt.id)<>1 THEN
+   RAISE EXCEPTION 'DB08 discount application key conflict'; END IF;
+  RETURN receipt.result_summary;
+ END IF;
+ IF EXISTS(SELECT 1 FROM app_private.finance_discount_adjustments a WHERE a.obligation_id=p_charge) THEN
+  RAISE EXCEPTION 'DB08 charge already has a retained discount'; END IF;
+ SELECT count(*) INTO candidate_count FROM app_private.finance_discount_intents i
+  JOIN app_private.approval_requests q ON q.id=i.request_id
+  WHERE i.student_id=selection.student_id AND i.school_id=charge.school_id
+   AND i.campus_id=charge.campus_id AND q.state='EXECUTED'
+   AND ((i.application_scope='SPECIFIC_CHARGE' AND i.target_obligation_id=p_charge)
+     OR (i.application_scope='MONTHLY_TUITION' AND charge.frequency='MONTHLY'
+       AND EXISTS(SELECT 1 FROM app_private.finance_fee_rules f
+        JOIN app_private.finance_fee_categories c ON c.id=f.category_id
+        WHERE f.id=charge.rule_id AND c.code='TUITION')
+       AND i.valid_from<=charge.period_start AND i.valid_through>=charge.period_end));
+ IF candidate_count=0 THEN
+  RETURN jsonb_build_object('obligation_id',p_charge,'gross_minor',charge.gross_amount_minor,
+    'discount_minor',0,'net_minor',charge.gross_amount_minor,'request_id',NULL);
+ ELSIF candidate_count<>1 THEN
+  RAISE EXCEPTION 'DB08 ambiguous approved Student discount'; END IF;
+ SELECT i.* INTO intent FROM app_private.finance_discount_intents i
+  JOIN app_private.approval_requests q ON q.id=i.request_id
+  WHERE i.student_id=selection.student_id AND i.school_id=charge.school_id
+   AND i.campus_id=charge.campus_id AND q.state='EXECUTED'
+   AND ((i.application_scope='SPECIFIC_CHARGE' AND i.target_obligation_id=p_charge)
+     OR (i.application_scope='MONTHLY_TUITION' AND charge.frequency='MONTHLY'
+       AND EXISTS(SELECT 1 FROM app_private.finance_fee_rules f
+        JOIN app_private.finance_fee_categories c ON c.id=f.category_id
+        WHERE f.id=charge.rule_id AND c.code='TUITION')
+       AND i.valid_from<=charge.period_start AND i.valid_through>=charge.period_end));
+ IF NOT EXISTS(SELECT 1 FROM app_private.finance_currency_units unit
+    JOIN app_private.finance_fee_rules rule ON rule.currency_unit_id=unit.id
+   WHERE rule.id=charge.rule_id AND unit.id=intent.currency_unit_id
+    AND unit.minor_unit_scale=2 AND unit.school_id=charge.school_id) THEN
+  RAISE EXCEPTION 'DB08 discount currency mismatch'; END IF;
+ amount:=CASE WHEN intent.value_type='FIXED' THEN intent.fixed_minor
+  ELSE round(charge.gross_amount_minor*intent.percent_hundredths/10000,0) END;
+ IF amount<=0 OR amount>charge.gross_amount_minor THEN
+  RAISE EXCEPTION 'DB08 discount amount outside charge'; END IF;
+ INSERT INTO app_private.finance_discount_adjustments(obligation_id,request_id,gross_minor,
+  discount_minor,net_minor,created_by)
+ VALUES(p_charge,intent.request_id,charge.gross_amount_minor,amount,
+  charge.gross_amount_minor-amount,ctx.actor_id)
+ RETURNING * INTO adjustment;
+ result:=jsonb_build_object('obligation_id',p_charge,'request_id',intent.request_id,
+  'gross_minor',adjustment.gross_minor,'discount_minor',adjustment.discount_minor,
+  'net_minor',adjustment.net_minor);
+ evidence:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,
+  canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(evidence,ctx.actor_id,ctx.operation_id,'finance.discount.apply','discount:apply:'||p_key,
+  v_hash,1,'SUCCEEDED','FINANCE_DISCOUNT_ADJUSTMENT',p_charge,result,clock_timestamp(),ctx.actor_id);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,
+  event_type,target_kind,target_ref,campus_id,command_receipt_id,source_kind,correlation_id,
+  occurred_at,details,created_by)
+ VALUES(ctx.actor_id,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation','finance.discount.apply'),
+  1,'finance.discount.apply','FINANCE_DISCOUNT_ADJUSTMENT',p_charge,charge.campus_id,evidence,'API',
+  correlation,clock_timestamp(),result,ctx.actor_id);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,
+  command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES('finance.discount.apply','FINANCE_DISCOUNT_ADJUSTMENT',p_charge,1,evidence,1,
+  correlation,clock_timestamp(),result,ctx.actor_id);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app.apply_finance_discount(uuid,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.apply_finance_discount(uuid,text) TO authenticated;
+
+-- Clients enter through this selector so an eligible recurring adjustment is
+-- inserted atomically alongside a newly assessed Student charge.
+REVOKE EXECUTE ON FUNCTION app.assess_selected_finance_fee(uuid,uuid,text,text,date,date,date,uuid)
+ FROM authenticated;
+CREATE FUNCTION app.assess_discounted_finance_fee(
+ p_student uuid,p_offering uuid,p_category text,p_frequency text,
+ p_from date,p_through date,p_due date,p_key uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE assessed jsonb; applied jsonb;
+BEGIN
+ assessed:=app.assess_selected_finance_fee(p_student,p_offering,p_category,p_frequency,
+   p_from,p_through,p_due,p_key);
+ applied:=app.apply_finance_discount((assessed->>'resource_id')::uuid,
+   'auto:'||p_key::text);
+ RETURN jsonb_build_object('charge',assessed,'discount',applied);
+END $body$;
+REVOKE ALL ON FUNCTION app.assess_discounted_finance_fee(uuid,uuid,text,text,date,date,date,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.assess_discounted_finance_fee(uuid,uuid,text,text,date,date,date,uuid)
+ TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
