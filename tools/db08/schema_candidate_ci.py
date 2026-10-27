@@ -143,7 +143,7 @@ def validate_discount_source():
     ]:
         raise RuntimeError('DB08_F6_COMMAND_SCOPE')
     test = (ROOT / 'supabase/tests/db08/06_student_discounts.sql').read_text()
-    expected = 28
+    expected = 33
     if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(
         r'(?m)^SELECT (?:is|ok|throws_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
         raise RuntimeError('DB08_F6_TEST_PLAN')
@@ -392,6 +392,11 @@ def main():
             if remaining != '0':
                 raise RuntimeError('DB08_F6_FIXTURE_ROLLBACK_INCOMPLETE')
             print(f'DB08_F6_DATABASE_PASS {discount_assertions}/{discount_assertions}; fixtures_rolled_back=true; money_scale=2; independent_review=true', flush=True)
+            from tools.db08.discount_runtime_ci import run_discount_runtime
+            run_discount_runtime(local_status, ROOT)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_discount_intents)+(SELECT count(*) FROM app_private.finance_discount_adjustments)+(SELECT count(*) FROM app_private.finance_fee_obligations)+(SELECT count(*) FROM app_private.students)+(SELECT count(*) FROM app_private.school_profiles);", 'DB08_F6_REAL_AUTH_CLEANUP', tuples=True).strip()
+            if remaining != '0':
+                raise RuntimeError('DB08_F6_REAL_AUTH_ROLLBACK_INCOMPLETE')
             return 0
     finally:
         if started:

@@ -2,11 +2,18 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(28);
+SELECT plan(33);
 SELECT ok(has_function_privilege('authenticated','app.request_finance_discount(uuid,uuid,text,text,numeric,date,date,uuid,uuid,uuid,text,text)','EXECUTE'),'request RPC exposed to authenticated');
 SELECT ok(has_function_privilege('authenticated','app.review_finance_discount(uuid,text,bigint,text,text)','EXECUTE'),'review RPC exposed to authenticated');
 SELECT ok(NOT has_function_privilege('authenticated','app.assess_selected_finance_fee(uuid,uuid,text,text,date,date,date,uuid)','EXECUTE'),'old gross-only client assessment revoked');
 SELECT ok(NOT has_function_privilege('service_role','app.apply_finance_discount(uuid,text)','EXECUTE'),'service role cannot apply discount');
+SELECT ok(NOT has_table_privilege('authenticated','app_private.finance_discount_intents','SELECT'),
+ 'authenticated cannot read private discount intents');
+SELECT ok(NOT has_table_privilege('authenticated','app_private.finance_discount_adjustments','INSERT'),
+ 'authenticated cannot write private adjustments');
+SELECT ok((SELECT relrowsecurity AND relforcerowsecurity FROM pg_class
+ WHERE oid='app_private.finance_discount_adjustments'::regclass),
+ 'discount adjustment source forces RLS');
 \ir fixture_commands.sql
 \ir fixture_change.sql
 \ir fixture_selection.sql
@@ -81,6 +88,17 @@ SELECT set_config('request.jwt.claims',jsonb_build_object(
  WHERE id='08000000-0000-4000-8000-000000000022'),
  'exp',floor(extract(epoch FROM clock_timestamp()+interval '1 hour'))::bigint,
  'is_anonymous',false)::text,true);
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.permission_scope_contracts SET enabled=false
+ WHERE id='08000000-0000-4000-8000-000000000086';
+RESET ROLE;
+SELECT throws_ok(format('SELECT app.review_finance_discount(%L::uuid,%L,%s::bigint,%L,%L)',
+ :'monthly_request_id','APPROVE',:'monthly_request_version','Revoked reviewer','revoked'),
+ 'P0001'::char(5),NULL::text,'current reviewer-scope revocation denies approval');
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.permission_scope_contracts SET enabled=true
+ WHERE id='08000000-0000-4000-8000-000000000086';
+RESET ROLE;
 SET ROLE authenticated;
 SELECT * FROM jsonb_to_record(app.review_finance_discount(
  :'monthly_request_id'::uuid,'APPROVE',:'monthly_request_version'::bigint,
@@ -157,6 +175,14 @@ SELECT throws_ok($sql$SELECT app.request_finance_discount(
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'Wrong Student','f6-wrong-student')$sql$,'P0001'::char(5),NULL::text,
  'specific charge cannot be discounted for another Student');
+SELECT throws_ok($sql$SELECT app.request_finance_discount(
+ '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000003',
+ 'SPECIFIC_CHARGE','FIXED',200.00,NULL,NULL,
+ (SELECT id FROM app_private.finance_fee_obligations WHERE assessment_key=
+  '08000000-0000-4000-8000-000000000093'),
+ '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
+ 'Exceeds gross','f6-over-gross')$sql$,'P0001'::char(5),NULL::text,
+ 'fixed discount cannot exceed the selected full charge');
 SET ROLE authenticated;
 SELECT * FROM jsonb_to_record(app.request_finance_discount(
  '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000003',
