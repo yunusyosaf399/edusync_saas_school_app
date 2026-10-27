@@ -82,7 +82,7 @@ SET ROLE schoolos_workflow_executor;
 CREATE FUNCTION app.bind_finance_fee(p_rule uuid,p_class_offering uuid,p_student uuid,
  p_valid_from date,p_valid_through date,p_key text)
 RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE fee app_private.finance_fee_rules%ROWTYPE; offering app_private.class_offerings%ROWTYPE;
+DECLARE fee app_private.finance_fee_rules%ROWTYPE; offering record;
  yr app.academic_years%ROWTYPE; ctx record; v_hash bytea; result jsonb; binding uuid;
 BEGIN
  IF p_rule IS NULL OR p_class_offering IS NULL OR p_key IS NULL
@@ -100,7 +100,8 @@ BEGIN
    p_student,p_valid_from,p_valid_through)::text,'UTF8'));
  result:=app_private.db08_f5_binding_receipt(fee.campus_id,p_key,v_hash);
  IF result IS NOT NULL THEN RETURN result; END IF;
- SELECT * INTO offering FROM app_private.class_offerings WHERE id=p_class_offering;
+ SELECT id,school_id,campus_id,academic_year_id,state INTO offering
+ FROM app_private.class_offerings WHERE id=p_class_offering;
  SELECT * INTO yr FROM app.academic_years WHERE id=fee.academic_year_id;
  IF offering.id IS NULL OR offering.school_id<>fee.school_id
   OR offering.campus_id<>fee.campus_id OR offering.academic_year_id<>fee.academic_year_id

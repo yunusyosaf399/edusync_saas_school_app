@@ -9,8 +9,8 @@ CREATE FUNCTION app.assess_selected_finance_fee(
  p_student uuid,p_class_offering uuid,p_category_code text,p_frequency text,
  p_period_start date,p_period_end date,p_due_on date,p_key uuid)
 RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
-DECLARE offering app_private.class_offerings%ROWTYPE; yr app.academic_years%ROWTYPE;
- school app_private.school_profiles%ROWTYPE; ctx record; student app_private.students%ROWTYPE;
+DECLARE offering record; yr app.academic_years%ROWTYPE;
+ school app_private.school_profiles%ROWTYPE; ctx record; student record;
  source app_private.finance_fee_assessment_selections%ROWTYPE;
  obligation app_private.finance_fee_obligations%ROWTYPE;
  chosen app_private.finance_fee_applicabilities%ROWTYPE;
@@ -25,7 +25,8 @@ BEGIN
   OR p_due_on IS NULL OR NOT isfinite(p_due_on) OR p_key IS NULL THEN
   RAISE EXCEPTION 'DB08 F5 selected charge invalid'; END IF;
  PERFORM pg_advisory_xact_lock(71001,1);
- SELECT * INTO offering FROM app_private.class_offerings WHERE id=p_class_offering;
+ SELECT id,school_id,campus_id,academic_year_id,state INTO offering
+ FROM app_private.class_offerings WHERE id=p_class_offering;
  IF offering.id IS NULL THEN RAISE EXCEPTION 'DB08 F5 offering unavailable'; END IF;
  SELECT * INTO ctx FROM app_private.db08_fee_actor('finance.charge.assess',offering.campus_id);
  PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':'||p_key::text));
@@ -58,7 +59,8 @@ BEGIN
   RAISE EXCEPTION 'DB08 F5 assessment key already used'; END IF;
  SELECT * INTO school FROM app_private.school_profiles WHERE id=offering.school_id;
  SELECT * INTO yr FROM app.academic_years WHERE id=offering.academic_year_id;
- SELECT * INTO student FROM app_private.students WHERE id=p_student;
+ SELECT id,person_id,current_status INTO student
+ FROM app_private.students WHERE id=p_student;
  SELECT count(*),min(e.id) INTO matches,enrollment
  FROM app_private.enrollments e JOIN app_private.section_offerings section
    ON section.id=e.section_offering_id
