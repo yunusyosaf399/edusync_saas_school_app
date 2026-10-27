@@ -149,9 +149,13 @@ def main():
                 raise RuntimeError('DB08_F2_PARTIAL_INSTALL_SURVIVED')
             print('DB08_F2_DDL_ROLLBACK_PASS publication=0 functions=0', flush=True)
             local.run_psql(container, 'BEGIN;\n' + workflow_sql + '\nCOMMIT;', 'DB08_F2_INSTALL')
-            output = local.run_psql(container, workflow_test, 'DB08_F2_COMMAND_TEST')
-            print(output, flush=True)
-            parse_tap(output, workflow_assertions)
+            try:
+                output = local.run_psql(container, workflow_test, 'DB08_F2_COMMAND_TEST')
+                print(output, flush=True)
+                parse_tap(output, workflow_assertions)
+            except local.DomainLocalCIError:
+                local.run_psql(container, '\\o /dev/null\n' + workflow_test, 'DB08_F2_SQL_DIAGNOSTIC')
+                raise
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_fee_publications)+(SELECT count(*) FROM app_private.finance_fee_obligations)+(SELECT count(*) FROM app_private.finance_fee_rules)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.audit_events)+(SELECT count(*) FROM app_private.outbox_events)+(SELECT count(*) FROM app_private.school_profiles)+(SELECT count(*) FROM app_private.principals);", 'DB08_F2_FIXTURE_CLEANUP', tuples=True).strip()
             if remaining != '0':
                 raise RuntimeError('DB08_F2_FIXTURE_ROLLBACK_INCOMPLETE')
