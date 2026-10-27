@@ -52,18 +52,33 @@ CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.fi
 
 -- All generic writes are confined to the no-login executor. The only public
 -- entry points are fixed request/review RPCs with per-statement authorization.
+CREATE POLICY db08_change_executor_operation ON app_private.operation_contracts
+ FOR SELECT TO schoolos_workflow_executor USING(code='finance.fee.change' AND contract_version=1);
+GRANT SELECT(id,code,contract_version) ON app_private.operation_contracts TO schoolos_workflow_executor;
 CREATE POLICY db08_change_policy_read ON app_private.approval_policy_versions
- FOR SELECT TO schoolos_workflow_executor USING(true);
+ FOR SELECT TO schoolos_workflow_executor USING(operation_id IN
+  (SELECT id FROM app_private.operation_contracts WHERE code='finance.fee.change' AND contract_version=1));
 CREATE POLICY db08_change_template_read ON app_private.approval_step_templates
- FOR SELECT TO schoolos_workflow_executor USING(true);
+ FOR SELECT TO schoolos_workflow_executor USING(policy_id IN
+  (SELECT id FROM app_private.approval_policy_versions));
 CREATE POLICY db08_change_request_access ON app_private.approval_requests
- FOR ALL TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+ FOR ALL TO schoolos_workflow_executor
+ USING(operation_id IN(SELECT id FROM app_private.operation_contracts WHERE code='finance.fee.change' AND contract_version=1)
+   AND policy_id IN(SELECT id FROM app_private.approval_policy_versions))
+ WITH CHECK(operation_id IN(SELECT id FROM app_private.operation_contracts WHERE code='finance.fee.change' AND contract_version=1)
+   AND policy_id IN(SELECT id FROM app_private.approval_policy_versions));
 CREATE POLICY db08_change_step_access ON app_private.approval_request_steps
- FOR ALL TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+ FOR ALL TO schoolos_workflow_executor
+ USING(request_id IN(SELECT id FROM app_private.approval_requests))
+ WITH CHECK(request_id IN(SELECT id FROM app_private.approval_requests));
 CREATE POLICY db08_change_reviewer_access ON app_private.approval_step_reviewers
- FOR ALL TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+ FOR ALL TO schoolos_workflow_executor
+ USING(step_id IN(SELECT id FROM app_private.approval_request_steps))
+ WITH CHECK(step_id IN(SELECT id FROM app_private.approval_request_steps));
 CREATE POLICY db08_change_review_access ON app_private.approval_reviews
- FOR ALL TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+ FOR ALL TO schoolos_workflow_executor
+ USING(step_id IN(SELECT id FROM app_private.approval_request_steps))
+ WITH CHECK(step_id IN(SELECT id FROM app_private.approval_request_steps));
 GRANT SELECT ON app_private.approval_policy_versions,app_private.approval_step_templates TO schoolos_workflow_executor;
 GRANT SELECT,INSERT,UPDATE ON app_private.approval_requests,app_private.approval_request_steps,
  app_private.approval_step_reviewers TO schoolos_workflow_executor;
