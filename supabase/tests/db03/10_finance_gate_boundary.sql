@@ -25,8 +25,9 @@ SELECT is(app.read_admission_finance_gate(:'a_application_id')->>'finance_status
 SELECT is(app.read_admission_finance_gate(:'a_application_id')->>'can_finalize','false'::text,'status cannot grant finalization');
 SELECT is(app.read_admission_finance_gate(:'a_application_id')->>'finance_clearance_required','true'::text,'Finance authorization is always required');
 SELECT throws_ok(format($q$SELECT app.read_admission_finance_gate(%L::uuid,true)$q$,:'a_application_id'),'42883'::char(5),NULL::text,'caller paid or waived flag is not a supported input');
+-- The privileged test transport retains the real user claims; the service
+-- suite separately invokes this guard under the actual workflow role.
 RESET ROLE;
-SET ROLE schoolos_workflow_executor;
 SELECT throws_ok(format($q$SELECT app_private.db03_assert_admission_finance_clearance(%L::uuid)$q$,:'a_application_id'),'P0001'::char(5),'DB03 Finance source unavailable; explicit Finance clearance required including waived or zero fees'::text,'internal guard denies even an authorized current caller');
 RESET ROLE;
 SELECT is((SELECT row_version FROM app_private.admission_applications WHERE id=:'a_application_id'),1::bigint,'status and denied guard preserve root version');
