@@ -13,7 +13,7 @@ CREATE TABLE app_private.finance_discount_intents (
  percent_hundredths integer,
  valid_from date,
  valid_through date,
- target_obligation_id uuid UNIQUE REFERENCES app_private.finance_fee_obligations(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ target_obligation_id uuid REFERENCES app_private.finance_fee_obligations(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
  reason text NOT NULL CHECK(length(btrim(reason)) BETWEEN 1 AND 1000),
  requested_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
@@ -30,6 +30,8 @@ CREATE TABLE app_private.finance_discount_intents (
    AND valid_through IS NULL AND target_obligation_id IS NOT NULL))
 );
 CREATE INDEX db08_discount_student ON app_private.finance_discount_intents(student_id,application_scope,valid_from,valid_through);
+CREATE INDEX db08_discount_charge ON app_private.finance_discount_intents(target_obligation_id)
+ WHERE target_obligation_id IS NOT NULL;
 CREATE TABLE app_private.finance_discount_adjustments (
  obligation_id uuid PRIMARY KEY REFERENCES app_private.finance_fee_obligations(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
  request_id uuid NOT NULL REFERENCES app_private.finance_discount_intents(request_id) ON UPDATE RESTRICT ON DELETE RESTRICT,

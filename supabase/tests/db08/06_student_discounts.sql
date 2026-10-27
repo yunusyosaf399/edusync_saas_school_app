@@ -2,7 +2,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(24);
+SELECT plan(28);
 SELECT ok(has_function_privilege('authenticated','app.request_finance_discount(uuid,uuid,text,text,numeric,date,date,uuid,uuid,uuid,text,text)','EXECUTE'),'request RPC exposed to authenticated');
 SELECT ok(has_function_privilege('authenticated','app.review_finance_discount(uuid,text,bigint,text,text)','EXECUTE'),'review RPC exposed to authenticated');
 SELECT ok(NOT has_function_privilege('authenticated','app.assess_selected_finance_fee(uuid,uuid,text,text,date,date,date,uuid)','EXECUTE'),'old gross-only client assessment revoked');
@@ -58,6 +58,18 @@ SELECT is((app.request_finance_discount(
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'Ten percent recurring tuition','f6-ten-percent')->>'request_id')::uuid,
  :'monthly_request_id'::uuid,'exact request replay');
+SELECT throws_ok($sql$SELECT app.request_finance_discount(
+ '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
+ 'MONTHLY_TUITION','FIXED',5.00,'2026-11-01','2026-12-31',NULL,
+ '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
+ 'Overlapping request','f6-overlap')$sql$,'P0001'::char(5),NULL::text,
+ 'second overlapping recurring discount denied');
+SELECT throws_ok($sql$SELECT app.request_finance_discount(
+ '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000003',
+ 'MONTHLY_TUITION','FIXED',5.00,'2026-11-01','2026-12-31',NULL,
+ '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000007',
+ 'Self reviewer','f6-self')$sql$,'P0001'::char(5),NULL::text,
+ 'requester cannot choose themselves as reviewer');
 SELECT throws_ok($sql$SELECT app.review_finance_discount(
  (SELECT request_id FROM app_private.finance_discount_intents WHERE student_id=
  '08000000-0000-4000-8000-000000000060'), 'APPROVE',3,'Self approval','self')$sql$,
@@ -112,13 +124,49 @@ SELECT * FROM jsonb_to_record(app.assess_discounted_finance_fee(
  AS x(source_id uuid,resource_id uuid,campus_id uuid) \gset specific_
 SELECT * FROM jsonb_to_record(app.request_finance_discount(
  '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000003',
+ 'SPECIFIC_CHARGE','FIXED',10.00,NULL,NULL,:'specific_resource_id'::uuid,
+ '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
+ 'Rejected draft for the same charge','f6-rejected-specific')) AS x(request_id uuid,state text,request_version bigint) \gset rejected_
+RESET ROLE;
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.finance_reviewer_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.finance_reviewer_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint FROM app_private.principal_auth_bindings
+ WHERE id='08000000-0000-4000-8000-000000000022'),
+ 'exp',floor(extract(epoch FROM clock_timestamp()+interval '1 hour'))::bigint,
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT app.review_finance_discount(:'rejected_request_id'::uuid,'REJECT',
+ :'rejected_request_version'::bigint,'Not approved','f6-reject-specific');
+RESET ROLE;
+SELECT is((SELECT state FROM app_private.approval_requests
+ WHERE id=:'rejected_request_id'::uuid),'REJECTED'::text,
+ 'independent rejection cannot create an effective discount');
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.finance_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.finance_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint FROM app_private.principal_auth_bindings
+ WHERE id='08000000-0000-4000-8000-000000000008'),
+ 'exp',floor(extract(epoch FROM clock_timestamp()+interval '1 hour'))::bigint,
+ 'is_anonymous',false)::text,true);
+SELECT throws_ok($sql$SELECT app.request_finance_discount(
+ '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
+ 'SPECIFIC_CHARGE','FIXED',5.00,NULL,NULL,
+ (SELECT id FROM app_private.finance_fee_obligations WHERE assessment_key=
+  '08000000-0000-4000-8000-000000000093'),
+ '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
+ 'Wrong Student','f6-wrong-student')$sql$,'P0001'::char(5),NULL::text,
+ 'specific charge cannot be discounted for another Student');
+SET ROLE authenticated;
+SELECT * FROM jsonb_to_record(app.request_finance_discount(
+ '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000003',
  'SPECIFIC_CHARGE','FIXED',20.34,NULL,NULL,:'specific_resource_id'::uuid,
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'One charge only','f6-fixed-specific')) AS x(request_id uuid,state text,request_version bigint) \gset specific_request_
 RESET ROLE;
 SELECT is((SELECT fixed_minor FROM app_private.finance_discount_intents
  WHERE request_id=:'specific_request_request_id'::uuid),2034::numeric,
- 'fixed 20.34 is stored as exact minor units');
+ 'corrected request after rejection stores fixed 20.34 in minor units');
 SELECT is((app.apply_finance_discount(:'specific_resource_id'::uuid,'before-review')->>'discount_minor')::numeric,
  0::numeric,'pending specific-charge discount has no effect');
 SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.finance_reviewer_subject'),true);

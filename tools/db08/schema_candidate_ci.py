@@ -143,7 +143,7 @@ def validate_discount_source():
     ]:
         raise RuntimeError('DB08_F6_COMMAND_SCOPE')
     test = (ROOT / 'supabase/tests/db08/06_student_discounts.sql').read_text()
-    expected = 24
+    expected = 28
     if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(
         r'(?m)^SELECT (?:is|ok|throws_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
         raise RuntimeError('DB08_F6_TEST_PLAN')
