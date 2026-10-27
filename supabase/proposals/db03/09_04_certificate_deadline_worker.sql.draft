@@ -1,0 +1,110 @@
+GRANT CREATE ON SCHEMA app_private TO schoolos_platform_executor;
+SET ROLE schoolos_platform_executor;
+-- Advisory candidate discovery and authoritative mutation use the same rule.
+-- A timely receipt counts while awaiting review, including quarantine/archive.
+-- Only a principal REJECTED decision makes a received file need replacement.
+CREATE FUNCTION app_private.db03_deadline_basis(p_app uuid)
+RETURNS TABLE(document_kind text,grace_head_id uuid,kind_grace_id uuid,intake_id uuid,rejected_link_id uuid,due_on date,evaluated_on date,school_timezone text,evaluated_at timestamptz)
+LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; h app_private.admission_certificate_grace_history%ROWTYPE;
+ i app_private.admission_document_intakes%ROWTYPE; l app_private.admission_document_links%ROWTYPE;
+ k text; v_kind_grace uuid; v_due date; v_today date; zone text; moment timestamptz;
+BEGIN
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_app;
+ IF a.id IS NULL OR NOT app_private.db03_document_target_open(a.id,a.row_version) THEN RETURN; END IF;
+ SELECT * INTO h FROM app_private.admission_certificate_grace_history g WHERE g.application_id=a.id ORDER BY g.revision DESC LIMIT 1;
+ IF h.id IS NULL THEN RETURN; END IF;
+ SELECT * INTO i FROM app_private.admission_document_intakes x WHERE x.application_id=a.id ORDER BY x.revision DESC LIMIT 1;
+ IF i.id IS NOT NULL AND (NOT EXISTS(SELECT 1 FROM app_private.admission_policy_versions p WHERE p.id=i.policy_version_id AND p.school_id=a.school_id AND p.state='PUBLISHED')
+ OR EXISTS(SELECT 1 FROM app_private.db03_document_required(a.id) q WHERE q.document_kind NOT IN('BIRTH_CERTIFICATE','SCHOOL_LEAVING_CERTIFICATE','TRANSCRIPT'))) THEN RETURN; END IF;
+ SELECT s.timezone INTO zone FROM app_private.school_profiles s WHERE s.id=a.school_id;
+ moment:=clock_timestamp();v_today:=(moment AT TIME ZONE zone)::date;
+ IF v_today<h.first_granted_on THEN RETURN; END IF;
+ FOR k IN SELECT 'BIRTH_CERTIFICATE' UNION SELECT q.document_kind FROM app_private.db03_document_required(a.id) q ORDER BY 1 LOOP
+  v_due:=app_private.db03_document_due(a.id,k);
+  IF v_due IS NULL OR v_today<=v_due THEN CONTINUE; END IF;
+  SELECT g.id INTO v_kind_grace FROM app_private.admission_certificate_grace_history g WHERE g.application_id=a.id AND g.document_kind=k ORDER BY g.revision DESC LIMIT 1;
+  SELECT * INTO l FROM app_private.admission_document_links x WHERE x.application_id=a.id AND x.document_kind=k ORDER BY x.revision DESC LIMIT 1;
+  IF l.id IS NOT NULL AND l.received_on<=v_due AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_reviews r WHERE r.link_id=l.id AND r.decision='REJECTED') THEN CONTINUE; END IF;
+  RETURN QUERY SELECT k,h.id,v_kind_grace,i.id,l.id,v_due,v_today,zone,moment;
+  RETURN;
+ END LOOP;
+END $body$;
+CREATE FUNCTION app_private.db03_deadline_candidates(p_after uuid DEFAULT NULL,p_limit integer DEFAULT 50)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE result jsonb;
+BEGIN
+ IF p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 100 THEN RAISE EXCEPTION 'DB03 deadline candidate page invalid'; END IF;
+ PERFORM app_private.db03_deadline_actor();
+ SELECT COALESCE(jsonb_agg(q.id ORDER BY q.id),'[]') INTO result FROM(
+ SELECT a.id FROM app_private.admission_applications a WHERE a.state='DRAFT' AND (p_after IS NULL OR a.id>p_after)
+ AND EXISTS(SELECT 1 FROM app_private.admission_certificate_grace_history h WHERE h.application_id=a.id)
+ AND EXISTS(SELECT 1 FROM app_private.db03_deadline_basis(a.id)) ORDER BY a.id LIMIT p_limit) q;
+ PERFORM app_private.db03_deadline_actor();
+ RETURN result;
+END $body$;
+CREATE FUNCTION app_private.db03_expire_admission_certificate(p_application uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ctx record; basis record; existing uuid;
+ receipt uuid:=gen_random_uuid(); transition uuid:=gen_random_uuid(); source uuid; version bigint; result jsonb;
+BEGIN
+ IF p_application IS NULL THEN RAISE EXCEPTION 'DB03 deadline application required'; END IF;
+ SELECT * INTO ctx FROM app_private.db03_deadline_actor();
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF a.id IS NULL THEN RAISE EXCEPTION 'DB03 deadline application unavailable'; END IF;
+ -- Shared S1-S8 order: authorization fence, command key, School, Campus,
+ -- AcademicYear, application; all facts and authority are checked after waits.
+ PERFORM pg_advisory_xact_lock(71002,hashtext('admission.certificate.expire:'||a.id::text));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=a.school_id FOR UPDATE;
+ PERFORM 1 FROM app.campuses WHERE id=a.campus_id AND school_id=a.school_id FOR UPDATE;
+ PERFORM 1 FROM app.academic_years WHERE id=a.academic_year_id AND school_id=a.school_id FOR UPDATE;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application FOR UPDATE;
+ SELECT * INTO ctx FROM app_private.db03_deadline_actor();
+ SELECT id INTO existing FROM app_private.admission_deadline_rejections WHERE application_id=a.id;
+ IF existing IS NOT NULL THEN
+  RETURN app_private.db03_deadline_receipt(existing)||jsonb_build_object('status','REJECTED');
+ END IF;
+ SELECT * INTO basis FROM app_private.db03_deadline_basis(a.id);
+ IF NOT FOUND THEN RETURN jsonb_build_object('application_id',a.id,'application_version',a.row_version,'status','UNCHANGED'); END IF;
+ UPDATE app_private.admission_applications SET state='REJECTED',stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version INTO version;
+ INSERT INTO app_private.admission_application_transitions(id,application_id,sequence_number,from_state,to_state,application_version,reason_private,command_receipt_id,occurred_at,created_by)
+ VALUES(transition,a.id,2,'DRAFT','REJECTED',version,'MISSING_REQUIRED_CERTIFICATE_DEADLINE',receipt,basis.evaluated_at,ctx.actor_id);
+ INSERT INTO app_private.admission_deadline_rejections(application_id,transition_id,grace_head_id,kind_grace_id,intake_id,rejected_link_id,document_kind,
+ due_on,evaluated_on,school_timezone,application_version,command_receipt_id,occurred_at,created_by)
+ VALUES(a.id,transition,basis.grace_head_id,basis.kind_grace_id,basis.intake_id,basis.rejected_link_id,basis.document_kind,basis.due_on,basis.evaluated_on,
+ basis.school_timezone,version,receipt,basis.evaluated_at,ctx.actor_id) RETURNING id INTO source;
+ result:=app_private.db03_deadline_receipt(source);
+ RETURN result||jsonb_build_object('status','REJECTED');
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_deadline_basis(uuid),app_private.db03_deadline_candidates(uuid,integer),app_private.db03_expire_admission_certificate(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_deadline_candidates(uuid,integer),app_private.db03_expire_admission_certificate(uuid) TO schoolos_event_login;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_platform_executor;
+SET ROLE schoolos_schema_owner;
+CREATE OR REPLACE VIEW app_private.admission_certificate_grace_current WITH(security_invoker=true) AS
+ SELECT h.id,h.application_id,h.document_kind,h.revision,h.first_granted_on,h.due_on,
+ CASE WHEN a.state='REJECTED' THEN 'REJECTED' WHEN a.state='WITHDRAWN' THEN 'WITHDRAWN'
+ WHEN EXISTS(SELECT 1 FROM app_private.admission_document_links l WHERE l.application_id=a.id AND l.document_kind=h.document_kind
+ AND l.received_on<=h.due_on AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_links n WHERE n.application_id=a.id AND n.document_kind=l.document_kind AND n.revision>l.revision)
+ AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_reviews r WHERE r.link_id=l.id AND r.decision='REJECTED')) THEN 'DOCUMENT_RECEIVED'
+ WHEN (clock_timestamp() AT TIME ZONE s.timezone)::date>h.due_on THEN 'OVERDUE' ELSE 'AWAITING_DOCUMENT' END AS status
+ FROM app_private.admission_certificate_grace_history h JOIN app_private.admission_applications a ON a.id=h.application_id
+ JOIN app_private.school_profiles s ON s.id=a.school_id
+ WHERE NOT EXISTS(SELECT 1 FROM app_private.admission_certificate_grace_history n WHERE n.application_id=h.application_id AND n.document_kind=h.document_kind AND n.revision>h.revision);
+RESET ROLE;
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE OR REPLACE FUNCTION app.read_admission_document_queue(p_application_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ready bytea; status text;
+BEGIN
+ a:=app_private.db03_document_lock(p_application_id,'admission.document.view','read');
+ ready:=app_private.db03_document_snapshot(a.id);
+ status:=CASE WHEN a.state='REJECTED' THEN 'REJECTED' WHEN a.state='WITHDRAWN' THEN 'WITHDRAWN'
+ WHEN app_private.db03_documents_cleared(a.id) THEN 'DOCUMENTS_APPROVED'
+ WHEN app_private.db03_document_is_forwarded(a.id) THEN 'AWAITING_PRINCIPAL_REVIEW'
+ WHEN ready IS NOT NULL THEN 'READY_TO_FORWARD' ELSE 'PENDING_DOCUMENTS' END;
+ RETURN jsonb_build_object('application_id',a.id,'application_version',a.row_version,'status',status);
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;

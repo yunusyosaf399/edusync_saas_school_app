@@ -16,6 +16,6 @@
       "selected_description": "Keep admission certificates permanently, including rejected and withdrawn applications."
     }
   ],
-  "implementation_status": "Recorded product requirements. Deadline rejection and permanent byte retention are not yet implemented.",
+  "implementation_status": "Inactive S7/S9 candidates implement retained certificate storage and automatic missing-certificate deadline rejection; see db03_s9_certificate_deadline_rejection_20261027.md and PR #102 for exact runtime evidence. No hosted deployment or schedule activation.",
   "hosted_deployment_authorized": false
 }

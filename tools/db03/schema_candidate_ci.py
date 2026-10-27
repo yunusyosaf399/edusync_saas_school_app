@@ -234,6 +234,24 @@ def validate_review_source() -> tuple[str, str]:
     return sql, fixture
 
 
+
+def validate_deadline_source() -> tuple[str, str]:
+    paths = sorted((ROOT / "supabase/proposals/db03").glob("09_*.sql.draft"))
+    if len(paths) != 4:
+        raise RuntimeError("DB03_DEADLINE_FRAGMENT_COUNT")
+    sql = "\n".join(p.read_text() for p in paths)
+    if re.findall(r"(?mi)^CREATE TABLE app_private\.([a-z_]+)", sql) != ["admission_deadline_rejections"]:
+        raise RuntimeError("DB03_DEADLINE_TABLE_SCOPE")
+    if re.search(r"(?mi)^CREATE FUNCTION app\.", sql):
+        raise RuntimeError("DB03_DEADLINE_PUBLIC_SCOPE")
+    outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
+    if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE EXTENSION|SELECT cron\.)\b", outside):
+        raise RuntimeError("DB03_DEADLINE_ACTIVATION_OR_SEED")
+    fixture = (ROOT / "supabase/tests/db03/fixtures/certificate_deadline_actor.sql").read_text()
+    print("DB03_DEADLINE_SOURCE_PASS fragments=4 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, fixture
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -248,6 +266,7 @@ def main() -> int:
     principal_test = validate_principal_source()
     document_sql, document_test, document_fixture = validate_document_source()
     review_sql, review_fixture = validate_review_source()
+    deadline_sql, deadline_fixture = validate_deadline_source()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -412,6 +431,21 @@ def main() -> int:
                 raise RuntimeError("DB03_REVIEW_DDL_ROLLBACK_INCOMPLETE")
             print("DB03_REVIEW_DDL_ROLLBACK_PASS sources=0 prior_snapshot_restored=true")
             local.run_psql(container, "BEGIN;\n" + review_sql + "\nCOMMIT;", "DB03_REVIEW_INSTALL")
+            deadline_probe = "SELECT md5(pg_get_functiondef('app_private.db03_guard_intake()'::regprocedure)||pg_get_functiondef('app.read_admission_document_queue(uuid)'::regprocedure)||pg_get_viewdef('app_private.admission_certificate_grace_current'::regclass));"
+            deadline_before = local.run_psql(container, deadline_probe, "DB03_DEADLINE_BEFORE", tuples=True).strip()
+            try:
+                local.run_psql(container, "BEGIN;\n" + deadline_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_DEADLINE_FAILURE'; END $failure$;\nCOMMIT;", "DB03_DEADLINE_DDL_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_DEADLINE_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_DEADLINE_DDL_FAILURE_ABSENT")
+            deadline_after = local.run_psql(container, deadline_probe, "DB03_DEADLINE_AFTER", tuples=True).strip()
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='admission_deadline_rejections';", "DB03_DEADLINE_ABSENT", tuples=True).strip()
+            if deadline_before != deadline_after or absent != "0":
+                raise RuntimeError("DB03_DEADLINE_DDL_ROLLBACK_INCOMPLETE")
+            print("DB03_DEADLINE_DDL_ROLLBACK_PASS source=0 prior_guard_queue_view_restored=true")
+            local.run_psql(container, "BEGIN;\n" + deadline_sql + "\nCOMMIT;", "DB03_DEADLINE_INSTALL")
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -514,7 +548,7 @@ def main() -> int:
             print("DB03_DOCUMENT_DATABASE_PASS 28/28; total_DB03=305/305; Foundation=220/220; fixtures_rolled_back=true")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -529,6 +563,8 @@ def main() -> int:
             run_document_service(local, fresh_publication_database, document_fixture)
             from document_review_ci import run_document_review
             run_document_review(local, fresh_publication_database, document_fixture + "\n" + review_fixture)
+            from certificate_deadline_ci import run_certificate_deadline
+            run_certificate_deadline(local, fresh_publication_database, document_fixture + "\n" + review_fixture + "\n" + deadline_fixture)
             return 0
     finally:
         if started:

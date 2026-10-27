@@ -1,0 +1,36 @@
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db03_deadline_operation ON app_private.operation_contracts FOR SELECT TO schoolos_authz_reader,schoolos_evidence_writer
+ USING(code='admission.certificate.expire' AND contract_version=1);
+RESET ROLE;
+GRANT USAGE ON SCHEMA app_private TO schoolos_event_login;
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.db03_deadline_actor() RETURNS TABLE(actor_id uuid,operation_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; operation uuid; permission uuid; moment timestamptz;
+BEGIN
+ IF session_user<>'schoolos_event_login' OR current_setting('transaction_isolation')<>'read committed' THEN RAISE EXCEPTION 'DB03 deadline purpose-bound login required'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT id INTO STRICT actor FROM app_private.principals WHERE kind='SYSTEM' AND state='ACTIVE' AND system_purpose='admission-certificate-deadline';
+ SELECT o.id,o.request_permission_id INTO operation,permission FROM app_private.operation_contracts o JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='admission.certificate.expire' AND o.handler_key=o.code AND o.contract_version=1 AND o.payload_schema_version=1 AND o.enabled AND NOT o.requires_approval
+ AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ moment:=clock_timestamp();
+ IF operation IS NULL OR NOT EXISTS(
+ SELECT 1 FROM app_private.assignment_permission_scopes s
+ JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+ JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id JOIN app_private.roles r ON r.id=s.role_id
+ WHERE a.principal_id=actor AND a.principal_kind='SYSTEM' AND a.context_kind='SYSTEM' AND a.role_id=s.role_id
+ AND g.role_id=s.role_id AND g.permission_id=s.permission_id AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind AND c.resolver_key=s.resolver_key AND c.enabled
+ AND s.permission_id=permission AND r.code='ADMISSION_DEADLINE_WORKER' AND r.state='ACTIVE' AND NOT r.family_only
+ AND s.scope_kind='ALL' AND s.resolver_key='DIRECT' AND s.campus_id IS NULL
+ AND a.valid_from<=moment AND (a.valid_until IS NULL OR moment<a.valid_until) AND (a.revoked_at IS NULL OR moment<a.revoked_at)
+ AND g.valid_from<=moment AND (g.valid_until IS NULL OR moment<g.valid_until) AND (g.revoked_at IS NULL OR moment<g.revoked_at)
+ AND s.valid_from<=moment AND (s.valid_until IS NULL OR moment<s.valid_until) AND (s.revoked_at IS NULL OR moment<s.revoked_at)) THEN RAISE EXCEPTION 'DB03 deadline current SYSTEM authority denied'; END IF;
+ RETURN QUERY SELECT actor,operation;
+EXCEPTION WHEN no_data_found OR too_many_rows THEN RAISE EXCEPTION 'DB03 deadline unique active SYSTEM actor required';
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_deadline_actor() FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_deadline_actor() TO schoolos_platform_executor,schoolos_evidence_writer;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
