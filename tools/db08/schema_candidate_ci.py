@@ -101,6 +101,33 @@ def validate_chain_source():
     return sql, test, expected
 
 
+def validate_selection_source():
+    paths = sorted((ROOT / 'supabase/proposals/db08').glob('05_*.sql.draft'))
+    if len(paths) != 3:
+        raise RuntimeError('DB08_F5_FRAGMENT_SCOPE')
+    sql = '\n'.join(path.read_text() for path in paths)
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)', sql) != [
+        'finance_fee_applicabilities', 'finance_fee_assessment_selections'
+    ]:
+        raise RuntimeError('DB08_F5_TABLE_SCOPE')
+    if re.findall(r'(?m)^CREATE FUNCTION app\.([a-z_]+)', sql) != [
+        'bind_finance_fee', 'assess_selected_finance_fee'
+    ]:
+        raise RuntimeError('DB08_F5_COMMAND_SCOPE')
+    test = (ROOT / 'supabase/tests/db08/05_fee_selection.sql').read_text()
+    expected = 24
+    if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB08_F5_TEST_PLAN')
+    for name in ('fixture_commands.sql', 'fixture_selection.sql'):
+        if test.count('\\ir ' + name) != 1:
+            raise RuntimeError('DB08_F5_FIXTURE_SCOPE')
+        test = test.replace('\\ir ' + name, (ROOT / 'supabase/tests/db08' / name).read_text())
+    print(f'DB08_F5_SOURCE_PASS fragments=3 assertions={expected} sha256=' +
+          hashlib.sha256(sql.encode()).hexdigest(), flush=True)
+    return sql, test, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--foundation-root', type=Path)
@@ -110,6 +137,7 @@ def main():
     workflow_sql, workflow_test, workflow_assertions = validate_workflow_source()
     change_sql, change_test, change_assertions = validate_change_source()
     chain_sql, chain_test, chain_assertions = validate_chain_source()
+    selection_sql, selection_test, selection_assertions = validate_selection_source()
     if args.source_only:
         return 0
     if os.environ.get('GITHUB_ACTIONS') != 'true' or args.foundation_root is None:
@@ -257,6 +285,31 @@ def main():
             sys.path.insert(0, str(ROOT))
             from tools.db08.finance_runtime_ci import run_finance_runtime
             run_finance_runtime(local_status)
+            # F5 reads the actual D1 class, Student and Enrollment identities.
+            # Apply the immutable D1 draft chain only inside this disposable stack.
+            sys.path.insert(0, str(ROOT / 'tools/supabase'))
+            from domain_local_ci import assemble_draft_chain
+            d1_files, d1_sql = assemble_draft_chain(ROOT)
+            local.run_psql(container, d1_sql, 'DB08_F5_D1_INSTALL', timeout=1200)
+            print(f'DB08_F5_D1_DEPENDENCY_PASS fragments={len(d1_files)}', flush=True)
+            try:
+                local.run_psql(container, 'BEGIN;\n' + selection_sql +
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB08_INJECTED_F5_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB08_F5_FAILED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB08_INJECTED_F5_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB08_F5_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('finance_fee_applicabilities','finance_fee_assessment_selections');", 'DB08_F5_ROLLBACK_ABSENCE', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB08_F5_PARTIAL_INSTALL_SURVIVED')
+            print('DB08_F5_DDL_ROLLBACK_PASS tables=0', flush=True)
+            local.run_psql(container, 'BEGIN;\n' + selection_sql + '\nCOMMIT;', 'DB08_F5_INSTALL')
+            output = local.run_psql(container, selection_test, 'DB08_F5_SELECTION_TEST')
+            print(output, flush=True)
+            parse_tap(output, selection_assertions)
+            print(f'DB08_F5_DATABASE_PASS {selection_assertions}/{selection_assertions}; fixtures_rolled_back=true; discounts=false', flush=True)
             return 0
     finally:
         if started:
