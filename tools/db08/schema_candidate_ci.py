@@ -82,6 +82,25 @@ def validate_change_source():
     return sql, test, expected
 
 
+def validate_chain_source():
+    paths = sorted((ROOT / 'supabase/proposals/db08').glob('04_*.sql.draft'))
+    if len(paths) != 1:
+        raise RuntimeError('DB08_F4_FRAGMENT_SCOPE')
+    sql = paths[0].read_text()
+    if len(re.findall(r'(?m)^CREATE FUNCTION app\.request_finance_fee_change', sql)) != 1 or len(re.findall(r'(?m)^CREATE OR REPLACE FUNCTION app\.review_finance_fee_change', sql)) != 1:
+        raise RuntimeError('DB08_F4_COMMAND_SCOPE')
+    test = (ROOT / 'supabase/tests/db08/04_fee_chain.sql').read_text()
+    expected = 25
+    if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB08_F4_TEST_PLAN')
+    for name in ('fixture_commands.sql', 'fixture_change.sql', 'fixture_chain.sql'):
+        if test.count('\\ir ' + name) != 1:
+            raise RuntimeError('DB08_F4_FIXTURE_SCOPE')
+        test = test.replace('\\ir ' + name, (ROOT / 'supabase/tests/db08' / name).read_text())
+    print(f'DB08_F4_SOURCE_PASS fragments=1 assertions={expected} sha256=' + hashlib.sha256(sql.encode()).hexdigest(), flush=True)
+    return sql, test, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--foundation-root', type=Path)
@@ -90,6 +109,7 @@ def main():
     sql, test = validate_source()
     workflow_sql, workflow_test, workflow_assertions = validate_workflow_source()
     change_sql, change_test, change_assertions = validate_change_source()
+    chain_sql, chain_test, chain_assertions = validate_chain_source()
     if args.source_only:
         return 0
     if os.environ.get('GITHUB_ACTIONS') != 'true' or args.foundation_root is None:
@@ -205,6 +225,29 @@ def main():
             if remaining != '0':
                 raise RuntimeError('DB08_F3_FIXTURE_ROLLBACK_INCOMPLETE')
             print(f'DB08_F3_DATABASE_PASS {change_assertions}/{change_assertions}; fixtures_rolled_back=true; financial_clearance=false', flush=True)
+            try:
+                local.run_psql(container, 'BEGIN;\n' + chain_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB08_INJECTED_F4_FAILURE'; END $failure$;\nCOMMIT;", 'DB08_F4_FAILED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB08_INJECTED_F4_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB08_F4_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_proc WHERE pronamespace='app'::regnamespace AND proname='request_finance_fee_change' AND oidvectortypes(proargtypes) LIKE '%uuid[]%';", 'DB08_F4_ROLLBACK_ABSENCE', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB08_F4_PARTIAL_INSTALL_SURVIVED')
+            print('DB08_F4_DDL_ROLLBACK_PASS chain_rpc=0', flush=True)
+            local.run_psql(container, 'BEGIN;\n' + chain_sql + '\nCOMMIT;', 'DB08_F4_INSTALL')
+            try:
+                output = local.run_psql(container, chain_test, 'DB08_F4_COMMAND_TEST')
+                print(output, flush=True)
+                parse_tap(output, chain_assertions)
+            except local.DomainLocalCIError:
+                local.run_psql(container, '\\o /dev/null\n' + chain_test, 'DB08_F4_SQL_DIAGNOSTIC')
+                raise
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_fee_change_intents)+(SELECT count(*) FROM app_private.finance_fee_publications)+(SELECT count(*) FROM app_private.approval_requests)+(SELECT count(*) FROM app_private.approval_reviews)+(SELECT count(*) FROM app_private.finance_fee_obligations)+(SELECT count(*) FROM app_private.command_receipts);", 'DB08_F4_FIXTURE_CLEANUP', tuples=True).strip()
+            if remaining != '0':
+                raise RuntimeError('DB08_F4_FIXTURE_ROLLBACK_INCOMPLETE')
+            print(f'DB08_F4_DATABASE_PASS {chain_assertions}/{chain_assertions}; fixtures_rolled_back=true; financial_clearance=false', flush=True)
             # Persist only in the disposable stack to exercise real Auth/Data API
             # and independent PostgreSQL backends with observable blocking.
             fixture = (ROOT / 'supabase/tests/db08/fixture_commands.sql').read_text()
