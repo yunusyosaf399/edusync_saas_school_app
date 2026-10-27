@@ -285,6 +285,16 @@ def main():
             sys.path.insert(0, str(ROOT))
             from tools.db08.finance_runtime_ci import run_finance_runtime
             run_finance_runtime(local_status)
+            # The earlier real Auth actors intentionally commit in their
+            # disposable stack. Reset before F5 so its transaction-scoped
+            # Foundation/D1/Finance fixtures cannot collide with those IDs.
+            run(['supabase', 'db', 'reset', '--local', '--no-seed'], cwd=foundation, timeout=900)
+            url, key = local_status()
+            if len(prepare(url, key)) != 5:
+                raise RuntimeError('DB08_F5_AUTH_FIXTURES')
+            key = None
+            local.run_psql(container, 'BEGIN;\n' + sql + '\n' + workflow_sql +
+                '\n' + change_sql + '\n' + chain_sql + '\nCOMMIT;', 'DB08_F5_PREREQUISITES')
             # F5 reads the actual D1 class, Student and Enrollment identities.
             # Apply the immutable D1 draft chain only inside this disposable stack.
             sys.path.insert(0, str(ROOT / 'tools/supabase'))
