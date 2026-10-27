@@ -17,7 +17,7 @@ ASSERTIONS = 73
 
 
 def validate_source():
-    paths = sorted((ROOT / 'supabase/proposals/db08').glob('*.sql.draft'))
+    paths = sorted((ROOT / 'supabase/proposals/db08').glob('01_*.sql.draft'))
     if len(paths) != 1:
         raise RuntimeError('DB08_FRAGMENT_SCOPE')
     sql = paths[0].read_text()
@@ -38,12 +38,36 @@ def validate_source():
     return sql, test
 
 
+def validate_workflow_source():
+    paths = sorted((ROOT / 'supabase/proposals/db08').glob('02_*.sql.draft'))
+    if len(paths) != 3:
+        raise RuntimeError('DB08_F2_FRAGMENT_SCOPE')
+    sql = '\n'.join(p.read_text() for p in paths)
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)', sql) != ['finance_fee_publications']:
+        raise RuntimeError('DB08_F2_TABLE_SCOPE')
+    if re.findall(r'(?m)^CREATE FUNCTION app\.([a-z_]+)', sql) != ['configure_finance_fee', 'assess_finance_fee']:
+        raise RuntimeError('DB08_F2_PUBLIC_COMMAND_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(CREATE ROLE|ALTER ROLE|INSERT INTO app_private\.permissions)\b', outside):
+        raise RuntimeError('DB08_F2_SEED_OR_ROLE_CHANGE')
+    test = (ROOT / 'supabase/tests/db08/02_finance_commands.sql').read_text()
+    expected = 40
+    if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB08_F2_TEST_PLAN')
+    if test.count('\\ir fixture_commands.sql') != 1:
+        raise RuntimeError('DB08_F2_FIXTURE_SCOPE')
+    test = test.replace('\\ir fixture_commands.sql', (ROOT / 'supabase/tests/db08/fixture_commands.sql').read_text())
+    print(f'DB08_F2_SOURCE_PASS fragments=3 assertions={expected} sha256=' + hashlib.sha256(sql.encode()).hexdigest(), flush=True)
+    return sql, test, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--foundation-root', type=Path)
     parser.add_argument('--source-only', action='store_true')
     args = parser.parse_args()
     sql, test = validate_source()
+    workflow_sql, workflow_test, workflow_assertions = validate_workflow_source()
     if args.source_only:
         return 0
     if os.environ.get('GITHUB_ACTIONS') != 'true' or args.foundation_root is None:
@@ -113,6 +137,25 @@ def main():
             if total != 220:
                 raise RuntimeError('DB08_FOUNDATION_ASSERTION_COUNT')
             print(f'DB08_F1_DATABASE_PASS {ASSERTIONS}/{ASSERTIONS}; frozen_Foundation=220/220; fixtures_rolled_back=true; business_APIs=0; clearance_issuance=false', flush=True)
+            try:
+                local.run_psql(container, 'BEGIN;\n' + workflow_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB08_INJECTED_F2_FAILURE'; END $failure$;\nCOMMIT;", 'DB08_F2_FAILED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB08_INJECTED_F2_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB08_F2_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='finance_fee_publications')+(SELECT count(*) FROM pg_proc WHERE proname IN('db08_fee_actor','db08_fee_receipt','configure_finance_fee','assess_finance_fee') AND pronamespace IN('app_private'::regnamespace,'app'::regnamespace));", 'DB08_F2_ROLLBACK_ABSENCE', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB08_F2_PARTIAL_INSTALL_SURVIVED')
+            print('DB08_F2_DDL_ROLLBACK_PASS publication=0 functions=0', flush=True)
+            local.run_psql(container, 'BEGIN;\n' + workflow_sql + '\nCOMMIT;', 'DB08_F2_INSTALL')
+            output = local.run_psql(container, workflow_test, 'DB08_F2_COMMAND_TEST')
+            print(output, flush=True)
+            parse_tap(output, workflow_assertions)
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_fee_publications)+(SELECT count(*) FROM app_private.finance_fee_obligations)+(SELECT count(*) FROM app_private.finance_fee_rules)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.audit_events)+(SELECT count(*) FROM app_private.outbox_events)+(SELECT count(*) FROM app_private.school_profiles)+(SELECT count(*) FROM app_private.principals);", 'DB08_F2_FIXTURE_CLEANUP', tuples=True).strip()
+            if remaining != '0':
+                raise RuntimeError('DB08_F2_FIXTURE_ROLLBACK_INCOMPLETE')
+            print(f'DB08_F2_DATABASE_PASS {workflow_assertions}/{workflow_assertions}; frozen_Foundation=220/220; fixtures_rolled_back=true; financial_clearance=false', flush=True)
             return 0
     finally:
         if started:
