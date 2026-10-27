@@ -14,6 +14,8 @@ import json
 import math
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import time
 from typing import Callable, Protocol
 from uuid import UUID
@@ -185,8 +187,8 @@ class Entitlements:
 def measure_image(data: bytes) -> tuple[str, bytes]:
     """Decode only PNG/JPEG with explicit size/pixel/frame bounds.
 
-    Images are source artifacts, not proof of certificate authenticity. PDF and
-    other formats fail closed until a separate reviewed validator is installed.
+    Images are source artifacts, not proof of certificate authenticity.
+    PDF processing is isolated in measure_certificate().
     """
     if not isinstance(data, bytes) or not 1 <= len(data) <= MAX_BYTES:
         raise Denied('Certificate must contain 1 to 1048576 bytes')
@@ -203,6 +205,23 @@ def measure_image(data: bytes) -> tuple[str, bytes]:
         return {'PNG': 'image/png', 'JPEG': 'image/jpeg'}[kind], hashlib.sha256(data).digest()
     except Exception:
         raise Denied('Certificate must be a valid single-frame PNG or JPEG') from None
+
+
+def measure_certificate(data: bytes) -> tuple[str, bytes]:
+    """Derive the type from bounded bytes, never a filename/client MIME claim."""
+    if not isinstance(data, bytes) or not 1 <= len(data) <= MAX_BYTES:
+        raise Denied('Certificate must contain 1 to 1048576 bytes')
+    if not data.startswith(b'%PDF-'):
+        return measure_image(data)
+    try:
+        result = subprocess.run([sys.executable, '-I', str(Path(__file__).with_name('pdf_validator.py'))],
+                                input=data, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=5, check=False)
+        if result.returncode != 0:
+            raise ValueError('PDF validation rejected')
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise Denied('PDF must be valid, unencrypted, at most 50 pages, and contain no active content or embedded files') from None
+    return 'application/pdf', hashlib.sha256(data).digest()
 
 
 class AdmissionDocumentService:
@@ -237,7 +256,7 @@ class AdmissionDocumentService:
         claims = self.authenticate(token)
         if not isinstance(claims, VerifiedClaims):
             raise Denied('Verified authentication required')
-        content_type, digest = measure_image(data)
+        content_type, digest = measure_certificate(data)
         from datetime import datetime, timezone
         expiry = datetime.fromtimestamp(self.clock() + self.lifetime, timezone.utc)
         with self.entitlements.current() as (revision, snapshot_digest, valid_until):
@@ -251,7 +270,7 @@ class AdmissionDocumentService:
             adapter = self.locations[intent['storage_location_key']]
             adapter.put_once(intent['object_key'], data)
             stored = adapter.read(intent['object_key'], MAX_BYTES)
-            stored_type, stored_digest = measure_image(stored)
+            stored_type, stored_digest = measure_certificate(stored)
             if stored_digest != digest or stored_type != content_type or len(stored) != len(data):
                 raise Denied('Stored certificate validation failed')
         # Separate external I/O from the revision critical section. Downgrade,

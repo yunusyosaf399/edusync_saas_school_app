@@ -24,7 +24,7 @@ CREATE TABLE app_private.admission_document_upload_intents (
  file_id uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(),
  storage_location_key text NOT NULL CHECK(storage_location_key ~ '^[A-Z][A-Z0-9_]{0,63}$'),
  object_key text NOT NULL UNIQUE,
- content_type text NOT NULL CHECK(content_type IN('image/png','image/jpeg')),
+ content_type text NOT NULL CHECK(content_type IN('image/png','image/jpeg','application/pdf')),
  byte_size bigint NOT NULL CHECK(byte_size BETWEEN 1 AND 1048576),
  content_hash bytea NOT NULL CHECK(octet_length(content_hash)=32),
  entitlement_revision bigint NOT NULL CHECK(entitlement_revision>0),

@@ -102,8 +102,8 @@ def run_document_service(local, fresh_database, fixture):
         archive=LocalPrivateArchive(directory/'archive')
         service=AdmissionDocumentService(connect=worker,authenticate=authenticate,entitlements=ent,
              locations={'PRIVATE_ADMISSIONS':archive},upload_location='PRIVATE_ADMISSIONS',intent_lifetime=300)
-        def upload(app,version,kind,key):
-            return service.upload(token,application_id=str(app),expected_version=version,document_kind=kind,data=data,idempotency_key=key)
+        def upload(app,version,kind,key,payload=None):
+            return service.upload(token,application_id=str(app),expected_version=version,document_kind=kind,data=data if payload is None else payload,idempotency_key=key)
         def queue(app):return api('SELECT app.read_admission_document_queue(%s)',(app,))['status']
         app=make_app('transfer','Private Previous School')
         denied(lambda:api('SELECT app.forward_admission_to_principal(%s,2,%s)',(app,'early-forward')),'required documents missing')
@@ -134,6 +134,23 @@ def run_document_service(local, fresh_database, fixture):
         upload(first,2,'BIRTH_CERTIFICATE','first-birth')
         check(queue(first)=='READY_TO_FORWARD','first-time applicant needs no leaving certificate')
         denied(lambda:upload(first,3,'UNKNOWN_DOCUMENT','unknown-kind'),'not in current application roster')
+        from services.admission_documents.tests.pdf_fixtures import certificate_pdf
+        pdf_data=certificate_pdf(2)
+        pdf_app=make_app('pdf')
+        pdf_result=upload(pdf_app,2,'BIRTH_CERTIFICATE','pdf-birth',payload=pdf_data)
+        check(queue(pdf_app)=='READY_TO_FORWARD','real PDF certificate satisfies collection roster')
+        check(upload(pdf_app,2,'BIRTH_CERTIFICATE','pdf-birth',payload=pdf_data)==pdf_result,'PDF retry retains original source')
+        with connection() as root:
+            mime,size,content_hash,object_key=root.execute('SELECT content_type,byte_size,content_hash,object_key FROM app_private.file_objects WHERE id=%s',(pdf_result['file_id'],)).fetchone()
+            check(mime=='application/pdf' and size==len(pdf_data) and bytes(content_hash)==hashlib.sha256(pdf_data).digest(),'worker records measured PDF MIME/size/hash')
+        check(archive.read(object_key,1048576)==pdf_data,'original PDF bytes preserved without rewriting')
+        api('SELECT app.forward_admission_to_principal(%s,3,%s)',(pdf_app,'pdf-forward'))
+        check(queue(pdf_app)=='AWAITING_PRINCIPAL_REVIEW','PDF attachment can be forwarded to principal')
+        invalid_pdf=make_app('invalid-pdf')
+        denied(lambda:upload(invalid_pdf,2,'BIRTH_CERTIFICATE','encrypted-pdf',payload=certificate_pdf(encrypted=True)),'PDF must be valid')
+        denied(lambda:upload(invalid_pdf,2,'BIRTH_CERTIFICATE','active-pdf',payload=certificate_pdf(attachment=True)),'PDF must be valid')
+        with connection() as root:
+            check(root.execute('SELECT count(*) FROM app_private.admission_document_upload_intents WHERE application_id=%s',(invalid_pdf,)).fetchone()[0]==0,'unsafe PDFs create no upload intent or private object')
         atomic=make_app('atomic')
         with connection() as root:
             root.execute("CREATE FUNCTION app_private.db03_document_test_failure() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF NEW.event_type='admission.document.upload' THEN RAISE EXCEPTION 'document synthetic outbox failure'; END IF; RETURN NEW; END$$")
@@ -203,7 +220,7 @@ def run_document_service(local, fresh_database, fixture):
         # A finite set of real backend lock schedules over real service files.
         races=0
         for case in ('quarantine_first','forward_first_quarantine','same_key_forward','withdrawal_first','revocation_first'):
-            target=make_app('race-'+case);file=upload(target,2,'BIRTH_CERTIFICATE','race-birth-'+case)['file_id']
+            target=make_app('race-'+case);file=upload(target,2,'BIRTH_CERTIFICATE','race-birth-'+case,payload=pdf_data if case=='same_key_forward' else None)['file_id']
             a,b,control=connection(),connection(),connection();pool=ThreadPoolExecutor(max_workers=1)
             try:
                 if case in ('quarantine_first','withdrawal_first','revocation_first'):

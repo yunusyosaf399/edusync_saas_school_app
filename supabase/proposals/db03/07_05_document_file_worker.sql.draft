@@ -7,7 +7,7 @@ DECLARE a app_private.admission_applications%ROWTYPE; ctx record; i app_private.
  u app_private.admission_document_upload_intents%ROWTYPE; v_hash bytea; due date; file uuid; identifier uuid; today date;
 BEGIN
  IF session_user<>'schoolos_file_login' THEN RAISE EXCEPTION 'DB03 purpose-bound file worker required'; END IF;
- IF p_expected IS NULL OR p_expected<1 OR p_kind IS NULL OR p_kind !~ '^[A-Z][A-Z0-9_]{0,63}$' OR p_type IS NULL OR p_type NOT IN('image/png','image/jpeg')
+ IF p_expected IS NULL OR p_expected<1 OR p_kind IS NULL OR p_kind !~ '^[A-Z][A-Z0-9_]{0,63}$' OR p_type IS NULL OR p_type NOT IN('image/png','image/jpeg','application/pdf')
   OR p_size IS NULL OR p_size NOT BETWEEN 1 AND 1048576 OR p_content_hash IS NULL OR octet_length(p_content_hash)<>32
   OR p_revision IS NULL OR p_revision<1 OR p_snapshot_digest IS NULL OR octet_length(p_snapshot_digest)<>32
   OR p_location IS NULL OR p_location !~ '^[A-Z][A-Z0-9_]{0,63}$' OR p_expires IS NULL OR NOT isfinite(p_expires) THEN
