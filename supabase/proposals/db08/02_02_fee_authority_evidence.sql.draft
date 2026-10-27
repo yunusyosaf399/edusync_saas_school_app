@@ -17,8 +17,6 @@ GRANT SELECT,INSERT ON app_private.command_receipts,app_private.audit_events,app
 RESET ROLE;
 
 GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
-GRANT USAGE ON SCHEMA auth TO schoolos_authz_reader;
-GRANT EXECUTE ON FUNCTION auth.jwt() TO schoolos_authz_reader;
 SET ROLE schoolos_authz_reader;
 CREATE FUNCTION app_private.db08_fee_actor(p_code text,p_campus uuid)
 RETURNS TABLE(actor_id uuid,operation_id uuid)
@@ -29,7 +27,8 @@ BEGIN
  IF p_code IS NULL OR p_code NOT IN('finance.fee.configure','finance.charge.assess') OR p_campus IS NULL
    OR pg_catalog.current_setting('transaction_isolation')<>'read committed' THEN
    RAISE EXCEPTION 'DB08 Finance operation unavailable'; END IF;
- claims:=auth.jwt(); exp_text:=claims->>'exp';
+ claims:=NULLIF(pg_catalog.current_setting('request.jwt.claims',true),'')::jsonb;
+ exp_text:=claims->>'exp';
  IF exp_text IS NULL OR exp_text !~ '^[0-9]{1,12}$' OR
     pg_catalog.to_timestamp(exp_text::bigint)<=pg_catalog.clock_timestamp() THEN
     RAISE EXCEPTION 'DB08 Finance authentication expired'; END IF;
