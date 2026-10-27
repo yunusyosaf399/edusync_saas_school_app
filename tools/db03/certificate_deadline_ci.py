@@ -302,7 +302,7 @@ def run_certificate_deadline(local, fresh_database, fixture):
         check(expire(missing)==result,'authorized replacement worker assignment cannot duplicate historical terminal effect')
         # Retired policy prevents automatic interpretation of untrusted roster.
         with connection() as root:pv=root.execute("SELECT row_version FROM app_private.admission_policy_versions WHERE id='66666666-6666-4666-8666-666666666666'").fetchone()[0]
-        api('SELECT policy_id FROM app.publish_admission_policy(%s,%s,NULL,%s)',('66666666-6666-4666-8666-666666666666',pv,'retire-old-policy'))
+        api('SELECT policy_id FROM app.publish_admission_policy(%s,%s,%s,%s)',('66666666-6666-4666-8666-666666666666',pv,POLICY,'retire-old-policy'))
         check(expire(retired_policy)['status']=='UNCHANGED','retired collection policy is skipped for repair, not used for destructive decision')
         # After policy retirement only the unprepared mandatory-birth draft
         # remains eligible; a real bounded periodic pass must reject it.
