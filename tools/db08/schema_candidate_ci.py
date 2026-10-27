@@ -316,9 +316,16 @@ def main():
                 raise RuntimeError('DB08_F5_PARTIAL_INSTALL_SURVIVED')
             print('DB08_F5_DDL_ROLLBACK_PASS tables=0', flush=True)
             local.run_psql(container, 'BEGIN;\n' + selection_sql + '\nCOMMIT;', 'DB08_F5_INSTALL')
-            output = local.run_psql(container, selection_test, 'DB08_F5_SELECTION_TEST')
-            print(output, flush=True)
-            parse_tap(output, selection_assertions)
+            try:
+                output = local.run_psql(container, selection_test, 'DB08_F5_SELECTION_TEST')
+                print(output, flush=True)
+                parse_tap(output, selection_assertions)
+            except local.DomainLocalCIError:
+                # Suppress pgtap/stdout so psql's actual SQLSTATE and context
+                # survive the runner's bounded diagnostic tail.
+                local.run_psql(container, '\\o /dev/null\n' + selection_test,
+                               'DB08_F5_SQL_DIAGNOSTIC')
+                raise
             print(f'DB08_F5_DATABASE_PASS {selection_assertions}/{selection_assertions}; fixtures_rolled_back=true; discounts=false', flush=True)
             return 0
     finally:
