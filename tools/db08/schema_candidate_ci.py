@@ -252,7 +252,8 @@ def main():
             # and independent PostgreSQL backends with observable blocking.
             fixture = (ROOT / 'supabase/tests/db08/fixture_commands.sql').read_text()
             change_fixture = (ROOT / 'supabase/tests/db08/fixture_change.sql').read_text()
-            local.run_psql(container, 'BEGIN;\n' + fixture + '\n' + change_fixture + '\nCOMMIT;', 'DB08_REAL_AUTH_FIXTURE')
+            chain_fixture = (ROOT / 'supabase/tests/db08/fixture_chain.sql').read_text()
+            local.run_psql(container, 'BEGIN;\n' + fixture + '\n' + change_fixture + '\n' + chain_fixture + '\nCOMMIT;', 'DB08_REAL_AUTH_FIXTURE')
             sys.path.insert(0, str(ROOT))
             from tools.db08.finance_runtime_ci import run_finance_runtime
             run_finance_runtime(local_status)

@@ -15,6 +15,9 @@ FEE_SCOPE = '08000000-0000-4000-8000-000000000017'
 REVIEW_SCOPE = '08000000-0000-4000-8000-000000000032'
 CHANGE_POLICY = '08000000-0000-4000-8000-000000000034'
 REVIEWER = '08000000-0000-4000-8000-000000000021'
+SECOND_REVIEWER = '08000000-0000-4000-8000-000000000041'
+SECOND_REVIEW_SCOPE = '08000000-0000-4000-8000-000000000043'
+CHAIN_POLICY = '08000000-0000-4000-8000-000000000045'
 CONFIG_SQL = ('SELECT app.configure_finance_fee(%s::uuid,%s::uuid,%s,%s,%s,%s,'
               '%s::integer,%s::numeric,%s::date,%s::date,%s,%s)')
 ASSESS_SQL = ('SELECT app.assess_finance_fee(%s::uuid,%s::uuid,%s::uuid,'
@@ -242,6 +245,108 @@ def run_finance_runtime(local_status):
     check(decision['state'] == 'REJECTED' and 'publication_id' not in decision,
           'rejection creates no price publication')
     print('DB08_F3_REAL_AUTH_PASS pending=true independent_approval=true replay=true rejected_no_price=true', flush=True)
+
+    with connect() as root:
+        second_subject = root.execute("SELECT auth_user_id::text FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000044'").fetchone()[0]
+    second_password = secrets.token_urlsafe(36)
+    http('PUT', '/auth/v1/admin/users/' + second_subject, {'password': second_password}, admin_key, admin_key)
+    second_token = http('POST', '/auth/v1/token?grant_type=password',
+                        {'email': 'foundation-own-002@example.invalid', 'password': second_password},
+                        admin_key, admin_key)['access_token']
+    second_password = None
+    second_claims = SupabaseAuthenticator(url, admin_key, allow_local_test=True)(second_token)
+    chain_fee = http('POST', '/rest/v1/rpc/configure_finance_fee',
+                     configure('CHAIN_SERVICE_FEE', 'real-f4-fee'), admin_key, token, profile='app')
+    with connect() as root:
+        chain_revision = root.execute('SELECT id::text FROM app_private.finance_fee_rule_revisions WHERE rule_id=%s AND revision=1',
+                                      (chain_fee['resource_id'],)).fetchone()[0]
+
+    def chain_payload(previous, amount, effective, key):
+        return {'p_rule': chain_fee['resource_id'], 'p_previous_revision': previous,
+                'p_gross_minor': amount, 'p_valid_from': effective,
+                'p_valid_through': '2026-12-31', 'p_policy': CHAIN_POLICY,
+                'p_reviewers': [REVIEWER, SECOND_REVIEWER],
+                'p_reason': 'Two independent financial reviews', 'p_key': key}
+
+    chain_request = http('POST', '/rest/v1/rpc/request_finance_fee_change',
+                         chain_payload(chain_revision, 17500, '2026-11-01', 'real-f4-request'),
+                         admin_key, token, profile='app')
+    check(chain_request['state'] == 'PENDING', 'real Auth chain request pending')
+    check(http('POST', '/rest/v1/rpc/request_finance_fee_change',
+               chain_payload(chain_revision, 17500, '2026-11-01', 'real-f4-request'),
+               admin_key, token, profile='app') == chain_request, 'real chain request replay')
+    intermediate = http('POST', '/rest/v1/rpc/review_finance_fee_change',
+                        review_payload(chain_request, 'APPROVE', 'real-f4-first'),
+                        admin_key, reviewer_token, profile='app')
+    check(intermediate['state'] == 'PENDING' and 'publication_id' not in intermediate,
+          'first real reviewer cannot publish')
+    check(http('POST', '/rest/v1/rpc/review_finance_fee_change',
+               review_payload(chain_request, 'APPROVE', 'real-f4-first'),
+               admin_key, reviewer_token, profile='app') == intermediate,
+          'real intermediate exact replay')
+    with connect() as root:
+        check(root.execute('SELECT count(*) FROM app_private.finance_fee_rule_revisions WHERE rule_id=%s',
+                           (chain_fee['resource_id'],)).fetchone()[0] == 1,
+              'first real review leaves original price')
+    final = http('POST', '/rest/v1/rpc/review_finance_fee_change',
+                 review_payload(intermediate, 'APPROVE', 'real-f4-final'),
+                 admin_key, second_token, profile='app')
+    check(final['state'] == 'EXECUTED' and UUID(final['publication_id']),
+          'second real reviewer publishes')
+    check(http('POST', '/rest/v1/rpc/review_finance_fee_change',
+               review_payload(intermediate, 'APPROVE', 'real-f4-final'),
+               admin_key, second_token, profile='app') == final, 'real final replay')
+    with connect() as root:
+        chain_next = root.execute('SELECT id::text FROM app_private.finance_fee_rule_revisions WHERE rule_id=%s AND revision=2 AND gross_amount_minor=17500',
+                                  (chain_fee['resource_id'],)).fetchone()[0]
+    chain_rejected = http('POST', '/rest/v1/rpc/request_finance_fee_change',
+                          chain_payload(chain_next, 18500, '2026-12-15', 'real-f4-reject'),
+                          admin_key, token, profile='app')
+    first_rejected = http('POST', '/rest/v1/rpc/review_finance_fee_change',
+                          review_payload(chain_rejected, 'APPROVE', 'real-f4-reject-first'),
+                          admin_key, reviewer_token, profile='app')
+    rejected_chain = http('POST', '/rest/v1/rpc/review_finance_fee_change',
+                          review_payload(first_rejected, 'REJECT', 'real-f4-reject-final'),
+                          admin_key, second_token, profile='app')
+    check(rejected_chain['state'] == 'REJECTED' and 'publication_id' not in rejected_chain,
+          'second real reviewer rejection leaves price')
+    print('DB08_F4_REAL_AUTH_PASS ordered_reviews=true first_pending=true final_publication=true replays=true second_rejection=true', flush=True)
+
+    chain_race = http('POST', '/rest/v1/rpc/request_finance_fee_change',
+                      chain_payload(chain_next, 19000, '2026-12-20', 'real-f4-race'),
+                      admin_key, token, profile='app')
+    chain_race_first = http('POST', '/rest/v1/rpc/review_finance_fee_change',
+                            review_payload(chain_race, 'APPROVE', 'real-f4-race-first'),
+                            admin_key, reviewer_token, profile='app')
+    a, b, control = connect(), connect(), connect()
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        a.execute('BEGIN')
+        a.execute('SELECT pg_advisory_xact_lock(71001,1)')
+        a.execute('SET LOCAL ROLE schoolos_schema_owner')
+        a.execute('UPDATE app_private.assignment_permission_scopes SET revoked_at=clock_timestamp() WHERE id=%s',
+                  (SECOND_REVIEW_SCOPE,))
+        actor(b, second_claims)
+        future = pool.submit(lambda: b.execute('SELECT app.review_finance_fee_change(%s::uuid,%s,%s::bigint,%s,%s)',
+                                                (chain_race_first['request_id'], 'APPROVE',
+                                                 chain_race_first['request_version'],
+                                                 'Review after revocation', 'real-f4-race-final')).fetchone())
+        witness(control, a, b)
+        a.execute('COMMIT')
+        denied(future, 'authority denied')
+        b.execute('ROLLBACK')
+    finally:
+        a.close(); b.close(); control.close()
+        pool.shutdown(wait=True, cancel_futures=True)
+    with connect() as root:
+        check(root.execute('SELECT state FROM app_private.approval_requests WHERE id=%s',
+                           (chain_race['request_id'],)).fetchone()[0] == 'PENDING',
+              'revoked second reviewer left chain pending')
+        check(root.execute('SELECT count(*) FROM app_private.finance_fee_rule_revisions WHERE rule_id=%s',
+                           (chain_fee['resource_id'],)).fetchone()[0] == 2,
+              'revoked second reviewer produced no successor')
+    second_token = None
+    print('DB08_F4_REVIEW_RACE_PASS second_reviewer_revocation_first observed_block=true pending_retained=true', flush=True)
 
     race_request = http('POST', '/rest/v1/rpc/request_finance_fee_change',
                         change_payload(new_revision, 19000, '2026-12-20', 'real-f3-race'),
