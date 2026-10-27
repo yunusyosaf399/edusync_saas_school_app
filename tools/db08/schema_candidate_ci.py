@@ -1,4 +1,4 @@
-"""DB08 F1 structural acceptance; never connects to hosted databases."""
+"""DB08 F1/F2 disposable acceptance; never connects to hosted databases."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -160,6 +160,13 @@ def main():
             if remaining != '0':
                 raise RuntimeError('DB08_F2_FIXTURE_ROLLBACK_INCOMPLETE')
             print(f'DB08_F2_DATABASE_PASS {workflow_assertions}/{workflow_assertions}; frozen_Foundation=220/220; fixtures_rolled_back=true; financial_clearance=false', flush=True)
+            # Persist only in the disposable stack to exercise real Auth/Data API
+            # and independent PostgreSQL backends with observable blocking.
+            fixture = (ROOT / 'supabase/tests/db08/fixture_commands.sql').read_text()
+            local.run_psql(container, 'BEGIN;\n' + fixture + '\nCOMMIT;', 'DB08_REAL_AUTH_FIXTURE')
+            sys.path.insert(0, str(ROOT))
+            from tools.db08.finance_runtime_ci import run_finance_runtime
+            run_finance_runtime(local_status)
             return 0
     finally:
         if started:
