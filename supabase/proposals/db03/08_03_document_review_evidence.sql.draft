@@ -37,7 +37,7 @@ BEGIN
  END IF;
  SELECT * INTO a FROM app_private.admission_applications WHERE id=h.application_id;
  IF h.id IS NULL OR a.id IS NULL OR a.campus_id IS DISTINCT FROM p_campus OR h.created_by IS DISTINCT FROM ctx.actor_id
-  OR h.application_version<>p_expected+CASE WHEN p_code='admission.document.read' THEN 0 ELSE 1 END OR a.row_version<h.application_version
+  OR h.application_version<>p_expected+(CASE WHEN p_code='admission.document.read' THEN 0 ELSE 1 END) OR a.row_version<h.application_version
   OR h.command_receipt_id IS DISTINCT FROM COALESCE(r.id,p_receipt) THEN RAISE EXCEPTION 'DB03 document source proof invalid'; END IF;
  IF r.id IS NULL AND (a.state<>'DRAFT' OR a.row_version<>h.application_version) THEN RAISE EXCEPTION 'DB03 document new source stale'; END IF;
  result_body:=jsonb_build_object('source_id',h.id,'application_id',a.id,'application_version',h.application_version);
