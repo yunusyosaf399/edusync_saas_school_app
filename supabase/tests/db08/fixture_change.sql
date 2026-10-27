@@ -1,4 +1,6 @@
 -- Extends the F2 synthetic School with an independent configured reviewer.
+SELECT set_config('schoolos_test.finance_reviewer_subject',
+ (SELECT id::text FROM auth.users WHERE email='foundation-own-001@example.invalid'),true);
 SET ROLE schoolos_schema_owner;
 INSERT INTO app_private.people(id,display_name,created_by)
 VALUES('08000000-0000-4000-8000-000000000020','Independent fee reviewer','08000000-0000-4000-8000-000000000001');
@@ -7,7 +9,7 @@ VALUES('08000000-0000-4000-8000-000000000021','INDIVIDUAL','08000000-0000-4000-8
  'Independent fee reviewer','ACTIVE','08000000-0000-4000-8000-000000000001');
 INSERT INTO app_private.principal_auth_bindings(id,principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by)
 VALUES('08000000-0000-4000-8000-000000000022','08000000-0000-4000-8000-000000000021','INDIVIDUAL',
- (SELECT id FROM auth.users WHERE email='foundation-own-001@example.invalid'),clock_timestamp(),
+ current_setting('schoolos_test.finance_reviewer_subject')::uuid,clock_timestamp(),
  to_timestamp(floor(extract(epoch FROM clock_timestamp()))),'08000000-0000-4000-8000-000000000001');
 INSERT INTO app_private.roles(id,code,label,state,created_by)
 VALUES('08000000-0000-4000-8000-000000000023','FINANCE_REVIEWER','Synthetic configured reviewer',
