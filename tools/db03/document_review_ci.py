@@ -223,7 +223,7 @@ def run_document_review(local, fresh_database, fixture):
         denied(lambda:rapi('SELECT app.read_admission_document_queue(%s)',(atomic,)),'authority denied')
         # Genuine concurrent backends; every loser is observed waiting in PG.
         races=0
-        for case in ('same_key_review','quarantine_first','withdrawal_first','revocation_first'):
+        for case in ('same_key_review','quarantine_first','withdrawal_first','expiry_first','revocation_first'):
             target,tf,tl,tid=bundle('race-'+case)
             tx=read(tf,tl[0]);v=version(target)
             a,b,control=connection(),connection(),connection();pool=ThreadPoolExecutor(max_workers=1)
@@ -234,27 +234,51 @@ def run_document_review(local, fresh_database, fixture):
                 else:
                     a.execute('BEGIN')
                     if case=='quarantine_first':a.execute("UPDATE app_private.file_objects SET state='QUARANTINED' WHERE id=%s",(tid,))
+                    elif case=='expiry_first':a.execute('SELECT pg_advisory_xact_lock(71001,1)')
                     elif case=='revocation_first':a.execute("UPDATE app_private.principal_role_assignments SET revoked_at=clock_timestamp() WHERE id='84848484-8484-4484-8484-848484848484'")
                     else:
                         a.execute("SELECT set_config('request.jwt.claims',%s,true)",(json.dumps(claims.database_claims()),));a.execute("SELECT set_config('request.jwt.claim.sub',%s,true)",(claims.subject,));a.execute('SET LOCAL ROLE authenticated')
                         a.execute("SELECT * FROM app.withdraw_admission_draft(%s,%s,'Withdraw before review',%s)",(target,v,'withdraw-'+case))
-                actor(b,reviewer_claims);future=pool.submit(lambda:b.execute(statement,params).fetchone())
+                if case=='expiry_first':
+                    from services.admission_documents.service import VerifiedClaims
+                    expires=int(time.time())+2
+                    waiting_claims=VerifiedClaims(reviewer_claims.subject,reviewer_claims.issued_at,expires)
+                else:waiting_claims=reviewer_claims
+                actor(b,waiting_claims);future=pool.submit(lambda:b.execute(statement,params).fetchone())
                 deadline=time.monotonic()+15
                 while time.monotonic()<deadline:
                     if control.execute('SELECT %s=ANY(pg_blocking_pids(%s))',(a.info.backend_pid,b.info.backend_pid)).fetchone()[0]:break
                     time.sleep(.05)
                 else:raise RuntimeError('DB03_REVIEW_BLOCK_WITNESS_ABSENT')
+                if case=='expiry_first':
+                    while time.time()<=expires:time.sleep(.05)
                 a.execute('COMMIT')
                 if case=='same_key_review':
                     check(future.result(15)[0]==winner,'same-key review returns one immutable result');b.execute('COMMIT')
                 else:
-                    denied(lambda:future.result(15),'authority denied' if case=='revocation_first' else 'target stale or closed');b.execute('ROLLBACK')
+                    denied(lambda:future.result(15),'authority denied' if case=='revocation_first' else ('authentication expired' if case=='expiry_first' else 'target stale or closed'));b.execute('ROLLBACK')
                 check(control.execute('SELECT count(*) FROM app_private.admission_document_reviews WHERE application_id=%s',(target,)).fetchone()[0]==(1 if case=='same_key_review' else 0),'durable exact concurrent review count')
                 races+=1;print('DB03_REVIEW_RACE_PASS '+case+' observed_block=true exact_effect=true')
             finally:a.close();b.close();control.close();pool.shutdown(wait=True,cancel_futures=True)
         with connection() as root:
             root.execute("UPDATE app_private.principal_role_assignments SET revoked_at=clock_timestamp() WHERE id='abababab-abab-4bab-8bab-abababababab'")
         denied(lambda:read(af,al[0],token),'principal document authority denied')
+        with connection() as root:
+            root.execute("UPDATE app_private.principals SET state='RETIRED' WHERE id='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'")
+        alias_subject_sql="SELECT id::text FROM auth.users WHERE email='foundation-own-002@example.invalid'"
+        with connection() as root:
+            alias_subject=root.execute(alias_subject_sql).fetchone()[0]
+            root.execute("INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by) VALUES('85858585-8585-4585-8585-858585858585','INDIVIDUAL','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Replacement principal for uploader','ACTIVE','11111111-1111-4111-8111-111111111111')")
+            root.execute("INSERT INTO app_private.principal_auth_bindings(principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by) VALUES('85858585-8585-4585-8585-858585858585','INDIVIDUAL',%s,clock_timestamp(),to_timestamp(floor(extract(epoch FROM clock_timestamp()))),'11111111-1111-4111-8111-111111111111')",(alias_subject,))
+            root.execute("INSERT INTO app_private.principal_role_assignments(id,principal_id,principal_kind,role_id,role_family_only,context_kind,valid_from,created_by) VALUES('86868686-8686-4686-8686-868686868686','85858585-8585-4585-8585-858585858585','INDIVIDUAL','dddddddd-dddd-4ddd-8ddd-dddddddddddd',false,'INDIVIDUAL',clock_timestamp()-interval '1 hour','11111111-1111-4111-8111-111111111111')")
+            root.execute("INSERT INTO app_private.assignment_permission_scopes(assignment_id,grant_id,role_id,permission_id,scope_contract_id,scope_kind,resolver_key,valid_from,created_by) SELECT '86868686-8686-4686-8686-868686868686',md5(p.code||':review-grant')::uuid,'dddddddd-dddd-4ddd-8ddd-dddddddddddd',p.id,md5(p.code||':review-contract')::uuid,'ALL','DIRECT',clock_timestamp()-interval '1 hour','11111111-1111-4111-8111-111111111111' FROM app_private.permissions p WHERE p.code IN('admission.document.read','admission.document.review','admission.document.approve','file.view')")
+        password=secrets.token_urlsafe(36)
+        request('PUT','/admin/users/'+alias_subject,{'password':password})
+        alias_token=request('POST','/token?grant_type=password',{'email':'foundation-own-002@example.invalid','password':password})['access_token'];password=None
+        alias_claims=authenticate(alias_token)
+        alias_access=read(af,al[0],alias_token)
+        denied(lambda:api('SELECT app.review_admission_document(%s,%s,%s,%s,%s)',(alias_access.access_id,version(atomic),'VERIFIED','Same person with new principal','alias-review'),alias_claims),'independent document reader required')
+        alias_token=None
         with connection() as root:
             check(root.execute("SELECT count(*) FROM app_private.outbox_events WHERE event_type IN('admission.document.read','admission.document.review','admission.document.approve') AND ((SELECT count(*) FROM jsonb_object_keys(payload))<>3 OR payload::text LIKE '%Paper and%' OR payload::text LIKE '%admissions/%')").fetchone()[0]==0,'general events contain only bounded source references')
             check(root.execute("SELECT count(*) FROM app_private.admission_document_clearances c LEFT JOIN app_private.command_receipts r ON r.id=c.command_receipt_id WHERE r.id IS NULL OR r.state<>'SUCCEEDED'").fetchone()[0]==0,'clearances have atomic successful receipts')

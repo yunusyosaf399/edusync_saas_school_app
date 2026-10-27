@@ -62,7 +62,7 @@ BEGIN
  FOR kind IN SELECT q.document_kind FROM app_private.db03_document_required(a.id) q ORDER BY q.document_kind LOOP
   SELECT * INTO l FROM app_private.admission_document_links WHERE application_id=a.id AND document_kind=kind ORDER BY revision DESC LIMIT 1;
   SELECT * INTO r FROM app_private.admission_document_reviews WHERE forward_id=f.id AND link_id=l.id ORDER BY revision DESC LIMIT 1;
-  IF r.id IS NULL OR r.decision<>'VERIFIED' OR r.file_version<>l.file_version OR r.created_by=l.created_by
+  IF r.id IS NULL OR r.decision<>'VERIFIED' OR r.file_version<>l.file_version OR app_private.db03_same_document_person(r.created_by,l.created_by)
    OR r.authority_hash IS DISTINCT FROM app_private.db03_document_review_authority(r.created_by,a.campus_id,'admission.document.review') THEN RETURN NULL; END IF;
   parts:=parts||jsonb_build_array(jsonb_build_array(l.id,r.id,r.authority_hash));
  END LOOP;
@@ -94,8 +94,8 @@ BEGIN
  IF result IS NOT NULL THEN RETURN result; END IF;
  SELECT * INTO l FROM app_private.admission_document_links WHERE id=x.link_id;
  read_hash:=sha256(app_private.db03_document_review_authority(ctx.actor_id,a.campus_id,'admission.document.read')||app_private.db03_document_review_authority(ctx.actor_id,a.campus_id,'file.view'));
- IF x.created_by<>ctx.actor_id OR x.authority_hash IS DISTINCT FROM read_hash OR l.created_by=ctx.actor_id
- OR EXISTS(SELECT 1 FROM app_private.file_objects f WHERE f.id=l.file_object_id AND f.uploaded_by_principal_id=ctx.actor_id) THEN RAISE EXCEPTION 'DB03 independent document reader required'; END IF;
+ IF x.created_by<>ctx.actor_id OR x.authority_hash IS DISTINCT FROM read_hash OR app_private.db03_same_document_person(l.created_by,ctx.actor_id)
+ OR EXISTS(SELECT 1 FROM app_private.file_objects f WHERE f.id=l.file_object_id AND app_private.db03_same_document_person(f.uploaded_by_principal_id,ctx.actor_id)) THEN RAISE EXCEPTION 'DB03 independent document reader required'; END IF;
  IF NOT app_private.db03_document_target_open(a.id,p_expected_version) OR NOT app_private.db03_document_is_forwarded(a.id)
  OR app_private.db03_documents_cleared(a.id) OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards n WHERE n.application_id=a.id AND n.id<>x.forward_id AND n.application_version>x.application_version)
  OR NOT EXISTS(SELECT 1 FROM app_private.db03_document_required(a.id) q WHERE q.document_kind=l.document_kind)
@@ -123,7 +123,7 @@ BEGIN
  snapshot:=app_private.db03_review_snapshot(f.id);
  IF NOT app_private.db03_document_target_open(a.id,p_expected_version) OR snapshot IS NULL OR app_private.db03_documents_cleared(a.id) THEN RAISE EXCEPTION 'DB03 independent verified documents required'; END IF;
  IF EXISTS(SELECT 1 FROM app_private.admission_document_links l JOIN app_private.db03_document_required(a.id) q ON q.document_kind=l.document_kind JOIN app_private.file_objects file ON file.id=l.file_object_id
- WHERE l.application_id=a.id AND (l.created_by=ctx.actor_id OR file.uploaded_by_principal_id=ctx.actor_id)
+ WHERE l.application_id=a.id AND (app_private.db03_same_document_person(l.created_by,ctx.actor_id) OR app_private.db03_same_document_person(file.uploaded_by_principal_id,ctx.actor_id))
  AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_links n WHERE n.application_id=a.id AND n.document_kind=l.document_kind AND n.revision>l.revision)) THEN RAISE EXCEPTION 'DB03 independent document approver required'; END IF;
  SELECT * INTO prev FROM app_private.admission_document_clearances WHERE forward_id=f.id ORDER BY revision DESC LIMIT 1;
  UPDATE app_private.admission_applications SET stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version INTO version;
