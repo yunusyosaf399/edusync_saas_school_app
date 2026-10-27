@@ -17,6 +17,11 @@ SELECT md5(p.code||':review-grant')::uuid,'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 INSERT INTO app_private.assignment_permission_scopes(id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,scope_kind,resolver_key,valid_from,created_by)
 SELECT md5(p.code||a.id::text||':review-scope')::uuid,a.id,md5(p.code||':review-grant')::uuid,'dddddddd-dddd-4ddd-8ddd-dddddddddddd',p.id,md5(p.code||':review-contract')::uuid,'ALL','DIRECT',clock_timestamp()-interval '1 hour','11111111-1111-4111-8111-111111111111'
 FROM app_private.permissions p CROSS JOIN app_private.principal_role_assignments a WHERE a.role_id='dddddddd-dddd-4ddd-8ddd-dddddddddddd' AND p.code IN('admission.document.read','admission.document.review','admission.document.approve','file.view');
+-- Deliberate ADMIN exact grants exercise the independent Principal role ceiling.
+INSERT INTO app_private.role_permission_grants(id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
+SELECT md5(p.code||':admin-review-grant')::uuid,'71717171-7171-4171-8171-717171717171',false,p.id,false,clock_timestamp()-interval '1 hour','11111111-1111-4111-8111-111111111111' FROM app_private.permissions p WHERE p.code IN('admission.document.read','admission.document.review','admission.document.approve','file.view');
+INSERT INTO app_private.assignment_permission_scopes(id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,scope_kind,resolver_key,valid_from,created_by)
+SELECT md5(p.code||':admin-review-scope')::uuid,'72727272-7272-4272-8272-727272727272',md5(p.code||':admin-review-grant')::uuid,'71717171-7171-4171-8171-717171717171',p.id,md5(p.code||':review-contract')::uuid,'ALL','DIRECT',clock_timestamp()-interval '1 hour','11111111-1111-4111-8111-111111111111' FROM app_private.permissions p WHERE p.code IN('admission.document.read','admission.document.review','admission.document.approve','file.view');
 INSERT INTO app_private.operation_contracts(code,handler_key,request_permission_id,created_by)
 SELECT p.code,p.code,p.id,'11111111-1111-4111-8111-111111111111' FROM app_private.permissions p WHERE p.code IN('admission.document.read','admission.document.review','admission.document.approve');
 RESET ROLE;

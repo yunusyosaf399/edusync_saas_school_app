@@ -109,7 +109,7 @@ def run_document_review(local, fresh_database, fixture):
         ent.activate(*snapshot(1))
         archive=LocalPrivateArchive(directory/'archive')
         service=AdmissionDocumentService(connect=worker,authenticate=authenticate,entitlements=ent,
-             locations={'PRIVATE_ADMISSIONS':archive},upload_location='PRIVATE_ADMISSIONS',intent_lifetime=300,read_gate=lambda school:None)
+             locations={'PRIVATE_ADMISSIONS':archive},upload_location='PRIVATE_ADMISSIONS',intent_lifetime=300,read_gate=lambda school:True)
         def upload(app,version,kind,key,payload=None):
             return service.upload(token,application_id=str(app),expected_version=version,document_kind=kind,data=data if payload is None else payload,idempotency_key=key)
         def queue(app):return api('SELECT app.read_admission_document_queue(%s)',(app,))['status']
@@ -136,6 +136,9 @@ def run_document_review(local, fresh_database, fixture):
         checklist=rapi('SELECT app.read_admission_principal_checklist(%s)',(app,))
         check(len(checklist['documents'])==2 and not checklist['documents_approved'],'principal sees required transfer checklist')
         denied(lambda:approve(forward,app),'independent verified documents required')
+        with connection() as root:root.execute("UPDATE app_private.operation_contracts SET enabled=false WHERE code='admission.document.read'")
+        denied(lambda:read(forward,links[0]),'principal document authority denied')
+        with connection() as root:root.execute("UPDATE app_private.operation_contracts SET enabled=true WHERE code='admission.document.read'")
         own=read(forward,links[0],token)
         check(own.data==pdf_data and own.content_type=='application/pdf','private original PDF bytes returned')
         denied(lambda:api('SELECT app.review_admission_document(%s,%s,%s,%s,%s)',(own.access_id,version(app),'VERIFIED','Own certificate','self-review')),'independent document reader required')
@@ -165,7 +168,7 @@ def run_document_review(local, fresh_database, fixture):
         denied(lambda:read(rf,links[0]),'target stale or unavailable')
         service.read_gate=None
         denied(lambda:read(rf,rl[0]),'read policy required')
-        service.read_gate=lambda school:None
+        service.read_gate=lambda school:True
         ent.activate(*snapshot(2,False))
         rx=read(rf,rl[0]);check(rx.data==pdf_data,'upload downgrade preserves separately authorized reads')
         review(rx,rejected,'REJECTED')
@@ -178,6 +181,16 @@ def run_document_review(local, fresh_database, fixture):
         check(str(nf)!=rf and queue(rejected)=='AWAITING_PRINCIPAL_REVIEW','new link requires a new forward/review')
         check(api('SELECT app.read_admission_document_feedback(%s)',(rejected,))['rejections']==[],'old rejection retained but no longer current feedback')
         denied(lambda:review(rx,rejected),'target stale or closed')
+        ioapp,iof,iol,iofile=bundle('io-change')
+        class QuarantineDuringRead:
+            def read(self,key,maximum):
+                content=archive.read(key,maximum)
+                with connection() as root:root.execute("UPDATE app_private.file_objects SET state='QUARANTINED' WHERE id=%s",(iofile,))
+                return content
+        service.locations['PRIVATE_ADMISSIONS']=QuarantineDuringRead()
+        denied(lambda:read(iof,iol[0]),'target stale or unavailable')
+        service.locations['PRIVATE_ADMISSIONS']=archive
+        with connection() as root:check(root.execute('SELECT count(*) FROM app_private.admission_document_accesses WHERE application_id=%s',(ioapp,)).fetchone()[0]==0,'quarantine during I/O leaves no confirmed access proof')
         # Byte corruption and changed configuration cannot create a read proof.
         atomic,af,al,unused=bundle('atomic')
         with connection() as root:before=root.execute('SELECT count(*) FROM app_private.admission_document_accesses WHERE application_id=%s',(atomic,)).fetchone()[0]
@@ -208,9 +221,6 @@ def run_document_review(local, fresh_database, fixture):
         with connection() as root:check(root.execute('SELECT count(*) FROM app_private.admission_document_reviews WHERE application_id=%s',(atomic,)).fetchone()[0]==2,'reverification appends revision')
         # Current Principal role AND exact permission are both required.
         denied(lambda:rapi('SELECT app.read_admission_document_queue(%s)',(atomic,)),'authority denied')
-        with connection() as root:
-            root.execute("UPDATE app_private.principal_role_assignments SET revoked_at=clock_timestamp() WHERE id='abababab-abab-4bab-8bab-abababababab'")
-        denied(lambda:read(af,al[0],token),'principal document authority denied')
         # Genuine concurrent backends; every loser is observed waiting in PG.
         races=0
         for case in ('same_key_review','quarantine_first','withdrawal_first','revocation_first'):
@@ -242,6 +252,9 @@ def run_document_review(local, fresh_database, fixture):
                 check(control.execute('SELECT count(*) FROM app_private.admission_document_reviews WHERE application_id=%s',(target,)).fetchone()[0]==(1 if case=='same_key_review' else 0),'durable exact concurrent review count')
                 races+=1;print('DB03_REVIEW_RACE_PASS '+case+' observed_block=true exact_effect=true')
             finally:a.close();b.close();control.close();pool.shutdown(wait=True,cancel_futures=True)
+        with connection() as root:
+            root.execute("UPDATE app_private.principal_role_assignments SET revoked_at=clock_timestamp() WHERE id='abababab-abab-4bab-8bab-abababababab'")
+        denied(lambda:read(af,al[0],token),'principal document authority denied')
         with connection() as root:
             check(root.execute("SELECT count(*) FROM app_private.outbox_events WHERE event_type IN('admission.document.read','admission.document.review','admission.document.approve') AND ((SELECT count(*) FROM jsonb_object_keys(payload))<>3 OR payload::text LIKE '%Paper and%' OR payload::text LIKE '%admissions/%')").fetchone()[0]==0,'general events contain only bounded source references')
             check(root.execute("SELECT count(*) FROM app_private.admission_document_clearances c LEFT JOIN app_private.command_receipts r ON r.id=c.command_receipt_id WHERE r.id IS NULL OR r.state<>'SUCCEEDED'").fetchone()[0]==0,'clearances have atomic successful receipts')

@@ -300,7 +300,8 @@ class AdmissionDocumentService:
             raise Denied('Verified authentication required')
         if self.read_gate is None:
             raise Denied('Private certificate read policy required')
-        self.read_gate(self.entitlements.school)
+        if self.read_gate(self.entitlements.school) is not True:
+            raise Denied('Private certificate account read denied')
         descriptor = self._rpc(claims, 'SELECT app_private.db03_describe_document_read(%s,%s)', (forward_id, link_id))
         if str(descriptor['school_id']) != self.entitlements.school or descriptor['storage_location_key'] not in self.locations:
             raise Denied('Stored read location or School mismatch')
@@ -308,8 +309,10 @@ class AdmissionDocumentService:
         content_type, digest = measure_certificate(data)
         if content_type != descriptor['content_type'] or len(data) != descriptor['byte_size'] or digest.hex() != descriptor['content_hash']:
             raise Denied('Stored certificate validation failed')
-        self.read_gate(self.entitlements.school)
+        if self.read_gate(self.entitlements.school) is not True:
+            raise Denied('Private certificate account read denied')
         result = self._rpc(claims, 'SELECT app_private.db03_confirm_document_read(%s,%s,%s,%s,%s)',
                            (forward_id, link_id, descriptor['application_version'], descriptor['file_version'], bytes.fromhex(descriptor['authority_hash'])))
-        self.read_gate(self.entitlements.school)
+        if self.read_gate(self.entitlements.school) is not True:
+            raise Denied('Private certificate account read denied')
         return CertificateRead(str(result['source_id']), content_type, data)
