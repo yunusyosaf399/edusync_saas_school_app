@@ -1191,6 +1191,8 @@ Sibling discounts may be enabled or disabled by the school and can use configura
 
 Discounts can be long-term/recurring or one-time. Sensitive or large adjustments can require approval according to school-defined thresholds.
 
+**Student discount choice — 27 October 2026:** The school may choose either a fixed discount amount or a percentage of the Student's selected full fee. For each assignment it may choose recurring application to monthly tuition or application to one specified charge. The choices are independent, and the selected gross fee remains retained separately from the discount. This owner decision does not set percentage rounding, approval thresholds, discount stacking or payment/clearance behavior. See [DB08 F6 design gate](../database/db08_f6_student_discount_choice_20261027.md).
+
 ---
 
 # 32. Invoices
