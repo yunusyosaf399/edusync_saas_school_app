@@ -16,6 +16,7 @@ from services.admission_documents.service import Denied, VerifiedClaims
 from services.payment_evidence.service import PaymentEvidenceService
 from services.payment_evidence.review import PaymentReviewService
 from services.payment_evidence.receipt import PaymentReceiptService
+from services.payment_evidence.allocation import PaymentAllocationService
 
 SCHOOL = '08000000-0000-4000-8000-000000000002'
 CAMPUS = '08000000-0000-4000-8000-000000000003'
@@ -210,6 +211,31 @@ class PaymentReceiptTests(unittest.TestCase):
         with self.assertRaises(Denied):
             service.issue(token='valid', submission_id=STUDENT, review_id=SUBJECT,
                           idempotency_key='')
+        self.assertEqual(conn.calls, [])
+
+
+class PaymentAllocationTests(unittest.TestCase):
+    def test_minor_units_and_checked_command(self):
+        conn = FakeConnection()
+        service = PaymentAllocationService(school_id=SCHOOL,
+            authenticate=lambda token: VerifiedClaims(SUBJECT, int(time.time()) - 5,
+                                                       int(time.time()) + 60),
+            connect=lambda: conn)
+        service.allocate(token='valid', payment_id=SUBJECT, obligation_id=STUDENT,
+                         amount=Decimal('50.66'), idempotency_key='allocate-1')
+        sql, params = conn.calls[-1]
+        self.assertIn('db08_allocate_bank_payment', sql)
+        self.assertEqual(params, (SCHOOL, SUBJECT, STUDENT, 5066, 'allocate-1'))
+
+    def test_fractional_minor_unit_denied_before_database(self):
+        conn = FakeConnection()
+        service = PaymentAllocationService(school_id=SCHOOL,
+            authenticate=lambda token: VerifiedClaims(SUBJECT, int(time.time()) - 5,
+                                                       int(time.time()) + 60),
+            connect=lambda: conn)
+        with self.assertRaises(Denied):
+            service.allocate(token='valid', payment_id=SUBJECT, obligation_id=STUDENT,
+                             amount=Decimal('0.001'), idempotency_key='allocate-1')
         self.assertEqual(conn.calls, [])
 
 

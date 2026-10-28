@@ -21,6 +21,7 @@ def run_payment_runtime(local_status, root: Path):
     from services.payment_evidence.service import PaymentEvidenceService
     from services.payment_evidence.review import PaymentReviewService
     from services.payment_evidence.receipt import PaymentReceiptService
+    from services.payment_evidence.allocation import PaymentAllocationService
 
     school = '08000000-0000-4000-8000-000000000002'
     campus = '08000000-0000-4000-8000-000000000003'
@@ -35,16 +36,13 @@ def run_payment_runtime(local_status, root: Path):
         try:
             for name in ('fixture_commands.sql', 'fixture_change.sql',
                          'fixture_selection.sql', 'fixture_bank_slip.sql',
-                         'fixture_bank_review.sql', 'fixture_bank_receipt.sql'):
+                         'fixture_bank_review.sql', 'fixture_bank_receipt.sql',
+                         'fixture_payment_allocation.sql'):
                 conn.execute((root / 'supabase/tests/db08' / name).read_text())
             # The F5 fixture was originally rollback-only. Complete its D1
             # capacity and pointwise Roll facts before sharing it with the
             # separate file-worker connection.
             conn.execute('SET ROLE schoolos_schema_owner')
-            conn.execute("INSERT INTO app_private.finance_currency_units("
-                "school_id,currency_code,minor_unit_scale,created_by) VALUES("
-                "'08000000-0000-4000-8000-000000000002','SAR',2,"
-                "'08000000-0000-4000-8000-000000000001')")
             conn.execute("INSERT INTO app_private.capacity_revisions("
                 "class_offering_id,section_offering_id,new_capacity,effective_on,reason,created_by) "
                 "SELECT id,NULL,capacity,'2026-01-01','F8 committed fixture',"
@@ -294,6 +292,70 @@ def run_payment_runtime(local_status, root: Path):
                 (official['payment_id'],)).fetchone()
         if payment_counts != (2, 2, 2, 2) or retained != (9934, 'BANK_TRANSFER', 'APPROVE', 1):
             raise RuntimeError('DB08_F10_OFFICIAL_SOURCE_INVALID')
+        allocator = PaymentAllocationService(school_id=school,
+            authenticate=authenticate, connect=worker)
+        charge = '08000000-0000-4000-8000-000000000244'
+        wrong_charge = '08000000-0000-4000-8000-000000000245'
+        try:
+            allocator.allocate(token=token, payment_id=official['payment_id'],
+                obligation_id=charge, amount=Decimal('99.34'), idempotency_key='f11-family')
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F11_FAMILY_ALLOCATED')
+        try:
+            allocator.allocate(token=staff_token, payment_id=official['payment_id'],
+                obligation_id=wrong_charge, amount=Decimal('1.00'), idempotency_key='f11-other-child')
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F11_CROSS_STUDENT_ALLOCATED')
+        allocation_args = dict(token=staff_token, payment_id=official['payment_id'],
+            obligation_id=charge, amount=Decimal('99.34'), idempotency_key='f11-one')
+        allocated = allocator.allocate(**allocation_args)
+        if allocated['payment_unallocated_minor'] != 0 or allocated['obligation_remaining_minor'] != 5066:
+            raise RuntimeError('DB08_F11_FIRST_BALANCE_INVALID')
+        if allocator.allocate(**allocation_args) != allocated:
+            raise RuntimeError('DB08_F11_REPLAY_INVALID')
+        try:
+            allocator.allocate(**(allocation_args | {'idempotency_key': 'f11-duplicate'}))
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F11_PAYMENT_OVERALLOCATED')
+        try:
+            allocator.allocate(token=staff_token, payment_id=second_official['payment_id'],
+                obligation_id=charge, amount=Decimal('60.00'), idempotency_key='f11-over-net')
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F11_CHARGE_OVERALLOCATED')
+        settled = allocator.allocate(token=staff_token,
+            payment_id=second_official['payment_id'], obligation_id=charge,
+            amount=Decimal('50.66'), idempotency_key='f11-two')
+        if settled['obligation_remaining_minor'] != 0 or settled['payment_unallocated_minor'] != 4268:
+            raise RuntimeError('DB08_F11_NET_BALANCE_INVALID')
+        with connection() as conn:
+            allocation_counts = conn.execute("SELECT "
+                "(SELECT count(*) FROM app_private.finance_payment_allocations),"
+                "(SELECT sum(amount_minor) FROM app_private.finance_payment_allocations WHERE obligation_id=%s),"
+                "(SELECT count(*) FROM app_private.command_receipts WHERE command_kind='finance.payment.allocate'),"
+                "(SELECT count(*) FROM app_private.audit_events WHERE event_type='finance.payment.allocate'),"
+                "(SELECT count(*) FROM app_private.outbox_events WHERE event_type='finance.payment.allocate')",
+                (charge,)).fetchone()
+        if allocation_counts != (2, 15000, 2, 2, 2):
+            raise RuntimeError('DB08_F11_RETAINED_ALLOCATION_INVALID')
+        with connection() as conn:
+            conn.execute('SET ROLE schoolos_schema_owner')
+            conn.execute("UPDATE app_private.assignment_permission_scopes "
+                "SET revoked_at=clock_timestamp() WHERE id='08000000-0000-4000-8000-000000000234'")
+            conn.execute('RESET ROLE')
+        try:
+            allocator.allocate(**allocation_args)
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F11_REVOKED_ALLOCATOR_ALLOWED')
         with connection() as conn:
             conn.execute('SET ROLE schoolos_schema_owner')
             conn.execute("UPDATE app_private.assignment_permission_scopes "
@@ -337,4 +399,7 @@ def run_payment_runtime(local_status, root: Path):
           'revoked_reviewer_denied=true review_alone_payment=false', flush=True)
     print('DB08_F10_REAL_AUTH_PASS rejected_and_pending_denied=true family_denied=true '
           'serials=1,2 replay=true double_issue_denied=true revoked_issuer_denied=true '
-          'allocation=false clearance=false', flush=True)
+          'receipt_alone_allocation=false clearance=false', flush=True)
+    print('DB08_F11_REAL_AUTH_PASS cross_student_denied=true partial_then_net_zero=true '
+          'payment_remainder=4268 replay=true overpayment_denied=true '
+          'revoked_allocator_denied=true clearance=false', flush=True)
