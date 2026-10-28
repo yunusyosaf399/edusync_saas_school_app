@@ -186,6 +186,29 @@ def validate_payment_baseline_source():
     return sql, test, expected
 
 
+def validate_bank_slip_source():
+    paths = sorted((ROOT / 'supabase/proposals/db08').glob('08_*.sql.draft'))
+    if len(paths) != 1:
+        raise RuntimeError('DB08_F8_FRAGMENT_SCOPE')
+    sql = paths[0].read_text()
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != ['db08_submit_bank_slip'] or re.search(r'(?m)^CREATE FUNCTION app\.', sql):
+        raise RuntimeError('DB08_F8_WORKER_ONLY_SCOPE')
+    test = (ROOT / 'supabase/tests/db08/08_bank_slip_submission.sql').read_text()
+    expected = 14
+    if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB08_F8_TEST_PLAN')
+    for name in ('fixture_commands.sql', 'fixture_change.sql',
+                 'fixture_selection.sql', 'fixture_bank_slip.sql'):
+        if test.count('\\ir ' + name) != 1:
+            raise RuntimeError('DB08_F8_FIXTURE_SCOPE')
+        test = test.replace('\\ir ' + name,
+                            (ROOT / 'supabase/tests/db08' / name).read_text())
+    print(f'DB08_F8_SOURCE_PASS fragments=1 assertions={expected} sha256=' +
+          hashlib.sha256(sql.encode()).hexdigest(), flush=True)
+    return sql, test, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--foundation-root', type=Path)
@@ -198,6 +221,7 @@ def main():
     selection_sql, selection_test, selection_assertions = validate_selection_source()
     discount_sql, discount_test, discount_assertions = validate_discount_source()
     payment_sql, payment_test, payment_assertions = validate_payment_baseline_source()
+    bank_sql, bank_test, bank_assertions = validate_bank_slip_source()
     if args.source_only:
         return 0
     if os.environ.get('GITHUB_ACTIONS') != 'true' or args.foundation_root is None:
@@ -452,6 +476,35 @@ def main():
             if remaining != '0':
                 raise RuntimeError('DB08_F7_FIXTURE_ROLLBACK_INCOMPLETE')
             print(f'DB08_F7_DATABASE_PASS {payment_assertions}/{payment_assertions}; fixtures_rolled_back=true; client_payment_rpc=false', flush=True)
+            try:
+                local.run_psql(container, 'BEGIN;\n' + bank_sql +
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB08_INJECTED_F8_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB08_F8_FAILED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB08_INJECTED_F8_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB08_F8_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db08_submit_bank_slip';",
+                'DB08_F8_ROLLBACK_ABSENCE', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB08_F8_PARTIAL_INSTALL_SURVIVED')
+            local.run_psql(container, 'BEGIN;\n' + bank_sql + '\nCOMMIT;', 'DB08_F8_INSTALL')
+            try:
+                output = local.run_psql(container, bank_test, 'DB08_F8_SUBMISSION_TEST')
+                print(output, flush=True)
+                parse_tap(output, bank_assertions)
+            except local.DomainLocalCIError:
+                local.run_psql(container, '\\o /dev/null\n' + bank_test,
+                               'DB08_F8_SQL_DIAGNOSTIC')
+                raise
+            remaining = local.run_psql(container,
+                "SELECT (SELECT count(*) FROM app_private.finance_payment_submissions)+(SELECT count(*) FROM app_private.finance_official_payments)+(SELECT count(*) FROM app_private.file_objects)+(SELECT count(*) FROM app_private.students)+(SELECT count(*) FROM app_private.school_profiles);",
+                'DB08_F8_FIXTURE_CLEANUP', tuples=True).strip()
+            if remaining != '0':
+                raise RuntimeError('DB08_F8_FIXTURE_ROLLBACK_INCOMPLETE')
+            print(f'DB08_F8_DATABASE_PASS {bank_assertions}/{bank_assertions}; fixtures_rolled_back=true; official_payment=false', flush=True)
             return 0
     finally:
         if started:

@@ -79,12 +79,16 @@ class Entitlements:
     """
     def __init__(self, path: Path, *, school_id: str, issuer: str,
                  keys: dict[str, bytes], maximum_age: int, maximum_ttl: int,
-                 audit: Callable[[str, int, bytes, str], None], clock=time.time):
+                 audit: Callable[[str, int, bytes, str], None], clock=time.time,
+                 capability: str = CAPABILITY, module: str = 'admissions'):
         UUID(school_id)
         if not keys or not issuer or type(maximum_age) is not int or type(maximum_ttl) is not int or min(maximum_age, maximum_ttl) <= 0:
             raise ValueError('Finite entitlement security settings required')
         self.path, self.school, self.issuer = Path(path), school_id, issuer
         self.keys, self.maximum_age, self.maximum_ttl = keys, maximum_age, maximum_ttl
+        if not capability or not module:
+            raise ValueError('Explicit capability and module required')
+        self.capability, self.module = capability, module
         self.audit, self.clock = audit, clock
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         import os
@@ -175,8 +179,8 @@ class Entitlements:
                 if not row:
                     raise Denied('School storage entitlement unavailable')
                 p, digest = self._verify(row[2], row[3], row[4])
-                if p['subscription_state'] != 'ACTIVE' or p['capabilities'].get(CAPABILITY) is not True or p['modules'].get('admissions') is not True:
-                    raise Denied('School admission uploads disabled')
+                if p['subscription_state'] != 'ACTIVE' or p['capabilities'].get(self.capability) is not True or p['modules'].get(self.module) is not True:
+                    raise Denied('School document uploads disabled')
                 yield p['revision'], digest, min(p['expires_at'], p['issued_at'] + self.maximum_age)
                 db.execute('COMMIT')
             except BaseException:
