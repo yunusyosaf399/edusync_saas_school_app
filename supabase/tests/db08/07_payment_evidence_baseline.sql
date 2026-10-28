@@ -1,6 +1,7 @@
 -- F7 structural baseline with schema-owner fixtures only; not runtime payment authorization.
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
+GRANT USAGE ON SCHEMA extensions TO schoolos_schema_owner;
 SET LOCAL search_path=extensions,pg_catalog,public;
 SELECT plan(27);
 SELECT ok((SELECT relrowsecurity AND relforcerowsecurity FROM pg_class
