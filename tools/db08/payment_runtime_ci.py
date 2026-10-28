@@ -212,6 +212,19 @@ def run_payment_runtime(local_status, root: Path):
             pass
         else:
             raise RuntimeError('DB08_F9_SECOND_DECISION_ALLOWED')
+        try:
+            reviewer.decide(**(review_args | {'submission_id': second['submission_id'],
+                                              'idempotency_key': 'f9-duplicate-3'}))
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F9_DUPLICATE_APPROVAL_ALLOWED')
+        rejected = reviewer.decide(token=staff_token,
+            submission_id=second['submission_id'], decision='REJECT',
+            reason='Duplicate bank reference and original proof',
+            idempotency_key='f9-reject-4')
+        if rejected['state'] != 'REJECTED':
+            raise RuntimeError('DB08_F9_REJECTION_INVALID')
         with connection() as conn:
             review_counts = conn.execute("SELECT "
                 "(SELECT count(*) FROM app_private.finance_payment_reviews),"
@@ -219,8 +232,19 @@ def run_payment_runtime(local_status, root: Path):
                 "(SELECT count(*) FROM app_private.command_receipts WHERE command_kind='payment.evidence.review'),"
                 "(SELECT count(*) FROM app_private.audit_events WHERE event_type='payment.evidence.review'),"
                 "(SELECT count(*) FROM app_private.outbox_events WHERE event_type='payment.evidence.review')").fetchone()
-        if review_counts != (1, 0, 1, 1, 1):
+        if review_counts != (2, 0, 2, 2, 2):
             raise RuntimeError('DB08_F9_REVIEW_EFFECT_INVALID')
+        with connection() as conn:
+            conn.execute('SET ROLE schoolos_schema_owner')
+            conn.execute("UPDATE app_private.assignment_permission_scopes "
+                "SET revoked_at=clock_timestamp() WHERE id='08000000-0000-4000-8000-000000000224'")
+            conn.execute('RESET ROLE')
+        try:
+            reviewer.inspect(token=staff_token, submission_id=second['submission_id'])
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F9_REVOKED_REVIEWER_ALLOWED')
         before_files = len(list((directory / 'private').iterdir()))
         with connection() as conn:
             conn.execute('SET ROLE schoolos_schema_owner')
@@ -238,4 +262,5 @@ def run_payment_runtime(local_status, root: Path):
     print('DB08_F8_REAL_AUTH_PASS pending=true replay=true wrong_child_denied=true '
           'duplicate_flag=true revoked_preflight_denied=true official_payment=false', flush=True)
     print('DB08_F9_REAL_AUTH_PASS staff_original_bytes=true family_denied=true '
-          'review_replay=true one_decision=true official_payment=false', flush=True)
+          'review_replay=true one_decision_each=true duplicate_approval_denied=true '
+          'revoked_reviewer_denied=true official_payment=false', flush=True)

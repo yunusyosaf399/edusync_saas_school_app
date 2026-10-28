@@ -106,6 +106,8 @@ BEGIN
  -- Serialize competing approvals of the same bank reference across submissions.
  PERFORM pg_advisory_xact_lock(71005,hashtext(source.school_id::text||':'||
   source.method||':'||source.institution_key||':'||source.reference_key));
+ PERFORM pg_advisory_xact_lock(71006,hashtext(source.school_id::text||':'||
+  encode(source.evidence_sha256,'hex')));
  SELECT * INTO file FROM app_private.file_objects WHERE id=source.evidence_file_id;
  IF file.id IS NULL OR file.state<>'AVAILABLE' OR file.classification<>'PRIVATE'
   OR file.purpose_code<>'PAYMENT_EVIDENCE' OR file.campus_id<>source.campus_id
@@ -132,8 +134,10 @@ BEGIN
     SELECT 1 FROM app_private.finance_payment_submissions other
     JOIN app_private.finance_payment_reviews r ON r.submission_id=other.id
     WHERE other.id<>source.id AND other.school_id=source.school_id
-     AND other.method=source.method AND other.institution_key=source.institution_key
-     AND other.reference_key=source.reference_key AND r.decision='APPROVE')) THEN
+     AND ((other.method=source.method AND other.institution_key=source.institution_key
+       AND other.reference_key=source.reference_key)
+       OR other.evidence_sha256=source.evidence_sha256)
+     AND r.decision='APPROVE')) THEN
   RAISE EXCEPTION 'DB08 review already decided or duplicate approved transfer'; END IF;
  INSERT INTO app_private.finance_payment_reviews(submission_id,decision,reviewer_id,reason)
  VALUES(p_submission,p_decision,actor,reason) RETURNING * INTO review;
