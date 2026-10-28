@@ -38,6 +38,10 @@ def run_payment_runtime(local_status, root: Path):
             # capacity and pointwise Roll facts before sharing it with the
             # separate file-worker connection.
             conn.execute('SET ROLE schoolos_schema_owner')
+            conn.execute("INSERT INTO app_private.finance_currency_units("
+                "school_id,currency_code,minor_unit_scale,created_by) VALUES("
+                "'08000000-0000-4000-8000-000000000002','SAR',2,"
+                "'08000000-0000-4000-8000-000000000001')")
             conn.execute("INSERT INTO app_private.capacity_revisions("
                 "class_offering_id,section_offering_id,new_capacity,effective_on,reason,created_by) "
                 "SELECT id,NULL,capacity,'2026-01-01','F8 committed fixture',"
