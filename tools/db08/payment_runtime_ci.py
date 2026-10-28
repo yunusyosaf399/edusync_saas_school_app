@@ -34,6 +34,36 @@ def run_payment_runtime(local_status, root: Path):
             for name in ('fixture_commands.sql', 'fixture_change.sql',
                          'fixture_selection.sql', 'fixture_bank_slip.sql'):
                 conn.execute((root / 'supabase/tests/db08' / name).read_text())
+            # The F5 fixture was originally rollback-only. Complete its D1
+            # capacity and pointwise Roll facts before sharing it with the
+            # separate file-worker connection.
+            conn.execute('SET ROLE schoolos_schema_owner')
+            conn.execute("INSERT INTO app_private.capacity_revisions("
+                "class_offering_id,section_offering_id,new_capacity,effective_on,reason,created_by) "
+                "SELECT id,NULL,capacity,'2026-01-01','F8 committed fixture',"
+                "'08000000-0000-4000-8000-000000000001' FROM app_private.class_offerings "
+                "WHERE id IN('08000000-0000-4000-8000-000000000055',"
+                "'08000000-0000-4000-8000-000000000056')")
+            conn.execute("INSERT INTO app_private.capacity_revisions("
+                "class_offering_id,section_offering_id,new_capacity,effective_on,reason,created_by) "
+                "SELECT NULL,id,capacity,'2026-01-01','F8 committed fixture',"
+                "'08000000-0000-4000-8000-000000000001' FROM app_private.section_offerings "
+                "WHERE id IN('08000000-0000-4000-8000-000000000057',"
+                "'08000000-0000-4000-8000-000000000058')")
+            conn.execute("INSERT INTO app_private.roll_policy_revisions("
+                "id,school_id,revision,mode,start_value,effective_from,reason,created_by) VALUES("
+                "'08000000-0000-4000-8000-000000000220',"
+                "'08000000-0000-4000-8000-000000000002',1,'PERSISTENT_STUDENT',1,"
+                "'2026-01-01','F8 committed fixture',"
+                "'08000000-0000-4000-8000-000000000001')")
+            conn.execute("INSERT INTO app_private.roll_allocations("
+                "enrollment_id,student_id,policy_revision_id,numeric_value,effective_from,created_by) "
+                "SELECT e.id,e.student_id,'08000000-0000-4000-8000-000000000220',"
+                "row_number() OVER(ORDER BY e.student_id),e.effective_from,"
+                "'08000000-0000-4000-8000-000000000001' FROM app_private.enrollments e "
+                "WHERE e.student_id IN('08000000-0000-4000-8000-000000000059',"
+                "'08000000-0000-4000-8000-000000000060')")
+            conn.execute('RESET ROLE')
             conn.execute('COMMIT')
         except BaseException:
             conn.execute('ROLLBACK')
@@ -131,5 +161,19 @@ def run_payment_runtime(local_status, root: Path):
         second = service.submit(**(payload | {'idempotency_key': 'f8-duplicate-2'}))
         if second['duplicate_suspected'] is not True:
             raise RuntimeError('DB08_F8_DUPLICATE_NOT_FLAGGED')
+        before_files = len(list((directory / 'private').iterdir()))
+        with connection() as conn:
+            conn.execute('SET ROLE schoolos_schema_owner')
+            conn.execute("UPDATE app_private.assignment_permission_scopes "
+                "SET revoked_at=clock_timestamp() WHERE id='08000000-0000-4000-8000-000000000215'")
+            conn.execute('RESET ROLE')
+        try:
+            service.submit(**(payload | {'idempotency_key': 'f8-revoked-3'}))
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F8_REVOKED_PERMISSION_ALLOWED')
+        if len(list((directory / 'private').iterdir())) != before_files:
+            raise RuntimeError('DB08_F8_REVOKED_PERMISSION_STORED_BYTES')
     print('DB08_F8_REAL_AUTH_PASS pending=true replay=true wrong_child_denied=true '
-          'duplicate_flag=true official_payment=false', flush=True)
+          'duplicate_flag=true revoked_preflight_denied=true official_payment=false', flush=True)
