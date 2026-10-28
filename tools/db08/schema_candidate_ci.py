@@ -211,6 +211,33 @@ def validate_bank_slip_source():
     return sql, test, expected
 
 
+def validate_bank_review_source():
+    paths = sorted((ROOT / 'supabase/proposals/db08').glob('09_*.sql.draft'))
+    if len(paths) != 1:
+        raise RuntimeError('DB08_F9_FRAGMENT_SCOPE')
+    sql = paths[0].read_text()
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != [
+        'db08_review_slip_authority', 'db08_review_slip_evidence',
+        'db08_review_bank_slip'
+    ] or re.search(r'(?m)^CREATE FUNCTION app\.', sql):
+        raise RuntimeError('DB08_F9_WORKER_ONLY_SCOPE')
+    test = (ROOT / 'supabase/tests/db08/09_bank_slip_review.sql').read_text()
+    expected = 8
+    if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB08_F9_TEST_PLAN')
+    for name in ('fixture_commands.sql', 'fixture_change.sql',
+                 'fixture_selection.sql', 'fixture_bank_slip.sql',
+                 'fixture_bank_review.sql'):
+        if test.count('\\ir ' + name) != 1:
+            raise RuntimeError('DB08_F9_FIXTURE_SCOPE')
+        test = test.replace('\\ir ' + name,
+                            (ROOT / 'supabase/tests/db08' / name).read_text())
+    print(f'DB08_F9_SOURCE_PASS fragments=1 assertions={expected} sha256=' +
+          hashlib.sha256(sql.encode()).hexdigest(), flush=True)
+    return sql, test, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--foundation-root', type=Path)
@@ -224,6 +251,7 @@ def main():
     discount_sql, discount_test, discount_assertions = validate_discount_source()
     payment_sql, payment_test, payment_assertions = validate_payment_baseline_source()
     bank_sql, bank_test, bank_assertions = validate_bank_slip_source()
+    review_sql, review_test, review_assertions = validate_bank_review_source()
     if args.source_only:
         return 0
     if os.environ.get('GITHUB_ACTIONS') != 'true' or args.foundation_root is None:
@@ -510,6 +538,25 @@ def main():
             if remaining != '0':
                 raise RuntimeError('DB08_F8_FIXTURE_ROLLBACK_INCOMPLETE')
             print(f'DB08_F8_DATABASE_PASS {bank_assertions}/{bank_assertions}; fixtures_rolled_back=true; official_payment=false', flush=True)
+            try:
+                local.run_psql(container, 'BEGIN;\n' + review_sql +
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB08_INJECTED_F9_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB08_F9_FAILED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB08_INJECTED_F9_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB08_F9_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db08_review_slip_authority','db08_review_slip_evidence','db08_review_bank_slip');",
+                'DB08_F9_ROLLBACK_ABSENCE', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB08_F9_PARTIAL_INSTALL_SURVIVED')
+            local.run_psql(container, 'BEGIN;\n' + review_sql + '\nCOMMIT;', 'DB08_F9_INSTALL')
+            output = local.run_psql(container, review_test, 'DB08_F9_REVIEW_TEST')
+            print(output, flush=True)
+            parse_tap(output, review_assertions)
+            print(f'DB08_F9_DATABASE_PASS {review_assertions}/{review_assertions}; fixtures_rolled_back=true', flush=True)
             from tools.db08.payment_runtime_ci import run_payment_runtime
             run_payment_runtime(local_status, ROOT)
             # Real worker and Auth checks commit only in the disposable stack.

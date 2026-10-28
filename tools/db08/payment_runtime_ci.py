@@ -19,6 +19,7 @@ def run_payment_runtime(local_status, root: Path):
     from services.admission_documents.adapters import LocalPrivateArchive, SupabaseAuthenticator, _NoRedirect
     from services.admission_documents.service import Entitlements, canonical
     from services.payment_evidence.service import PaymentEvidenceService
+    from services.payment_evidence.review import PaymentReviewService
 
     school = '08000000-0000-4000-8000-000000000002'
     campus = '08000000-0000-4000-8000-000000000003'
@@ -32,7 +33,8 @@ def run_payment_runtime(local_status, root: Path):
         conn.execute('BEGIN')
         try:
             for name in ('fixture_commands.sql', 'fixture_change.sql',
-                         'fixture_selection.sql', 'fixture_bank_slip.sql'):
+                         'fixture_selection.sql', 'fixture_bank_slip.sql',
+                         'fixture_bank_review.sql'):
                 conn.execute((root / 'supabase/tests/db08' / name).read_text())
             # The F5 fixture was originally rollback-only. Complete its D1
             # capacity and pointwise Roll facts before sharing it with the
@@ -78,6 +80,8 @@ def run_payment_runtime(local_status, root: Path):
             raise
         subject = conn.execute("SELECT auth_user_id::text FROM app_private.principal_auth_bindings "
             "WHERE id='08000000-0000-4000-8000-000000000202'").fetchone()[0]
+        staff_subject = conn.execute("SELECT auth_user_id::text FROM app_private.principal_auth_bindings "
+            "WHERE id='08000000-0000-4000-8000-000000000008'").fetchone()[0]
         worker_password = secrets.token_urlsafe(48)
         conn.execute(sql.SQL('ALTER ROLE schoolos_file_login PASSWORD {}').format(
             sql.Literal(worker_password)))
@@ -104,6 +108,21 @@ def run_payment_runtime(local_status, root: Path):
     with opener.open(req, timeout=20) as response:
         token = json.load(response)['access_token']
     password = None
+    staff_password = secrets.token_urlsafe(36)
+    req = urllib.request.Request(url + '/auth/v1/admin/users/' + staff_subject,
+        data=json.dumps({'password': staff_password}).encode(), method='PUT',
+        headers={'apikey': admin_key, 'Authorization': 'Bearer ' + admin_key,
+                 'Content-Type': 'application/json'})
+    with opener.open(req, timeout=20):
+        pass
+    req = urllib.request.Request(url + '/auth/v1/token?grant_type=password',
+        data=json.dumps({'email': 'foundation-rbac-001@example.invalid',
+                         'password': staff_password}).encode(), method='POST',
+        headers={'apikey': admin_key, 'Authorization': 'Bearer ' + admin_key,
+                 'Content-Type': 'application/json'})
+    with opener.open(req, timeout=20) as response:
+        staff_token = json.load(response)['access_token']
+    staff_password = None
     authenticate = SupabaseAuthenticator(url, admin_key, allow_local_test=True)
 
     with tempfile.TemporaryDirectory(prefix='db08-private-bank-slip-') as temporary:
@@ -169,6 +188,39 @@ def run_payment_runtime(local_status, root: Path):
         second = service.submit(**(payload | {'idempotency_key': 'f8-duplicate-2'}))
         if second['duplicate_suspected'] is not True:
             raise RuntimeError('DB08_F8_DUPLICATE_NOT_FLAGGED')
+        reviewer = PaymentReviewService(school_id=school, authenticate=authenticate,
+            connect=worker, objects=objects)
+        try:
+            reviewer.inspect(token=token, submission_id=first['submission_id'])
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F9_FAMILY_READ_ALLOWED')
+        evidence = reviewer.inspect(token=staff_token, submission_id=first['submission_id'])
+        if evidence['slip'] != png.getvalue() or evidence['amount_minor'] != 9934:
+            raise RuntimeError('DB08_F9_EVIDENCE_INVALID')
+        review_args = dict(token=staff_token, submission_id=first['submission_id'],
+            decision='APPROVE', reason='Checked original slip and transfer reference',
+            idempotency_key='f9-review-1')
+        reviewed = reviewer.decide(**review_args)
+        if reviewed['state'] != 'VERIFIED' or reviewer.decide(**review_args) != reviewed:
+            raise RuntimeError('DB08_F9_REVIEW_REPLAY_INVALID')
+        try:
+            reviewer.decide(**(review_args | {'decision': 'REJECT',
+                                              'idempotency_key': 'f9-conflict-2'}))
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F9_SECOND_DECISION_ALLOWED')
+        with connection() as conn:
+            review_counts = conn.execute("SELECT "
+                "(SELECT count(*) FROM app_private.finance_payment_reviews),"
+                "(SELECT count(*) FROM app_private.finance_official_payments),"
+                "(SELECT count(*) FROM app_private.command_receipts WHERE command_kind='payment.evidence.review'),"
+                "(SELECT count(*) FROM app_private.audit_events WHERE event_type='payment.evidence.review'),"
+                "(SELECT count(*) FROM app_private.outbox_events WHERE event_type='payment.evidence.review')").fetchone()
+        if review_counts != (1, 0, 1, 1, 1):
+            raise RuntimeError('DB08_F9_REVIEW_EFFECT_INVALID')
         before_files = len(list((directory / 'private').iterdir()))
         with connection() as conn:
             conn.execute('SET ROLE schoolos_schema_owner')
@@ -185,3 +237,5 @@ def run_payment_runtime(local_status, root: Path):
             raise RuntimeError('DB08_F8_REVOKED_PERMISSION_STORED_BYTES')
     print('DB08_F8_REAL_AUTH_PASS pending=true replay=true wrong_child_denied=true '
           'duplicate_flag=true revoked_preflight_denied=true official_payment=false', flush=True)
+    print('DB08_F9_REAL_AUTH_PASS staff_original_bytes=true family_denied=true '
+          'review_replay=true one_decision=true official_payment=false', flush=True)

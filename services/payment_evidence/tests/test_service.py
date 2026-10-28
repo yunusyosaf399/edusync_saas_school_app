@@ -14,6 +14,7 @@ from pypdf import PdfWriter
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from services.admission_documents.service import Denied, VerifiedClaims
 from services.payment_evidence.service import PaymentEvidenceService
+from services.payment_evidence.review import PaymentReviewService
 
 SCHOOL = '08000000-0000-4000-8000-000000000002'
 CAMPUS = '08000000-0000-4000-8000-000000000003'
@@ -137,6 +138,53 @@ class PaymentEvidenceTests(unittest.TestCase):
         with self.assertRaises(Denied):
             self.service.submit(**(self.request | {'slip': changed.getvalue()}))
         self.assertEqual(len([sql for sql, _ in self.conn.calls if 'db08_submit_bank_slip' in sql]), before)
+
+
+class FakeReviewConnection(FakeConnection):
+    def __init__(self, details):
+        super().__init__()
+        self.details = details
+
+    def fetchone(self):
+        if 'db08_review_slip_evidence' in self.calls[-1][0]:
+            return (self.details,)
+        return ({'decision': 'APPROVE', 'state': 'VERIFIED'},)
+
+
+class PaymentReviewTests(unittest.TestCase):
+    def setUp(self):
+        buf = BytesIO()
+        Image.new('RGB', (2, 2), 'red').save(buf, format='PNG')
+        self.slip = buf.getvalue()
+        self.objects = FakeObjects()
+        self.key = f'payments/{SCHOOL}/' + 'a' * 64
+        self.objects.put_once(self.key, self.slip)
+        self.details = dict(object_key=self.key, content_type='image/png',
+                            byte_size=len(self.slip), sha256=hashlib.sha256(self.slip).hexdigest(),
+                            amount_minor=9934)
+        self.conn = FakeReviewConnection(self.details)
+        self.service = PaymentReviewService(school_id=SCHOOL,
+            authenticate=lambda token: VerifiedClaims(SUBJECT, int(time.time()) - 5,
+                                                       int(time.time()) + 60),
+            connect=lambda: self.conn, objects=self.objects)
+
+    def test_original_bytes_and_checked_review(self):
+        inspected = self.service.inspect(token='valid', submission_id=STUDENT)
+        self.assertEqual(inspected['slip'], self.slip)
+        self.assertNotIn('object_key', inspected)
+        result = self.service.decide(token='valid', submission_id=STUDENT,
+            decision='APPROVE', reason='Original checked', idempotency_key='review-1')
+        self.assertEqual(result['state'], 'VERIFIED')
+        sql, args = self.conn.calls[-1]
+        self.assertIn('db08_review_bank_slip', sql)
+        self.assertEqual(args[4], hashlib.sha256(self.slip).digest())
+
+    def test_changed_archive_bytes_deny_review(self):
+        self.objects.saved[self.key] = self.slip + b'altered'
+        with self.assertRaises(Denied):
+            self.service.decide(token='valid', submission_id=STUDENT,
+                decision='APPROVE', reason='Original checked', idempotency_key='review-1')
+        self.assertFalse(any('db08_review_bank_slip' in sql for sql, _ in self.conn.calls))
 
 
 if __name__ == '__main__':
