@@ -56,6 +56,10 @@ def run_payment_runtime(local_status, root: Path):
                 "'08000000-0000-4000-8000-000000000002',1,'PERSISTENT_STUDENT',1,"
                 "'2026-01-01','F8 committed fixture',"
                 "'08000000-0000-4000-8000-000000000001')")
+            conn.execute("INSERT INTO app_private.roll_allocator_states("
+                "policy_revision_id,class_offering_id,next_value,created_by) VALUES("
+                "'08000000-0000-4000-8000-000000000220',NULL,3,"
+                "'08000000-0000-4000-8000-000000000001')")
             conn.execute("INSERT INTO app_private.roll_allocations("
                 "enrollment_id,student_id,policy_revision_id,numeric_value,effective_from,created_by) "
                 "SELECT e.id,e.student_id,'08000000-0000-4000-8000-000000000220',"
