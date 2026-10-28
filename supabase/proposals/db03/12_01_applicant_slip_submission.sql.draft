@@ -3,7 +3,6 @@
 -- This is PENDING evidence only, never payment, receipt or Finance clearance.
 GRANT EXECUTE ON FUNCTION app_private.db03_document_lock(uuid,text,text),
  app_private.db03_document_target_open(uuid,bigint),
- app_private.db03_document_is_forwarded(uuid),
  app_private.db03_document_actor_context(text,uuid),
  app_private.db03_document_worker_actor(),
  app_private.has_complete_grant(text,text,uuid) TO schoolos_schema_owner;
@@ -23,7 +22,8 @@ BEGIN
  a:=app_private.db03_document_lock(p_app,'admission.document.upload','applicant-slip:'||p_key);
  IF a.school_id<>p_school OR a.campus_id<>p_campus
   OR NOT app_private.db03_document_target_open(a.id,p_expected)
-  OR app_private.db03_document_is_forwarded(a.id) THEN
+  OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards f
+   WHERE f.application_id=a.id) THEN
   RAISE EXCEPTION 'DB03 applicant application stale or unavailable'; END IF;
  PERFORM app_private.db03_document_actor_context('admission.document.upload',p_campus);
  IF NOT app_private.has_complete_grant('file.upload','CAMPUS',p_campus)
