@@ -399,17 +399,17 @@ def run_payment_runtime(local_status, root: Path):
             pass
         else:
             raise RuntimeError('DB08_F13_FAMILY_ISSUED')
-        issue_args = dict(token=staff_token, student_id=student, action='ISSUE',
+        clearance_issue_args = dict(token=staff_token, student_id=student, action='ISSUE',
             reason='All selected Student charges settled', idempotency_key='f13-issue-1')
-        issued = clearance.decide(**issue_args)
+        issued = clearance.decide(**clearance_issue_args)
         if issued['state'] != 'ISSUED' or issued['revision'] != 1:
             raise RuntimeError('DB08_F13_ISSUE_INVALID')
-        if clearance.decide(**issue_args) != issued:
+        if clearance.decide(**clearance_issue_args) != issued:
             raise RuntimeError('DB08_F13_ISSUE_REPLAY_INVALID')
         if clearance.status(token=token, student_id=student)['state'] != 'ACTIVE':
             raise RuntimeError('DB08_F13_ACTIVE_STATUS_INVALID')
         try:
-            clearance.decide(**(issue_args | {'idempotency_key': 'f13-double-issue'}))
+            clearance.decide(**(clearance_issue_args | {'idempotency_key': 'f13-double-issue'}))
         except psycopg.Error:
             pass
         else:
@@ -421,7 +421,7 @@ def run_payment_runtime(local_status, root: Path):
             raise RuntimeError('DB08_F13_REVOKE_INVALID')
         if clearance.status(token=staff_token, student_id=student)['state'] != 'REVOKED':
             raise RuntimeError('DB08_F13_REVOKED_STATUS_INVALID')
-        reissued = clearance.decide(**(issue_args | {'idempotency_key': 'f13-reissue-3'}))
+        reissued = clearance.decide(**(clearance_issue_args | {'idempotency_key': 'f13-reissue-3'}))
         if reissued['revision'] != 3 or clearance.status(token=staff_token,
                 student_id=student)['state'] != 'ACTIVE':
             raise RuntimeError('DB08_F13_REISSUE_INVALID')
@@ -472,7 +472,7 @@ def run_payment_runtime(local_status, root: Path):
                 "SET revoked_at=clock_timestamp() WHERE id='08000000-0000-4000-8000-000000000263'")
             conn.execute('RESET ROLE')
         try:
-            clearance.decide(**issue_args)
+            clearance.decide(**clearance_issue_args)
         except psycopg.Error:
             pass
         else:
