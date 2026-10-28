@@ -1,0 +1,32 @@
+# DB08 F8 — family payment evidence submission readiness
+
+**Status: design contract only.** F7 provides inactive private storage, but no operational payment upload or submission command. This document defines the first F8 boundary. It does not make a screenshot an official payment, issue a receipt, or clear an admission.
+
+## Purpose and prerequisites
+
+An authenticated FAMILY principal may submit measured bank or wallet evidence for a currently linked Student. The stored submission remains pending for a different authorized Accountant to investigate. Staff-assisted intake requires a separately reviewed permission and actor contract; it must not impersonate a family account.
+
+F8 depends on the installed Foundation identity, grants, receipt/audit/outbox contracts; the D1 Family membership, child-access and primary enrollment sources; F7's private payment tables; and a **new purpose-bound PAYMENT_EVIDENCE file worker**. The existing DB03 admissions document worker is restricted to `ADMISSION_DOCUMENT` and cannot be reused by passing a different purpose. The payment worker must implement the ADR-004 effective entitlement snapshot, `storage.payment_evidence.upload`, module state, `file.upload`, typed `payment.evidence.submit` permission, Student relationship and private PDF/JPEG/PNG validation. It must create an AVAILABLE file only after server-measured bytes and current entitlement are rechecked at finalization. Until these pieces are installed and tested, F8 is closed.
+
+## Candidate command boundary
+
+1. Derive the principal solely from verified Auth context. Require active FAMILY kind, an enabled family-safe `payment.evidence.submit` operation and complete current scope/grant. A direct service-role call, an expired JWT and a stale role or scope deny. The authorization code and scope alternatives need deployment-owned registration before the command is exposed.
+2. Resolve active Family membership and active Family→Student access at the School-local current date. Require an active Student and a primary enrollment covering the declared payment date at the selected School/Campus. A historical relationship alone does not authorize a new submission. Staff, another family and an emergency contact cannot borrow this path.
+3. Recheck the relationship and permission **after waiting on the same D1 Student and Family mutation fences** used by relationship and access revocation. Follow the Foundation School shared authorization lock and canonical D1 lock order; a revocation that commits first must deny the waiting submission. Obtain the command-key lock before its source insertion and keep all checks and writes in one transaction.
+4. Require a PAYMENT_EVIDENCE AVAILABLE private file belonging to this principal and Campus, with the verified content hash bound to a trusted payment upload intent for this Student and this request. File UUID, content hash, entitlement revision and caller-provided school/capability flags are not authority by themselves. The file worker and submission command must serialize intent consumption so one file cannot support two submissions.
+5. Accept one positive amount in the School's configured two-decimal currency, a finite payment date, bank/wallet method, normalized institution and transaction reference. Preserve the originally submitted values and proof. Flag possible duplicate reference/amount/date or identical hash for Accountant investigation; do not silently mark a pending submission official. A correction is a new submission linked to the prior REQUEST_CORRECTION review, with fresh evidence and current authorization.
+6. Return a stable pending submission ID for an exact retry under the same principal/key/payload. A changed payload under the key fails. Before returning historical success, verify its submission and exact retained command receipt, audit and outbox evidence; recheck present principal authority. A successful command never writes `finance_payment_reviews` or `finance_official_payments`.
+
+## Data, privacy and history
+
+F7 `finance_payment_submissions` is the immutable source. The payment upload intent needs typed School/Campus/Student/principal/file identity, canonical request hash, expiry, entitlement revision and digest, and a one-time consumption link. The intent and file metadata are private and forced RLS. No `anon`, `authenticated` or `service_role` direct DML/SELECT grant on the payment sources. A narrowly scoped private executor and file worker may write only through checked functions. The audit/outbox event contains identifiers and status, not bank proof bytes, signed URLs or secret entitlement material. Generated receipt PDFs remain on demand after a later official payment command.
+
+## Acceptance gates before operational claim
+
+- Install failure rolls back all new objects; existing F1–F7 and frozen Foundation checks remain green in a disposable project.
+- Real family Auth succeeds with a current membership, child access, enrollment, permission and finalized entitled private file. Another family, staff role, service role, expired JWT, absent entitlement, wrong purpose/Campus/Student/uploader, changed hash, stale intent and unverified file fail without a submission.
+- Genuine two-backend revocation races cover Family membership, child access, permission/scope and School entitlement activation. Check both commit orders and absence of partial receipts, files or submission rows.
+- Exact replay returns the same ID and one audit/outbox pair; a changed-key payload or reused file fails. Concurrent same-key requests produce one submission. Suspected duplicate transactions remain pending and visible only to authorized Finance review.
+- F7 approval/receipt storage is not invoked by F8. Accountant review, official receipt serial allocation, payment allocation and Finance clearance have their own later acceptance gates.
+
+**Open design decisions:** define the deployment-owned family-safe permission and scope contract; the payment-specific upload-intent schema and server enforcement path; entitlement snapshot freshness bounds; staff-assisted intake authorization; and the lock composition with D1 Family revocation and the file worker. These decisions affect finance, privacy and irreversible schema design and must be reviewed before executable F8 SQL is added.
