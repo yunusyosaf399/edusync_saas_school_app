@@ -51,6 +51,7 @@ class FakeObjects:
 class FakeConnection:
     def __init__(self):
         self.calls = []
+        self.authorized = True
 
     def __enter__(self):
         return self
@@ -67,6 +68,8 @@ class FakeConnection:
         return self
 
     def fetchone(self):
+        if 'db08_bank_slip_preflight' in self.calls[-1][0]:
+            return (self.authorized,)
         return ({'submission_id': STUDENT, 'state': 'PENDING'},)
 
 
@@ -106,6 +109,13 @@ class PaymentEvidenceTests(unittest.TestCase):
         self.assertEqual(self.objects.saved, {})
         self.assertEqual(self.conn.calls, [])
 
+    def test_revoked_family_preflight_stores_no_bytes(self):
+        self.conn.authorized = False
+        with self.assertRaises(Denied):
+            self.service.submit(**self.request)
+        self.assertEqual(self.objects.saved, {})
+        self.assertFalse(any('db08_submit_bank_slip' in sql for sql, _ in self.conn.calls))
+
     def test_pdf_slip_is_measured_from_bytes(self):
         pdf = BytesIO()
         writer = PdfWriter()
@@ -123,10 +133,10 @@ class PaymentEvidenceTests(unittest.TestCase):
         self.service.submit(**self.request)
         changed = BytesIO()
         Image.new('RGB', (2, 2), 'blue').save(changed, format='PNG')
-        before = len(self.conn.calls)
+        before = len([sql for sql, _ in self.conn.calls if 'db08_submit_bank_slip' in sql])
         with self.assertRaises(Denied):
             self.service.submit(**(self.request | {'slip': changed.getvalue()}))
-        self.assertEqual(len(self.conn.calls), before)
+        self.assertEqual(len([sql for sql, _ in self.conn.calls if 'db08_submit_bank_slip' in sql]), before)
 
 
 if __name__ == '__main__':

@@ -155,4 +155,58 @@ REVOKE ALL ON FUNCTION app_private.db08_submit_bank_slip(uuid,uuid,uuid,numeric,
  FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app_private.db08_submit_bank_slip(uuid,uuid,uuid,numeric,date,text,text,
  text,bigint,bytea,text,text,bigint,bytea,timestamptz,text) TO schoolos_file_login;
+-- Cheap authorization preflight before the private object is written. The
+-- final command repeats current checks after the object write and locks.
+CREATE FUNCTION app_private.db08_bank_slip_preflight(p_school uuid,p_campus uuid,
+ p_student uuid,p_paid_on date)
+RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; school_day date;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR p_school IS NULL OR p_campus IS NULL
+  OR p_student IS NULL OR p_paid_on IS NULL OR NOT isfinite(p_paid_on)
+  OR current_setting('transaction_isolation')<>'read committed' THEN
+  RAISE EXCEPTION 'DB08 bank slip preflight denied'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ SELECT (clock_timestamp() AT TIME ZONE timezone)::date INTO school_day
+  FROM app_private.school_profiles WHERE id=p_school AND state='ACTIVE';
+ IF actor IS NULL OR school_day IS NULL OR p_paid_on>school_day
+  OR NOT EXISTS(SELECT 1 FROM app_private.principals
+    WHERE id=actor AND kind='FAMILY' AND state='ACTIVE')
+  OR (current_setting('request.jwt.claims',true)::jsonb->>'exp') !~ '^[0-9]{1,12}$'
+  OR to_timestamp((current_setting('request.jwt.claims',true)::jsonb->>'exp')::bigint)<=clock_timestamp()
+  OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+      JOIN app_private.permissions p ON p.id=o.request_permission_id
+      WHERE o.code='payment.evidence.submit' AND o.contract_version=1
+       AND o.handler_key=o.code AND o.payload_schema_version=1
+       AND o.enabled AND NOT o.requires_approval AND p.code=o.code
+       AND p.state='ENABLED' AND p.family_safe)
+  OR NOT EXISTS(SELECT 1 FROM app.campuses c
+      WHERE c.id=p_campus AND c.school_id=p_school AND c.state='ACTIVE')
+  OR NOT EXISTS(SELECT 1 FROM app_private.family_principal_memberships m
+      JOIN app_private.families f ON f.id=m.family_id
+      JOIN app_private.family_student_access a ON a.family_id=f.id
+      JOIN app_private.family_relationships r ON r.family_id=f.id AND r.student_id=a.student_id
+      WHERE m.principal_id=actor AND m.principal_kind='FAMILY'
+       AND f.school_id=p_school AND f.state='ACTIVE' AND a.student_id=p_student
+       AND m.effective_from<=school_day AND (m.effective_until IS NULL OR school_day<m.effective_until)
+       AND a.effective_from<=school_day AND (a.effective_until IS NULL OR school_day<a.effective_until)
+       AND r.effective_from<=school_day AND (r.effective_until IS NULL OR school_day<r.effective_until))
+  OR app_private.d1_authorized('payment.evidence.submit','STUDENT',p_student,NULL,school_day) IS NOT TRUE
+  OR app_private.d1_authorized('file.upload','STUDENT',p_student,NULL,school_day) IS NOT TRUE
+  OR NOT EXISTS(SELECT 1 FROM app_private.enrollments e
+      JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+      JOIN app_private.class_offerings c ON c.id=s.class_offering_id
+      WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+       AND e.placement_state='ACTIVE' AND e.effective_from<=p_paid_on
+       AND (e.effective_until IS NULL OR p_paid_on<e.effective_until)
+       AND c.school_id=p_school AND c.campus_id=p_campus) THEN
+  RAISE EXCEPTION 'DB08 bank slip preflight denied'; END IF;
+ RETURN true;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_bank_slip_preflight(uuid,uuid,uuid,date)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_bank_slip_preflight(uuid,uuid,uuid,date)
+ TO schoolos_file_login;
 RESET ROLE;

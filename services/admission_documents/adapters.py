@@ -23,7 +23,10 @@ class LocalPrivateArchive:
     This adapter exposes no deletion or overwrite. OS administrators remain part
     of the trusted infrastructure boundary, as provider operators would be.
     """
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, purpose: str = 'admissions'):
+        if purpose not in ('admissions', 'payments'):
+            raise ValueError('Explicit private object purpose required')
+        self.purpose = purpose
         self.root = Path(root)
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.root.is_symlink():
@@ -31,7 +34,9 @@ class LocalPrivateArchive:
         self.root.chmod(0o700)
 
     def _name(self, key):
-        if not isinstance(key, str) or not re.fullmatch(r'admissions/[0-9a-f-]{36}/[0-9a-f-]{36}', key):
+        pattern = (r'admissions/[0-9a-f-]{36}/[0-9a-f-]{36}' if self.purpose == 'admissions'
+                   else r'payments/[0-9a-f-]{36}/[0-9a-f]{64}')
+        if not isinstance(key, str) or not re.fullmatch(pattern, key):
             raise Denied('Object key unavailable')
         return hashlib.sha256(key.encode()).hexdigest()
 

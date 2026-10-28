@@ -55,6 +55,17 @@ class PaymentEvidenceService:
         identity = json.dumps([self.school_id, claims.subject, student_id, idempotency_key], separators=(',', ':')).encode()
         key = f'payments/{self.school_id}/{hashlib.sha256(identity).hexdigest()}'
         with self.entitlements.current() as (revision, entitlement_digest, until):
+            with self.connect() as conn:
+                with conn.transaction():
+                    conn.execute("SELECT set_config('request.jwt.claims',%s,true)",
+                                 (json.dumps(verified),))
+                    conn.execute("SELECT set_config('request.jwt.claim.sub',%s,true)",
+                                 (claims.subject,))
+                    if conn.execute(
+                        'SELECT app_private.db08_bank_slip_preflight(%s,%s,%s,%s)',
+                        (self.school_id, self.campus_id, student_id, paid_on),
+                    ).fetchone()[0] is not True:
+                        raise Denied('Bank slip authorization denied')
             self.objects.put_once(key, slip)
             if hashlib.sha256(self.objects.read(key, 1_048_577)).digest() != digest:
                 raise Denied('Stored bank slip changed')

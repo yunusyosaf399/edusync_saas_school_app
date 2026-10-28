@@ -9,6 +9,7 @@ on:
       - 'tools/db08/**'
       - 'services/payment_evidence/**'
       - 'services/admission_documents/service.py'
+      - 'services/admission_documents/adapters.py'
       - 'services/admission_documents/pdf_validator.py'
 
 permissions:

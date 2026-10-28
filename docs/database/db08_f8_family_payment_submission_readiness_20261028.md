@@ -19,7 +19,7 @@ F8 depends on Foundation identity, grants, receipt/audit/outbox contracts; D1 Fa
 
 ## Data, privacy and history
 
-F7 `finance_payment_submissions` is the immutable source. The candidate service stores private bytes using a deterministic, non-overwritable key for exact retry; a changed-byte retry is denied before database write. It then invokes the private command in one database transaction while holding the durable entitlement activation lock. Failed SQL after an object write may leave private orphan bytes; provider reconciliation is an activation gate. No `anon`, `authenticated` or `service_role` direct DML/SELECT grant on the payment sources. The audit/outbox event contains identifiers and status, not bank proof bytes, signed URLs or secret entitlement material. Generated receipt PDFs remain on demand after a later official payment command.
+F7 `finance_payment_submissions` is the immutable source. The candidate service checks current database authorization before storing bytes, uses a deterministic non-overwritable private key for exact retry, and denies a changed-byte retry. It then invokes the private command in one database transaction while holding the durable entitlement activation lock. The final command checks authorization again after any intervening revocation. A race between preflight and final SQL may leave private orphan bytes; provider reconciliation is an activation gate. No `anon`, `authenticated` or `service_role` direct DML/SELECT grant on the payment sources. The audit/outbox event contains identifiers and status, not bank proof bytes, signed URLs or secret entitlement material. Generated receipt PDFs remain on demand after a later official payment command.
 
 ## Acceptance gates before operational claim
 

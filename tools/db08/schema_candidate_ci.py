@@ -191,10 +191,12 @@ def validate_bank_slip_source():
     if len(paths) != 1:
         raise RuntimeError('DB08_F8_FRAGMENT_SCOPE')
     sql = paths[0].read_text()
-    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != ['db08_submit_bank_slip'] or re.search(r'(?m)^CREATE FUNCTION app\.', sql):
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != [
+        'db08_submit_bank_slip', 'db08_bank_slip_preflight'
+    ] or re.search(r'(?m)^CREATE FUNCTION app\.', sql):
         raise RuntimeError('DB08_F8_WORKER_ONLY_SCOPE')
     test = (ROOT / 'supabase/tests/db08/08_bank_slip_submission.sql').read_text()
-    expected = 15
+    expected = 8
     if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(
         r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
         raise RuntimeError('DB08_F8_TEST_PLAN')
@@ -489,7 +491,7 @@ def main():
             else:
                 raise RuntimeError('DB08_F8_EXPECTED_FAILURE_ABSENT')
             absent = local.run_psql(container,
-                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db08_submit_bank_slip';",
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db08_submit_bank_slip','db08_bank_slip_preflight');",
                 'DB08_F8_ROLLBACK_ABSENCE', tuples=True).strip()
             if absent != '0':
                 raise RuntimeError('DB08_F8_PARTIAL_INSTALL_SURVIVED')
@@ -508,6 +510,15 @@ def main():
             if remaining != '0':
                 raise RuntimeError('DB08_F8_FIXTURE_ROLLBACK_INCOMPLETE')
             print(f'DB08_F8_DATABASE_PASS {bank_assertions}/{bank_assertions}; fixtures_rolled_back=true; official_payment=false', flush=True)
+            from tools.db08.payment_runtime_ci import run_payment_runtime
+            run_payment_runtime(local_status, ROOT)
+            # Real worker and Auth checks commit only in the disposable stack.
+            run(['supabase', 'db', 'reset', '--local', '--no-seed'], cwd=foundation, timeout=900)
+            remaining = local.run_psql(container,
+                "SELECT count(*) FROM app_private.school_profiles;",
+                'DB08_F8_REAL_AUTH_RESET', tuples=True).strip()
+            if remaining != '0':
+                raise RuntimeError('DB08_F8_REAL_AUTH_CLEANUP')
             return 0
     finally:
         if started:
