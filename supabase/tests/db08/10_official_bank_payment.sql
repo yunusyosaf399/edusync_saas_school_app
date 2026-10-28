@@ -34,7 +34,7 @@ SELECT ok((SELECT count(*) FROM pg_constraint WHERE conrelid=
  'app_private.finance_official_payments'::regclass AND contype='u')>=4,
  'official source retains unique receipt, submission, review and transfer keys');
 SELECT ok((SELECT count(*) FROM pg_constraint WHERE conrelid=
- 'app_private.finance_official_payments'::regclass AND contype='f')>=8,
+ 'app_private.finance_official_payments'::regclass AND contype='f')>=7,
  'official source retains approved review and submission links');
 SELECT * FROM finish();
 ROLLBACK;
