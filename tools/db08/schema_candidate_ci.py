@@ -158,6 +158,34 @@ def validate_discount_source():
     return sql, test, expected
 
 
+def validate_payment_baseline_source():
+    paths = sorted((ROOT / 'supabase/proposals/db08').glob('07_*.sql.draft'))
+    if len(paths) != 1:
+        raise RuntimeError('DB08_F7_FRAGMENT_SCOPE')
+    sql = paths[0].read_text()
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)', sql) != [
+        'finance_payment_submissions', 'finance_payment_reviews',
+        'finance_official_payments'
+    ] or re.search(r'(?m)^CREATE FUNCTION app\.', sql):
+        raise RuntimeError('DB08_F7_STORAGE_SCOPE')
+    if len(re.findall(r'FORCE ROW LEVEL SECURITY;', sql)) != 3:
+        raise RuntimeError('DB08_F7_FORCED_RLS')
+    test = (ROOT / 'supabase/tests/db08/07_payment_evidence_baseline.sql').read_text()
+    expected = 27
+    if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB08_F7_TEST_PLAN')
+    for name in ('fixture_commands.sql', 'fixture_change.sql',
+                 'fixture_selection.sql', 'fixture_payment.sql'):
+        if test.count('\\ir ' + name) != 1:
+            raise RuntimeError('DB08_F7_FIXTURE_SCOPE')
+        test = test.replace('\\ir ' + name,
+                            (ROOT / 'supabase/tests/db08' / name).read_text())
+    print(f'DB08_F7_SOURCE_PASS fragments=1 assertions={expected} sha256=' +
+          hashlib.sha256(sql.encode()).hexdigest(), flush=True)
+    return sql, test, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--foundation-root', type=Path)
@@ -169,6 +197,7 @@ def main():
     chain_sql, chain_test, chain_assertions = validate_chain_source()
     selection_sql, selection_test, selection_assertions = validate_selection_source()
     discount_sql, discount_test, discount_assertions = validate_discount_source()
+    payment_sql, payment_test, payment_assertions = validate_payment_baseline_source()
     if args.source_only:
         return 0
     if os.environ.get('GITHUB_ACTIONS') != 'true' or args.foundation_root is None:
@@ -397,6 +426,32 @@ def main():
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_discount_intents)+(SELECT count(*) FROM app_private.finance_discount_adjustments)+(SELECT count(*) FROM app_private.finance_fee_obligations)+(SELECT count(*) FROM app_private.students)+(SELECT count(*) FROM app_private.school_profiles);", 'DB08_F6_REAL_AUTH_CLEANUP', tuples=True).strip()
             if remaining != '0':
                 raise RuntimeError('DB08_F6_REAL_AUTH_ROLLBACK_INCOMPLETE')
+            try:
+                local.run_psql(container, 'BEGIN;\n' + payment_sql +
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB08_INJECTED_F7_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB08_F7_FAILED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB08_INJECTED_F7_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB08_F7_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('finance_payment_submissions','finance_payment_reviews','finance_official_payments');", 'DB08_F7_ROLLBACK_ABSENCE', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB08_F7_PARTIAL_INSTALL_SURVIVED')
+            print('DB08_F7_DDL_ROLLBACK_PASS tables=0', flush=True)
+            local.run_psql(container, 'BEGIN;\n' + payment_sql + '\nCOMMIT;', 'DB08_F7_INSTALL')
+            try:
+                output = local.run_psql(container, payment_test, 'DB08_F7_STORAGE_TEST')
+                print(output, flush=True)
+                parse_tap(output, payment_assertions)
+            except local.DomainLocalCIError:
+                local.run_psql(container, '\\o /dev/null\n' + payment_test,
+                               'DB08_F7_SQL_DIAGNOSTIC')
+                raise
+            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.finance_payment_submissions)+(SELECT count(*) FROM app_private.finance_payment_reviews)+(SELECT count(*) FROM app_private.finance_official_payments)+(SELECT count(*) FROM app_private.file_objects)+(SELECT count(*) FROM app_private.students)+(SELECT count(*) FROM app_private.school_profiles);", 'DB08_F7_FIXTURE_CLEANUP', tuples=True).strip()
+            if remaining != '0':
+                raise RuntimeError('DB08_F7_FIXTURE_ROLLBACK_INCOMPLETE')
+            print(f'DB08_F7_DATABASE_PASS {payment_assertions}/{payment_assertions}; fixtures_rolled_back=true; client_payment_rpc=false', flush=True)
             return 0
     finally:
         if started:
