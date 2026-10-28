@@ -23,6 +23,7 @@ def run_payment_runtime(local_status, root: Path):
     from services.payment_evidence.receipt import PaymentReceiptService
     from services.payment_evidence.allocation import PaymentAllocationService
     from services.payment_evidence.statement import PaymentStatementService
+    from services.payment_evidence.clearance import StudentClearanceService
 
     school = '08000000-0000-4000-8000-000000000002'
     campus = '08000000-0000-4000-8000-000000000003'
@@ -39,7 +40,8 @@ def run_payment_runtime(local_status, root: Path):
                          'fixture_selection.sql', 'fixture_bank_slip.sql',
                          'fixture_bank_review.sql', 'fixture_bank_receipt.sql',
                          'fixture_payment_allocation.sql',
-                         'fixture_finance_statement.sql'):
+                         'fixture_finance_statement.sql',
+                         'fixture_student_clearance.sql'):
                 conn.execute((root / 'supabase/tests/db08' / name).read_text())
             # The F5 fixture was originally rollback-only. Complete its D1
             # capacity and pointwise Roll facts before sharing it with the
@@ -294,6 +296,15 @@ def run_payment_runtime(local_status, root: Path):
                 (official['payment_id'],)).fetchone()
         if payment_counts != (2, 2, 2, 2) or retained != (9934, 'BANK_TRANSFER', 'APPROVE', 1):
             raise RuntimeError('DB08_F10_OFFICIAL_SOURCE_INVALID')
+        clearance = StudentClearanceService(school_id=school,
+            authenticate=authenticate, connect=worker)
+        try:
+            clearance.decide(token=staff_token, student_id=student, action='ISSUE',
+                reason='Bank payments verified', idempotency_key='f13-unsettled')
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F13_UNSETTLED_ISSUED')
         allocator = PaymentAllocationService(school_id=school,
             authenticate=authenticate, connect=worker)
         charge = '08000000-0000-4000-8000-000000000244'
@@ -381,6 +392,91 @@ def run_payment_runtime(local_status, root: Path):
         if (staff_statement['campus_scope'] != campus
             or staff_statement['remaining_due_minor'] != 0):
             raise RuntimeError('DB08_F12_CAMPUS_BALANCE_INVALID')
+        try:
+            clearance.decide(token=token, student_id=student, action='ISSUE',
+                reason='Parent request', idempotency_key='f13-family')
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F13_FAMILY_ISSUED')
+        issue_args = dict(token=staff_token, student_id=student, action='ISSUE',
+            reason='All selected Student charges settled', idempotency_key='f13-issue-1')
+        issued = clearance.decide(**issue_args)
+        if issued['state'] != 'ISSUED' or issued['revision'] != 1:
+            raise RuntimeError('DB08_F13_ISSUE_INVALID')
+        if clearance.decide(**issue_args) != issued:
+            raise RuntimeError('DB08_F13_ISSUE_REPLAY_INVALID')
+        if clearance.status(token=token, student_id=student)['state'] != 'ACTIVE':
+            raise RuntimeError('DB08_F13_ACTIVE_STATUS_INVALID')
+        try:
+            clearance.decide(**(issue_args | {'idempotency_key': 'f13-double-issue'}))
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F13_DOUBLE_ISSUED')
+        revoked = clearance.decide(token=staff_token, student_id=student,
+            action='REVOKE', reason='Manual Finance reversal pending',
+            idempotency_key='f13-revoke-2')
+        if revoked['state'] != 'REVOKED' or revoked['revision'] != 2:
+            raise RuntimeError('DB08_F13_REVOKE_INVALID')
+        if clearance.status(token=staff_token, student_id=student)['state'] != 'REVOKED':
+            raise RuntimeError('DB08_F13_REVOKED_STATUS_INVALID')
+        reissued = clearance.decide(**(issue_args | {'idempotency_key': 'f13-reissue-3'}))
+        if reissued['revision'] != 3 or clearance.status(token=staff_token,
+                student_id=student)['state'] != 'ACTIVE':
+            raise RuntimeError('DB08_F13_REISSUE_INVALID')
+        # A later assessed charge invalidates the current payment-backed proof.
+        with connection() as conn:
+            conn.execute('SET ROLE schoolos_schema_owner')
+            conn.execute("INSERT INTO app_private.finance_fee_obligations("
+                "id,school_id,campus_id,academic_year_id,person_id,rule_id,rule_revision_id,"
+                "gross_amount_minor,frequency,period_start,period_end,due_on,assessment_key,created_by) "
+                "VALUES('08000000-0000-4000-8000-000000000268',"
+                "'08000000-0000-4000-8000-000000000002',"
+                "'08000000-0000-4000-8000-000000000003',"
+                "'08000000-0000-4000-8000-000000000004',"
+                "'08000000-0000-4000-8000-000000000006',"
+                "'08000000-0000-4000-8000-000000000241',"
+                "'08000000-0000-4000-8000-000000000242',15000,'MONTHLY',"
+                "'2026-11-01','2026-11-30','2026-12-05',"
+                "'08000000-0000-4000-8000-000000000267',"
+                "'08000000-0000-4000-8000-000000000007')")
+            conn.execute("INSERT INTO app_private.finance_fee_assessment_selections("
+                "obligation_id,applicability_id,student_id,enrollment_id,class_offering_id,"
+                "category_id,created_by) SELECT "
+                "'08000000-0000-4000-8000-000000000268',"
+                "'08000000-0000-4000-8000-000000000243',"
+                "'08000000-0000-4000-8000-000000000059',e.id,"
+                "'08000000-0000-4000-8000-000000000055',"
+                "'08000000-0000-4000-8000-000000000240',"
+                "'08000000-0000-4000-8000-000000000007' "
+                "FROM app_private.enrollments e WHERE e.student_id="
+                "'08000000-0000-4000-8000-000000000059' AND e.placement_kind='PRIMARY'")
+            conn.execute('RESET ROLE')
+        if clearance.status(token=staff_token, student_id=student)['state'] != 'STALE':
+            raise RuntimeError('DB08_F13_NEW_CHARGE_DID_NOT_STALE_CLEARANCE')
+        with connection() as conn:
+            clearance_counts = conn.execute("SELECT "
+                "(SELECT count(*) FROM app_private.finance_student_clearance_events),"
+                "(SELECT count(*) FROM app_private.command_receipts WHERE command_kind IN "
+                "('finance.clearance.issue','finance.clearance.revoke')) ,"
+                "(SELECT count(*) FROM app_private.audit_events WHERE event_type IN "
+                "('finance.clearance.issue','finance.clearance.revoke')) ,"
+                "(SELECT count(*) FROM app_private.outbox_events WHERE event_type IN "
+                "('finance.clearance.issue','finance.clearance.revoke'))").fetchone()
+        if clearance_counts != (3, 3, 3, 3):
+            raise RuntimeError('DB08_F13_RETAINED_HISTORY_INVALID')
+        with connection() as conn:
+            conn.execute('SET ROLE schoolos_schema_owner')
+            conn.execute("UPDATE app_private.assignment_permission_scopes "
+                "SET revoked_at=clock_timestamp() WHERE id='08000000-0000-4000-8000-000000000263'")
+            conn.execute('RESET ROLE')
+        try:
+            clearance.decide(**issue_args)
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F13_REVOKED_ISSUER_REPLAY_ALLOWED')
         with connection() as conn:
             conn.execute('SET ROLE schoolos_schema_owner')
             conn.execute("UPDATE app_private.assignment_permission_scopes "
@@ -453,3 +549,7 @@ def run_payment_runtime(local_status, root: Path):
     print('DB08_F12_REAL_AUTH_PASS family_child_only=true staff_campus=true '
           'gross=15000 allocated=15000 due=0 unallocated=4868 '
           'pending_excluded=true revoked_reads_denied=true', flush=True)
+    print('DB08_F13_REAL_AUTH_PASS unsettled_denied=true family_denied=true '
+          'issue_replay=true revoke=true reissue=true new_charge_stale=true '
+          'revoked_issuer_denied=true '
+          'admissions_clearance=false', flush=True)

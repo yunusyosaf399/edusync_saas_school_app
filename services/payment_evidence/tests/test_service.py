@@ -18,6 +18,7 @@ from services.payment_evidence.review import PaymentReviewService
 from services.payment_evidence.receipt import PaymentReceiptService
 from services.payment_evidence.allocation import PaymentAllocationService
 from services.payment_evidence.statement import PaymentStatementService
+from services.payment_evidence.clearance import StudentClearanceService
 
 SCHOOL = '08000000-0000-4000-8000-000000000002'
 CAMPUS = '08000000-0000-4000-8000-000000000003'
@@ -258,6 +259,33 @@ class PaymentStatementTests(unittest.TestCase):
             authenticate=lambda token: None, connect=lambda: conn)
         with self.assertRaises(Denied):
             service.read(token='invalid', student_id=STUDENT)
+        self.assertEqual(conn.calls, [])
+
+
+class StudentClearanceTests(unittest.TestCase):
+    def test_explicit_issue_and_status_use_verified_school_context(self):
+        conn = FakeConnection()
+        service = StudentClearanceService(school_id=SCHOOL,
+            authenticate=lambda token: VerifiedClaims(SUBJECT, int(time.time()) - 5,
+                                                       int(time.time()) + 60),
+            connect=lambda: conn)
+        service.decide(token='valid', student_id=STUDENT, action='ISSUE',
+                       reason='Settled', idempotency_key='issue-1')
+        sql, params = conn.calls[-1]
+        self.assertIn('db08_student_clearance(', sql)
+        self.assertEqual(params, (SCHOOL, STUDENT, 'ISSUE', 'Settled', 'issue-1'))
+        service.status(token='valid', student_id=STUDENT)
+        self.assertIn('db08_student_clearance_status', conn.calls[-1][0])
+
+    def test_invalid_action_denied_before_database(self):
+        conn = FakeConnection()
+        service = StudentClearanceService(school_id=SCHOOL,
+            authenticate=lambda token: VerifiedClaims(SUBJECT, int(time.time()) - 5,
+                                                       int(time.time()) + 60),
+            connect=lambda: conn)
+        with self.assertRaises(Denied):
+            service.decide(token='valid', student_id=STUDENT, action='WAIVE',
+                           reason='No payment', idempotency_key='issue-1')
         self.assertEqual(conn.calls, [])
 
 

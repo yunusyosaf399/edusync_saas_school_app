@@ -321,6 +321,37 @@ def validate_finance_statement_source():
     return sql, test, expected
 
 
+def validate_student_clearance_source():
+    paths = sorted((ROOT / 'supabase/proposals/db08').glob('13_*.sql.draft'))
+    if len(paths) != 1:
+        raise RuntimeError('DB08_F13_FRAGMENT_SCOPE')
+    sql = paths[0].read_text()
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z0-9_]+)', sql) != [
+        'finance_student_clearance_events'
+    ] or re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != [
+        'db08_clearance_snapshot', 'db08_student_clearance',
+        'db08_student_clearance_status'
+    ] or re.search(r'(?m)^CREATE FUNCTION app\.', sql):
+        raise RuntimeError('DB08_F13_PRIVATE_SCOPE')
+    test = (ROOT / 'supabase/tests/db08/13_student_payment_clearance.sql').read_text()
+    expected = 9
+    if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB08_F13_TEST_PLAN')
+    for name in ('fixture_commands.sql', 'fixture_change.sql',
+                 'fixture_selection.sql', 'fixture_bank_slip.sql',
+                 'fixture_bank_review.sql', 'fixture_bank_receipt.sql',
+                 'fixture_payment_allocation.sql', 'fixture_finance_statement.sql',
+                 'fixture_student_clearance.sql'):
+        if test.count('\\ir ' + name) != 1:
+            raise RuntimeError('DB08_F13_FIXTURE_SCOPE')
+        test = test.replace('\\ir ' + name,
+                            (ROOT / 'supabase/tests/db08' / name).read_text())
+    print(f'DB08_F13_SOURCE_PASS fragments=1 assertions={expected} sha256=' +
+          hashlib.sha256(sql.encode()).hexdigest(), flush=True)
+    return sql, test, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--foundation-root', type=Path)
@@ -338,6 +369,7 @@ def main():
     receipt_sql, receipt_test, receipt_assertions = validate_official_bank_payment_source()
     allocation_sql, allocation_test, allocation_assertions = validate_payment_allocation_source()
     statement_sql, statement_test, statement_assertions = validate_finance_statement_source()
+    clearance_sql, clearance_test, clearance_assertions = validate_student_clearance_source()
     if args.source_only:
         return 0
     if os.environ.get('GITHUB_ACTIONS') != 'true' or args.foundation_root is None:
@@ -700,6 +732,25 @@ def main():
             print(output, flush=True)
             parse_tap(output, statement_assertions)
             print(f'DB08_F12_DATABASE_PASS {statement_assertions}/{statement_assertions}; fixtures_rolled_back=true', flush=True)
+            try:
+                local.run_psql(container, 'BEGIN;\n' + clearance_sql +
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB08_INJECTED_F13_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB08_F13_FAILED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB08_INJECTED_F13_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB08_F13_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container,
+                "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='finance_student_clearance_events')+(SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db08_clearance_snapshot','db08_student_clearance','db08_student_clearance_status'));",
+                'DB08_F13_ROLLBACK_ABSENCE', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB08_F13_PARTIAL_INSTALL_SURVIVED')
+            local.run_psql(container, 'BEGIN;\n' + clearance_sql + '\nCOMMIT;', 'DB08_F13_INSTALL')
+            output = local.run_psql(container, clearance_test, 'DB08_F13_CLEARANCE_TEST')
+            print(output, flush=True)
+            parse_tap(output, clearance_assertions)
+            print(f'DB08_F13_DATABASE_PASS {clearance_assertions}/{clearance_assertions}; fixtures_rolled_back=true', flush=True)
             from tools.db08.payment_runtime_ci import run_payment_runtime
             run_payment_runtime(local_status, ROOT)
             # Real worker and Auth checks commit only in the disposable stack.
