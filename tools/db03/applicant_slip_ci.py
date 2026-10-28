@@ -98,6 +98,9 @@ def run_applicant_slip(local, fresh_database, fixture):
     image = BytesIO()
     Image.new('RGB', (12, 12), (25, 65, 105)).save(image, format='PNG')
     data = image.getvalue()
+    changed_image = BytesIO()
+    Image.new('RGB', (12, 12), (105, 65, 25)).save(changed_image, format='PNG')
+    changed_data = changed_image.getvalue()
 
     with tempfile.TemporaryDirectory(prefix='db03-private-applicant-slip-') as temporary:
         directory = Path(temporary)
@@ -127,7 +130,7 @@ def run_applicant_slip(local, fresh_database, fixture):
         check(first['state'] == 'PENDING' and first['duplicate_suspected'] is False,
               'staff proof only pending')
         check(upload(app, 'first') == first, 'exact key and bytes replay one source')
-        denied(lambda: upload(app, 'first', data + b'changed'), 'Stored object cannot be overwritten')
+        denied(lambda: upload(app, 'first', changed_data), 'Stored object cannot be overwritten')
         second = upload(other, 'second')
         check(second['duplicate_suspected'] is True, 'duplicate bank reference and hash flagged')
         with root() as conn:
