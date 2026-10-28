@@ -20,6 +20,7 @@ def run_payment_runtime(local_status, root: Path):
     from services.admission_documents.service import Entitlements, canonical
     from services.payment_evidence.service import PaymentEvidenceService
     from services.payment_evidence.review import PaymentReviewService
+    from services.payment_evidence.receipt import PaymentReceiptService
 
     school = '08000000-0000-4000-8000-000000000002'
     campus = '08000000-0000-4000-8000-000000000003'
@@ -34,7 +35,7 @@ def run_payment_runtime(local_status, root: Path):
         try:
             for name in ('fixture_commands.sql', 'fixture_change.sql',
                          'fixture_selection.sql', 'fixture_bank_slip.sql',
-                         'fixture_bank_review.sql'):
+                         'fixture_bank_review.sql', 'fixture_bank_receipt.sql'):
                 conn.execute((root / 'supabase/tests/db08' / name).read_text())
             # The F5 fixture was originally rollback-only. Complete its D1
             # capacity and pointwise Roll facts before sharing it with the
@@ -234,6 +235,76 @@ def run_payment_runtime(local_status, root: Path):
                 "(SELECT count(*) FROM app_private.outbox_events WHERE event_type='payment.evidence.review')").fetchone()
         if review_counts != (2, 0, 2, 2, 2):
             raise RuntimeError('DB08_F9_REVIEW_EFFECT_INVALID')
+        issuer = PaymentReceiptService(school_id=school, authenticate=authenticate,
+            connect=worker)
+        try:
+            issuer.issue(token=staff_token, submission_id=second['submission_id'],
+                review_id=rejected['review_id'], idempotency_key='f10-rejected')
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F10_REJECTED_SLIP_ISSUED')
+        try:
+            issuer.issue(token=token, submission_id=first['submission_id'],
+                review_id=reviewed['review_id'], idempotency_key='f10-family')
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F10_FAMILY_ISSUED')
+        issue_args = dict(token=staff_token, submission_id=first['submission_id'],
+            review_id=reviewed['review_id'], idempotency_key='f10-issue-1')
+        official = issuer.issue(**issue_args)
+        if official['state'] != 'RECORDED' or official['receipt_serial'] != 1:
+            raise RuntimeError('DB08_F10_FIRST_RECEIPT_INVALID')
+        if issuer.issue(**issue_args) != official:
+            raise RuntimeError('DB08_F10_EXACT_REPLAY_INVALID')
+        try:
+            issuer.issue(**(issue_args | {'idempotency_key': 'f10-second-key'}))
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F10_DOUBLE_ISSUANCE_ALLOWED')
+        other_png = BytesIO()
+        Image.new('RGB', (12, 12), (78, 45, 12)).save(other_png, format='PNG')
+        third = service.submit(**(payload | {'slip': other_png.getvalue(),
+            'reference': 'F8-OTHER-TRANSFER', 'idempotency_key': 'f8-distinct-3'}))
+        try:
+            issuer.issue(token=staff_token, submission_id=third['submission_id'],
+                review_id=reviewed['review_id'], idempotency_key='f10-pending')
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F10_PENDING_SLIP_ISSUED')
+        third_review = reviewer.decide(token=staff_token,
+            submission_id=third['submission_id'], decision='APPROVE',
+            reason='Distinct original transfer verified', idempotency_key='f9-third-5')
+        second_official = issuer.issue(token=staff_token,
+            submission_id=third['submission_id'], review_id=third_review['review_id'],
+            idempotency_key='f10-issue-2')
+        if second_official['receipt_serial'] != 2 or second_official['payment_id'] == official['payment_id']:
+            raise RuntimeError('DB08_F10_SCHOOL_SERIAL_INVALID')
+        with connection() as conn:
+            payment_counts = conn.execute("SELECT "
+                "(SELECT count(*) FROM app_private.finance_official_payments),"
+                "(SELECT count(*) FROM app_private.command_receipts WHERE command_kind='finance.payment.issue'),"
+                "(SELECT count(*) FROM app_private.audit_events WHERE event_type='finance.payment.issue'),"
+                "(SELECT count(*) FROM app_private.outbox_events WHERE event_type='finance.payment.issue')").fetchone()
+            retained = conn.execute("SELECT amount_minor,method,review_decision,receipt_serial "
+                "FROM app_private.finance_official_payments WHERE id=%s",
+                (official['payment_id'],)).fetchone()
+        if payment_counts != (2, 2, 2, 2) or retained != (9934, 'BANK_TRANSFER', 'APPROVE', 1):
+            raise RuntimeError('DB08_F10_OFFICIAL_SOURCE_INVALID')
+        with connection() as conn:
+            conn.execute('SET ROLE schoolos_schema_owner')
+            conn.execute("UPDATE app_private.assignment_permission_scopes "
+                "SET revoked_at=clock_timestamp() WHERE id='08000000-0000-4000-8000-000000000229'")
+            conn.execute('RESET ROLE')
+        try:
+            issuer.issue(**issue_args)
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F10_REVOKED_ISSUER_ALLOWED')
         with connection() as conn:
             conn.execute('SET ROLE schoolos_schema_owner')
             conn.execute("UPDATE app_private.assignment_permission_scopes "
@@ -263,4 +334,7 @@ def run_payment_runtime(local_status, root: Path):
           'duplicate_flag=true revoked_preflight_denied=true official_payment=false', flush=True)
     print('DB08_F9_REAL_AUTH_PASS staff_original_bytes=true family_denied=true '
           'review_replay=true one_decision_each=true duplicate_approval_denied=true '
-          'revoked_reviewer_denied=true official_payment=false', flush=True)
+          'revoked_reviewer_denied=true review_alone_payment=false', flush=True)
+    print('DB08_F10_REAL_AUTH_PASS rejected_and_pending_denied=true family_denied=true '
+          'serials=1,2 replay=true double_issue_denied=true revoked_issuer_denied=true '
+          'allocation=false clearance=false', flush=True)

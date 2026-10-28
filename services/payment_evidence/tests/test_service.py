@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from services.admission_documents.service import Denied, VerifiedClaims
 from services.payment_evidence.service import PaymentEvidenceService
 from services.payment_evidence.review import PaymentReviewService
+from services.payment_evidence.receipt import PaymentReceiptService
 
 SCHOOL = '08000000-0000-4000-8000-000000000002'
 CAMPUS = '08000000-0000-4000-8000-000000000003'
@@ -185,6 +186,31 @@ class PaymentReviewTests(unittest.TestCase):
             self.service.decide(token='valid', submission_id=STUDENT,
                 decision='APPROVE', reason='Original checked', idempotency_key='review-1')
         self.assertFalse(any('db08_review_bank_slip' in sql for sql, _ in self.conn.calls))
+
+
+class PaymentReceiptTests(unittest.TestCase):
+    def test_trusted_identity_and_typed_review_are_passed_to_checked_command(self):
+        conn = FakeConnection()
+        service = PaymentReceiptService(school_id=SCHOOL,
+            authenticate=lambda token: VerifiedClaims(SUBJECT, int(time.time()) - 5,
+                                                       int(time.time()) + 60),
+            connect=lambda: conn)
+        service.issue(token='valid', submission_id=STUDENT, review_id=SUBJECT,
+                      idempotency_key='issue-1')
+        sql, params = conn.calls[-1]
+        self.assertIn('db08_issue_bank_payment', sql)
+        self.assertEqual(params, (SCHOOL, STUDENT, SUBJECT, 'issue-1'))
+
+    def test_invalid_key_rejected_before_database(self):
+        conn = FakeConnection()
+        service = PaymentReceiptService(school_id=SCHOOL,
+            authenticate=lambda token: VerifiedClaims(SUBJECT, int(time.time()) - 5,
+                                                       int(time.time()) + 60),
+            connect=lambda: conn)
+        with self.assertRaises(Denied):
+            service.issue(token='valid', submission_id=STUDENT, review_id=SUBJECT,
+                          idempotency_key='')
+        self.assertEqual(conn.calls, [])
 
 
 if __name__ == '__main__':
