@@ -1235,6 +1235,8 @@ The exact sequence rule is configurable during database design.
 
 **CONFIRMED**
 
+**Initial parent submission clarification — 28 October 2026:** The app does not collect or initiate a payment. A parent pays by bank transfer outside the app, then uploads the transaction slip as a private PDF, JPEG or PNG for a linked Student. The submission remains pending until a school administrator with the specific payment-verification permission reviews it. The administrator may approve, reject or request a corrected slip. Approval must create the official payment and permanent receipt through the protected Finance command; an uploaded slip or review alone is not a paid charge. Role title alone does not confer verification permission. Cash handling and wallet evidence are separate later operational paths; the storage schema's ability to describe them does not enable those parent submission methods.
+
 Initial payment methods:
 
 - Cash
@@ -1243,13 +1245,13 @@ Initial payment methods:
 
 There is no direct online payment gateway in the initial version.
 
-For bank/wallet payments, parents can submit:
+For the initial bank-transfer evidence flow, parents can submit:
 
 - Amount
 - Transaction/reference ID
-- Bank/wallet information
+- Bank information
 - Payment date
-- Screenshot/evidence
+- PDF or image of the bank transaction slip
 
 Workflow:
 
@@ -1260,14 +1262,14 @@ Parent submits payment evidence
 Pending verification
         |
         v
-Accountant review
+Authorized school administrator review
         |
         +-- Approve -> official payment + receipt
         +-- Reject
         `-- Request correction
 ```
 
-Duplicate submissions should be flagged using information such as transaction ID, bank/wallet, and amount.
+Duplicate submissions should be flagged using information such as transaction ID, bank, amount and file hash.
 
 ---
 
