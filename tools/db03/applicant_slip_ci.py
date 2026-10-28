@@ -135,7 +135,7 @@ def run_applicant_slip(local, fresh_database, fixture):
         check(second['duplicate_suspected'] is True, 'duplicate bank reference and hash flagged')
         with root() as conn:
             rows = conn.execute("SELECT s.application_id,s.school_id,s.campus_id,s.application_version,s.submitted_by,s.evidence_sha256,f.state,f.classification,f.purpose_code,f.content_hash,f.created_by FROM app_private.finance_admission_slip_submissions s JOIN app_private.file_objects f ON f.id=s.evidence_file_id ORDER BY s.submitted_at,s.id").fetchall()
-            check(len(rows) == 2 and all(r[1:4] == (SCHOOL, CAMPUS, 1)
+            check(len(rows) == 2 and all((str(r[1]), str(r[2]), r[3]) == (SCHOOL, CAMPUS, 1)
                 and r[6:9] == ('AVAILABLE', 'PRIVATE', 'ADMISSION_PAYMENT_EVIDENCE')
                 and bytes(r[5]) == hashlib.sha256(data).digest() and bytes(r[9]) == bytes(r[5])
                 and r[4] != r[10] for r in rows), 'retained private measured applicant evidence')
