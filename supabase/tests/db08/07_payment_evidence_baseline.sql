@@ -68,7 +68,7 @@ SELECT throws_ok($q$INSERT INTO app_private.finance_official_payments
  10000,'BANK_TRANSFER','08000000-0000-4000-8000-000000000104',
  '08000000-0000-4000-8000-000000000105','BANK A','REF1',1,
  '08000000-0000-4000-8000-000000000021')$q$,
- '23503'::char(5),NULL::text,'no official payment without approved review source');
+ 'P0001'::char(5),NULL::text,'no official payment without approved review source');
 SELECT lives_ok($q$INSERT INTO app_private.finance_payment_reviews
  (id,submission_id,decision,reviewer_id,reason)
  VALUES('08000000-0000-4000-8000-000000000105',
