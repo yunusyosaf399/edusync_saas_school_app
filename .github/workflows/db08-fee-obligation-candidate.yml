@@ -7,6 +7,9 @@ on:
       - 'supabase/proposals/db08/**'
       - 'supabase/tests/db08/**'
       - 'tools/db08/**'
+      - 'services/payment_evidence/**'
+      - 'services/admission_documents/service.py'
+      - 'services/admission_documents/pdf_validator.py'
 
 permissions:
   contents: read

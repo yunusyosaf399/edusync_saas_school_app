@@ -194,7 +194,7 @@ def validate_bank_slip_source():
     if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != ['db08_submit_bank_slip'] or re.search(r'(?m)^CREATE FUNCTION app\.', sql):
         raise RuntimeError('DB08_F8_WORKER_ONLY_SCOPE')
     test = (ROOT / 'supabase/tests/db08/08_bank_slip_submission.sql').read_text()
-    expected = 14
+    expected = 15
     if re.findall(r'SELECT plan\((\d+)\);', test) != [str(expected)] or len(re.findall(
         r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != expected or not test.rstrip().endswith('ROLLBACK;'):
         raise RuntimeError('DB08_F8_TEST_PLAN')
@@ -226,6 +226,9 @@ def main():
         return 0
     if os.environ.get('GITHUB_ACTIONS') != 'true' or args.foundation_root is None:
         raise RuntimeError('DB08_DISPOSABLE_GITHUB_CI_REQUIRED')
+    subprocess.run([sys.executable, '-m', 'unittest',
+                    'services.payment_evidence.tests.test_service', '-v'],
+                   cwd=ROOT, check=True)
     foundation = args.foundation_root.resolve()
     if subprocess.check_output(['git', '-C', str(foundation), 'rev-parse', 'HEAD'], text=True).strip() != DEPENDENCY_SHA:
         raise RuntimeError('DB08_FOUNDATION_PIN_MISMATCH')

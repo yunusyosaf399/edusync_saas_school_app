@@ -3,7 +3,7 @@ BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 GRANT USAGE ON SCHEMA extensions TO schoolos_schema_owner;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(14);
+SELECT plan(15);
 SELECT ok(NOT has_function_privilege('authenticated',
  'app_private.db08_submit_bank_slip(uuid,uuid,uuid,numeric,date,text,text,text,bigint,bytea,text,text,bigint,bytea,timestamptz,text)',
  'EXECUTE'),'no client RPC');
@@ -46,6 +46,8 @@ SELECT is((SELECT count(*) FROM app_private.file_objects WHERE purpose_code='PAY
  1::bigint,'private verified evidence retained');
 SELECT is((SELECT count(*) FROM app_private.command_receipts
  WHERE command_kind='payment.evidence.submit'),1::bigint,'one immutable receipt');
+SELECT is((SELECT result_summary->>'duplicate_suspected' FROM app_private.command_receipts
+ WHERE command_kind='payment.evidence.submit'),'false','first proof is not a duplicate');
 SELECT is((SELECT count(*) FROM app_private.audit_events
  WHERE event_type='payment.evidence.submit'),1::bigint,'one audit event');
 SELECT is((SELECT count(*) FROM app_private.outbox_events

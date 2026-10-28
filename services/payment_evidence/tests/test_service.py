@@ -9,6 +9,7 @@ import time
 import unittest
 
 from PIL import Image
+from pypdf import PdfWriter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from services.admission_documents.service import Denied, VerifiedClaims
@@ -104,6 +105,17 @@ class PaymentEvidenceTests(unittest.TestCase):
             self.service.submit(**self.request)
         self.assertEqual(self.objects.saved, {})
         self.assertEqual(self.conn.calls, [])
+
+    def test_pdf_slip_is_measured_from_bytes(self):
+        pdf = BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.write(pdf)
+        self.service.submit(**(self.request | {'slip': pdf.getvalue(),
+                                               'idempotency_key': 'pdf-request'}))
+        sql, args = self.conn.calls[-1]
+        self.assertIn('db08_submit_bank_slip', sql)
+        self.assertEqual(args[7], 'application/pdf')
 
     def test_fractional_smallest_unit_and_changed_retry_bytes_denied(self):
         with self.assertRaises(Denied):

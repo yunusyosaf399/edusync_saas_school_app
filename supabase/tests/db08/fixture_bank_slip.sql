@@ -19,11 +19,11 @@ INSERT INTO app_private.families(id,school_id,code,display_label,created_by)
 VALUES('08000000-0000-4000-8000-000000000203',
  '08000000-0000-4000-8000-000000000002','BANK-SLIP-FAMILY','Bank slip family',
  '08000000-0000-4000-8000-000000000001');
-INSERT INTO app_private.family_relationships(id,family_id,student_id,relationship_kind,
+INSERT INTO app_private.family_relationships(id,family_id,student_id,relationship_kind,display_name,
  effective_from,reason,created_by)
 VALUES('08000000-0000-4000-8000-000000000204',
  '08000000-0000-4000-8000-000000000203',
- '08000000-0000-4000-8000-000000000059','GUARDIAN',CURRENT_DATE-20,
+ '08000000-0000-4000-8000-000000000059','GUARDIAN','Synthetic guardian',CURRENT_DATE-20,
  'Synthetic link','08000000-0000-4000-8000-000000000001');
 INSERT INTO app_private.family_principal_memberships(id,family_id,principal_id,
  principal_kind,effective_from,reason,created_by)
