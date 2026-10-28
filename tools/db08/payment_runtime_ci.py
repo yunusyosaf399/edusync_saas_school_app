@@ -334,7 +334,7 @@ def run_payment_runtime(local_status, root: Path):
             payment_id=second_official['payment_id'], obligation_id=charge,
             amount=Decimal('50.66'), idempotency_key='f11-two')
         if settled['obligation_remaining_minor'] != 0 or settled['payment_unallocated_minor'] != 4268:
-            raise RuntimeError('DB08_F11_NET_BALANCE_INVALID')
+            raise RuntimeError('DB08_F11_NET_BALANCE_INVALID ' + repr(settled))
         with connection() as conn:
             allocation_counts = conn.execute("SELECT "
                 "(SELECT count(*) FROM app_private.finance_payment_allocations),"
