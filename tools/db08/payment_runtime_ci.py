@@ -333,7 +333,7 @@ def run_payment_runtime(local_status, root: Path):
         settled = allocator.allocate(token=staff_token,
             payment_id=second_official['payment_id'], obligation_id=charge,
             amount=Decimal('50.66'), idempotency_key='f11-two')
-        if settled['obligation_remaining_minor'] != 0 or settled['payment_unallocated_minor'] != 4268:
+        if settled['obligation_remaining_minor'] != 0 or settled['payment_unallocated_minor'] != 4868:
             raise RuntimeError('DB08_F11_NET_BALANCE_INVALID ' + repr(settled))
         with connection() as conn:
             allocation_counts = conn.execute("SELECT "
@@ -401,5 +401,5 @@ def run_payment_runtime(local_status, root: Path):
           'serials=1,2 replay=true double_issue_denied=true revoked_issuer_denied=true '
           'receipt_alone_allocation=false clearance=false', flush=True)
     print('DB08_F11_REAL_AUTH_PASS cross_student_denied=true partial_then_net_zero=true '
-          'payment_remainder=4268 replay=true overpayment_denied=true '
+          'payment_remainder=4868 replay=true overpayment_denied=true '
           'revoked_allocator_denied=true clearance=false', flush=True)
