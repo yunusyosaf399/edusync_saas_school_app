@@ -1,0 +1,105 @@
+-- F12 candidate: checked, read-only Student Finance statement from retained
+-- charges, discounts, official payments and allocations. No paid flag/cache.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db08_student_finance_statement(p_school uuid,p_student uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; kind text; school_day date; current_campus uuid;
+ visible_campus uuid; charges jsonb; payments jsonb; totals record;
+ claims jsonb;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR current_setting('transaction_isolation')<>'read committed'
+  OR p_school IS NULL OR p_student IS NULL THEN
+  RAISE EXCEPTION 'DB08 statement worker denied'; END IF;
+ claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
+ IF claims->>'exp' IS NULL OR claims->>'exp' !~ '^[0-9]{1,12}$'
+  OR to_timestamp((claims->>'exp')::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB08 statement authentication expired'; END IF;
+ -- Existing Finance writes take the School advisory fence. F10 issuance locks
+ -- the School row, so the two locks keep this multi-query statement coherent.
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ PERFORM pg_advisory_xact_lock_shared(71003,hashtext(p_school::text));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=p_school AND state='ACTIVE' FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB08 statement School unavailable'; END IF;
+ PERFORM 1 FROM app_private.students WHERE id=p_student AND current_status='ACTIVE' FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB08 statement Student unavailable'; END IF;
+ actor:=app_private.current_principal_id();
+ SELECT p.kind INTO kind FROM app_private.principals p WHERE p.id=actor AND p.state='ACTIVE';
+ SELECT (clock_timestamp() AT TIME ZONE timezone)::date INTO school_day
+  FROM app_private.school_profiles WHERE id=p_school;
+ SELECT c.campus_id INTO current_campus
+  FROM app_private.enrollments e
+  JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+  JOIN app_private.class_offerings c ON c.id=s.class_offering_id
+  WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+   AND e.placement_state='ACTIVE' AND e.effective_from<=school_day
+   AND (e.effective_until IS NULL OR school_day<e.effective_until)
+   AND c.school_id=p_school AND c.campus_id=s.campus_id
+   AND EXISTS(SELECT 1 FROM app.campuses x
+      WHERE x.id=c.campus_id AND x.school_id=p_school AND x.state='ACTIVE');
+ IF actor IS NULL OR kind NOT IN('FAMILY','INDIVIDUAL') OR current_campus IS NULL
+  OR app_private.d1_authorized('finance.statement.view','STUDENT',p_student,NULL,school_day) IS NOT TRUE THEN
+  RAISE EXCEPTION 'DB08 statement authority denied'; END IF;
+ -- Campus staff only see facts from the Campus of the authorized placement.
+ -- A Family child grant may see the Student's School-wide history.
+ visible_campus:=CASE WHEN kind='FAMILY' THEN NULL ELSE current_campus END;
+ SELECT coalesce(jsonb_agg(jsonb_build_object(
+   'obligation_id',x.id,'campus_id',x.campus_id,'period_start',x.period_start,
+   'period_end',x.period_end,'due_on',x.due_on,'category',x.category,
+   'currency_code',x.currency_code,'gross_minor',x.gross,
+   'discount_minor',x.discount,'net_minor',x.net,
+   'allocated_minor',x.allocated,'remaining_minor',x.net-x.allocated)
+   ORDER BY x.due_on,x.id), '[]'::jsonb) INTO charges
+ FROM (
+  SELECT o.id,o.campus_id,o.period_start,o.period_end,o.due_on,
+   c.code AS category,u.currency_code,o.gross_amount_minor AS gross,
+   coalesce(a.discount_minor,0) AS discount,
+   coalesce(a.net_minor,o.gross_amount_minor) AS net,
+   coalesce((SELECT sum(z.amount_minor) FROM app_private.finance_payment_allocations z
+      WHERE z.obligation_id=o.id),0) AS allocated
+  FROM app_private.finance_fee_obligations o
+  JOIN app_private.finance_fee_assessment_selections s ON s.obligation_id=o.id
+  JOIN app_private.finance_fee_rules r ON r.id=o.rule_id
+  JOIN app_private.finance_fee_categories c ON c.id=r.category_id
+  JOIN app_private.finance_currency_units u ON u.id=r.currency_unit_id
+  LEFT JOIN app_private.finance_discount_adjustments a ON a.obligation_id=o.id
+  WHERE o.school_id=p_school AND s.student_id=p_student
+   AND (visible_campus IS NULL OR o.campus_id=visible_campus)
+ ) x;
+ SELECT coalesce(jsonb_agg(jsonb_build_object(
+  'payment_id',x.id,'campus_id',x.campus_id,'receipt_serial',x.receipt_serial,
+  'received_at',x.received_at,'amount_minor',x.amount_minor,
+  'allocated_minor',x.allocated,'unallocated_minor',x.amount_minor-x.allocated,
+  'currency_code',x.currency_code,'method',x.method,
+  'bank',x.institution_key,'reference',x.reference_key)
+  ORDER BY x.received_at,x.id),'[]'::jsonb) INTO payments
+ FROM (
+  SELECT p.id,p.campus_id,p.receipt_serial,p.received_at,p.amount_minor,
+   p.method,p.institution_key,p.reference_key,u.currency_code,
+   coalesce((SELECT sum(z.amount_minor) FROM app_private.finance_payment_allocations z
+      WHERE z.payment_id=p.id),0) AS allocated
+  FROM app_private.finance_official_payments p
+  JOIN app_private.finance_currency_units u ON u.id=p.currency_unit_id
+  WHERE p.school_id=p_school AND p.student_id=p_student
+   AND (visible_campus IS NULL OR p.campus_id=visible_campus)
+ ) x;
+ SELECT coalesce(sum((x->>'gross_minor')::numeric),0) AS gross,
+  coalesce(sum((x->>'discount_minor')::numeric),0) AS discount,
+  coalesce(sum((x->>'net_minor')::numeric),0) AS net,
+  coalesce(sum((x->>'allocated_minor')::numeric),0) AS allocated,
+  coalesce(sum((x->>'remaining_minor')::numeric),0) AS due
+ INTO totals FROM jsonb_array_elements(charges) x;
+ RETURN jsonb_build_object('school_id',p_school,'student_id',p_student,
+  'campus_scope',visible_campus,'as_of',clock_timestamp(),
+  'charges',charges,'official_payments',payments,
+  'gross_minor',totals.gross,'discount_minor',totals.discount,
+  'net_minor',totals.net,'allocated_minor',totals.allocated,
+  'remaining_due_minor',totals.due,
+  'unallocated_payment_minor',coalesce((SELECT sum((x->>'unallocated_minor')::numeric)
+    FROM jsonb_array_elements(payments) x),0));
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_student_finance_statement(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_student_finance_statement(uuid,uuid)
+ TO schoolos_file_login;
+RESET ROLE;

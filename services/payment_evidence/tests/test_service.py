@@ -17,6 +17,7 @@ from services.payment_evidence.service import PaymentEvidenceService
 from services.payment_evidence.review import PaymentReviewService
 from services.payment_evidence.receipt import PaymentReceiptService
 from services.payment_evidence.allocation import PaymentAllocationService
+from services.payment_evidence.statement import PaymentStatementService
 
 SCHOOL = '08000000-0000-4000-8000-000000000002'
 CAMPUS = '08000000-0000-4000-8000-000000000003'
@@ -236,6 +237,27 @@ class PaymentAllocationTests(unittest.TestCase):
         with self.assertRaises(Denied):
             service.allocate(token='valid', payment_id=SUBJECT, obligation_id=STUDENT,
                              amount=Decimal('0.001'), idempotency_key='allocate-1')
+        self.assertEqual(conn.calls, [])
+
+
+class PaymentStatementTests(unittest.TestCase):
+    def test_checked_read_uses_verified_subject_and_school(self):
+        conn = FakeConnection()
+        service = PaymentStatementService(school_id=SCHOOL,
+            authenticate=lambda token: VerifiedClaims(SUBJECT, int(time.time()) - 5,
+                                                       int(time.time()) + 60),
+            connect=lambda: conn)
+        service.read(token='valid', student_id=STUDENT)
+        sql, params = conn.calls[-1]
+        self.assertIn('db08_student_finance_statement', sql)
+        self.assertEqual(params, (SCHOOL, STUDENT))
+
+    def test_unverified_claims_do_not_read(self):
+        conn = FakeConnection()
+        service = PaymentStatementService(school_id=SCHOOL,
+            authenticate=lambda token: None, connect=lambda: conn)
+        with self.assertRaises(Denied):
+            service.read(token='invalid', student_id=STUDENT)
         self.assertEqual(conn.calls, [])
 
 

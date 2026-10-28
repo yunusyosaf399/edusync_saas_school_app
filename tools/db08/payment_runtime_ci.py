@@ -22,6 +22,7 @@ def run_payment_runtime(local_status, root: Path):
     from services.payment_evidence.review import PaymentReviewService
     from services.payment_evidence.receipt import PaymentReceiptService
     from services.payment_evidence.allocation import PaymentAllocationService
+    from services.payment_evidence.statement import PaymentStatementService
 
     school = '08000000-0000-4000-8000-000000000002'
     campus = '08000000-0000-4000-8000-000000000003'
@@ -37,7 +38,8 @@ def run_payment_runtime(local_status, root: Path):
             for name in ('fixture_commands.sql', 'fixture_change.sql',
                          'fixture_selection.sql', 'fixture_bank_slip.sql',
                          'fixture_bank_review.sql', 'fixture_bank_receipt.sql',
-                         'fixture_payment_allocation.sql'):
+                         'fixture_payment_allocation.sql',
+                         'fixture_finance_statement.sql'):
                 conn.execute((root / 'supabase/tests/db08' / name).read_text())
             # The F5 fixture was originally rollback-only. Complete its D1
             # capacity and pointwise Roll facts before sharing it with the
@@ -356,6 +358,51 @@ def run_payment_runtime(local_status, root: Path):
             pass
         else:
             raise RuntimeError('DB08_F11_REVOKED_ALLOCATOR_ALLOWED')
+        statements = PaymentStatementService(school_id=school,
+            authenticate=authenticate, connect=worker)
+        family_statement = statements.read(token=token, student_id=student)
+        if (family_statement['gross_minor'] != 15000
+            or family_statement['net_minor'] != 15000
+            or family_statement['allocated_minor'] != 15000
+            or family_statement['remaining_due_minor'] != 0
+            or family_statement['unallocated_payment_minor'] != 4868
+            or family_statement['campus_scope'] is not None
+            or len(family_statement['charges']) != 1
+            or len(family_statement['official_payments']) != 2):
+            raise RuntimeError('DB08_F12_FAMILY_BALANCE_INVALID ' + repr(family_statement))
+        try:
+            statements.read(token=token,
+                student_id='08000000-0000-4000-8000-000000000060')
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F12_OTHER_CHILD_VISIBLE')
+        staff_statement = statements.read(token=staff_token, student_id=student)
+        if (staff_statement['campus_scope'] != campus
+            or staff_statement['remaining_due_minor'] != 0):
+            raise RuntimeError('DB08_F12_CAMPUS_BALANCE_INVALID')
+        with connection() as conn:
+            conn.execute('SET ROLE schoolos_schema_owner')
+            conn.execute("UPDATE app_private.assignment_permission_scopes "
+                "SET revoked_at=clock_timestamp() WHERE id='08000000-0000-4000-8000-000000000253'")
+            conn.execute('RESET ROLE')
+        try:
+            statements.read(token=token, student_id=student)
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F12_REVOKED_FAMILY_READ_ALLOWED')
+        with connection() as conn:
+            conn.execute('SET ROLE schoolos_schema_owner')
+            conn.execute("UPDATE app_private.assignment_permission_scopes "
+                "SET revoked_at=clock_timestamp() WHERE id='08000000-0000-4000-8000-000000000254'")
+            conn.execute('RESET ROLE')
+        try:
+            statements.read(token=staff_token, student_id=student)
+        except psycopg.Error:
+            pass
+        else:
+            raise RuntimeError('DB08_F12_REVOKED_STAFF_READ_ALLOWED')
         with connection() as conn:
             conn.execute('SET ROLE schoolos_schema_owner')
             conn.execute("UPDATE app_private.assignment_permission_scopes "
@@ -403,3 +450,6 @@ def run_payment_runtime(local_status, root: Path):
     print('DB08_F11_REAL_AUTH_PASS cross_student_denied=true partial_then_net_zero=true '
           'payment_remainder=4868 replay=true overpayment_denied=true '
           'revoked_allocator_denied=true clearance=false', flush=True)
+    print('DB08_F12_REAL_AUTH_PASS family_child_only=true staff_campus=true '
+          'gross=15000 allocated=15000 due=0 unallocated=4868 '
+          'pending_excluded=true revoked_reads_denied=true', flush=True)
