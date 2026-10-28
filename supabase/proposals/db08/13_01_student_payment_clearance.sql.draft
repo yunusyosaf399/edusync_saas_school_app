@@ -67,6 +67,7 @@ RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
  SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE actor uuid; operation uuid; permission uuid; checked_at timestamptz;
  claims jsonb; school_day date; campus uuid; yr uuid; matches bigint;
+ command_code text;
  prior app_private.finance_student_clearance_events%ROWTYPE;
  event app_private.finance_student_clearance_events%ROWTYPE;
  receipt app_private.command_receipts%ROWTYPE;
@@ -78,6 +79,8 @@ BEGIN
   OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
   OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
   RAISE EXCEPTION 'DB08 clearance input denied'; END IF;
+ command_code:=CASE WHEN p_action='ISSUE' THEN 'finance.clearance.issue'
+  ELSE 'finance.clearance.revoke' END;
  claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
  IF claims->>'exp' IS NULL OR claims->>'exp' !~ '^[0-9]{1,12}$'
   OR to_timestamp((claims->>'exp')::bigint)<=clock_timestamp() THEN
@@ -111,8 +114,7 @@ BEGIN
  SELECT o.id,o.request_permission_id INTO operation,permission
  FROM app_private.operation_contracts o JOIN app_private.permissions p
   ON p.id=o.request_permission_id
- WHERE o.code=CASE WHEN p_action='ISSUE' THEN 'finance.clearance.issue'
-   ELSE 'finance.clearance.revoke' END
+ WHERE o.code=command_code
   AND o.contract_version=1 AND o.handler_key=o.code AND o.payload_schema_version=1
   AND o.enabled AND NOT o.requires_approval AND p.code=o.code
   AND p.state='ENABLED' AND NOT p.family_safe;
@@ -149,8 +151,7 @@ BEGIN
    AND idempotency_key='student-clearance:'||p_action||':'||p_key;
  IF receipt.id IS NOT NULL THEN
   SELECT * INTO event FROM app_private.finance_student_clearance_events WHERE id=receipt.result_ref;
-  IF receipt.state<>'SUCCEEDED' OR receipt.command_kind<>
-    CASE WHEN p_action='ISSUE' THEN 'finance.clearance.issue' ELSE 'finance.clearance.revoke' END
+  IF receipt.state<>'SUCCEEDED' OR receipt.command_kind<>command_code
    OR receipt.result_kind<>'FINANCE_STUDENT_CLEARANCE'
    OR receipt.canonical_payload_hash<>v_hash OR event.id IS NULL
    OR event.school_id<>p_school OR event.student_id<>p_student
@@ -183,20 +184,18 @@ BEGIN
  INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,
   idempotency_key,canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,
   result_summary,completed_at,created_by)
- VALUES(receipt_id,actor,operation,CASE WHEN p_action='ISSUE' THEN 'finance.clearance.issue'
-  ELSE 'finance.clearance.revoke' END,'student-clearance:'||p_action||':'||p_key,
+ VALUES(receipt_id,actor,operation,command_code,'student-clearance:'||p_action||':'||p_key,
   v_hash,1,'SUCCEEDED','FINANCE_STUDENT_CLEARANCE',event.id,result,clock_timestamp(),actor);
  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
   target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
   source_kind,correlation_id,occurred_at,details,created_by)
  VALUES(actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation',p_action,
-  'source_digest',encode(event.source_digest,'hex')),event.revision,
-  CASE WHEN p_action='ISSUE' THEN 'finance.clearance.issue' ELSE 'finance.clearance.revoke' END,
+  'source_digest',encode(event.source_digest,'hex')),event.revision,command_code,
   'FINANCE_STUDENT_CLEARANCE',event.id,campus,receipt_id,'WORKER',
   correlation,clock_timestamp(),result,actor);
  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
   aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
- VALUES(CASE WHEN p_action='ISSUE' THEN 'finance.clearance.issue' ELSE 'finance.clearance.revoke' END,
+ VALUES(command_code,
   'FINANCE_STUDENT_CLEARANCE',event.id,event.revision,receipt_id,1,
   correlation,clock_timestamp(),result,actor);
  RETURN result;
