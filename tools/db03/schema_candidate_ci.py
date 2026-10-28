@@ -290,6 +290,21 @@ def validate_applicant_slip_source() -> tuple[str, str]:
     return sql, test
 
 
+def validate_applicant_slip_submission() -> tuple[str, str, str]:
+    sql = (ROOT / "supabase/proposals/db03/12_01_applicant_slip_submission.sql.draft").read_text()
+    test = (ROOT / "supabase/tests/db03/12_applicant_slip_submission.sql").read_text()
+    fixture = (ROOT / "supabase/tests/db03/fixtures/applicant_slip_actor.sql").read_text()
+    if re.findall(r"(?mi)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(", sql) != ["db03_applicant_slip_preflight", "db03_submit_applicant_slip"]:
+        raise RuntimeError("DB03_APPLICANT_SLIP_COMMAND_SCOPE")
+    outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
+    if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE TABLE|CREATE FUNCTION app\.)\b", outside):
+        raise RuntimeError("DB03_APPLICANT_SLIP_COMMAND_NO_SEED")
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["8"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 8 or not test.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("DB03_APPLICANT_SLIP_COMMAND_TEST_PLAN")
+    print("DB03_APPLICANT_SLIP_COMMAND_SOURCE_PASS assertions=8 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test, fixture
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -307,6 +322,7 @@ def main() -> int:
     deadline_sql, deadline_fixture = validate_deadline_source()
     finance_boundary_sql, finance_boundary_test = validate_finance_boundary_source()
     applicant_slip_sql, applicant_slip_test = validate_applicant_slip_source()
+    applicant_command_sql, applicant_command_test, applicant_fixture = validate_applicant_slip_submission()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -510,6 +526,18 @@ def main() -> int:
                 raise RuntimeError("DB03_APPLICANT_SLIP_DDL_ROLLBACK_INCOMPLETE")
             print("DB03_APPLICANT_SLIP_DDL_ROLLBACK_PASS sources=0")
             local.run_psql(container, "BEGIN;\n" + applicant_slip_sql + "\nCOMMIT;", "DB03_APPLICANT_SLIP_INSTALL")
+            try:
+                local.run_psql(container, "BEGIN;\n" + applicant_command_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_APPLICANT_COMMAND_FAILURE'; END $failure$;\nCOMMIT;", "DB03_APPLICANT_COMMAND_DDL_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_APPLICANT_COMMAND_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_APPLICANT_COMMAND_DDL_FAILURE_ABSENT")
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_applicant_slip_preflight','db03_submit_applicant_slip');", "DB03_APPLICANT_COMMAND_ABSENT", tuples=True).strip()
+            if absent != "0":
+                raise RuntimeError("DB03_APPLICANT_COMMAND_ROLLBACK_INCOMPLETE")
+            print("DB03_APPLICANT_COMMAND_DDL_ROLLBACK_PASS functions=0")
+            local.run_psql(container, "BEGIN;\n" + applicant_command_sql + "\nCOMMIT;", "DB03_APPLICANT_COMMAND_INSTALL")
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -631,9 +659,12 @@ def main() -> int:
                     print("DB03_APPLICANT_SLIP_ASSERTION_DETAIL " + "\n".join(lines[max(0,i-1):i+12]))
             parse_tap(applicant_output, 12)
             print("DB03_APPLICANT_SLIP_DATABASE_PASS 12/12; no_submission_or_clearance_enabled=true")
+            command_output = local.run_psql(container, applicant_command_test, "DB03_APPLICANT_COMMAND_TEST")
+            parse_tap(command_output, 8)
+            print("DB03_APPLICANT_COMMAND_DATABASE_PASS 8/8; no_Finance_payment_or_clearance=true")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -652,6 +683,8 @@ def main() -> int:
             run_certificate_deadline(local, fresh_publication_database, document_fixture + "\n" + review_fixture + "\n" + deadline_fixture)
             from finance_boundary_ci import run_finance_boundary
             run_finance_boundary(local, fresh_publication_database, document_fixture + "\n" + review_fixture)
+            from applicant_slip_ci import run_applicant_slip
+            run_applicant_slip(local, fresh_publication_database, document_fixture + "\n" + applicant_fixture)
             return 0
     finally:
         if started:

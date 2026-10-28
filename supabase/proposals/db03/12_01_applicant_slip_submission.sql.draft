@@ -1,0 +1,147 @@
+-- S12: protected staff-recorded applicant bank-slip evidence. A school staff
+-- member records proof received from a parent; no parent account is inferred.
+-- This is PENDING evidence only, never payment, receipt or Finance clearance.
+GRANT EXECUTE ON FUNCTION app_private.db03_document_lock(uuid,text,text),
+ app_private.db03_document_target_open(uuid,bigint),
+ app_private.db03_document_is_forwarded(uuid),
+ app_private.db03_document_actor_context(text,uuid),
+ app_private.db03_document_worker_actor(),
+ app_private.has_complete_grant(text,text,uuid) TO schoolos_schema_owner;
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_applicant_slip_preflight(p_school uuid,p_campus uuid,
+ p_app uuid,p_expected bigint,p_paid_on date,p_key text)
+RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ operation uuid; school_day date;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR current_setting('transaction_isolation')<>'read committed'
+  OR p_school IS NULL OR p_campus IS NULL OR p_app IS NULL OR p_expected IS NULL OR p_expected<1
+  OR p_paid_on IS NULL OR NOT isfinite(p_paid_on) OR p_key IS NULL
+  OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB03 applicant slip preflight invalid'; END IF;
+ a:=app_private.db03_document_lock(p_app,'admission.document.upload','applicant-slip:'||p_key);
+ IF a.school_id<>p_school OR a.campus_id<>p_campus
+  OR NOT app_private.db03_document_target_open(a.id,p_expected)
+  OR app_private.db03_document_is_forwarded(a.id) THEN
+  RAISE EXCEPTION 'DB03 applicant application stale or unavailable'; END IF;
+ PERFORM app_private.db03_document_actor_context('admission.document.upload',p_campus);
+ IF NOT app_private.has_complete_grant('file.upload','CAMPUS',p_campus)
+  OR NOT app_private.has_complete_grant('finance.admission.evidence.submit','CAMPUS',p_campus) THEN
+  RAISE EXCEPTION 'DB03 applicant slip scope denied'; END IF;
+ SELECT o.id INTO operation FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='finance.admission.evidence.submit' AND o.contract_version=1
+  AND o.handler_key=o.code AND o.payload_schema_version=1 AND o.enabled
+  AND NOT o.requires_approval AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF operation IS NULL THEN RAISE EXCEPTION 'DB03 applicant slip command disabled'; END IF;
+ SELECT (clock_timestamp() AT TIME ZONE timezone)::date INTO school_day
+  FROM app_private.school_profiles WHERE id=p_school;
+ IF p_paid_on>school_day OR school_day IS NULL
+  OR COALESCE(current_setting('request.jwt.claims',true)::jsonb->>'exp','') !~ '^[0-9]{1,12}$'
+  OR to_timestamp((current_setting('request.jwt.claims',true)::jsonb->>'exp')::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 applicant slip date or authentication invalid'; END IF;
+ PERFORM app_private.db03_document_worker_actor();
+ RETURN true;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_applicant_slip_preflight(uuid,uuid,uuid,bigint,date,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_applicant_slip_preflight(uuid,uuid,uuid,bigint,date,text)
+ TO schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_submit_applicant_slip(p_school uuid,p_campus uuid,
+ p_app uuid,p_expected bigint,p_amount_minor numeric,p_paid_on date,p_bank text,p_reference text,
+ p_type text,p_size bigint,p_sha bytea,p_location text,p_object_key text,
+ p_entitlement_revision bigint,p_entitlement_digest bytea,p_snapshot_until timestamptz,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ ctx record; operation uuid; source app_private.finance_admission_slip_submissions%ROWTYPE;
+ prior app_private.command_receipts%ROWTYPE; actor uuid; worker uuid;
+ bank text; reference text; v_hash bytea; file_id uuid; receipt_id uuid;
+ correlation uuid; result jsonb; duplicate_suspected boolean; school_currency text;
+BEGIN
+ IF p_amount_minor IS NULL OR p_amount_minor<=0 OR p_amount_minor<>trunc(p_amount_minor)
+  OR p_amount_minor>=1000000000000000000000000 OR p_bank IS NULL OR p_reference IS NULL
+  OR p_type NOT IN('image/png','image/jpeg','application/pdf')
+  OR p_size IS NULL OR p_size NOT BETWEEN 1 AND 1048576
+  OR p_sha IS NULL OR octet_length(p_sha)<>32
+  OR p_location IS NULL OR p_location !~ '^[A-Z][A-Z0-9_]{0,63}$'
+  OR p_object_key IS NULL OR p_object_key !~ '^payments/[0-9a-f-]{36}/[0-9a-f]{64}$'
+  OR p_entitlement_revision IS NULL OR p_entitlement_revision<1
+  OR p_entitlement_digest IS NULL OR octet_length(p_entitlement_digest)<>32
+  OR p_snapshot_until IS NULL OR NOT isfinite(p_snapshot_until) OR p_snapshot_until<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 applicant slip measurements invalid'; END IF;
+ bank:=upper(btrim(p_bank)); reference:=upper(btrim(p_reference));
+ IF bank !~ '^[A-Z0-9][A-Z0-9_ -]{0,119}$'
+  OR reference !~ '^[A-Z0-9][A-Z0-9_./-]{0,119}$'
+  OR p_object_key NOT LIKE 'payments/'||p_school::text||'/%' THEN
+  RAISE EXCEPTION 'DB03 applicant slip identity invalid'; END IF;
+ PERFORM app_private.db03_applicant_slip_preflight(p_school,p_campus,p_app,p_expected,p_paid_on,p_key);
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_app;
+ SELECT * INTO ctx FROM app_private.db03_document_actor_context('admission.document.upload',p_campus);
+ actor:=ctx.actor_id;
+ SELECT o.id INTO operation FROM app_private.operation_contracts o
+  WHERE o.code='finance.admission.evidence.submit' AND o.enabled AND o.contract_version=1;
+ worker:=app_private.db03_document_worker_actor();
+ SELECT currency_code INTO school_currency FROM app_private.school_profiles WHERE id=p_school;
+ v_hash:=sha256(convert_to(jsonb_build_array('applicant-slip-v1',p_school,p_campus,p_app,
+  p_expected,p_amount_minor::text,p_paid_on,bank,reference,p_type,p_size,encode(p_sha,'hex'))::text,'UTF8'));
+ SELECT * INTO prior FROM app_private.command_receipts
+  WHERE principal_id=actor AND operation_id=operation AND idempotency_key='applicant-slip:'||p_key;
+ IF prior.id IS NOT NULL THEN
+  SELECT * INTO source FROM app_private.finance_admission_slip_submissions WHERE id=prior.result_ref;
+  IF prior.canonical_payload_hash IS DISTINCT FROM v_hash OR prior.state<>'SUCCEEDED'
+   OR prior.command_kind<>'finance.admission.evidence.submit'
+   OR prior.result_kind<>'FINANCE_ADMISSION_SLIP' OR source.id IS NULL
+   OR source.application_id<>p_app OR source.submitted_by<>actor
+   OR source.school_id<>p_school OR source.campus_id<>p_campus
+   OR source.application_version<>p_expected
+   OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=prior.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=prior.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 applicant slip replay conflict'; END IF;
+  RETURN prior.result_summary;
+ END IF;
+ SELECT EXISTS(SELECT 1 FROM app_private.finance_admission_slip_submissions s
+  WHERE s.school_id=p_school AND ((s.institution_key=bank AND s.reference_key=reference
+   AND s.claimed_amount_minor=p_amount_minor AND s.paid_on=p_paid_on)
+   OR s.evidence_sha256=p_sha)) INTO duplicate_suspected;
+ file_id:=gen_random_uuid();
+ INSERT INTO app_private.file_objects(id,uploaded_by_principal_id,campus_id,storage_location_key,
+  purpose_code,object_key,content_type,byte_size,content_hash,classification,created_by)
+ VALUES(file_id,actor,p_campus,p_location,'ADMISSION_PAYMENT_EVIDENCE',p_object_key,
+  p_type,p_size,p_sha,'PRIVATE',worker);
+ UPDATE app_private.file_objects SET state='VALIDATED',validated_at=clock_timestamp() WHERE id=file_id;
+ UPDATE app_private.file_objects SET state='AVAILABLE' WHERE id=file_id;
+ INSERT INTO app_private.finance_admission_slip_submissions(application_id,school_id,campus_id,
+  academic_year_id,application_version,submitted_by,claimed_amount_minor,currency_code,
+  paid_on,institution_key,reference_key,evidence_file_id,evidence_sha256)
+ VALUES(a.id,p_school,p_campus,a.academic_year_id,p_expected,actor,p_amount_minor,school_currency,
+  p_paid_on,bank,reference,file_id,p_sha) RETURNING * INTO source;
+ result:=jsonb_build_object('submission_id',source.id,'state','PENDING',
+  'duplicate_suspected',duplicate_suspected);
+ receipt_id:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,
+  idempotency_key,canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,
+  result_summary,completed_at,created_by)
+ VALUES(receipt_id,actor,operation,'finance.admission.evidence.submit','applicant-slip:'||p_key,
+  v_hash,1,'SUCCEEDED','FINANCE_ADMISSION_SLIP',source.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+  target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation','finance.admission.evidence.submit',
+  'entitlement_revision',p_entitlement_revision,'entitlement_digest',encode(p_entitlement_digest,'hex')),
+  p_expected,'finance.admission.evidence.submit','FINANCE_ADMISSION_SLIP',source.id,p_campus,
+  receipt_id,'WORKER',correlation,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+  aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES('finance.admission.evidence.submit','FINANCE_ADMISSION_SLIP',source.id,1,
+  receipt_id,1,correlation,clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_submit_applicant_slip(uuid,uuid,uuid,bigint,numeric,date,text,text,
+ text,bigint,bytea,text,text,bigint,bytea,timestamptz,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_submit_applicant_slip(uuid,uuid,uuid,bigint,numeric,date,text,text,
+ text,bigint,bytea,text,text,bigint,bytea,timestamptz,text) TO schoolos_file_login;
+RESET ROLE;
