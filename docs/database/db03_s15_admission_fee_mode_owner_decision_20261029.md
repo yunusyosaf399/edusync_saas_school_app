@@ -1,5 +1,7 @@
 # DB03 S15 — owner choice: automatic or applicant-specific admission fee
 
+> **Clarification, 29 October 2026:** The owner's subsequent Grade 1/Grade 2 amounts are **monthly tuition**. The selected-applicant 50% scholarship is a category-scoped **discount against retained gross fees**, not a manual replacement of the published price. See [DB08 F15](db08_f15_grade_monthly_fees_and_category_scholarship_owner_decision_20261029.md). This document's one-time admission-fee mode proposal must not be used to model that monthly example or inferred as an approved charge for it; the one-time admission fee remains separately unresolved.
+
 **Owner selection, 29 October 2026.** The school administrator needs two supported ways to determine an applicant's admission fee:
 
 1. **Automatic:** the school configures an admission-fee rule. The application selects the matching published, effective rule for its authorized destination and academic context. Finance records the assessed amount and exact rule revision.

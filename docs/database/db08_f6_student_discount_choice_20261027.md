@@ -1,5 +1,7 @@
 # DB08 F6 — independently reviewed Student discounts (inactive candidate)
 
+> **Later owner extension, 29 October 2026:** An applicant may receive a scholarship that explicitly selects tuition, transport or other configured fee categories; the published grade's monthly full fee remains unchanged. This is a pre-Student, category-scoped requirement. The F6 SQL below remains limited to a Student's recurring tuition or one specific charge. See [F15 owner decision](db08_f15_grade_monthly_fees_and_category_scholarship_owner_decision_20261029.md) before extending F6; no existing SQL is claimed to implement recurring transport/books discounts.
+
 The school can assign a discount to one Student after the full fee has been selected. It chooses **one value type** for that assignment: a fixed amount in the School currency's minor units, or a percentage of the selected gross fee. It also chooses **one application scope**: recurring monthly tuition, or one specifically identified assessed charge. A recurring assignment applies to eligible monthly tuition periods within its retained effective dates; the charge-specific assignment is consumed by that charge only. These are independent choices: either value type may be used with either scope.
 
 | Selected gross | Configuration | Discount | Remaining fee |

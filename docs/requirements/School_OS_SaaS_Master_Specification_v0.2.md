@@ -1197,6 +1197,8 @@ Discounts can be long-term/recurring or one-time. Sensitive or large adjustments
 
 **F6 precision and review clarification — 27 October 2026:** Money is displayed with two digits after the decimal point (for example 9,999.34). Percentage discounts round to the nearest 0.01 of currency with exact halves rounded upward. Every Student discount needs an independent approval before it can take effect. The F6 first increment rejects incompatible currency precision and overlapping discounts; payment and admission clearance remain separate.
 
+**Owner clarification — 29 October 2026:** The Grade 1 amount of 1,000 SAR and Grade 2 amount of 1,200 SAR in the owner's example are **monthly tuition full fees**. An authorized administrator may assign one applicant a scholarship or discount and select the affected fee categories. For Grade 1 Ahmad, a 50% tuition-only scholarship gives 500 SAR monthly tuition while transport and other unselected fees remain full; selecting transport separately also discounts its own assessed charge. Books, materials and other categories follow their configured frequency and must be explicitly selected. The original gross fee remains retained; independent Finance review and actual payment allocation remain separate. See [F15 category-scoped applicant scholarship decision](../database/db08_f15_grade_monthly_fees_and_category_scholarship_owner_decision_20261029.md).
+
 ---
 
 # 32. Invoices
