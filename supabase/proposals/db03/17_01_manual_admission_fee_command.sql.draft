@@ -50,10 +50,29 @@ BEGIN
  IF NOT app_private.has_complete_grant('admission.fee.manual.record','CAMPUS',campus)
   OR NOT EXISTS(SELECT 1 FROM app_private.principal_role_assignments ra
     JOIN app_private.roles r ON r.id=ra.role_id
+    JOIN app_private.assignment_permission_scopes sc ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+     AND g.role_id=ra.role_id AND g.permission_id=sc.permission_id
+    JOIN app_private.permission_scope_contracts pc ON pc.id=sc.scope_contract_id
+     AND pc.permission_id=sc.permission_id AND pc.scope_kind=sc.scope_kind
+     AND pc.resolver_key=sc.resolver_key
+    JOIN app_private.permissions pe ON pe.id=sc.permission_id
     WHERE ra.principal_id=actor AND ra.principal_kind='INDIVIDUAL'
-    AND r.code='ADMINISTRATOR' AND r.state='ACTIVE' AND NOT r.family_only
-    AND ra.revoked_at IS NULL AND ra.valid_from<=clock_timestamp()
-    AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)) THEN
+    AND ra.context_kind='INDIVIDUAL' AND r.code='ADMINISTRATOR'
+    AND r.state='ACTIVE' AND NOT r.family_only
+    AND pe.code='admission.fee.manual.record' AND pe.state='ENABLED' AND NOT pe.family_safe
+    AND pc.enabled AND sc.resolver_key='DIRECT'
+    AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+      OR (sc.scope_kind='CAMPUS' AND sc.campus_id=campus))
+    AND ra.valid_from<=clock_timestamp()
+    AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+    AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+    AND g.valid_from<=clock_timestamp()
+    AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+    AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+    AND sc.valid_from<=clock_timestamp()
+    AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+    AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at)) THEN
   RAISE EXCEPTION 'DB03 manual fee administrator scope denied'; END IF;
  payload_hash:=sha256(convert_to(jsonb_build_array('db03-manual-fee-v1',
   p_application,p_expected,p_amount_minor::text,
@@ -76,10 +95,29 @@ BEGIN
   OR NOT app_private.has_complete_grant('admission.fee.manual.record','CAMPUS',campus)
   OR NOT EXISTS(SELECT 1 FROM app_private.principal_role_assignments ra
     JOIN app_private.roles r ON r.id=ra.role_id
+    JOIN app_private.assignment_permission_scopes sc ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+    JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+     AND g.role_id=ra.role_id AND g.permission_id=sc.permission_id
+    JOIN app_private.permission_scope_contracts pc ON pc.id=sc.scope_contract_id
+     AND pc.permission_id=sc.permission_id AND pc.scope_kind=sc.scope_kind
+     AND pc.resolver_key=sc.resolver_key
+    JOIN app_private.permissions pe ON pe.id=sc.permission_id
     WHERE ra.principal_id=actor AND ra.principal_kind='INDIVIDUAL'
-    AND r.code='ADMINISTRATOR' AND r.state='ACTIVE' AND NOT r.family_only
-    AND ra.revoked_at IS NULL AND ra.valid_from<=clock_timestamp()
-    AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until))
+    AND ra.context_kind='INDIVIDUAL' AND r.code='ADMINISTRATOR'
+    AND r.state='ACTIVE' AND NOT r.family_only
+    AND pe.code='admission.fee.manual.record' AND pe.state='ENABLED' AND NOT pe.family_safe
+    AND pc.enabled AND sc.resolver_key='DIRECT'
+    AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+      OR (sc.scope_kind='CAMPUS' AND sc.campus_id=campus))
+    AND ra.valid_from<=clock_timestamp()
+    AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+    AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+    AND g.valid_from<=clock_timestamp()
+    AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+    AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+    AND sc.valid_from<=clock_timestamp()
+    AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+    AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at))
   OR to_timestamp(auth_exp::bigint)<=clock_timestamp() THEN
   RAISE EXCEPTION 'DB03 manual fee authority or target changed'; END IF;
  SELECT currency_code INTO currency FROM app_private.school_profiles WHERE id=school;
