@@ -2,7 +2,9 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(33);
+SELECT plan(41);
+SELECT ok(has_function_privilege('authenticated','app.request_finance_category_discount(uuid,uuid,text,text,numeric,date,date,uuid,uuid,text,text)','EXECUTE'),
+ 'named recurring category request has checked entry');
 SELECT ok(has_function_privilege('authenticated','app.request_finance_discount(uuid,uuid,text,text,numeric,date,date,uuid,uuid,uuid,text,text)','EXECUTE'),'request RPC exposed to authenticated');
 SELECT ok(has_function_privilege('authenticated','app.review_finance_discount(uuid,text,bigint,text,text)','EXECUTE'),'review RPC exposed to authenticated');
 SELECT ok(NOT has_function_privilege('authenticated','app.assess_selected_finance_fee(uuid,uuid,text,text,date,date,date,uuid)','EXECUTE'),'old gross-only client assessment revoked');
@@ -228,5 +230,73 @@ SELECT throws_ok($sql$SELECT app.apply_finance_discount(
  'new key cannot apply a second adjustment');
 SELECT is((SELECT count(*) FROM app_private.finance_discount_adjustments),2::bigint,
  'only two distinct retained discount adjustments');
+-- The same Student may have a separately approved transport scholarship;
+-- tuition's percentage and a one-time unselected books charge stay separate.
+SET ROLE authenticated;
+SELECT * FROM jsonb_to_record(app.configure_finance_fee(
+ '08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000004',
+ 'TRANSPORT','Transport','F6_TRANSPORT','MONTHLY',2,20000,'2026-01-01','2026-12-31',
+ 'Transport full fee','f6-transport')) AS x(source_id uuid,resource_id uuid,campus_id uuid) \gset transport_
+SELECT app.bind_finance_fee(:'transport_resource_id'::uuid,
+ '08000000-0000-4000-8000-000000000055',NULL,'2026-11-01','2026-12-31','f6-bind-transport');
+SELECT * FROM jsonb_to_record(app.configure_finance_fee(
+ '08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000004',
+ 'BOOKS','Books','F6_BOOKS','ONE_TIME',2,3000,'2026-01-01','2026-12-31',
+ 'Books full fee','f6-books')) AS x(source_id uuid,resource_id uuid,campus_id uuid) \gset books_
+SELECT app.bind_finance_fee(:'books_resource_id'::uuid,
+ '08000000-0000-4000-8000-000000000055',NULL,'2026-11-01','2026-12-31','f6-bind-books');
+SELECT * FROM jsonb_to_record(app.request_finance_category_discount(
+ '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
+ 'TRANSPORT','PERCENT',50,'2026-11-01','2026-12-31',
+ '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
+ 'Selected transport only','f6-transport-half')) AS x(request_id uuid,state text,request_version bigint) \gset transport_discount_
+RESET ROLE;
+SELECT is(:'transport_discount_state'::text,'PENDING'::text,'transport request awaits independent reviewer');
+SELECT is((SELECT c.code FROM app_private.finance_discount_intents i
+ JOIN app_private.finance_fee_categories c ON c.id=i.category_id
+ WHERE i.request_id=:'transport_discount_request_id'::uuid),'TRANSPORT'::text,
+ 'transport category bound to School typed catalog');
+SELECT throws_ok($sql$SELECT app.request_finance_category_discount(
+ '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
+ 'TUITION','PERCENT',50,'2026-11-01','2026-12-31',
+ '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
+ 'Overlapping tuition','f6-overlap-category')$sql$,'P0001'::char(5),NULL::text,
+ 'named tuition cannot stack with existing recurring tuition');
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.finance_reviewer_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.finance_reviewer_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint FROM app_private.principal_auth_bindings
+ WHERE id='08000000-0000-4000-8000-000000000022'),
+ 'exp',floor(extract(epoch FROM clock_timestamp()+interval '1 hour'))::bigint,
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT app.review_finance_discount(:'transport_discount_request_id'::uuid,'APPROVE',
+ :'transport_discount_request_version'::bigint,'Transport scholarship approved','f6-review-transport');
+RESET ROLE;
+SELECT is((SELECT state FROM app_private.approval_requests WHERE id=:'transport_discount_request_id'::uuid),
+ 'EXECUTED'::text,'independent review activates only selected category');
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.finance_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.finance_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint FROM app_private.principal_auth_bindings
+ WHERE id='08000000-0000-4000-8000-000000000008'),
+ 'exp',floor(extract(epoch FROM clock_timestamp()+interval '1 hour'))::bigint,
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT app.assess_discounted_finance_fee(
+ '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000055',
+ 'TRANSPORT','MONTHLY','2026-11-01','2026-11-30','2026-12-05',
+ '08000000-0000-4000-8000-000000000094') AS transport_assessed \gset
+SELECT app.assess_discounted_finance_fee(
+ '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000055',
+ 'BOOKS','ONE_TIME','2026-11-01','2026-11-30','2026-12-05',
+ '08000000-0000-4000-8000-000000000095') AS books_assessed \gset
+RESET ROLE;
+SELECT is((:'transport_assessed'::jsonb->'discount'->>'net_minor')::numeric,10000::numeric,
+ 'selected transport 200.00 less 50 percent is 100.00');
+SELECT is((:'books_assessed'::jsonb->'discount'->>'net_minor')::numeric,3000::numeric,
+ 'unselected one-time books 30.00 stays full');
+SELECT is((SELECT count(*) FROM app_private.finance_discount_adjustments),3::bigint,
+ 'only tuition, specific charge and selected transport have adjustments');
 SELECT * FROM finish();
 ROLLBACK;

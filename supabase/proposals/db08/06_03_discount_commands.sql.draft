@@ -9,19 +9,23 @@ RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_cata
 DECLARE ctx record; policy app_private.approval_policy_versions%ROWTYPE;
  template app_private.approval_step_templates%ROWTYPE; charge app_private.finance_fee_obligations%ROWTYPE;
  school app_private.school_profiles%ROWTYPE; currency app_private.finance_currency_units%ROWTYPE;
+ category app_private.finance_fee_categories%ROWTYPE; scope text; category_code text;
  request uuid; step uuid; version bigint; minor numeric; hundredths integer;
  v_hash bytea; receipt app_private.command_receipts%ROWTYPE; result jsonb; evidence uuid; correlation uuid;
 BEGIN
- IF p_student IS NULL OR p_campus IS NULL OR p_scope NOT IN('MONTHLY_TUITION','SPECIFIC_CHARGE')
+ scope:=CASE WHEN p_scope LIKE 'MONTHLY_CATEGORY:%' THEN 'MONTHLY_CATEGORY' ELSE p_scope END;
+ category_code:=CASE WHEN scope='MONTHLY_CATEGORY' THEN split_part(p_scope,':',2) END;
+ IF p_student IS NULL OR p_campus IS NULL OR scope NOT IN('MONTHLY_TUITION','MONTHLY_CATEGORY','SPECIFIC_CHARGE')
+  OR (scope='MONTHLY_CATEGORY' AND p_scope !~ '^MONTHLY_CATEGORY:[A-Z][A-Z0-9_]{0,63}$')
   OR p_type NOT IN('FIXED','PERCENT') OR p_value IS NULL OR p_value<=0
   OR p_policy IS NULL OR p_reviewer IS NULL OR p_reason IS NULL
   OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
   OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180
-  OR (p_scope='MONTHLY_TUITION' AND (p_charge IS NOT NULL
+  OR (scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY') AND (p_charge IS NOT NULL
       OR p_valid_from IS NULL OR NOT isfinite(p_valid_from)
       OR p_valid_through IS NULL OR NOT isfinite(p_valid_through)
       OR p_valid_through<p_valid_from))
-  OR (p_scope='SPECIFIC_CHARGE' AND (p_charge IS NULL
+  OR (scope='SPECIFIC_CHARGE' AND (p_charge IS NULL
       OR p_valid_from IS NOT NULL OR p_valid_through IS NOT NULL)) THEN
   RAISE EXCEPTION 'DB08 discount request invalid'; END IF;
  IF p_type='FIXED' THEN
@@ -59,11 +63,16 @@ BEGIN
  END IF;
  SELECT * INTO currency FROM app_private.finance_currency_units
  WHERE school_id=school.id AND currency_code=school.currency_code;
+ IF scope='MONTHLY_CATEGORY' THEN
+  SELECT * INTO category FROM app_private.finance_fee_categories
+   WHERE school_id=school.id AND code=category_code;
+  IF category.id IS NULL THEN RAISE EXCEPTION 'DB08 selected discount category unavailable'; END IF;
+ END IF;
  IF school.state<>'ACTIVE' OR currency.id IS NULL OR currency.minor_unit_scale<>2
   OR NOT EXISTS(SELECT 1 FROM app.campuses c WHERE c.id=p_campus
     AND c.school_id=school.id AND c.state='ACTIVE')
   OR NOT EXISTS(SELECT 1 FROM app_private.students s WHERE s.id=p_student AND s.current_status='ACTIVE')
-  OR (p_scope='MONTHLY_TUITION' AND
+  OR (scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY') AND
     (p_valid_from<=(clock_timestamp() AT TIME ZONE school.timezone)::date
      OR NOT EXISTS(SELECT 1 FROM app_private.enrollments e
        JOIN app_private.section_offerings sec ON sec.id=e.section_offering_id
@@ -77,7 +86,7 @@ BEGIN
        JOIN app_private.finance_fee_rules f ON f.id=o.rule_id
        JOIN app_private.finance_fee_categories c ON c.id=f.category_id
        WHERE x.student_id=p_student AND o.school_id=school.id AND o.campus_id=p_campus
-        AND o.frequency='MONTHLY' AND c.code='TUITION'
+        AND o.frequency='MONTHLY' AND c.code=coalesce(category_code,'TUITION')
         AND daterange(o.period_start,o.period_end,'[]') &&
             daterange(p_valid_from,p_valid_through,'[]'))))
   THEN RAISE EXCEPTION 'DB08 discount Student/context unavailable'; END IF;
@@ -96,20 +105,27 @@ BEGIN
    JOIN app_private.approval_requests q ON q.id=i.request_id
   WHERE i.student_id=p_student AND i.school_id=school.id
    AND q.state IN('DRAFT','SUBMITTED','PENDING','APPROVED','EXECUTED')
-   AND ((p_scope='SPECIFIC_CHARGE' AND
+   AND ((scope='SPECIFIC_CHARGE' AND
        (i.target_obligation_id=p_charge OR
-        (i.application_scope='MONTHLY_TUITION' AND charge.frequency='MONTHLY'
+        (i.application_scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY') AND charge.frequency='MONTHLY'
          AND EXISTS(SELECT 1 FROM app_private.finance_fee_categories c
            JOIN app_private.finance_fee_rules f ON f.category_id=c.id
-           WHERE f.id=charge.rule_id AND c.code='TUITION')
+           WHERE f.id=charge.rule_id AND
+            ((i.application_scope='MONTHLY_TUITION' AND c.code='TUITION')
+             OR (i.application_scope='MONTHLY_CATEGORY' AND c.id=i.category_id)))
          AND i.valid_from<=charge.period_start AND i.valid_through>=charge.period_end)))
-    OR (p_scope='MONTHLY_TUITION' AND
-       ((i.application_scope='MONTHLY_TUITION'
+    OR (scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY') AND
+       ((i.application_scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY')
+          AND ((i.application_scope='MONTHLY_TUITION' AND coalesce(category_code,'TUITION')='TUITION')
+            OR (i.application_scope='MONTHLY_CATEGORY' AND i.category_id=(SELECT id FROM app_private.finance_fee_categories WHERE school_id=school.id AND code=coalesce(category_code,'TUITION'))))
           AND daterange(i.valid_from,i.valid_through,'[]') &&
               daterange(p_valid_from,p_valid_through,'[]'))
         OR (i.application_scope='SPECIFIC_CHARGE' AND EXISTS(
           SELECT 1 FROM app_private.finance_fee_obligations o
+          JOIN app_private.finance_fee_rules f ON f.id=o.rule_id
+          JOIN app_private.finance_fee_categories c ON c.id=f.category_id
           WHERE o.id=i.target_obligation_id AND o.frequency='MONTHLY'
+           AND c.code=coalesce(category_code,'TUITION')
            AND o.period_start>=p_valid_from AND o.period_end<=p_valid_through)))))) THEN
   RAISE EXCEPTION 'DB08 overlapping Student discount denied'; END IF;
  SELECT * INTO policy FROM app_private.approval_policy_versions
@@ -129,12 +145,12 @@ BEGIN
   requester_id,campus_id,target_ref,reason,old_snapshot,requested_payload,created_by)
  VALUES(request,ctx.operation_id,1,p_policy,ctx.actor_id,p_campus,p_student,p_reason,
   jsonb_build_object('target_charge',p_charge),
-  jsonb_build_object('scope',p_scope,'value_type',p_type,'value',p_value,
+  jsonb_build_object('scope',scope,'category',category_code,'value_type',p_type,'value',p_value,
     'valid_from',p_valid_from,'valid_through',p_valid_through),ctx.actor_id);
  INSERT INTO app_private.finance_discount_intents(request_id,school_id,campus_id,student_id,
-  currency_unit_id,application_scope,value_type,fixed_minor,percent_hundredths,
+  currency_unit_id,application_scope,category_id,value_type,fixed_minor,percent_hundredths,
   valid_from,valid_through,target_obligation_id,reason,requested_by)
- VALUES(request,school.id,p_campus,p_student,currency.id,p_scope,p_type,minor,hundredths,
+ VALUES(request,school.id,p_campus,p_student,currency.id,scope,category.id,p_type,minor,hundredths,
   p_valid_from,p_valid_through,p_charge,p_reason,ctx.actor_id);
  UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=statement_timestamp() WHERE id=request;
  INSERT INTO app_private.approval_request_steps(id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
@@ -164,6 +180,22 @@ END $body$;
 REVOKE ALL ON FUNCTION app.request_finance_discount(uuid,uuid,text,text,numeric,date,date,uuid,uuid,uuid,text,text)
  FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION app.request_finance_discount(uuid,uuid,text,text,numeric,date,date,uuid,uuid,uuid,text,text)
+ TO authenticated;
+-- A named recurring category uses the same independent request/review path.
+-- A separate entry avoids overloading a charge UUID with a category identity.
+CREATE FUNCTION app.request_finance_category_discount(
+ p_student uuid,p_campus uuid,p_category text,p_type text,p_value numeric,
+ p_valid_from date,p_valid_through date,p_policy uuid,p_reviewer uuid,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF p_category IS NULL OR p_category !~ '^[A-Z][A-Z0-9_]{0,63}$' THEN
+  RAISE EXCEPTION 'DB08 discount category invalid'; END IF;
+ RETURN app.request_finance_discount(p_student,p_campus,'MONTHLY_CATEGORY:'||p_category,
+  p_type,p_value,p_valid_from,p_valid_through,NULL,p_policy,p_reviewer,p_reason,p_key);
+END $body$;
+REVOKE ALL ON FUNCTION app.request_finance_category_discount(uuid,uuid,text,text,numeric,date,date,uuid,uuid,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.request_finance_category_discount(uuid,uuid,text,text,numeric,date,date,uuid,uuid,text,text)
  TO authenticated;
 RESET ROLE;
 REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;

@@ -48,6 +48,8 @@ BEGIN
   OR q.campus_id<>intent.campus_id OR q.requester_id<>intent.requested_by
   OR q.requester_id=ctx.actor_id OR q.reason<>intent.reason
   OR q.requested_payload->>'scope' IS DISTINCT FROM intent.application_scope
+  OR q.requested_payload->>'category' IS DISTINCT FROM
+     (SELECT code FROM app_private.finance_fee_categories WHERE id=intent.category_id)
   OR q.requested_payload->>'value_type' IS DISTINCT FROM intent.value_type
   OR step.id IS NULL OR step.state<>'OPEN' OR step.step_number<>1
   OR EXISTS(SELECT 1 FROM app_private.approval_request_steps x
@@ -66,7 +68,7 @@ BEGIN
   OR NOT EXISTS(SELECT 1 FROM app_private.students s WHERE s.id=intent.student_id AND s.current_status='ACTIVE')
   THEN RAISE EXCEPTION 'DB08 discount review authority/state changed'; END IF;
  IF p_decision='APPROVE' THEN
-  IF (intent.application_scope='MONTHLY_TUITION'
+  IF (intent.application_scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY')
        AND intent.valid_from<=(clock_timestamp() AT TIME ZONE
            (SELECT timezone FROM app_private.school_profiles WHERE id=intent.school_id))::date)
     OR EXISTS(SELECT 1 FROM app_private.finance_discount_intents i
@@ -75,8 +77,10 @@ BEGIN
        AND i.school_id=intent.school_id AND x.state='EXECUTED'
        AND ((intent.application_scope='SPECIFIC_CHARGE'
               AND i.target_obligation_id=intent.target_obligation_id)
-         OR (intent.application_scope='MONTHLY_TUITION'
-              AND i.application_scope='MONTHLY_TUITION'
+         OR (intent.application_scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY')
+              AND i.application_scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY')
+              AND coalesce((SELECT code FROM app_private.finance_fee_categories WHERE id=i.category_id),'TUITION')=
+                  coalesce((SELECT code FROM app_private.finance_fee_categories WHERE id=intent.category_id),'TUITION')
               AND daterange(i.valid_from,i.valid_through,'[]') &&
                   daterange(intent.valid_from,intent.valid_through,'[]'))))
     OR (intent.application_scope='SPECIFIC_CHARGE' AND

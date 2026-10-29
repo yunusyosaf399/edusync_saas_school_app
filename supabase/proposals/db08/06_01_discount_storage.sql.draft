@@ -7,7 +7,8 @@ CREATE TABLE app_private.finance_discount_intents (
  campus_id uuid NOT NULL REFERENCES app.campuses(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
  student_id uuid NOT NULL REFERENCES app_private.students(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
  currency_unit_id uuid NOT NULL,
- application_scope text NOT NULL CHECK(application_scope IN('MONTHLY_TUITION','SPECIFIC_CHARGE')),
+ application_scope text NOT NULL CHECK(application_scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY','SPECIFIC_CHARGE')),
+ category_id uuid,
  value_type text NOT NULL CHECK(value_type IN('FIXED','PERCENT')),
  fixed_minor numeric,
  percent_hundredths integer,
@@ -18,16 +19,19 @@ CREATE TABLE app_private.finance_discount_intents (
  requested_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
  created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
  FOREIGN KEY(currency_unit_id,school_id) REFERENCES app_private.finance_currency_units(id,school_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(category_id,school_id) REFERENCES app_private.finance_fee_categories(id,school_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
  CHECK((value_type='FIXED' AND fixed_minor IS NOT NULL AND fixed_minor>0
    AND fixed_minor<1000000000000000000000000 AND fixed_minor=trunc(fixed_minor)
    AND percent_hundredths IS NULL)
   OR (value_type='PERCENT' AND fixed_minor IS NULL
    AND percent_hundredths BETWEEN 1 AND 10000)),
- CHECK((application_scope='MONTHLY_TUITION' AND valid_from IS NOT NULL AND valid_through IS NOT NULL
+ CHECK((application_scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY') AND valid_from IS NOT NULL AND valid_through IS NOT NULL
    AND isfinite(valid_from) AND isfinite(valid_through) AND valid_from<=valid_through
-   AND target_obligation_id IS NULL)
+   AND target_obligation_id IS NULL
+   AND ((application_scope='MONTHLY_TUITION' AND category_id IS NULL)
+    OR (application_scope='MONTHLY_CATEGORY' AND category_id IS NOT NULL)))
   OR (application_scope='SPECIFIC_CHARGE' AND valid_from IS NULL
-   AND valid_through IS NULL AND target_obligation_id IS NOT NULL))
+   AND valid_through IS NULL AND target_obligation_id IS NOT NULL AND category_id IS NULL))
 );
 CREATE INDEX db08_discount_student ON app_private.finance_discount_intents(student_id,application_scope,valid_from,valid_through);
 CREATE INDEX db08_discount_charge ON app_private.finance_discount_intents(target_obligation_id)

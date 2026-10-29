@@ -42,10 +42,12 @@ BEGIN
   WHERE i.student_id=selection.student_id AND i.school_id=charge.school_id
    AND i.campus_id=charge.campus_id AND q.state='EXECUTED'
    AND ((i.application_scope='SPECIFIC_CHARGE' AND i.target_obligation_id=p_charge)
-     OR (i.application_scope='MONTHLY_TUITION' AND charge.frequency='MONTHLY'
+     OR (i.application_scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY') AND charge.frequency='MONTHLY'
        AND EXISTS(SELECT 1 FROM app_private.finance_fee_rules f
         JOIN app_private.finance_fee_categories c ON c.id=f.category_id
-        WHERE f.id=charge.rule_id AND c.code='TUITION')
+        WHERE f.id=charge.rule_id AND
+         ((i.application_scope='MONTHLY_TUITION' AND c.code='TUITION')
+          OR (i.application_scope='MONTHLY_CATEGORY' AND c.id=i.category_id)))
        AND i.valid_from<=charge.period_start AND i.valid_through>=charge.period_end));
  IF candidate_count=0 THEN
   RETURN jsonb_build_object('obligation_id',p_charge,'gross_minor',charge.gross_amount_minor,
@@ -57,10 +59,12 @@ BEGIN
   WHERE i.student_id=selection.student_id AND i.school_id=charge.school_id
    AND i.campus_id=charge.campus_id AND q.state='EXECUTED'
    AND ((i.application_scope='SPECIFIC_CHARGE' AND i.target_obligation_id=p_charge)
-     OR (i.application_scope='MONTHLY_TUITION' AND charge.frequency='MONTHLY'
+     OR (i.application_scope IN('MONTHLY_TUITION','MONTHLY_CATEGORY') AND charge.frequency='MONTHLY'
        AND EXISTS(SELECT 1 FROM app_private.finance_fee_rules f
         JOIN app_private.finance_fee_categories c ON c.id=f.category_id
-        WHERE f.id=charge.rule_id AND c.code='TUITION')
+        WHERE f.id=charge.rule_id AND
+         ((i.application_scope='MONTHLY_TUITION' AND c.code='TUITION')
+          OR (i.application_scope='MONTHLY_CATEGORY' AND c.id=i.category_id)))
        AND i.valid_from<=charge.period_start AND i.valid_through>=charge.period_end));
  IF NOT EXISTS(SELECT 1 FROM app_private.finance_currency_units unit
     JOIN app_private.finance_fee_rules rule ON rule.currency_unit_id=unit.id
