@@ -1,0 +1,84 @@
+-- S16: private, append-only manual applicant admission-fee decision source.
+-- This creates no admission charge or school fee policy. It is intentionally
+-- not writable through any enabled command until separate Auth acceptance.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_admission_manual_fee_decisions (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ application_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ academic_year_id uuid NOT NULL,
+ application_version bigint NOT NULL CHECK(application_version>0),
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid UNIQUE REFERENCES app_private.finance_admission_manual_fee_decisions(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ amount_minor numeric(20,0) NOT NULL CHECK(amount_minor>=0),
+ currency_code text NOT NULL CHECK(currency_code ~ '^[A-Z]{3}$'),
+ reason_private text NOT NULL CHECK(length(btrim(reason_private)) BETWEEN 1 AND 1000),
+ recorded_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ recorded_by uuid NOT NULL REFERENCES app_private.principals(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT db03_manual_fee_application_fk
+  FOREIGN KEY(application_id,school_id,campus_id,academic_year_id)
+  REFERENCES app_private.admission_applications(id,school_id,campus_id,academic_year_id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(application_id,revision),
+ CONSTRAINT db03_manual_fee_first_predecessor CHECK ((revision=1)=(supersedes_id IS NULL))
+);
+CREATE INDEX db03_manual_fee_latest ON app_private.finance_admission_manual_fee_decisions
+ (application_id,revision DESC);
+CREATE FUNCTION app_private.db03_guard_manual_admission_fee()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ previous_record app_private.finance_admission_manual_fee_decisions%ROWTYPE;
+ school_currency text;
+ author record;
+BEGIN
+ IF TG_OP<>'INSERT' THEN
+  RAISE EXCEPTION 'DB03 manual fee decision history is immutable';
+ END IF;
+ IF current_user<>'schoolos_schema_owner' THEN
+  RAISE EXCEPTION 'DB03 manual fee decision requires protected issuer';
+ END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=NEW.application_id FOR UPDATE;
+ SELECT currency_code INTO school_currency
+  FROM app_private.school_profiles WHERE id=NEW.school_id;
+ SELECT kind,state INTO author FROM app_private.principals WHERE id=NEW.recorded_by;
+ IF a.id IS NULL OR a.school_id<>NEW.school_id
+  OR a.campus_id<>NEW.campus_id OR a.academic_year_id<>NEW.academic_year_id
+  OR a.state<>'DRAFT' OR a.row_version<>NEW.application_version
+  OR school_currency IS DISTINCT FROM NEW.currency_code
+  OR author.kind IS DISTINCT FROM 'INDIVIDUAL'
+  OR author.state IS DISTINCT FROM 'ACTIVE'
+  OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards f
+    WHERE f.application_id=NEW.application_id) THEN
+  RAISE EXCEPTION 'DB03 manual fee decision context stale or unavailable';
+ END IF;
+ SELECT * INTO previous_record FROM app_private.finance_admission_manual_fee_decisions
+  WHERE application_id=NEW.application_id ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+ IF (previous_record.id IS NULL AND
+     (NEW.revision<>1 OR NEW.supersedes_id IS NOT NULL))
+  OR (previous_record.id IS NOT NULL AND
+     (NEW.revision<>previous_record.revision+1 OR
+      NEW.supersedes_id IS DISTINCT FROM previous_record.id)) THEN
+  RAISE EXCEPTION 'DB03 manual fee decision revision/predecessor mismatch';
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_guard_manual_admission_fee()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+ALTER TABLE app_private.finance_admission_manual_fee_decisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_manual_fee_decisions FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.finance_admission_manual_fee_decisions
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE POLICY db03_manual_fee_schema_owner ON app_private.finance_admission_manual_fee_decisions
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER db03_manual_fee_immutable BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_manual_fee_decisions FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_guard_manual_admission_fee();
+CREATE TRIGGER db03_manual_fee_no_truncate BEFORE TRUNCATE
+ ON app_private.finance_admission_manual_fee_decisions FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_guard_manual_admission_fee();
+RESET ROLE;
