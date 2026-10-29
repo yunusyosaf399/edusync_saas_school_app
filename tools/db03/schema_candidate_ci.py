@@ -389,6 +389,20 @@ def validate_manual_fee_command() -> tuple[str, str, str]:
     return sql, test, fixture
 
 
+def validate_manual_assessment_binding() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/18_01_manual_assessment_binding.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/18_manual_assessment_binding.sql').read_text()
+    if re.findall(r'(?mi)^CREATE OR REPLACE FUNCTION app_private\.([a-z0-9_]+)\(', sql) != ['db03_guard_applicant_obligation_assessment']:
+        raise RuntimeError('DB03_MANUAL_ASSESSMENT_FUNCTION_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE EXTENSION|CREATE FUNCTION app\.)\b', outside):
+        raise RuntimeError('DB03_MANUAL_ASSESSMENT_NO_SEED')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['17'] or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 17 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_MANUAL_ASSESSMENT_TEST_PLAN')
+    print('DB03_MANUAL_ASSESSMENT_SOURCE_PASS assertions=17 sha256=' + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -412,6 +426,7 @@ def main() -> int:
     applicant_obligation_sql, applicant_obligation_test = validate_applicant_obligation()
     manual_fee_sql, manual_fee_test = validate_manual_admission_fee()
     manual_fee_command_sql, manual_fee_command_test, manual_fee_fixture = validate_manual_fee_command()
+    manual_assessment_sql, manual_assessment_test = validate_manual_assessment_binding()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -686,6 +701,17 @@ def main() -> int:
             if absent != '0':
                 raise RuntimeError('DB03_MANUAL_COMMAND_DDL_ROLLBACK_INCOMPLETE')
             local.run_psql(container, "BEGIN;\n" + manual_fee_command_sql + "\nCOMMIT;", 'DB03_MANUAL_COMMAND_INSTALL')
+            try:
+                local.run_psql(container, "BEGIN;\n" + manual_assessment_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_MANUAL_ASSESSMENT_FAILURE'; END $failure$;\nCOMMIT;", 'DB03_MANUAL_ASSESSMENT_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_MANUAL_ASSESSMENT_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_EXPECTED_MANUAL_ASSESSMENT_DDL_FAILURE_ABSENT')
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_constraint WHERE conname='db03_applicant_assessment_manual_fk';", 'DB03_MANUAL_ASSESSMENT_ABSENT', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_MANUAL_ASSESSMENT_DDL_ROLLBACK_INCOMPLETE')
+            local.run_psql(container, "BEGIN;\n" + manual_assessment_sql + "\nCOMMIT;", 'DB03_MANUAL_ASSESSMENT_INSTALL')
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -837,9 +863,12 @@ def main() -> int:
             manual_cmd_output = local.run_psql(container, manual_fee_command_test, 'DB03_MANUAL_COMMAND_TEST')
             parse_tap(manual_cmd_output, 10)
             print('DB03_MANUAL_COMMAND_DATABASE_PASS 10/10; operation_not_seeded=true')
+            manual_assessment_output = local.run_psql(container, manual_assessment_test, 'DB03_MANUAL_ASSESSMENT_TEST')
+            parse_tap(manual_assessment_output, 17)
+            print('DB03_MANUAL_ASSESSMENT_DATABASE_PASS 17/17; positive_clearance=false')
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\n" + manual_assessment_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
