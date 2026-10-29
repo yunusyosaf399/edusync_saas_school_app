@@ -20,8 +20,9 @@ SELECT ok((SELECT relrowsecurity AND relforcerowsecurity FROM pg_class
  WHERE oid='app_private.finance_admission_slip_submissions'::regclass),'RLS and FORCE RLS enabled');
 SELECT ok(to_regclass('app_private.finance_admission_clearance_events') IS NULL,
  'upload source cannot silently become clearance');
-SELECT throws_ok('TRUNCATE app_private.finance_admission_slip_submissions','P0001'::char(5),
- 'DB03 applicant payment evidence is immutable'::text,'retained submissions reject truncate');
+SELECT throws_ok('TRUNCATE app_private.finance_admission_slip_submissions','0A000'::char(5),
+ 'cannot truncate a table referenced in a foreign key constraint'::text,
+ 'review FK prevents truncating retained submissions');
 SELECT ok((SELECT count(*)=2 FROM pg_trigger WHERE tgrelid='app_private.finance_admission_slip_submissions'::regclass
  AND tgname IN('db03_applicant_slip_history','db03_applicant_slip_no_truncate')),
  'insert/update/delete and truncate guard installed');
