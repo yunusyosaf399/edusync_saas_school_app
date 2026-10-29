@@ -1,0 +1,149 @@
+-- S17: disabled-by-default server command for an independently authorized
+-- administrator manual fee decision. The operation and grants are test fixtures
+-- only. No direct client RPC, Finance assessment, payment or clearance.
+GRANT EXECUTE ON FUNCTION app_private.current_principal_id(),
+ app_private.has_complete_grant(text,text,uuid) TO schoolos_schema_owner;
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_record_manual_admission_fee(
+ p_application uuid,p_expected bigint,p_amount_minor numeric,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ prior_decision app_private.finance_admission_manual_fee_decisions%ROWTYPE;
+ decision app_private.finance_admission_manual_fee_decisions%ROWTYPE;
+ previous_receipt app_private.command_receipts%ROWTYPE;
+ actor uuid; operation uuid; campus uuid; school uuid; year_id uuid;
+ currency text; payload_hash bytea; receipt_id uuid; correlation uuid;
+ v_rev bigint; result jsonb; claims jsonb; auth_exp text;
+BEGIN
+ IF session_user<>'schoolos_file_login'
+  OR current_setting('transaction_isolation')<>'read committed'
+  OR p_application IS NULL OR p_expected IS NULL OR p_expected<1
+  OR p_amount_minor IS NULL OR p_amount_minor<>trunc(p_amount_minor)
+  OR p_amount_minor<0 OR p_amount_minor>=100000000000000000000
+  OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB03 manual fee command invalid'; END IF;
+ claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
+ auth_exp:=claims->>'exp';
+ IF auth_exp IS NULL OR auth_exp !~ '^[0-9]{1,12}$'
+  OR to_timestamp(auth_exp::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 manual fee authentication expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ IF actor IS NULL OR NOT EXISTS(SELECT 1 FROM app_private.principals
+  WHERE id=actor AND kind='INDIVIDUAL' AND state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB03 manual fee staff authentication required'; END IF;
+ SELECT a0.school_id,a0.campus_id,a0.academic_year_id
+  INTO school,campus,year_id FROM app_private.admission_applications a0
+  WHERE a0.id=p_application;
+ IF school IS NULL THEN RAISE EXCEPTION 'DB03 manual fee application unavailable'; END IF;
+ SELECT o.id INTO operation FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='admission.fee.manual.record'
+  AND o.contract_version=1 AND o.handler_key=o.code
+  AND o.payload_schema_version=1 AND o.enabled AND NOT o.requires_approval
+  AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF operation IS NULL THEN RAISE EXCEPTION 'DB03 manual fee command disabled'; END IF;
+ -- Do not accept a client-provided actor or scope. The role assignment and
+ -- exact active Campus grant are checked both before and after lock waits.
+ IF NOT app_private.has_complete_grant('admission.fee.manual.record','CAMPUS',campus)
+  OR NOT EXISTS(SELECT 1 FROM app_private.principal_role_assignments ra
+    JOIN app_private.roles r ON r.id=ra.role_id
+    WHERE ra.principal_id=actor AND ra.principal_kind='INDIVIDUAL'
+    AND r.code='ADMINISTRATOR' AND r.state='ACTIVE' AND NOT r.family_only
+    AND ra.revoked_at IS NULL AND ra.valid_from<=clock_timestamp()
+    AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)) THEN
+  RAISE EXCEPTION 'DB03 manual fee administrator scope denied'; END IF;
+ payload_hash:=sha256(convert_to(jsonb_build_array('db03-manual-fee-v1',
+  p_application,p_expected,p_amount_minor::text,
+  encode(sha256(convert_to(p_reason,'UTF8')),'hex'))::text,'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||operation::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles
+  WHERE id=school AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 manual fee School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses
+  WHERE id=campus AND school_id=school AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 manual fee Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years
+  WHERE id=year_id AND school_id=school FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 manual fee Year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=p_application FOR UPDATE;
+ IF a.id IS NULL OR a.school_id<>school OR a.campus_id<>campus
+  OR a.academic_year_id<>year_id
+  OR app_private.current_principal_id() IS DISTINCT FROM actor
+  OR NOT app_private.has_complete_grant('admission.fee.manual.record','CAMPUS',campus)
+  OR NOT EXISTS(SELECT 1 FROM app_private.principal_role_assignments ra
+    JOIN app_private.roles r ON r.id=ra.role_id
+    WHERE ra.principal_id=actor AND ra.principal_kind='INDIVIDUAL'
+    AND r.code='ADMINISTRATOR' AND r.state='ACTIVE' AND NOT r.family_only
+    AND ra.revoked_at IS NULL AND ra.valid_from<=clock_timestamp()
+    AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until))
+  OR to_timestamp(auth_exp::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 manual fee authority or target changed'; END IF;
+ SELECT currency_code INTO currency FROM app_private.school_profiles WHERE id=school;
+ SELECT * INTO previous_receipt FROM app_private.command_receipts
+  WHERE principal_id=actor AND operation_id=operation
+  AND idempotency_key='manual-fee:'||p_key;
+ IF previous_receipt.id IS NOT NULL THEN
+  SELECT * INTO decision FROM app_private.finance_admission_manual_fee_decisions
+   WHERE id=previous_receipt.result_ref;
+  IF previous_receipt.state<>'SUCCEEDED'
+   OR previous_receipt.command_kind<>'admission.fee.manual.record'
+   OR previous_receipt.result_kind<>'ADMISSION_MANUAL_FEE'
+   OR previous_receipt.canonical_payload_hash IS DISTINCT FROM payload_hash
+   OR previous_receipt.expected_target_version IS DISTINCT FROM p_expected
+   OR decision.id IS NULL OR decision.application_id<>p_application
+   OR decision.application_version<>p_expected OR decision.recorded_by<>actor
+   OR decision.amount_minor<>p_amount_minor
+   OR decision.reason_private<>p_reason
+   OR previous_receipt.result_summary->>'decision_id' IS DISTINCT FROM decision.id::text
+   OR (SELECT count(*) FROM app_private.audit_events
+       WHERE command_receipt_id=previous_receipt.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events
+       WHERE command_receipt_id=previous_receipt.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 manual fee replay conflict'; END IF;
+  RETURN previous_receipt.result_summary;
+ END IF;
+ IF a.state<>'DRAFT' OR a.row_version<>p_expected
+  OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards f
+    WHERE f.application_id=a.id) THEN
+  RAISE EXCEPTION 'DB03 manual fee application changed or forwarded'; END IF;
+ SELECT * INTO prior_decision FROM app_private.finance_admission_manual_fee_decisions
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+ v_rev:=coalesce(prior_decision.revision,0)+1;
+ INSERT INTO app_private.finance_admission_manual_fee_decisions(
+  application_id,school_id,campus_id,academic_year_id,application_version,
+  revision,supersedes_id,amount_minor,currency_code,reason_private,recorded_by)
+ VALUES(a.id,school,campus,year_id,p_expected,v_rev,prior_decision.id,
+  p_amount_minor,currency,p_reason,actor) RETURNING * INTO decision;
+ result:=jsonb_build_object('decision_id',decision.id,'application_id',a.id,
+  'revision',decision.revision,'application_version',p_expected,
+  'currency_code',currency,'amount_minor',decision.amount_minor,
+  'source_kind','MANUAL_PENDING_FINANCE_ASSESSMENT');
+ receipt_id:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,
+  command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+  expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(receipt_id,actor,operation,'admission.fee.manual.record','manual-fee:'||p_key,
+  payload_hash,1,p_expected,'SUCCEEDED','ADMISSION_MANUAL_FEE',decision.id,
+  result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+  target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation','admission.fee.manual.record'),
+  v_rev,'admission.fee.manual.record','ADMISSION_MANUAL_FEE',decision.id,campus,
+  receipt_id,'WORKER',correlation,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+  aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,
+  payload,created_by)
+ VALUES('admission.fee.manual.record','ADMISSION_MANUAL_FEE',decision.id,
+  v_rev,receipt_id,1,correlation,clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_record_manual_admission_fee(uuid,bigint,numeric,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_record_manual_admission_fee(uuid,bigint,numeric,text,text)
+ TO schoolos_file_login;
+RESET ROLE;
