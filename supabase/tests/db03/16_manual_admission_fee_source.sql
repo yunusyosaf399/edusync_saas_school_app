@@ -39,9 +39,11 @@ SELECT ok((SELECT data_type='numeric' AND numeric_scale=0 FROM information_schem
 SELECT ok((SELECT count(*)=1 FROM pg_attribute WHERE
  attrelid='app_private.finance_admission_manual_fee_decisions'::regclass
  AND attname='reason_private' AND NOT attisdropped), 'private decision reason retained');
+-- With S18's genuine assessment FK installed, PostgreSQL rejects TRUNCATE
+-- before the immutable-table trigger fires. Both outcomes fail closed.
 SELECT throws_ok('TRUNCATE app_private.finance_admission_manual_fee_decisions',
- 'P0001'::char(5), 'DB03 manual fee decision history is immutable'::text,
- 'cannot truncate the decision history');
+ '0A000'::char(5), 'cannot truncate a table referenced in a foreign key constraint'::text,
+ 'cannot truncate the decision history while assessments reference it');
 SELECT ok(to_regclass('app_private.finance_admission_clearance_events') IS NULL,
  'manual fee decision cannot bypass Finance clearance');
 SELECT ok((SELECT count(*)=0 FROM pg_proc WHERE pronamespace='app'::regnamespace

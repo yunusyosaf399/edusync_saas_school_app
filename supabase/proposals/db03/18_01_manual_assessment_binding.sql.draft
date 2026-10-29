@@ -1,0 +1,96 @@
+-- S18: bind an S15 Finance assessment to an exact retained S16/S17
+-- applicant manual-fee decision. Automatic Finance price terms still await
+-- a selected School matching dimension and application policy binding.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.finance_admission_manual_fee_decisions
+ ADD CONSTRAINT db03_manual_fee_assessment_context
+ UNIQUE(id,application_id,school_id,campus_id,academic_year_id,amount_minor,currency_code);
+ALTER TABLE app_private.finance_admission_obligation_assessments
+ ALTER COLUMN policy_version_id DROP NOT NULL,
+ ADD COLUMN source_kind text NOT NULL DEFAULT 'AUTOMATIC'
+  CHECK(source_kind IN('AUTOMATIC','MANUAL')),
+ ADD COLUMN manual_decision_id uuid,
+ ADD CONSTRAINT db03_applicant_assessment_source_exclusive CHECK(
+  (source_kind='AUTOMATIC' AND policy_version_id IS NOT NULL AND manual_decision_id IS NULL)
+  OR (source_kind='MANUAL' AND policy_version_id IS NULL AND manual_decision_id IS NOT NULL)),
+ ADD CONSTRAINT db03_applicant_assessment_manual_fk
+  FOREIGN KEY(manual_decision_id,application_id,school_id,campus_id,academic_year_id,
+   gross_amount_minor,currency_code)
+  REFERENCES app_private.finance_admission_manual_fee_decisions
+   (id,application_id,school_id,campus_id,academic_year_id,amount_minor,currency_code)
+  ON UPDATE RESTRICT ON DELETE RESTRICT;
+CREATE INDEX db03_applicant_assessment_manual
+ ON app_private.finance_admission_obligation_assessments(manual_decision_id)
+ WHERE manual_decision_id IS NOT NULL;
+CREATE OR REPLACE FUNCTION app_private.db03_guard_applicant_obligation_assessment()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ p app_private.admission_policy_versions%ROWTYPE;
+ manual app_private.finance_admission_manual_fee_decisions%ROWTYPE;
+ latest_manual app_private.finance_admission_manual_fee_decisions%ROWTYPE;
+ school record;
+ previous_record app_private.finance_admission_obligation_assessments%ROWTYPE;
+ assessor record;
+BEGIN
+ IF TG_OP<>'INSERT' THEN
+  RAISE EXCEPTION 'DB03 applicant obligation assessment history is immutable';
+ END IF;
+ IF current_user<>'schoolos_schema_owner' THEN
+  RAISE EXCEPTION 'DB03 applicant obligation requires protected Finance authority';
+ END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=NEW.application_id FOR UPDATE;
+ SELECT currency_code INTO school FROM app_private.school_profiles WHERE id=NEW.school_id;
+ SELECT kind,state INTO assessor FROM app_private.principals WHERE id=NEW.assessed_by;
+ IF a.id IS NULL OR a.state<>'DRAFT'
+  OR a.school_id<>NEW.school_id OR a.campus_id<>NEW.campus_id
+  OR a.academic_year_id<>NEW.academic_year_id
+  OR a.row_version<>NEW.application_version
+  OR school.currency_code IS DISTINCT FROM NEW.currency_code
+  OR assessor.kind IS DISTINCT FROM 'INDIVIDUAL'
+  OR assessor.state IS DISTINCT FROM 'ACTIVE'
+  OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards f
+    WHERE f.application_id=NEW.application_id) THEN
+  RAISE EXCEPTION 'DB03 applicant obligation source context unavailable';
+ END IF;
+ IF NEW.source_kind='MANUAL' THEN
+  SELECT * INTO manual FROM app_private.finance_admission_manual_fee_decisions
+   WHERE id=NEW.manual_decision_id AND application_id=a.id FOR UPDATE;
+  SELECT * INTO latest_manual FROM app_private.finance_admission_manual_fee_decisions
+   WHERE application_id=a.id ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+  IF manual.id IS NULL OR latest_manual.id IS DISTINCT FROM manual.id
+   OR manual.application_version<>NEW.application_version
+   OR manual.school_id<>NEW.school_id OR manual.campus_id<>NEW.campus_id
+   OR manual.academic_year_id<>NEW.academic_year_id
+   OR manual.amount_minor<>NEW.gross_amount_minor
+   OR manual.currency_code<>NEW.currency_code
+   OR manual.recorded_by=NEW.assessed_by THEN
+   RAISE EXCEPTION 'DB03 manual Finance assessment decision stale or self-assessed';
+  END IF;
+ ELSE
+  -- No positive automatic assessment is possible while the application has
+  -- no bound policy and no published, unambiguous fee-rule source.
+  SELECT * INTO p FROM app_private.admission_policy_versions
+   WHERE id=NEW.policy_version_id AND school_id=NEW.school_id FOR KEY SHARE;
+  IF p.id IS NULL OR p.state<>'PUBLISHED'
+   OR a.policy_version_id IS DISTINCT FROM NEW.policy_version_id THEN
+   RAISE EXCEPTION 'DB03 automatic assessment policy source unavailable';
+  END IF;
+  RAISE EXCEPTION 'DB03 automatic fee-rule source not yet installed';
+ END IF;
+ SELECT * INTO previous_record
+  FROM app_private.finance_admission_obligation_assessments
+  WHERE application_id=NEW.application_id ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+ IF (previous_record.id IS NULL AND
+  (NEW.revision<>1 OR NEW.supersedes_id IS NOT NULL))
+  OR (previous_record.id IS NOT NULL AND
+  (NEW.revision<>previous_record.revision+1
+   OR NEW.supersedes_id IS DISTINCT FROM previous_record.id)) THEN
+  RAISE EXCEPTION 'DB03 applicant obligation predecessor mismatch';
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_guard_applicant_obligation_assessment()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+RESET ROLE;
