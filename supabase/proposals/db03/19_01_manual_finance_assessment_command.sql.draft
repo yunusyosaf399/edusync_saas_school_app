@@ -1,0 +1,257 @@
+-- S19: protected independent Finance assessment of a retained manual applicant
+-- admission fee. Candidate only: no operation/permission seeded for any school.
+-- Monthly tuition and selected-category scholarships remain DB08 F15 concerns.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.finance_admission_obligation_assessments
+ ADD COLUMN assessment_reason_private text NOT NULL
+ CHECK (length(btrim(assessment_reason_private)) BETWEEN 1 AND 1000);
+
+CREATE FUNCTION app_private.db03_assess_manual_admission_fee(
+ p_application uuid,p_expected bigint,p_manual_decision uuid,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ a app_private.admission_applications%ROWTYPE;
+ decision app_private.finance_admission_manual_fee_decisions%ROWTYPE;
+ current_decision app_private.finance_admission_manual_fee_decisions%ROWTYPE;
+ prior_assessment app_private.finance_admission_obligation_assessments%ROWTYPE;
+ assessment app_private.finance_admission_obligation_assessments%ROWTYPE;
+ old_receipt app_private.command_receipts%ROWTYPE;
+ actor uuid; operation uuid; prior_operation uuid;
+ v_school uuid; v_campus uuid; v_year uuid; v_currency text;
+ v_hash bytea; v_receipt uuid; v_correlation uuid; v_revision bigint;
+ v_result jsonb; v_exp text; claims jsonb;
+BEGIN
+ IF session_user<>'schoolos_file_login'
+  OR current_setting('transaction_isolation')<>'read committed'
+  OR p_application IS NULL OR p_expected IS NULL OR p_expected<1
+  OR p_manual_decision IS NULL OR p_reason IS NULL
+  OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB03 Finance assessment intent invalid';
+ END IF;
+ claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
+ v_exp:=claims->>'exp';
+ IF v_exp IS NULL OR v_exp !~ '^[0-9]{1,12}$'
+  OR to_timestamp(v_exp::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 Finance assessor authentication expired';
+ END IF;
+ -- Shared Foundation catalog lock coordinates authority/revocation fences.
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ IF actor IS NULL OR NOT EXISTS(
+  SELECT 1 FROM app_private.principals p
+  WHERE p.id=actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB03 Finance assessor must be active individual';
+ END IF;
+ SELECT school_id,campus_id,academic_year_id
+ INTO v_school,v_campus,v_year
+ FROM app_private.admission_applications WHERE id=p_application;
+ IF v_school IS NULL THEN RAISE EXCEPTION 'DB03 Finance applicant unavailable'; END IF;
+
+ -- All Finance grants must belong to ONE active ACCOUNTANT role-assignment
+ -- chain; an unrelated administrator permission cannot be combined.
+ IF NOT EXISTS (
+  SELECT 1
+  FROM app_private.principal_role_assignments a0
+  JOIN app_private.roles r ON r.id=a0.role_id
+  JOIN app_private.assignment_permission_scopes sc
+   ON sc.assignment_id=a0.id AND sc.role_id=a0.role_id
+  JOIN app_private.role_permission_grants g
+   ON g.id=sc.grant_id AND g.role_id=a0.role_id
+   AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts c
+   ON c.id=sc.scope_contract_id AND c.permission_id=sc.permission_id
+   AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key
+  JOIN app_private.permissions pe ON pe.id=sc.permission_id
+  WHERE a0.principal_id=actor AND a0.principal_kind='INDIVIDUAL'
+   AND a0.context_kind='INDIVIDUAL' AND r.code='ACCOUNTANT'
+   AND r.state='ACTIVE' AND NOT r.family_only
+   AND pe.code='finance.admission.obligation.assess'
+   AND pe.state='ENABLED' AND NOT pe.family_safe
+   AND c.enabled AND sc.resolver_key='DIRECT'
+   AND ((sc.scope_kind='CAMPUS' AND sc.campus_id=v_campus)
+        OR (sc.scope_kind='ALL' AND sc.campus_id IS NULL))
+   AND a0.valid_from<=clock_timestamp()
+   AND (a0.valid_until IS NULL OR clock_timestamp()<a0.valid_until)
+   AND (a0.revoked_at IS NULL OR clock_timestamp()<a0.revoked_at)
+   AND g.valid_from<=clock_timestamp()
+   AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND sc.valid_from<=clock_timestamp()
+   AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+   AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at)
+ ) OR NOT app_private.has_complete_grant(
+     'finance.admission.obligation.assess','CAMPUS',v_campus) THEN
+  RAISE EXCEPTION 'DB03 Finance independent assessor scope denied';
+ END IF;
+ SELECT o.id INTO operation FROM app_private.operation_contracts o
+ JOIN app_private.permissions pe ON pe.id=o.request_permission_id
+ WHERE o.code='finance.admission.obligation.assess'
+  AND o.contract_version=1 AND o.handler_key=o.code
+  AND o.payload_schema_version=1 AND o.enabled AND NOT o.requires_approval
+  AND pe.code=o.code AND pe.state='ENABLED' AND NOT pe.family_safe;
+ IF operation IS NULL THEN RAISE EXCEPTION 'DB03 Finance assessment operation unavailable'; END IF;
+
+ v_hash:=sha256(convert_to(jsonb_build_array('db03-manual-assessment-v1',
+  p_application,p_expected,p_manual_decision,
+  encode(sha256(convert_to(p_reason,'UTF8')),'hex'))::text,'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||operation::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=v_school
+  AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 Finance School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=v_campus AND school_id=v_school
+  AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 Finance Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=v_year AND school_id=v_school
+  AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 Finance year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=p_application FOR UPDATE;
+ IF a.id IS NULL OR a.school_id<>v_school OR a.campus_id<>v_campus
+  OR a.academic_year_id<>v_year
+  OR app_private.current_principal_id() IS DISTINCT FROM actor
+  OR to_timestamp(v_exp::bigint)<=clock_timestamp()
+  OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+      JOIN app_private.permissions pe ON pe.id=o.request_permission_id
+      WHERE o.id=operation AND o.enabled AND NOT o.requires_approval
+      AND pe.state='ENABLED')
+  OR NOT app_private.has_complete_grant(
+     'finance.admission.obligation.assess','CAMPUS',v_campus)
+  OR NOT EXISTS(
+   SELECT 1 FROM app_private.principal_role_assignments a0
+   JOIN app_private.roles r ON r.id=a0.role_id
+   JOIN app_private.assignment_permission_scopes sc ON sc.assignment_id=a0.id
+    AND sc.role_id=a0.role_id
+   JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+    AND g.role_id=a0.role_id AND g.permission_id=sc.permission_id
+   JOIN app_private.permission_scope_contracts c ON c.id=sc.scope_contract_id
+    AND c.permission_id=sc.permission_id AND c.scope_kind=sc.scope_kind
+    AND c.resolver_key=sc.resolver_key
+   JOIN app_private.permissions pe ON pe.id=sc.permission_id
+   WHERE a0.principal_id=actor AND a0.principal_kind='INDIVIDUAL'
+    AND a0.context_kind='INDIVIDUAL' AND r.code='ACCOUNTANT'
+    AND r.state='ACTIVE' AND NOT r.family_only
+    AND pe.code='finance.admission.obligation.assess'
+    AND pe.state='ENABLED' AND NOT pe.family_safe
+    AND c.enabled AND sc.resolver_key='DIRECT'
+    AND ((sc.scope_kind='CAMPUS' AND sc.campus_id=v_campus)
+      OR (sc.scope_kind='ALL' AND sc.campus_id IS NULL))
+    AND a0.valid_from<=clock_timestamp()
+    AND (a0.valid_until IS NULL OR clock_timestamp()<a0.valid_until)
+    AND (a0.revoked_at IS NULL OR clock_timestamp()<a0.revoked_at)
+    AND g.valid_from<=clock_timestamp()
+    AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+    AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+    AND sc.valid_from<=clock_timestamp()
+    AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+    AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at)
+ ) THEN
+  RAISE EXCEPTION 'DB03 Finance authority or application changed';
+ END IF;
+
+ SELECT * INTO old_receipt FROM app_private.command_receipts
+  WHERE principal_id=actor AND operation_id=operation
+  AND idempotency_key='manual-assessment:'||p_key;
+ IF old_receipt.id IS NOT NULL THEN
+  SELECT * INTO assessment FROM app_private.finance_admission_obligation_assessments
+   WHERE id=old_receipt.result_ref;
+  IF old_receipt.state<>'SUCCEEDED'
+   OR old_receipt.command_kind<>'finance.admission.obligation.assess'
+   OR old_receipt.result_kind<>'FINANCE_ADMISSION_MANUAL_ASSESSMENT'
+   OR old_receipt.canonical_payload_hash IS DISTINCT FROM v_hash
+   OR old_receipt.expected_target_version IS DISTINCT FROM p_expected
+   OR assessment.id IS NULL OR assessment.application_id<>p_application
+   OR assessment.manual_decision_id<>p_manual_decision
+   OR assessment.assessed_by<>actor
+   OR assessment.application_version<>p_expected
+   OR assessment.assessment_reason_private<>p_reason
+   OR old_receipt.result_summary->>'assessment_id' IS DISTINCT FROM assessment.id::text
+   OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=old_receipt.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=old_receipt.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 Finance assessment replay conflict';
+  END IF;
+  -- Historical success is explicitly not a current clearance proof.
+  RETURN old_receipt.result_summary;
+ END IF;
+ IF a.state<>'DRAFT' OR a.row_version<>p_expected
+  OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards
+    WHERE application_id=p_application) THEN
+  RAISE EXCEPTION 'DB03 Finance application stale or forwarded';
+ END IF;
+ SELECT * INTO current_decision
+ FROM app_private.finance_admission_manual_fee_decisions
+ WHERE application_id=p_application ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+ IF current_decision.id IS NULL
+  OR current_decision.id IS DISTINCT FROM p_manual_decision
+  OR current_decision.application_version<>p_expected
+  OR current_decision.recorded_by=actor THEN
+  RAISE EXCEPTION 'DB03 Finance decision stale or self-assessment denied';
+ END IF;
+ SELECT id INTO prior_operation FROM app_private.operation_contracts
+  WHERE code='admission.fee.manual.record' AND contract_version=1;
+ IF prior_operation IS NULL OR NOT EXISTS(
+  SELECT 1 FROM app_private.command_receipts r
+  WHERE r.operation_id=prior_operation AND r.result_ref=current_decision.id
+   AND r.command_kind='admission.fee.manual.record'
+   AND r.result_kind='ADMISSION_MANUAL_FEE' AND r.state='SUCCEEDED'
+   AND r.created_by=current_decision.recorded_by
+   AND r.expected_target_version=current_decision.application_version
+   AND r.result_summary->>'decision_id'=current_decision.id::text
+   AND (SELECT count(*) FROM app_private.audit_events au
+    WHERE au.command_receipt_id=r.id AND au.event_type=r.command_kind
+     AND au.actor_id=r.created_by AND au.target_ref=current_decision.id)=1
+   AND (SELECT count(*) FROM app_private.outbox_events ob
+    WHERE ob.command_receipt_id=r.id AND ob.event_type=r.command_kind
+     AND ob.aggregate_ref=current_decision.id)=1) THEN
+  RAISE EXCEPTION 'DB03 Finance manual decision provenance missing';
+ END IF;
+ SELECT currency_code INTO v_currency
+  FROM app_private.school_profiles WHERE id=v_school;
+ SELECT * INTO prior_assessment FROM app_private.finance_admission_obligation_assessments
+  WHERE application_id=p_application ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+ IF prior_assessment.manual_decision_id IS NOT DISTINCT FROM current_decision.id THEN
+  RAISE EXCEPTION 'DB03 Finance manual decision already assessed';
+ END IF;
+ v_revision:=coalesce(prior_assessment.revision,0)+1;
+ INSERT INTO app_private.finance_admission_obligation_assessments(
+  application_id,school_id,campus_id,academic_year_id,application_version,
+  policy_version_id,revision,supersedes_id,gross_amount_minor,currency_code,
+  source_kind,manual_decision_id,assessment_reason_private,assessed_by)
+ VALUES(p_application,v_school,v_campus,v_year,p_expected,NULL,v_revision,
+  prior_assessment.id,current_decision.amount_minor,v_currency,
+  'MANUAL',current_decision.id,p_reason,actor)
+ RETURNING * INTO assessment;
+ v_result:=jsonb_build_object(
+  'assessment_id',assessment.id,'application_id',p_application,
+  'application_version',p_expected,'assessment_revision',v_revision,
+  'manual_decision_id',current_decision.id,'manual_decision_revision',current_decision.revision,
+  'gross_amount_minor',assessment.gross_amount_minor,'currency_code',v_currency,
+  'source_kind','MANUAL','state','RECORDED_NOT_CLEARED');
+ v_receipt:=gen_random_uuid(); v_correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,
+  command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+  expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(v_receipt,actor,operation,'finance.admission.obligation.assess','manual-assessment:'||p_key,
+  v_hash,1,p_expected,'SUCCEEDED','FINANCE_ADMISSION_MANUAL_ASSESSMENT',
+  assessment.id,v_result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+  target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',
+  jsonb_build_object('operation','finance.admission.obligation.assess',
+   'manual_decision_id',current_decision.id),v_revision,
+  'finance.admission.obligation.assess','FINANCE_ADMISSION_ASSESSMENT',
+  assessment.id,v_campus,v_receipt,'WORKER',v_correlation,clock_timestamp(),v_result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+  aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,
+  payload,created_by)
+ VALUES('finance.admission.obligation.assess','FINANCE_ADMISSION_ASSESSMENT',
+  assessment.id,v_revision,v_receipt,1,v_correlation,clock_timestamp(),v_result,actor);
+ RETURN v_result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_assess_manual_admission_fee(uuid,bigint,uuid,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_assess_manual_admission_fee(uuid,bigint,uuid,text,text)
+ TO schoolos_file_login;
+RESET ROLE;
