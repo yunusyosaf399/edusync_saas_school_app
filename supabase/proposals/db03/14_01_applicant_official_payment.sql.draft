@@ -1,5 +1,5 @@
--- S14 Finance candidate: an approved applicant bank transfer becomes one
--- unallocated official payment with a permanent admission receipt number.
+-- S14 Finance candidate: APPROVE atomically issues one unallocated official
+-- payment with a permanent admission receipt number. Internal issuer only.
 -- ADM is a distinct receipt namespace from DB08 student numeric serials.
 SET ROLE schoolos_schema_owner;
 ALTER TABLE app_private.finance_admission_slip_submissions
@@ -153,7 +153,5 @@ BEGIN
  RETURN result;
 END $body$;
 REVOKE ALL ON FUNCTION app_private.db03_issue_applicant_payment(uuid,uuid,uuid,text)
- FROM PUBLIC,anon,authenticated,service_role;
-GRANT EXECUTE ON FUNCTION app_private.db03_issue_applicant_payment(uuid,uuid,uuid,text)
- TO schoolos_file_login;
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
 RESET ROLE;

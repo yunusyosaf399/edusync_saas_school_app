@@ -26,7 +26,6 @@ def run_applicant_slip(local, fresh_database, fixture):
     from services.admission_documents.service import Denied, Entitlements, canonical
     from services.payment_evidence.applicant import ApplicantSlipService
     from services.payment_evidence.applicant_review import ApplicantSlipReviewService
-    from services.payment_evidence.applicant_payment import ApplicantPaymentService
     from prepare_local_auth_fixtures import local_status, NoRedirect
 
     fresh_database()
@@ -133,7 +132,6 @@ def run_applicant_slip(local, fresh_database, fixture):
             objects=archive, location_key='PRIVATE_PAYMENTS')
         review = ApplicantSlipReviewService(school_id=SCHOOL,
             authenticate=authenticate, connect=worker, objects=archive)
-        payment = ApplicantPaymentService(school_id=SCHOOL, authenticate=authenticate, connect=worker)
         def upload(target, request_key, payload=data):
             return service.submit(token=token, application_id=str(target), expected_version=1,
                 amount=Decimal('250.00'), paid_on=date.today(), bank='Test Bank',
@@ -152,10 +150,22 @@ def run_applicant_slip(local, fresh_database, fixture):
         check(details['slip'] == data and 'object_key' not in details
               and str(details['application_id']) == str(app),
               'independent reviewer inspects original private bytes')
+        with root() as conn:
+            conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE id=md5('finance.admission.payment.issue:grant')::uuid")
+        denied(lambda: review.decide(token=reviewer_token, submission_id=str(first['submission_id']),
+               decision='APPROVE', reason='Bank transfer confirmed', idempotency_key='review-first'),
+               'payment issue authority denied')
+        with root() as conn:
+            check(conn.execute("SELECT count(*) FROM app_private.finance_admission_slip_reviews WHERE submission_id=%s", (first['submission_id'],)).fetchone()[0] == 0
+                  and conn.execute("SELECT count(*) FROM app_private.finance_admission_official_payments").fetchone()[0] == 0,
+                  'issuer denial rolled back review and receipt')
+            conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=NULL WHERE id=md5('finance.admission.payment.issue:grant')::uuid")
         accepted = review.decide(token=reviewer_token, submission_id=str(first['submission_id']),
                                  decision='APPROVE', reason='Bank transfer confirmed', idempotency_key='review-first')
-        check(accepted['decision'] == 'APPROVE' and accepted['state'] == 'VERIFIED',
-              'review is verified evidence only')
+        check(accepted['decision'] == 'APPROVE' and accepted['state'] == 'VERIFIED'
+              and accepted['payment_state'] == 'RECORDED_UNALLOCATED'
+              and accepted['receipt_number'] == 'ADM-0000000001',
+              'approval issued permanent receipt atomically')
         check(review.decide(token=reviewer_token, submission_id=str(first['submission_id']),
                             decision='APPROVE', reason='Bank transfer confirmed',
                             idempotency_key='review-first') == accepted,
@@ -170,22 +180,8 @@ def run_applicant_slip(local, fresh_database, fixture):
                  decision='REQUEST_CORRECTION', reason='Duplicate proof; provide independent bank reference',
                  idempotency_key='review-correction')
         check(correction['state'] == 'CORRECTION_REQUESTED', 'duplicate can request correction without payment')
-        denied(lambda: payment.issue(token=token, submission_id=str(first['submission_id']),
-               review_id=str(accepted['review_id']), idempotency_key='submitter'),
-               'independent reviewer authority denied')
-        denied(lambda: payment.issue(token=reviewer_token, submission_id=str(second['submission_id']),
-               review_id=str(correction['review_id']), idempotency_key='correction'),
-               'approved applicant review required')
-        issued = payment.issue(token=reviewer_token, submission_id=str(first['submission_id']),
-            review_id=str(accepted['review_id']), idempotency_key='issue-first')
-        check(issued['state'] == 'RECORDED_UNALLOCATED' and issued['receipt_number'] == 'ADM-0000000001'
-              and str(issued['application_id']) == str(app), 'official receipt after approval')
-        check(payment.issue(token=reviewer_token, submission_id=str(first['submission_id']),
-              review_id=str(accepted['review_id']), idempotency_key='issue-first') == issued,
-              'exact payment replay one receipt')
-        denied(lambda: payment.issue(token=reviewer_token, submission_id=str(first['submission_id']),
-               review_id=str(accepted['review_id']), idempotency_key='another'),
-               'already issued for transfer')
+        denied(lambda: api('SELECT app_private.db03_issue_applicant_payment(NULL,NULL,NULL,NULL)'),
+               'permission denied')
         with root() as conn:
             rows = conn.execute("SELECT s.application_id,s.school_id,s.campus_id,s.application_version,s.submitted_by,s.evidence_sha256,f.state,f.classification,f.purpose_code,f.content_hash,f.created_by FROM app_private.finance_admission_slip_submissions s JOIN app_private.file_objects f ON f.id=s.evidence_file_id ORDER BY s.submitted_at,s.id").fetchall()
             check(len(rows) == 2 and all((str(r[1]), str(r[2]), r[3]) == (SCHOOL, CAMPUS, 1)
@@ -220,15 +216,9 @@ def run_applicant_slip(local, fresh_database, fixture):
         denied(lambda: upload(app, 'after-revoke'), 'scope denied')
         with root() as conn:
             conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE id=md5('finance.admission.payment.issue:grant')::uuid")
-        denied(lambda: payment.issue(token=reviewer_token, submission_id=str(first['submission_id']),
-               review_id=str(accepted['review_id']), idempotency_key='issue-after-revoke'),
-               'payment issue authority denied')
         with root() as conn:
             conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE id=md5('finance.admission.evidence.review:grant')::uuid")
         denied(lambda: review.inspect(token=reviewer_token, submission_id=str(first['submission_id'])),
                'independent reviewer authority denied')
-        denied(lambda: payment.issue(token=reviewer_token, submission_id=str(first['submission_id']),
-               review_id=str(accepted['review_id']), idempotency_key='after-revoke'),
-               'independent reviewer authority denied')
         check(len(audited) == 1, 'signed storage entitlement activation audited')
-    print(f'DB03_APPLICANT_SLIP_REAL_AUTH_PASS assertions={count} approved_payment=true clearance=false duplicate_issuance_denied=true revoked_grants_denied=true')
+    print(f'DB03_APPLICANT_SLIP_REAL_AUTH_PASS assertions={count} atomic_approval_payment=true clearance=false duplicate_approval_denied=true revoked_issuer_grant_rolls_back=true')

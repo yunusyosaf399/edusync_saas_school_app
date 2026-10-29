@@ -11,7 +11,7 @@ SELECT ok(NOT has_table_privilege('authenticated','app_private.finance_admission
 SELECT ok(NOT has_table_privilege('service_role','app_private.finance_admission_official_payments','SELECT,INSERT,UPDATE,DELETE'), 'service role DML denied');
 SELECT ok(NOT has_table_privilege('schoolos_file_login','app_private.finance_admission_official_payments','INSERT'), 'worker cannot insert directly');
 SELECT ok(NOT has_function_privilege('authenticated','app_private.db03_issue_applicant_payment(uuid,uuid,uuid,text)','EXECUTE'), 'client command denied');
-SELECT ok(has_function_privilege('schoolos_file_login','app_private.db03_issue_applicant_payment(uuid,uuid,uuid,text)','EXECUTE'), 'narrow server command');
+SELECT ok(NOT has_function_privilege('schoolos_file_login','app_private.db03_issue_applicant_payment(uuid,uuid,uuid,text)','EXECUTE'), 'issuer callable only through protected review');
 SELECT throws_ok('TRUNCATE app_private.finance_admission_official_payments','P0001'::char(5),
  'DB03 applicant payment is immutable'::text,'payment history retained');
 SELECT ok((SELECT count(*)=2 FROM pg_constraint WHERE conrelid='app_private.finance_admission_official_payments'::regclass

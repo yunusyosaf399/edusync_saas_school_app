@@ -121,7 +121,7 @@ RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
  SET search_path=pg_catalog,pg_temp AS $body$
 DECLARE actor uuid; operation uuid; source app_private.finance_admission_slip_submissions%ROWTYPE;
  f app_private.file_objects%ROWTYPE; review app_private.finance_admission_slip_reviews%ROWTYPE;
- prior app_private.command_receipts%ROWTYPE; payload_hash bytea; result jsonb;
+ prior app_private.command_receipts%ROWTYPE; payload_hash bytea; result jsonb; issued jsonb;
  receipt_id uuid; correlation uuid; reason text;
 BEGIN
  IF p_decision IS NULL OR p_decision NOT IN('APPROVE','REJECT','REQUEST_CORRECTION')
@@ -151,6 +151,11 @@ BEGIN
   IF prior.state<>'SUCCEEDED' OR prior.command_kind<>'finance.admission.evidence.review'
    OR prior.result_kind<>'FINANCE_ADMISSION_REVIEW' OR prior.canonical_payload_hash<>payload_hash
    OR review.id IS NULL OR review.reviewer_id<>actor OR review.submission_id<>p_submission
+   OR (review.decision='APPROVE' AND NOT EXISTS(
+    SELECT 1 FROM app_private.finance_admission_official_payments payment
+    WHERE payment.review_id=review.id AND payment.submission_id=review.submission_id
+     AND payment.created_by=actor AND payment.id=(prior.result_summary->>'payment_id')::uuid
+     AND payment.receipt_number=prior.result_summary->>'receipt_number'))
    OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=prior.id)<>1
    OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=prior.id)<>1 THEN
    RAISE EXCEPTION 'DB03 applicant review replay conflict'; END IF;
@@ -166,9 +171,18 @@ BEGIN
   RAISE EXCEPTION 'DB03 applicant review already decided or duplicate approved transfer'; END IF;
  INSERT INTO app_private.finance_admission_slip_reviews(submission_id,decision,reviewer_id,seen_sha256,reason)
  VALUES(p_submission,p_decision,actor,p_seen_sha,reason) RETURNING * INTO review;
+ -- One transaction owns both the approval and the permanent receipt. Any
+ -- issuer denial or failed insert rolls the review decision back as well.
+ IF p_decision='APPROVE' THEN
+  issued:=app_private.db03_issue_applicant_payment(p_school,p_submission,review.id,p_key);
+ END IF;
  result:=jsonb_build_object('review_id',review.id,'submission_id',p_submission,
   'decision',p_decision,'state',CASE WHEN p_decision='APPROVE' THEN 'VERIFIED'
    WHEN p_decision='REJECT' THEN 'REJECTED' ELSE 'CORRECTION_REQUESTED' END);
+ IF p_decision='APPROVE' THEN
+  result:=result||jsonb_build_object('payment_id',issued->'payment_id',
+   'receipt_number',issued->'receipt_number','payment_state',issued->'state');
+ END IF;
  receipt_id:=gen_random_uuid(); correlation:=gen_random_uuid();
  INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,
   idempotency_key,canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,
