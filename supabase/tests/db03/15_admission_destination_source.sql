@@ -49,6 +49,10 @@ SELECT is((SELECT ac.code FROM app_private.admission_destination_intents i
  'GRADE_1'::text,'destination resolves to typed Grade 1');
 SELECT is((SELECT count(*) FROM app_private.admission_destination_intents),1::bigint,
  'one retained intention');
+-- pgTAP itself lives in extensions; this temporary grant rolls back with the
+-- fixture and is never part of the candidate schema.
+GRANT USAGE ON SCHEMA extensions TO schoolos_schema_owner;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA extensions TO schoolos_schema_owner;
 SET ROLE schoolos_schema_owner;
 SELECT extensions.throws_ok(format($q$INSERT INTO app_private.admission_destination_intents
  (application_id,school_id,campus_id,academic_year_id,application_version,revision,class_offering_id,reason_private,created_by)
