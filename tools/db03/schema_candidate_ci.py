@@ -835,6 +835,9 @@ def main() -> int:
             parse_tap(manual_fee_output, 16)
             print('DB03_MANUAL_FEE_DATABASE_PASS 16/16; clearance=false')
             manual_cmd_output = local.run_psql(container, manual_fee_command_test, 'DB03_MANUAL_COMMAND_TEST')
+            for line in manual_cmd_output.splitlines():
+                if re.match(r'^\\s*not ok\\b', line):
+                    print('DB03_MANUAL_COMMAND_ASSERTION_DETAIL ' + line)
             parse_tap(manual_cmd_output, 10)
             print('DB03_MANUAL_COMMAND_DATABASE_PASS 10/10; operation_not_seeded=true')
             def fresh_publication_database():
