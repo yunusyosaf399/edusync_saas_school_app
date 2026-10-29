@@ -219,6 +219,11 @@ def run_applicant_slip(local, fresh_database, fixture):
             conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE id=md5('finance.admission.evidence.submit:grant')::uuid")
         denied(lambda: upload(app, 'after-revoke'), 'scope denied')
         with root() as conn:
+            conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE id=md5('finance.admission.payment.issue:grant')::uuid")
+        denied(lambda: payment.issue(token=reviewer_token, submission_id=str(first['submission_id']),
+               review_id=str(accepted['review_id']), idempotency_key='issue-after-revoke'),
+               'payment issue authority denied')
+        with root() as conn:
             conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE id=md5('finance.admission.evidence.review:grant')::uuid")
         denied(lambda: review.inspect(token=reviewer_token, submission_id=str(first['submission_id'])),
                'independent reviewer authority denied')

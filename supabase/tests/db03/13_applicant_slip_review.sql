@@ -22,8 +22,9 @@ SELECT ok(NOT has_function_privilege('authenticated','app_private.db03_review_ap
  'review command is server-only');
 SELECT ok(has_function_privilege('schoolos_file_login','app_private.db03_review_applicant_slip(uuid,uuid,text,text,bytea,text)','EXECUTE'),
  'narrow worker entry');
-SELECT throws_ok('TRUNCATE app_private.finance_admission_slip_reviews','P0001'::char(5),
- 'DB03 applicant slip review is immutable'::text,'review history cannot truncate');
+SELECT throws_ok('TRUNCATE app_private.finance_admission_slip_reviews','0A000'::char(5),
+ 'cannot truncate a table referenced in a foreign key constraint'::text,
+ 'payment FK prevents truncating retained reviews');
 SELECT ok(to_regclass('app_private.finance_admission_clearance_events') IS NULL
  AND (SELECT count(*)=0 FROM app_private.finance_admission_official_payments),
  'approved evidence alone creates no payment or clearance');
