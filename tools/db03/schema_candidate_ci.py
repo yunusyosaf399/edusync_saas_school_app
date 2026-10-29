@@ -861,6 +861,8 @@ def main() -> int:
             from applicant_slip_ci import run_applicant_slip
             run_applicant_slip(local, fresh_publication_database,
                                document_fixture + "\n" + review_fixture + "\n" + applicant_fixture + "\n" + applicant_review_fixture + "\n" + applicant_payment_fixture)
+            from manual_fee_ci import run_manual_fee
+            run_manual_fee(local, fresh_publication_database, document_fixture + "\n" + manual_fee_fixture)
             return 0
     finally:
         if started:
