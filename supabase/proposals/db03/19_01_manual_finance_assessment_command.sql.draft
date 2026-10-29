@@ -210,6 +210,9 @@ BEGIN
   FROM app_private.school_profiles WHERE id=v_school;
  SELECT * INTO prior_assessment FROM app_private.finance_admission_obligation_assessments
   WHERE application_id=p_application ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+ IF prior_assessment.manual_decision_id IS NOT DISTINCT FROM current_decision.id THEN
+  RAISE EXCEPTION 'DB03 Finance manual decision already assessed';
+ END IF;
  v_revision:=coalesce(prior_assessment.revision,0)+1;
  INSERT INTO app_private.finance_admission_obligation_assessments(
   application_id,school_id,campus_id,academic_year_id,application_version,
