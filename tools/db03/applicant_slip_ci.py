@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from io import BytesIO
 import hashlib
@@ -9,6 +10,7 @@ import json
 from pathlib import Path
 import secrets
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -132,10 +134,10 @@ def run_applicant_slip(local, fresh_database, fixture):
             objects=archive, location_key='PRIVATE_PAYMENTS')
         review = ApplicantSlipReviewService(school_id=SCHOOL,
             authenticate=authenticate, connect=worker, objects=archive)
-        def upload(target, request_key, payload=data):
+        def upload(target, request_key, payload=data, reference='REF-123'):
             return service.submit(token=token, application_id=str(target), expected_version=1,
                 amount=Decimal('250.00'), paid_on=date.today(), bank='Test Bank',
-                reference='REF-123', slip=payload, idempotency_key=request_key)
+                reference=reference, slip=payload, idempotency_key=request_key)
 
         first = upload(app, 'first')
         check(first['state'] == 'PENDING' and first['duplicate_suspected'] is False,
@@ -210,6 +212,64 @@ def run_applicant_slip(local, fresh_database, fixture):
                   'no duplicate same-key row')
             check(conn.execute("SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='finance_admission_clearance_events'").fetchone()[0] == 0,
                   'no applicant clearance issued')
+        # Separate transfers issued concurrently must allocate different
+        # permanent School receipt serials, even across applications.
+        third_image = BytesIO()
+        Image.new('RGB', (12, 12), (15, 135, 65)).save(third_image, format='PNG')
+        third_data = third_image.getvalue()
+        app_three = api('SELECT application_id FROM app.create_admission_draft(%s,%s,%s)',
+                        (CAMPUS, YEAR, 'applicant-slip-three'))
+        app_four = api('SELECT application_id FROM app.create_admission_draft(%s,%s,%s)',
+                       (CAMPUS, YEAR, 'applicant-slip-four'))
+        third = upload(app_three, 'third', changed_data, 'REF-THREE')
+        fourth = upload(app_four, 'fourth', third_data, 'REF-FOUR')
+        start = threading.Barrier(2)
+        def approve(submission, request_key):
+            start.wait(timeout=20)
+            return review.decide(token=reviewer_token, submission_id=str(submission['submission_id']),
+                decision='APPROVE', reason='Independent bank transfer confirmed',
+                idempotency_key=request_key)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            one = pool.submit(approve, third, 'review-third')
+            two = pool.submit(approve, fourth, 'review-fourth')
+            concurrent = [one.result(timeout=40), two.result(timeout=40)]
+        check({r['receipt_number'] for r in concurrent} == {'ADM-0000000002', 'ADM-0000000003'}
+              and all(r['payment_state'] == 'RECORDED_UNALLOCATED' for r in concurrent),
+              'concurrent distinct transfers receive unique School receipts')
+        with root() as conn:
+            check(conn.execute("SELECT count(*) FROM app_private.finance_admission_official_payments WHERE school_id=%s", (SCHOOL,)).fetchone()[0] == 3
+                  and conn.execute("SELECT count(*) FROM app_private.finance_admission_slip_reviews WHERE decision='APPROVE'").fetchone()[0] == 3,
+                  'concurrent approvals each have exactly one payment')
+        # Reusing a bank reference with different bytes must not permit two
+        # concurrent approvals to create two receipts for the same transfer.
+        app_five = api('SELECT application_id FROM app.create_admission_draft(%s,%s,%s)',
+                       (CAMPUS, YEAR, 'applicant-slip-five'))
+        app_six = api('SELECT application_id FROM app.create_admission_draft(%s,%s,%s)',
+                      (CAMPUS, YEAR, 'applicant-slip-six'))
+        fifth_image = BytesIO()
+        Image.new('RGB', (12, 12), (95, 10, 115)).save(fifth_image, format='PNG')
+        sixth_image = BytesIO()
+        Image.new('RGB', (12, 12), (100, 15, 120)).save(sixth_image, format='PNG')
+        fifth = upload(app_five, 'fifth', fifth_image.getvalue(), 'REF-RACE')
+        sixth = upload(app_six, 'sixth', sixth_image.getvalue(), 'REF-RACE')
+        start = threading.Barrier(2)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            one = pool.submit(approve, fifth, 'review-fifth')
+            two = pool.submit(approve, sixth, 'review-sixth')
+            outcomes = []
+            for future in (one, two):
+                try:
+                    outcomes.append(('issued', future.result(timeout=40)))
+                except psycopg.Error as exc:
+                    outcomes.append(('denied', str(exc)))
+        check(sum(kind == 'issued' for kind, _ in outcomes) == 1
+              and sum(kind == 'denied' and 'duplicate approved transfer' in value
+                      for kind, value in outcomes) == 1,
+              'competing same-reference approvals yield one payment')
+        with root() as conn:
+            check(conn.execute("SELECT count(*) FROM app_private.finance_admission_official_payments WHERE school_id=%s AND reference_key='REF-RACE'", (SCHOOL,)).fetchone()[0] == 1
+                  and conn.execute("SELECT count(*) FROM app_private.finance_admission_slip_reviews r JOIN app_private.finance_admission_slip_submissions s ON s.id=r.submission_id WHERE s.reference_key='REF-RACE' AND r.decision='APPROVE'").fetchone()[0] == 1,
+                  'losing approval left no review without payment')
         denied(lambda: api('SELECT app_private.db03_submit_applicant_slip(NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)'), 'permission denied')
         with root() as conn:
             conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE id=md5('finance.admission.evidence.submit:grant')::uuid")
@@ -221,4 +281,4 @@ def run_applicant_slip(local, fresh_database, fixture):
         denied(lambda: review.inspect(token=reviewer_token, submission_id=str(first['submission_id'])),
                'independent reviewer authority denied')
         check(len(audited) == 1, 'signed storage entitlement activation audited')
-    print(f'DB03_APPLICANT_SLIP_REAL_AUTH_PASS assertions={count} atomic_approval_payment=true clearance=false duplicate_approval_denied=true disabled_issuer_rolls_back=true')
+    print(f'DB03_APPLICANT_SLIP_REAL_AUTH_PASS assertions={count} atomic_approval_payment=true clearance=false concurrent_serials_unique=true same_transfer_one_receipt=true disabled_issuer_rolls_back=true')
