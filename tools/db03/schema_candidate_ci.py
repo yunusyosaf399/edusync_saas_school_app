@@ -794,7 +794,14 @@ def main() -> int:
             if absent != '0':
                 raise RuntimeError('DB03_DESTINATION_ROLLBACK_INCOMPLETE')
             local.run_psql(container, 'BEGIN;\n' + destination_sql + '\nCOMMIT;', 'DB03_DESTINATION_INSTALL')
-            output = local.run_psql(container, destination_test, 'DB03_DESTINATION_TEST')
+            try:
+                output = local.run_psql(container, destination_test, 'DB03_DESTINATION_TEST')
+            except local.DomainLocalCIError:
+                # Suppress the successful TAP rows so the runner's bounded
+                # error tail includes the failing SQLSTATE and statement.
+                local.run_psql(container, '\\o /dev/null\n' + destination_test,
+                               'DB03_DESTINATION_SQL_DIAGNOSTIC')
+                raise
             parse_tap(output, 15)
             print('DB03_DESTINATION_DATABASE_PASS 15/15; D1_typed_grade=true; no_applicant_writer=true')
             return 0
