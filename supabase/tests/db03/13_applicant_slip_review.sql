@@ -24,9 +24,9 @@ SELECT ok(has_function_privilege('schoolos_file_login','app_private.db03_review_
  'narrow worker entry');
 SELECT throws_ok('TRUNCATE app_private.finance_admission_slip_reviews','P0001'::char(5),
  'DB03 applicant slip review is immutable'::text,'review history cannot truncate');
-SELECT ok(to_regclass('app_private.finance_admission_official_payments') IS NULL
- AND to_regclass('app_private.finance_admission_clearance_events') IS NULL,
- 'approved evidence is not a payment or clearance');
+SELECT ok(to_regclass('app_private.finance_admission_clearance_events') IS NULL
+ AND (SELECT count(*)=0 FROM app_private.finance_admission_official_payments),
+ 'approved evidence alone creates no payment or clearance');
 SELECT ok((SELECT count(*)=3 FROM pg_proc p WHERE p.pronamespace='app_private'::regnamespace
  AND p.proname IN('db03_applicant_review_authority','db03_applicant_review_evidence','db03_review_applicant_slip')
  AND p.proowner='schoolos_schema_owner'::regrole

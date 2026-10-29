@@ -16,7 +16,7 @@ SELECT throws_ok('SELECT app_private.db03_applicant_slip_preflight(NULL,NULL,NUL
  'P0001'::char(5),'DB03 applicant slip preflight invalid'::text,
  'different SQL session cannot impersonate worker');
 SELECT ok(to_regclass('app_private.finance_admission_clearance_events') IS NULL
- AND to_regclass('app_private.finance_admission_official_payments') IS NULL,
+ AND (SELECT count(*)=0 FROM app_private.finance_admission_official_payments),
  'submission never installs payment or clearance');
 SELECT ok((SELECT count(*)=2 FROM pg_proc p WHERE p.pronamespace='app_private'::regnamespace
  AND p.proname IN('db03_applicant_slip_preflight','db03_submit_applicant_slip')
