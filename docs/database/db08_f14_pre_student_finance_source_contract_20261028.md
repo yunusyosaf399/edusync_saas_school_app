@@ -12,6 +12,8 @@
 
 **Next prerequisite acceptance:** the disposable real-Auth test launches concurrent approvals for distinct applications and proves different permanent School receipt serials; it also launches two approvals sharing a bank reference with different private bytes and proves only one approval/payment commits. A disabled issuer permission rolls back the review and receipt together. These are integrity checks on S13–S14, not a fee assessment. The current application relation only supports an unresolved `DRAFT` with no published policy or authorized commercial terms; the claimed amount on the slip cannot be treated as the charge. The Finance assessment source remains blocked on a typed school fee/terms authority, including the zero/waiver and version rules recorded below. S10 must continue returning `FINANCE_SOURCE_UNAVAILABLE`.
 
+**S15 owner choice:** admission fee pricing supports a published automatic school rule and an authorized manual amount for selected applicants. The [decision record](db03_s15_admission_fee_mode_owner_decision_20261029.md) fixes the two modes and retained Finance/Admissions boundary; it does not assign an automatic matching dimension or activate a charge.
+
 ## Decision already established
 
 The school accepts bank transfer proof as a private PDF or PNG/JPEG image; a school administrator reviews it. The uploaded slip is **pending evidence**, not money. Before final admission, a **Finance authorizer must issue a current clearance in every case**, including a school-approved admission-fee waiver. The F13 event is for an existing Student and cannot be reused as a pre-Student application event. A principal's admission approval is distinct from Finance authorization. No app payment or payment gateway is assumed.

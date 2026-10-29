@@ -751,6 +751,8 @@ However, each stage is optional. A school can skip document verification, test, 
 
 **Finance rule reconciliation — 27 October 2026:** The approved 21 October school-led Finance clarification requires current **Finance-authorizer clearance in every final admission case**, including an approved fee waiver or zero/no-obligation outcome. A waiver affects Finance-owned terms; it is not an alternative to Finance authorization. Payment evidence, document approval, a skipped fee stage and client paid/waived flags cannot authorize final admission. The S10 inactive candidate provides an explicit unavailable-source status and internal denial boundary while the real Finance obligation/clearance/reversal package is absent. It implements no positive clearance or waiver issuer. See the [owner decision](../database/db03_owner_decision_school_offers_test_skip_finance_changes_20261021.md) and [S10 boundary and remaining prerequisites](../database/db03_s10_finance_gate_boundary_20261027.md).
 
+**Owner choice — 29 October 2026:** Admission fees support both a school-configured automatic rule and an authorized administrator's manual amount for selected applicants. A manual amount is a retained, applicant-specific decision and Finance must independently assess it. An uploaded slip's claimed amount is never the charge. Both modes remain subject to current Finance-authorizer clearance before admission completion. The [S15 decision and open rule-matching dimension](../database/db03_s15_admission_fee_mode_owner_decision_20261029.md) record the implementation boundary.
+
 The admission process can generate:
 
 - Application number
