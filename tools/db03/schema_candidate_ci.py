@@ -374,6 +374,21 @@ def validate_manual_admission_fee() -> tuple[str, str]:
     return sql, test
 
 
+def validate_manual_fee_command() -> tuple[str, str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/17_01_manual_admission_fee_command.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/17_manual_fee_command.sql').read_text()
+    fixture = (ROOT / 'supabase/tests/db03/fixtures/manual_fee_actor.sql').read_text()
+    if re.findall(r'(?mi)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql) != ['db03_record_manual_admission_fee']:
+        raise RuntimeError('DB03_MANUAL_FEE_COMMAND_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE EXTENSION|CREATE FUNCTION app\.)\b', outside):
+        raise RuntimeError('DB03_MANUAL_FEE_COMMAND_NO_SEED')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['10'] or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 10 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_MANUAL_FEE_COMMAND_TEST_PLAN')
+    print('DB03_MANUAL_FEE_COMMAND_SOURCE_PASS assertions=10 sha256=' + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test, fixture
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -396,6 +411,7 @@ def main() -> int:
     applicant_payment_sql, applicant_payment_test, applicant_payment_fixture = validate_applicant_payment()
     applicant_obligation_sql, applicant_obligation_test = validate_applicant_obligation()
     manual_fee_sql, manual_fee_test = validate_manual_admission_fee()
+    manual_fee_command_sql, manual_fee_command_test, manual_fee_fixture = validate_manual_fee_command()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -659,6 +675,17 @@ def main() -> int:
                 raise RuntimeError('DB03_MANUAL_FEE_DDL_ROLLBACK_INCOMPLETE')
             print('DB03_MANUAL_FEE_DDL_ROLLBACK_PASS sources=0')
             local.run_psql(container, "BEGIN;\n" + manual_fee_sql + "\nCOMMIT;", 'DB03_MANUAL_FEE_INSTALL')
+            try:
+                local.run_psql(container, "BEGIN;\n" + manual_fee_command_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_MANUAL_COMMAND_FAILURE'; END $failure$;\nCOMMIT;", 'DB03_MANUAL_COMMAND_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_MANUAL_COMMAND_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_EXPECTED_MANUAL_COMMAND_DDL_FAILURE_ABSENT')
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_record_manual_admission_fee';", 'DB03_MANUAL_COMMAND_ABSENT', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_MANUAL_COMMAND_DDL_ROLLBACK_INCOMPLETE')
+            local.run_psql(container, "BEGIN;\n" + manual_fee_command_sql + "\nCOMMIT;", 'DB03_MANUAL_COMMAND_INSTALL')
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -807,9 +834,17 @@ def main() -> int:
                     print('DB03_MANUAL_FEE_ASSERTION_DETAIL ' + '\n'.join(manual_fee_lines[max(0,i-1):i+12]))
             parse_tap(manual_fee_output, 16)
             print('DB03_MANUAL_FEE_DATABASE_PASS 16/16; clearance=false')
+            manual_cmd_output = local.run_psql(container, manual_fee_command_test, 'DB03_MANUAL_COMMAND_TEST')
+            for line in manual_cmd_output.splitlines():
+                if 'not ok' in line:
+                    print('DB03_MANUAL_COMMAND_ASSERTION_DETAIL ' + line)
+            if 'not ok' in manual_cmd_output:
+                print('DB03_MANUAL_COMMAND_FULL_ASSERTION_OUTPUT ' + manual_cmd_output)
+            parse_tap(manual_cmd_output, 10)
+            print('DB03_MANUAL_COMMAND_DATABASE_PASS 10/10; operation_not_seeded=true')
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -831,6 +866,8 @@ def main() -> int:
             from applicant_slip_ci import run_applicant_slip
             run_applicant_slip(local, fresh_publication_database,
                                document_fixture + "\n" + review_fixture + "\n" + applicant_fixture + "\n" + applicant_review_fixture + "\n" + applicant_payment_fixture)
+            from manual_fee_ci import run_manual_fee
+            run_manual_fee(local, fresh_publication_database, document_fixture + "\n" + manual_fee_fixture)
             return 0
     finally:
         if started:
