@@ -169,10 +169,12 @@ def run_finance_assessment(local, fresh_database, fixture):
          FROM app_private.finance_admission_obligation_assessments
          WHERE application_id=%s ORDER BY revision
         """,(app,)).fetchall()
-        check(len(rows)==3 and all(r[2]==FINANCE_PRINCIPAL for r in rows)
+        lineage_ok=(len(rows)==3 and all(str(r[2])==FINANCE_PRINCIPAL for r in rows)
           and [r[3] for r in rows]==[10000,4200,0]
-          and rows[0][4] is None and all(r[4] is not None for r in rows[1:]),
-          'immutable independent assessed amounts and predecessor lineage')
+          and rows[0][4] is None and all(r[4] is not None for r in rows[1:]))
+        if not lineage_ok:
+            print('DB03_S19_LINEAGE_OBSERVED ' + repr(rows))
+        check(lineage_ok,'immutable independent assessed amounts and predecessor lineage')
         check(conn.execute("SELECT count(*) FROM app_private.command_receipts "
             "WHERE command_kind='finance.admission.obligation.assess'"
             ).fetchone()[0]==3,'one Finance receipt per assessment')
