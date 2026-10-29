@@ -305,6 +305,25 @@ def validate_applicant_slip_submission() -> tuple[str, str, str]:
     return sql, test, fixture
 
 
+def validate_applicant_slip_review() -> tuple[str, str, str]:
+    sql = (ROOT / "supabase/proposals/db03/13_01_applicant_slip_review.sql.draft").read_text()
+    test = (ROOT / "supabase/tests/db03/13_applicant_slip_review.sql").read_text()
+    fixture = (ROOT / "supabase/tests/db03/fixtures/applicant_review_actor.sql").read_text()
+    if re.findall(r"(?mi)^CREATE TABLE app_private\.([a-z_]+)", sql) != ["finance_admission_slip_reviews"]:
+        raise RuntimeError("DB03_APPLICANT_REVIEW_TABLE_SCOPE")
+    if re.findall(r"(?mi)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(", sql) != [
+        "db03_applicant_review_guard", "db03_applicant_review_authority",
+        "db03_applicant_review_evidence", "db03_review_applicant_slip"]:
+        raise RuntimeError("DB03_APPLICANT_REVIEW_FUNCTION_SCOPE")
+    outside = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "", sql, flags=re.S)
+    if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE EXTENSION|CREATE FUNCTION app\.)\b", outside):
+        raise RuntimeError("DB03_APPLICANT_REVIEW_NO_SEED")
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["12"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 12 or not test.rstrip().endswith("ROLLBACK;"):
+        raise RuntimeError("DB03_APPLICANT_REVIEW_TEST_PLAN")
+    print("DB03_APPLICANT_REVIEW_SOURCE_PASS assertions=12 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test, fixture
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -323,6 +342,7 @@ def main() -> int:
     finance_boundary_sql, finance_boundary_test = validate_finance_boundary_source()
     applicant_slip_sql, applicant_slip_test = validate_applicant_slip_source()
     applicant_command_sql, applicant_command_test, applicant_fixture = validate_applicant_slip_submission()
+    applicant_review_sql, applicant_review_test, applicant_review_fixture = validate_applicant_slip_review()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -538,6 +558,18 @@ def main() -> int:
                 raise RuntimeError("DB03_APPLICANT_COMMAND_ROLLBACK_INCOMPLETE")
             print("DB03_APPLICANT_COMMAND_DDL_ROLLBACK_PASS functions=0")
             local.run_psql(container, "BEGIN;\n" + applicant_command_sql + "\nCOMMIT;", "DB03_APPLICANT_COMMAND_INSTALL")
+            try:
+                local.run_psql(container, "BEGIN;\n" + applicant_review_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_APPLICANT_REVIEW_FAILURE'; END $failure$;\nCOMMIT;", "DB03_APPLICANT_REVIEW_DDL_REHEARSAL")
+            except local.DomainLocalCIError as exc:
+                if "DB03_INJECTED_APPLICANT_REVIEW_FAILURE" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("DB03_EXPECTED_APPLICANT_REVIEW_DDL_FAILURE_ABSENT")
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='finance_admission_slip_reviews';", "DB03_APPLICANT_REVIEW_ABSENT", tuples=True).strip()
+            if absent != "0":
+                raise RuntimeError("DB03_APPLICANT_REVIEW_DDL_ROLLBACK_INCOMPLETE")
+            print("DB03_APPLICANT_REVIEW_DDL_ROLLBACK_PASS sources=0")
+            local.run_psql(container, "BEGIN;\n" + applicant_review_sql + "\nCOMMIT;", "DB03_APPLICANT_REVIEW_INSTALL")
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -662,9 +694,12 @@ def main() -> int:
             command_output = local.run_psql(container, applicant_command_test, "DB03_APPLICANT_COMMAND_TEST")
             parse_tap(command_output, 8)
             print("DB03_APPLICANT_COMMAND_DATABASE_PASS 8/8; no_Finance_payment_or_clearance=true")
+            review_output = local.run_psql(container, applicant_review_test, "DB03_APPLICANT_REVIEW_TEST")
+            parse_tap(review_output, 12)
+            print("DB03_APPLICANT_REVIEW_DATABASE_PASS 12/12; approved_evidence_is_not_payment=true")
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -684,7 +719,8 @@ def main() -> int:
             from finance_boundary_ci import run_finance_boundary
             run_finance_boundary(local, fresh_publication_database, document_fixture + "\n" + review_fixture)
             from applicant_slip_ci import run_applicant_slip
-            run_applicant_slip(local, fresh_publication_database, document_fixture + "\n" + applicant_fixture)
+            run_applicant_slip(local, fresh_publication_database,
+                               document_fixture + "\n" + review_fixture + "\n" + applicant_fixture + "\n" + applicant_review_fixture)
             return 0
     finally:
         if started:
