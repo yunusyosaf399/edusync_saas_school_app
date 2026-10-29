@@ -1,0 +1,166 @@
+-- DB03 S2 isolated candidate. No deployment-owned catalog rows or activation.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.admission_numbering_profiles
+ DROP CONSTRAINT admission_numbering_profiles_state_check,
+ ADD COLUMN published_at timestamptz,
+ ADD COLUMN published_by uuid REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ADD CONSTRAINT db03_profile_publication_shape CHECK(
+  (state='DRAFT' AND published_at IS NULL AND published_by IS NULL)
+  OR (state='PUBLISHED' AND published_at IS NOT NULL AND published_by IS NOT NULL));
+ALTER TABLE app_private.admission_policy_versions
+ DROP CONSTRAINT admission_policy_versions_state_check,
+ ADD COLUMN effective_from timestamptz,
+ ADD COLUMN effective_until timestamptz,
+ ADD COLUMN published_at timestamptz,
+ ADD COLUMN published_by uuid REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ADD CONSTRAINT db03_policy_publication_shape CHECK(
+  (state='DRAFT' AND effective_from IS NULL AND effective_until IS NULL
+    AND published_at IS NULL AND published_by IS NULL)
+  OR (state IN ('PUBLISHED','RETIRED') AND published_by IS NOT NULL
+    AND published_at IS NOT NULL AND effective_from IS NOT NULL
+    AND effective_from=published_at AND pg_catalog.isfinite(effective_from)
+    AND ((state='PUBLISHED' AND effective_until IS NULL)
+      OR (state='RETIRED' AND effective_until>effective_from AND pg_catalog.isfinite(effective_until)))));
+CREATE UNIQUE INDEX db03_one_open_policy ON app_private.admission_policy_versions(school_id,policy_key)
+ WHERE state='PUBLISHED';
+
+-- Full ordered prelock for the publisher and future draft command writers.
+-- Direct schema-owner maintenance must use this before child mutations.
+CREATE FUNCTION app_private.db03_lock_policy_configuration(p_policy uuid)
+RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE target_school uuid; app_profile uuid; adm_profile uuid; locked_policy record;
+BEGIN
+ SELECT school_id INTO target_school FROM app_private.admission_policy_versions WHERE id=p_policy;
+ IF target_school IS NULL THEN RAISE EXCEPTION 'DB03 policy unavailable'; END IF;
+ PERFORM 1 FROM app_private.school_profiles WHERE id=target_school FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 School unavailable'; END IF;
+ SELECT application_numbering_profile_id,admission_numbering_profile_id INTO app_profile,adm_profile
+  FROM app_private.admission_policy_versions WHERE id=p_policy;
+ PERFORM 1 FROM app_private.admission_numbering_profiles
+  WHERE id IN(app_profile,adm_profile) ORDER BY id FOR UPDATE;
+ SELECT * INTO locked_policy FROM app_private.admission_policy_versions WHERE id=p_policy FOR UPDATE;
+ IF locked_policy.application_numbering_profile_id IS DISTINCT FROM app_profile
+  OR locked_policy.admission_numbering_profile_id IS DISTINCT FROM adm_profile THEN
+  RAISE EXCEPTION 'DB03 profile references changed during prelock';
+ END IF;
+ PERFORM 1 FROM app_private.admission_policy_stages WHERE policy_version_id=p_policy ORDER BY id FOR UPDATE;
+ PERFORM 1 FROM app_private.admission_policy_document_requirements d
+  WHERE EXISTS(SELECT 1 FROM app_private.admission_policy_stages s
+   WHERE s.id=d.policy_stage_id AND s.policy_version_id=p_policy) ORDER BY d.id FOR UPDATE;
+ RETURN target_school;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_lock_policy_configuration(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_lock_policy_configuration(uuid) TO schoolos_workflow_executor;
+
+CREATE OR REPLACE FUNCTION app_private.db03_guard_draft_configuration() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE app_profile record; admit_profile record; parent_kind text; parent_policy uuid; parent_state text;
+BEGIN
+ IF TG_OP IN('DELETE','TRUNCATE') THEN RAISE EXCEPTION 'DB03 configuration history is retained'; END IF;
+ IF TG_OP='INSERT' AND NEW.row_version<>1 THEN RAISE EXCEPTION 'DB03 initial version must be one'; END IF;
+ IF TG_OP='UPDATE' AND (NEW.id IS DISTINCT FROM OLD.id OR NEW.created_at IS DISTINCT FROM OLD.created_at
+  OR NEW.created_by IS DISTINCT FROM OLD.created_by) THEN RAISE EXCEPTION 'DB03 identity metadata is immutable'; END IF;
+ CASE TG_TABLE_NAME
+ WHEN 'admission_numbering_profiles' THEN
+  IF TG_OP='INSERT' AND NEW.state<>'DRAFT' THEN RAISE EXCEPTION 'DB03 profile must begin DRAFT'; END IF;
+  IF TG_OP='UPDATE' THEN
+   IF OLD.state='PUBLISHED' THEN RAISE EXCEPTION 'DB03 published profile is immutable'; END IF;
+   IF NEW.school_id IS DISTINCT FROM OLD.school_id OR NEW.profile_key IS DISTINCT FROM OLD.profile_key
+    OR NEW.version IS DISTINCT FROM OLD.version OR NEW.number_kind IS DISTINCT FROM OLD.number_kind THEN
+    RAISE EXCEPTION 'DB03 profile identity is immutable'; END IF;
+   IF (pg_catalog.to_jsonb(NEW)-ARRAY['state','published_at','published_by','row_version','updated_at'])
+     IS DISTINCT FROM (pg_catalog.to_jsonb(OLD)-ARRAY['state','published_at','published_by','row_version','updated_at'])
+    AND EXISTS(SELECT 1 FROM app_private.admission_policy_versions p
+      WHERE OLD.id IN(p.application_numbering_profile_id,p.admission_numbering_profile_id)) THEN
+    RAISE EXCEPTION 'DB03 referenced profile format is frozen; use a new profile'; END IF;
+   IF NEW.state='PUBLISHED' AND current_user<>'schoolos_workflow_executor' THEN
+    RAISE EXCEPTION 'DB03 profile publication requires protected publisher'; END IF;
+  END IF;
+ WHEN 'admission_policy_versions' THEN
+  IF TG_OP='INSERT' AND NEW.state<>'DRAFT' THEN RAISE EXCEPTION 'DB03 policy must begin DRAFT'; END IF;
+  IF TG_OP='UPDATE' THEN
+   IF OLD.state='RETIRED' THEN RAISE EXCEPTION 'DB03 retired policy is immutable'; END IF;
+   IF OLD.state='PUBLISHED' THEN
+    IF current_user<>'schoolos_workflow_executor' OR NEW.state<>'RETIRED'
+     OR OLD.effective_until IS NOT NULL OR NEW.effective_until IS NULL
+     OR (pg_catalog.to_jsonb(NEW)-ARRAY['state','effective_until','row_version','updated_at'])
+       IS DISTINCT FROM (pg_catalog.to_jsonb(OLD)-ARRAY['state','effective_until','row_version','updated_at']) THEN
+     RAISE EXCEPTION 'DB03 published policy permits only protected one-way close'; END IF;
+    RETURN NEW;
+   END IF;
+   IF NEW.school_id IS DISTINCT FROM OLD.school_id OR NEW.policy_key IS DISTINCT FROM OLD.policy_key
+    OR NEW.version IS DISTINCT FROM OLD.version THEN RAISE EXCEPTION 'DB03 policy identity is immutable'; END IF;
+   IF NEW.state='PUBLISHED' AND current_user<>'schoolos_workflow_executor' THEN
+    RAISE EXCEPTION 'DB03 policy publication requires protected publisher'; END IF;
+  END IF;
+  SELECT school_id,number_kind INTO app_profile FROM app_private.admission_numbering_profiles
+   WHERE id=NEW.application_numbering_profile_id;
+  SELECT school_id,number_kind INTO admit_profile FROM app_private.admission_numbering_profiles
+   WHERE id=NEW.admission_numbering_profile_id;
+  IF app_profile.school_id IS DISTINCT FROM NEW.school_id OR app_profile.number_kind IS DISTINCT FROM 'APPLICATION'
+   OR admit_profile.school_id IS DISTINCT FROM NEW.school_id OR admit_profile.number_kind IS DISTINCT FROM 'ADMISSION' THEN
+   RAISE EXCEPTION 'DB03 policy requires exact same-School typed profiles'; END IF;
+ WHEN 'admission_policy_stages' THEN
+  IF TG_OP='UPDATE' AND (NEW.policy_version_id IS DISTINCT FROM OLD.policy_version_id
+   OR NEW.stage_kind IS DISTINCT FROM OLD.stage_kind) THEN RAISE EXCEPTION 'DB03 stage identity is immutable'; END IF;
+  parent_policy:=NEW.policy_version_id;
+ WHEN 'admission_policy_document_requirements' THEN
+  IF TG_OP='UPDATE' AND (NEW.policy_stage_id IS DISTINCT FROM OLD.policy_stage_id
+   OR NEW.document_kind IS DISTINCT FROM OLD.document_kind) THEN RAISE EXCEPTION 'DB03 document identity is immutable'; END IF;
+  SELECT stage_kind,policy_version_id INTO parent_kind,parent_policy FROM app_private.admission_policy_stages
+   WHERE id=NEW.policy_stage_id;
+  IF parent_kind IS DISTINCT FROM 'DOCUMENT_VERIFICATION' THEN
+   RAISE EXCEPTION 'DB03 document requirement needs document-verification stage'; END IF;
+ ELSE RAISE EXCEPTION 'DB03 draft trigger target denied';
+ END CASE;
+ IF parent_policy IS NOT NULL THEN
+  SELECT state INTO parent_state FROM app_private.admission_policy_versions WHERE id=parent_policy FOR UPDATE;
+  IF parent_state IS DISTINCT FROM 'DRAFT' THEN RAISE EXCEPTION 'DB03 published policy children are immutable'; END IF;
+  -- Bind a reviewed policy row_version to every child edit, not only root edits.
+  UPDATE app_private.admission_policy_versions SET updated_at=updated_at WHERE id=parent_policy;
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_guard_draft_configuration() FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER db03_no_truncate BEFORE TRUNCATE ON app_private.admission_numbering_profiles
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_guard_draft_configuration();
+CREATE TRIGGER db03_no_truncate BEFORE TRUNCATE ON app_private.admission_policy_versions
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_guard_draft_configuration();
+CREATE TRIGGER db03_no_truncate BEFORE TRUNCATE ON app_private.admission_policy_stages
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_guard_draft_configuration();
+CREATE TRIGGER db03_no_truncate BEFORE TRUNCATE ON app_private.admission_policy_document_requirements
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_guard_draft_configuration();
+
+GRANT SELECT ON app_private.admission_numbering_profiles,app_private.admission_policy_versions,
+ app_private.admission_policy_stages,app_private.admission_policy_document_requirements
+ TO schoolos_workflow_executor,schoolos_evidence_writer;
+GRANT UPDATE(state,published_at,published_by) ON app_private.admission_numbering_profiles TO schoolos_workflow_executor;
+GRANT UPDATE(state,effective_from,effective_until,published_at,published_by,updated_at)
+ ON app_private.admission_policy_versions TO schoolos_workflow_executor;
+GRANT UPDATE(row_version) ON app_private.admission_policy_stages,
+ app_private.admission_policy_document_requirements TO schoolos_workflow_executor;
+CREATE POLICY db03_publication_read ON app_private.admission_numbering_profiles
+ FOR SELECT TO schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_publication_write ON app_private.admission_numbering_profiles
+ FOR UPDATE TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+CREATE POLICY db03_publication_read ON app_private.admission_policy_versions
+ FOR SELECT TO schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_publication_write ON app_private.admission_policy_versions
+ FOR UPDATE TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+CREATE POLICY db03_publication_read ON app_private.admission_policy_stages
+ FOR SELECT TO schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_publication_lock ON app_private.admission_policy_stages
+ FOR UPDATE TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+CREATE POLICY db03_publication_read ON app_private.admission_policy_document_requirements
+ FOR SELECT TO schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_publication_lock ON app_private.admission_policy_document_requirements
+ FOR UPDATE TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+GRANT SELECT(id,state),UPDATE(id) ON app_private.school_profiles TO schoolos_workflow_executor;
+CREATE POLICY db03_publication_school_read ON app_private.school_profiles
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db03_publication_school_lock ON app_private.school_profiles
+ FOR UPDATE TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+GRANT EXECUTE ON FUNCTION app_private.db03_required_certificate_roster_valid(uuid)
+ TO schoolos_workflow_executor;
+RESET ROLE;

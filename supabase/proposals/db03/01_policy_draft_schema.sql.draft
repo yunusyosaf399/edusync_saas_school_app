@@ -1,0 +1,178 @@
+-- DB03 S1: isolated, NON-EXECUTABLE draft-configuration schema candidate.
+-- Apply only in the disposable DB03 CI target after frozen Foundation 1-9.
+-- DRAFT only: no publication, numbering allocation, identity verification,
+-- Finance clearance, READY handoff, Student creation, registrar or client API.
+SET ROLE schoolos_schema_owner;
+
+CREATE TABLE app_private.admission_numbering_profiles (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ profile_key text NOT NULL CHECK (pg_catalog.btrim(profile_key)<>''),
+ version integer NOT NULL CHECK (version>0),
+ number_kind text NOT NULL CHECK (number_kind IN ('APPLICATION','ADMISSION')),
+ prefix text NOT NULL,
+ separator text NOT NULL,
+ session_format text NOT NULL CHECK (session_format IN ('FULL_YEAR','TWO_DIGIT_YEAR')),
+ digits integer NOT NULL CHECK (digits BETWEEN 1 AND 8),
+ start_value bigint NOT NULL CHECK (start_value>0),
+ state text NOT NULL DEFAULT 'DRAFT' CHECK (state='DRAFT'),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ row_version bigint NOT NULL DEFAULT 1 CHECK (row_version>0),
+ updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ UNIQUE(school_id,profile_key,version),
+ CHECK (start_value < pg_catalog.power(10::numeric,digits))
+);
+
+CREATE TABLE app_private.admission_policy_versions (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ policy_key text NOT NULL CHECK (pg_catalog.btrim(policy_key)<>''),
+ version integer NOT NULL CHECK (version>0),
+ application_numbering_profile_id uuid NOT NULL REFERENCES app_private.admission_numbering_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ admission_numbering_profile_id uuid NOT NULL REFERENCES app_private.admission_numbering_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ state text NOT NULL DEFAULT 'DRAFT' CHECK (state='DRAFT'),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ row_version bigint NOT NULL DEFAULT 1 CHECK (row_version>0),
+ updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ UNIQUE(school_id,policy_key,version),
+ UNIQUE(id,school_id)
+);
+
+CREATE TABLE app_private.admission_policy_stages (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ policy_version_id uuid NOT NULL REFERENCES app_private.admission_policy_versions(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ordinal integer NOT NULL CHECK (ordinal>0),
+ stage_kind text NOT NULL CHECK (stage_kind IN ('DOCUMENT_VERIFICATION','ADMISSION_TEST','INTERVIEW','APPROVAL','ADMISSION_FEE')),
+ requirement text NOT NULL CHECK (requirement IN ('REQUIRED','SKIPPED')),
+ label text NOT NULL CHECK (pg_catalog.btrim(label)<>''),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ row_version bigint NOT NULL DEFAULT 1 CHECK (row_version>0),
+ updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ UNIQUE(policy_version_id,ordinal),
+ UNIQUE(policy_version_id,stage_kind)
+);
+
+CREATE TABLE app_private.admission_policy_document_requirements (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ policy_stage_id uuid NOT NULL REFERENCES app_private.admission_policy_stages(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ document_kind text NOT NULL CHECK (pg_catalog.btrim(document_kind)<>''),
+ requirement text NOT NULL CHECK (requirement IN ('REQUIRED','OPTIONAL')),
+ ordinal integer NOT NULL CHECK (ordinal>0),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ row_version bigint NOT NULL DEFAULT 1 CHECK (row_version>0),
+ updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ UNIQUE(policy_stage_id,document_kind),
+ UNIQUE(policy_stage_id,ordinal)
+);
+
+-- A structural invoker trigger, not a privileged business-command dispatcher.
+-- Parent identity fields are immutable even in drafts, so these checks do not
+-- invent a mutable-source/Finance/Person locking or verification contract.
+CREATE FUNCTION app_private.db03_guard_draft_configuration() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp
+AS $body$
+DECLARE app_profile record; admit_profile record; parent_kind text;
+BEGIN
+ IF TG_OP='DELETE' THEN
+   RAISE EXCEPTION 'DB03 candidate retains draft configuration';
+ END IF;
+ IF TG_OP='INSERT' AND NEW.row_version<>1 THEN
+   RAISE EXCEPTION 'DB03 initial version must be one';
+ END IF;
+ IF TG_OP='UPDATE' AND (
+   NEW.id IS DISTINCT FROM OLD.id OR NEW.created_at IS DISTINCT FROM OLD.created_at
+   OR NEW.created_by IS DISTINCT FROM OLD.created_by) THEN
+   RAISE EXCEPTION 'DB03 draft identity metadata is immutable';
+ END IF;
+ CASE TG_TABLE_NAME
+ WHEN 'admission_numbering_profiles' THEN
+   IF TG_OP='UPDATE' AND (NEW.school_id IS DISTINCT FROM OLD.school_id
+    OR NEW.profile_key IS DISTINCT FROM OLD.profile_key
+    OR NEW.version IS DISTINCT FROM OLD.version
+    OR NEW.number_kind IS DISTINCT FROM OLD.number_kind) THEN
+     RAISE EXCEPTION 'DB03 profile identity is immutable';
+   END IF;
+ WHEN 'admission_policy_versions' THEN
+   IF TG_OP='UPDATE' AND (NEW.school_id IS DISTINCT FROM OLD.school_id
+    OR NEW.policy_key IS DISTINCT FROM OLD.policy_key
+    OR NEW.version IS DISTINCT FROM OLD.version
+    OR NEW.application_numbering_profile_id IS DISTINCT FROM OLD.application_numbering_profile_id
+    OR NEW.admission_numbering_profile_id IS DISTINCT FROM OLD.admission_numbering_profile_id) THEN
+     RAISE EXCEPTION 'DB03 policy identity is immutable';
+   END IF;
+   SELECT school_id,number_kind INTO app_profile
+    FROM app_private.admission_numbering_profiles WHERE id=NEW.application_numbering_profile_id;
+   SELECT school_id,number_kind INTO admit_profile
+    FROM app_private.admission_numbering_profiles WHERE id=NEW.admission_numbering_profile_id;
+   IF app_profile.school_id IS DISTINCT FROM NEW.school_id
+    OR app_profile.number_kind IS DISTINCT FROM 'APPLICATION'
+    OR admit_profile.school_id IS DISTINCT FROM NEW.school_id
+    OR admit_profile.number_kind IS DISTINCT FROM 'ADMISSION' THEN
+     RAISE EXCEPTION 'DB03 policy requires exact same-School typed profiles';
+   END IF;
+ WHEN 'admission_policy_stages' THEN
+   IF TG_OP='UPDATE' AND (NEW.policy_version_id IS DISTINCT FROM OLD.policy_version_id
+    OR NEW.stage_kind IS DISTINCT FROM OLD.stage_kind) THEN
+     RAISE EXCEPTION 'DB03 stage identity is immutable';
+   END IF;
+ WHEN 'admission_policy_document_requirements' THEN
+   IF TG_OP='UPDATE' AND (NEW.policy_stage_id IS DISTINCT FROM OLD.policy_stage_id
+    OR NEW.document_kind IS DISTINCT FROM OLD.document_kind) THEN
+     RAISE EXCEPTION 'DB03 document requirement identity is immutable';
+   END IF;
+   SELECT stage_kind INTO parent_kind FROM app_private.admission_policy_stages
+    WHERE id=NEW.policy_stage_id;
+   IF parent_kind IS DISTINCT FROM 'DOCUMENT_VERIFICATION' THEN
+     RAISE EXCEPTION 'DB03 document requirement needs document-verification stage';
+   END IF;
+ ELSE
+   RAISE EXCEPTION 'DB03 draft trigger target denied';
+ END CASE;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_guard_draft_configuration()
+ FROM PUBLIC,anon,authenticated,service_role;
+
+ALTER TABLE app_private.admission_numbering_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_numbering_profiles FORCE ROW LEVEL SECURITY;
+CREATE POLICY db03_owner_only ON app_private.admission_numbering_profiles
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+ALTER TABLE app_private.admission_policy_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_policy_versions FORCE ROW LEVEL SECURITY;
+CREATE POLICY db03_owner_only ON app_private.admission_policy_versions
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+ALTER TABLE app_private.admission_policy_stages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_policy_stages FORCE ROW LEVEL SECURITY;
+CREATE POLICY db03_owner_only ON app_private.admission_policy_stages
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+ALTER TABLE app_private.admission_policy_document_requirements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_policy_document_requirements FORCE ROW LEVEL SECURITY;
+CREATE POLICY db03_owner_only ON app_private.admission_policy_document_requirements
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+
+CREATE TRIGGER aa_db03_draft_guard BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.admission_numbering_profiles FOR EACH ROW EXECUTE FUNCTION app_private.db03_guard_draft_configuration();
+CREATE TRIGGER zz_db03_version BEFORE UPDATE ON app_private.admission_numbering_profiles
+ FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_db03_draft_guard BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.admission_policy_versions FOR EACH ROW EXECUTE FUNCTION app_private.db03_guard_draft_configuration();
+CREATE TRIGGER zz_db03_version BEFORE UPDATE ON app_private.admission_policy_versions
+ FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_db03_draft_guard BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.admission_policy_stages FOR EACH ROW EXECUTE FUNCTION app_private.db03_guard_draft_configuration();
+CREATE TRIGGER zz_db03_version BEFORE UPDATE ON app_private.admission_policy_stages
+ FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+CREATE TRIGGER aa_db03_draft_guard BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.admission_policy_document_requirements FOR EACH ROW EXECUTE FUNCTION app_private.db03_guard_draft_configuration();
+CREATE TRIGGER zz_db03_version BEFORE UPDATE ON app_private.admission_policy_document_requirements
+ FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+
+REVOKE ALL ON TABLE app_private.admission_numbering_profiles,
+ app_private.admission_policy_versions,app_private.admission_policy_stages,
+ app_private.admission_policy_document_requirements
+ FROM PUBLIC,anon,authenticated,service_role;
+RESET ROLE;

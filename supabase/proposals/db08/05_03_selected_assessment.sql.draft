@@ -1,0 +1,142 @@
+-- Class default, then explicit Student full-price override for one category/frequency.
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+-- The earlier explicit Person command remains available to this no-login
+-- function owner, but clients must enter through the checked D1 selector.
+REVOKE EXECUTE ON FUNCTION app.assess_finance_fee(uuid,uuid,uuid,date,date,date,uuid)
+ FROM authenticated;
+CREATE FUNCTION app.assess_selected_finance_fee(
+ p_student uuid,p_class_offering uuid,p_category_code text,p_frequency text,
+ p_period_start date,p_period_end date,p_due_on date,p_key uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE offering record; yr app.academic_years%ROWTYPE;
+ school app_private.school_profiles%ROWTYPE; ctx record; student record;
+ source app_private.finance_fee_assessment_selections%ROWTYPE;
+ obligation app_private.finance_fee_obligations%ROWTYPE;
+ chosen app_private.finance_fee_applicabilities%ROWTYPE;
+ fee app_private.finance_fee_rules%ROWTYPE; price app_private.finance_fee_rule_revisions%ROWTYPE;
+ enrollment uuid; chosen_id uuid; matches integer; priority integer; response jsonb; v_hash bytea;
+BEGIN
+ IF p_student IS NULL OR p_class_offering IS NULL OR p_category_code IS NULL
+  OR p_category_code !~ '^[A-Z][A-Z0-9_]{0,63}$'
+  OR p_frequency IS NULL OR p_frequency NOT IN('MONTHLY','QUARTERLY','HALF_YEARLY','ANNUAL','ONE_TIME','CUSTOM')
+  OR p_period_start IS NULL OR NOT isfinite(p_period_start) OR
+  p_period_end IS NULL OR NOT isfinite(p_period_end) OR p_period_end<p_period_start
+  OR p_due_on IS NULL OR NOT isfinite(p_due_on) OR p_key IS NULL THEN
+  RAISE EXCEPTION 'DB08 F5 selected charge invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT id,school_id,campus_id,academic_year_id,state INTO offering
+ FROM app_private.class_offerings WHERE id=p_class_offering;
+ IF offering.id IS NULL THEN RAISE EXCEPTION 'DB08 F5 offering unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db08_fee_actor('finance.charge.assess',offering.campus_id);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':'||p_key::text));
+ PERFORM pg_advisory_xact_lock(71003,hashtext(offering.school_id::text));
+ PERFORM app_private.db08_fee_actor('finance.charge.assess',offering.campus_id);
+ SELECT x.* INTO source FROM app_private.finance_fee_assessment_selections x
+  JOIN app_private.finance_fee_obligations o ON o.id=x.obligation_id
+  WHERE o.school_id=offering.school_id AND o.assessment_key=p_key;
+ IF source.obligation_id IS NOT NULL THEN
+  SELECT * INTO obligation FROM app_private.finance_fee_obligations WHERE id=source.obligation_id;
+  SELECT * INTO fee FROM app_private.finance_fee_rules WHERE id=obligation.rule_id;
+  IF source.student_id<>p_student OR source.class_offering_id<>p_class_offering
+   OR obligation.period_start<>p_period_start OR obligation.period_end<>p_period_end
+   OR obligation.due_on<>p_due_on OR fee.frequency<>p_frequency OR
+   source.category_id<>fee.category_id OR
+   NOT EXISTS(SELECT 1 FROM app_private.finance_fee_categories c
+     WHERE c.id=source.category_id AND c.code=p_category_code) THEN
+   RAISE EXCEPTION 'DB08 F5 selected charge key conflict'; END IF;
+  v_hash:=sha256(convert_to(jsonb_build_array('finance.charge.assess',
+   obligation.rule_id,obligation.person_id,obligation.rule_revision_id,
+   p_period_start,p_period_end,p_due_on,p_key)::text,'UTF8'));
+  response:=app_private.db08_fee_receipt('finance.charge.assess',offering.campus_id,
+     p_key::text,v_hash);
+  IF response IS NULL OR (response->>'resource_id')::uuid<>source.obligation_id THEN
+   RAISE EXCEPTION 'DB08 F5 selected source receipt unavailable'; END IF;
+  RETURN response;
+ END IF;
+ IF EXISTS(SELECT 1 FROM app_private.finance_fee_obligations
+   WHERE school_id=offering.school_id AND assessment_key=p_key) THEN
+  RAISE EXCEPTION 'DB08 F5 assessment key already used'; END IF;
+ SELECT * INTO school FROM app_private.school_profiles WHERE id=offering.school_id;
+ SELECT * INTO yr FROM app.academic_years WHERE id=offering.academic_year_id;
+ SELECT id,person_id,current_status INTO student
+ FROM app_private.students WHERE id=p_student;
+ SELECT count(*) INTO matches
+ FROM app_private.enrollments e JOIN app_private.section_offerings section
+   ON section.id=e.section_offering_id
+ WHERE e.student_id=p_student AND section.class_offering_id=offering.id
+  AND section.state='OPEN' AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+  AND e.effective_from<=p_period_start
+  AND (e.effective_until IS NULL OR e.effective_until>=p_period_end);
+ IF school.id IS NULL OR school.state<>'ACTIVE' OR yr.id IS NULL OR yr.state<>'ACTIVE'
+  OR offering.state<>'OPEN' OR yr.school_id<>offering.school_id
+  OR NOT EXISTS(SELECT 1 FROM app.campuses c WHERE c.id=offering.campus_id
+       AND c.school_id=offering.school_id AND c.state='ACTIVE')
+  OR student.id IS NULL OR student.current_status<>'ACTIVE'
+  OR p_period_start<yr.starts_on OR p_period_end>yr.ends_on
+  OR matches<>1 THEN
+  RAISE EXCEPTION 'DB08 F5 current Student placement unavailable'; END IF;
+ SELECT e.id INTO enrollment
+ FROM app_private.enrollments e JOIN app_private.section_offerings section
+   ON section.id=e.section_offering_id
+ WHERE e.student_id=p_student AND section.class_offering_id=offering.id
+  AND section.state='OPEN' AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+  AND e.effective_from<=p_period_start
+  AND (e.effective_until IS NULL OR e.effective_until>=p_period_end);
+ SELECT max(CASE WHEN a.student_id=p_student THEN 2 ELSE 1 END) INTO priority
+ FROM app_private.finance_fee_applicabilities a
+ JOIN app_private.finance_fee_rules f ON f.id=a.rule_id
+ JOIN app_private.finance_fee_categories c ON c.id=f.category_id
+ WHERE a.class_offering_id=offering.id AND (a.student_id=p_student OR a.student_id IS NULL)
+  AND a.valid_from<=p_period_start AND a.valid_through>=p_period_end
+  AND f.school_id=offering.school_id AND f.campus_id=offering.campus_id
+  AND f.academic_year_id=offering.academic_year_id AND f.frequency=p_frequency
+  AND c.code=p_category_code AND c.school_id=f.school_id;
+ IF priority IS NULL THEN RAISE EXCEPTION 'DB08 F5 fee applicability unavailable'; END IF;
+ SELECT count(*) INTO matches
+ FROM app_private.finance_fee_applicabilities a
+ JOIN app_private.finance_fee_rules f ON f.id=a.rule_id
+ JOIN app_private.finance_fee_categories c ON c.id=f.category_id
+ WHERE a.class_offering_id=offering.id
+  AND ((priority=2 AND a.student_id=p_student) OR (priority=1 AND a.student_id IS NULL))
+  AND a.valid_from<=p_period_start AND a.valid_through>=p_period_end
+  AND f.school_id=offering.school_id AND f.campus_id=offering.campus_id
+  AND f.academic_year_id=offering.academic_year_id AND f.frequency=p_frequency
+  AND c.code=p_category_code AND c.school_id=f.school_id;
+ IF matches<>1 THEN RAISE EXCEPTION 'DB08 F5 ambiguous fee applicability'; END IF;
+ SELECT a.id INTO chosen_id
+ FROM app_private.finance_fee_applicabilities a
+ JOIN app_private.finance_fee_rules f ON f.id=a.rule_id
+ JOIN app_private.finance_fee_categories c ON c.id=f.category_id
+ WHERE a.class_offering_id=offering.id
+  AND ((priority=2 AND a.student_id=p_student) OR (priority=1 AND a.student_id IS NULL))
+  AND a.valid_from<=p_period_start AND a.valid_through>=p_period_end
+  AND f.school_id=offering.school_id AND f.campus_id=offering.campus_id
+  AND f.academic_year_id=offering.academic_year_id AND f.frequency=p_frequency
+  AND c.code=p_category_code AND c.school_id=f.school_id;
+ SELECT * INTO chosen FROM app_private.finance_fee_applicabilities WHERE id=chosen_id;
+ SELECT * INTO fee FROM app_private.finance_fee_rules WHERE id=chosen.rule_id;
+ SELECT v.* INTO price FROM app_private.finance_fee_rule_revisions v
+ JOIN app_private.finance_fee_publications pub ON pub.revision_id=v.id
+ WHERE v.rule_id=fee.id AND pub.state='PUBLISHED'
+  AND v.valid_from<=p_period_start AND v.valid_through>=p_period_end
+  AND NOT EXISTS(SELECT 1 FROM app_private.finance_fee_rule_revisions newer
+   JOIN app_private.finance_fee_publications next_pub ON next_pub.revision_id=newer.id
+   WHERE newer.rule_id=fee.id AND next_pub.state='PUBLISHED'
+     AND newer.revision>v.revision AND newer.valid_from<=p_period_end);
+ IF price.id IS NULL THEN RAISE EXCEPTION 'DB08 F5 published period price unavailable'; END IF;
+ response:=app.assess_finance_fee(fee.id,student.person_id,price.id,
+   p_period_start,p_period_end,p_due_on,p_key);
+ IF response IS NULL OR (response->>'resource_id') IS NULL THEN
+  RAISE EXCEPTION 'DB08 F5 assessment unavailable'; END IF;
+ INSERT INTO app_private.finance_fee_assessment_selections(
+  obligation_id,applicability_id,student_id,enrollment_id,class_offering_id,category_id,created_by)
+ VALUES((response->>'resource_id')::uuid,chosen.id,p_student,enrollment,offering.id,fee.category_id,ctx.actor_id);
+ RETURN response;
+END $body$;
+REVOKE ALL ON FUNCTION app.assess_selected_finance_fee(uuid,uuid,text,text,date,date,date,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.assess_selected_finance_fee(uuid,uuid,text,text,date,date,date,uuid)
+ TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;

@@ -1,0 +1,209 @@
+-- S13: independent, scoped school review of applicant bank-slip evidence.
+-- Approval is evidence review, never an official payment or clearance.
+GRANT EXECUTE ON FUNCTION app_private.current_principal_id(),
+ app_private.has_complete_grant(text,text,uuid) TO schoolos_schema_owner;
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_admission_slip_reviews (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ submission_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_admission_slip_submissions(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ decision text NOT NULL CHECK(decision IN('APPROVE','REJECT','REQUEST_CORRECTION')),
+ reviewer_id uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ seen_sha256 bytea NOT NULL CHECK(octet_length(seen_sha256)=32),
+ reason text NOT NULL CHECK(length(btrim(reason)) BETWEEN 1 AND 1000),
+ decided_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ UNIQUE(id,submission_id,decision)
+);
+CREATE INDEX db03_applicant_review_reviewer ON app_private.finance_admission_slip_reviews(reviewer_id,decided_at,id);
+CREATE FUNCTION app_private.db03_applicant_review_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE source app_private.finance_admission_slip_submissions%ROWTYPE;
+ f app_private.file_objects%ROWTYPE;
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 applicant slip review is immutable'; END IF;
+ IF current_user<>'schoolos_schema_owner' THEN RAISE EXCEPTION 'DB03 applicant review requires protected source'; END IF;
+ SELECT * INTO source FROM app_private.finance_admission_slip_submissions WHERE id=NEW.submission_id FOR UPDATE;
+ SELECT * INTO f FROM app_private.file_objects WHERE id=source.evidence_file_id FOR KEY SHARE;
+ IF source.id IS NULL OR source.submitted_by=NEW.reviewer_id
+  OR NEW.seen_sha256 IS DISTINCT FROM source.evidence_sha256
+  OR f.id IS NULL OR f.state<>'AVAILABLE' OR f.classification<>'PRIVATE'
+  OR f.purpose_code<>'ADMISSION_PAYMENT_EVIDENCE' OR f.campus_id<>source.campus_id
+  OR f.content_hash<>source.evidence_sha256 THEN
+  RAISE EXCEPTION 'DB03 applicant review source mismatch'; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_applicant_review_guard() FROM PUBLIC,anon,authenticated,service_role;
+ALTER TABLE app_private.finance_admission_slip_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_slip_reviews FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.finance_admission_slip_reviews FROM PUBLIC,anon,authenticated,service_role,
+ schoolos_file_login,schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE POLICY db03_applicant_review_owner ON app_private.finance_admission_slip_reviews
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER db03_applicant_review_history BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_slip_reviews FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_applicant_review_guard();
+CREATE TRIGGER db03_applicant_review_no_truncate BEFORE TRUNCATE
+ ON app_private.finance_admission_slip_reviews FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_applicant_review_guard();
+
+CREATE FUNCTION app_private.db03_applicant_review_authority(p_school uuid,p_submission uuid)
+RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; source app_private.finance_admission_slip_submissions%ROWTYPE;
+ a app_private.admission_applications%ROWTYPE; operation uuid; claims jsonb;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR current_setting('transaction_isolation')<>'read committed'
+  OR p_school IS NULL OR p_submission IS NULL THEN
+  RAISE EXCEPTION 'DB03 applicant review worker denied'; END IF;
+ claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
+ IF claims->>'exp' IS NULL OR claims->>'exp' !~ '^[0-9]{1,12}$'
+  OR to_timestamp((claims->>'exp')::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 applicant review authentication expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ SELECT * INTO source FROM app_private.finance_admission_slip_submissions WHERE id=p_submission;
+ IF source.id IS NULL OR source.school_id<>p_school THEN
+  RAISE EXCEPTION 'DB03 applicant review source unavailable'; END IF;
+ -- Acquire parent locks before the submission lock. Withdrawals and review
+ -- serialize through the same School/application boundary.
+ PERFORM 1 FROM app_private.school_profiles WHERE id=p_school AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 applicant review School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=source.campus_id AND school_id=p_school AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 applicant review Campus unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=source.application_id FOR UPDATE;
+ IF a.id IS NULL OR a.state<>'DRAFT' OR a.school_id<>source.school_id
+  OR a.campus_id<>source.campus_id OR a.academic_year_id<>source.academic_year_id THEN
+  RAISE EXCEPTION 'DB03 applicant review application closed'; END IF;
+ actor:=app_private.current_principal_id();
+ SELECT o.id INTO operation FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='finance.admission.evidence.review' AND o.contract_version=1
+  AND o.handler_key=o.code AND o.payload_schema_version=1 AND o.enabled
+  AND NOT o.requires_approval AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF actor IS NULL OR actor=source.submitted_by OR operation IS NULL
+  OR NOT EXISTS(SELECT 1 FROM app_private.principals p WHERE p.id=actor
+    AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+  OR NOT app_private.has_complete_grant('finance.admission.evidence.review','CAMPUS',source.campus_id) THEN
+  RAISE EXCEPTION 'DB03 applicant independent reviewer authority denied'; END IF;
+ RETURN actor;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_applicant_review_authority(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE FUNCTION app_private.db03_applicant_review_evidence(p_school uuid,p_submission uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE source app_private.finance_admission_slip_submissions%ROWTYPE;
+ f app_private.file_objects%ROWTYPE;
+BEGIN
+ PERFORM app_private.db03_applicant_review_authority(p_school,p_submission);
+ SELECT * INTO source FROM app_private.finance_admission_slip_submissions WHERE id=p_submission;
+ SELECT * INTO f FROM app_private.file_objects WHERE id=source.evidence_file_id;
+ IF f.id IS NULL OR f.state<>'AVAILABLE' OR f.classification<>'PRIVATE'
+  OR f.purpose_code<>'ADMISSION_PAYMENT_EVIDENCE' OR f.campus_id<>source.campus_id
+  OR f.content_hash<>source.evidence_sha256
+  OR f.object_key NOT LIKE 'payments/'||p_school::text||'/%' THEN
+  RAISE EXCEPTION 'DB03 applicant review evidence unavailable'; END IF;
+ RETURN jsonb_build_object('submission_id',source.id,'application_id',source.application_id,
+  'campus_id',source.campus_id,'claimed_amount_minor',source.claimed_amount_minor,
+  'currency_code',source.currency_code,'paid_on',source.paid_on,
+  'bank',source.institution_key,'reference',source.reference_key,
+  'content_type',f.content_type,'byte_size',f.byte_size,
+  'sha256',encode(source.evidence_sha256,'hex'),'object_key',f.object_key);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_applicant_review_evidence(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_applicant_review_evidence(uuid,uuid)
+ TO schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_review_applicant_slip(p_school uuid,p_submission uuid,
+ p_decision text,p_reason text,p_seen_sha bytea,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; operation uuid; source app_private.finance_admission_slip_submissions%ROWTYPE;
+ f app_private.file_objects%ROWTYPE; review app_private.finance_admission_slip_reviews%ROWTYPE;
+ prior app_private.command_receipts%ROWTYPE; payload_hash bytea; result jsonb; issued jsonb;
+ receipt_id uuid; correlation uuid; reason text;
+BEGIN
+ IF p_decision IS NULL OR p_decision NOT IN('APPROVE','REJECT','REQUEST_CORRECTION')
+  OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
+  OR p_seen_sha IS NULL OR octet_length(p_seen_sha)<>32
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB03 applicant review input invalid'; END IF;
+ reason:=btrim(p_reason);
+ actor:=app_private.db03_applicant_review_authority(p_school,p_submission);
+ PERFORM pg_advisory_xact_lock(71004,hashtext(p_submission::text));
+ SELECT * INTO source FROM app_private.finance_admission_slip_submissions WHERE id=p_submission FOR UPDATE;
+ PERFORM pg_advisory_xact_lock(71005,hashtext(source.school_id::text||':'||source.institution_key||':'||source.reference_key));
+ PERFORM pg_advisory_xact_lock(71006,hashtext(source.school_id::text||':'||encode(source.evidence_sha256,'hex')));
+ SELECT * INTO f FROM app_private.file_objects WHERE id=source.evidence_file_id;
+ IF f.id IS NULL OR f.state<>'AVAILABLE' OR f.classification<>'PRIVATE'
+  OR f.purpose_code<>'ADMISSION_PAYMENT_EVIDENCE' OR f.campus_id<>source.campus_id
+  OR f.content_hash<>source.evidence_sha256 OR p_seen_sha<>source.evidence_sha256 THEN
+  RAISE EXCEPTION 'DB03 applicant reviewed bytes mismatch'; END IF;
+ SELECT id INTO operation FROM app_private.operation_contracts
+  WHERE code='finance.admission.evidence.review' AND contract_version=1 AND enabled;
+ payload_hash:=sha256(convert_to(jsonb_build_array('applicant-slip-review-v1',p_school,
+  p_submission,p_decision,reason,encode(p_seen_sha,'hex'))::text,'UTF8'));
+ SELECT * INTO prior FROM app_private.command_receipts WHERE principal_id=actor
+  AND operation_id=operation AND idempotency_key='applicant-slip-review:'||p_key;
+ IF prior.id IS NOT NULL THEN
+  SELECT * INTO review FROM app_private.finance_admission_slip_reviews WHERE id=prior.result_ref;
+  IF prior.state<>'SUCCEEDED' OR prior.command_kind<>'finance.admission.evidence.review'
+   OR prior.result_kind<>'FINANCE_ADMISSION_REVIEW' OR prior.canonical_payload_hash<>payload_hash
+   OR review.id IS NULL OR review.reviewer_id<>actor OR review.submission_id<>p_submission
+   OR (review.decision='APPROVE' AND NOT EXISTS(
+    SELECT 1 FROM app_private.finance_admission_official_payments payment
+    WHERE payment.review_id=review.id AND payment.submission_id=review.submission_id
+     AND payment.created_by=actor AND payment.id=(prior.result_summary->>'payment_id')::uuid
+     AND payment.receipt_number=prior.result_summary->>'receipt_number'))
+   OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=prior.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=prior.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 applicant review replay conflict'; END IF;
+  RETURN prior.result_summary;
+ END IF;
+ IF EXISTS(SELECT 1 FROM app_private.finance_admission_slip_reviews WHERE submission_id=p_submission)
+  OR (p_decision='APPROVE' AND EXISTS(
+   SELECT 1 FROM app_private.finance_admission_slip_submissions other
+   JOIN app_private.finance_admission_slip_reviews r ON r.submission_id=other.id
+   WHERE other.id<>source.id AND other.school_id=source.school_id
+    AND ((other.institution_key=source.institution_key AND other.reference_key=source.reference_key)
+     OR other.evidence_sha256=source.evidence_sha256) AND r.decision='APPROVE')) THEN
+  RAISE EXCEPTION 'DB03 applicant review already decided or duplicate approved transfer'; END IF;
+ INSERT INTO app_private.finance_admission_slip_reviews(submission_id,decision,reviewer_id,seen_sha256,reason)
+ VALUES(p_submission,p_decision,actor,p_seen_sha,reason) RETURNING * INTO review;
+ -- One transaction owns both the approval and the permanent receipt. Any
+ -- issuer denial or failed insert rolls the review decision back as well.
+ IF p_decision='APPROVE' THEN
+  issued:=app_private.db03_issue_applicant_payment(p_school,p_submission,review.id,p_key);
+ END IF;
+ result:=jsonb_build_object('review_id',review.id,'submission_id',p_submission,
+  'decision',p_decision,'state',CASE WHEN p_decision='APPROVE' THEN 'VERIFIED'
+   WHEN p_decision='REJECT' THEN 'REJECTED' ELSE 'CORRECTION_REQUESTED' END);
+ IF p_decision='APPROVE' THEN
+  result:=result||jsonb_build_object('payment_id',issued->'payment_id',
+   'receipt_number',issued->'receipt_number','payment_state',issued->'state');
+ END IF;
+ receipt_id:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,
+  idempotency_key,canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,
+  result_summary,completed_at,created_by)
+ VALUES(receipt_id,actor,operation,'finance.admission.evidence.review','applicant-slip-review:'||p_key,
+  payload_hash,1,'SUCCEEDED','FINANCE_ADMISSION_REVIEW',review.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+  target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation','finance.admission.evidence.review',
+  'evidence_sha256',encode(p_seen_sha,'hex')),1,'finance.admission.evidence.review',
+  'FINANCE_ADMISSION_REVIEW',review.id,source.campus_id,receipt_id,'WORKER',
+  correlation,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+  aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES('finance.admission.evidence.review','FINANCE_ADMISSION_REVIEW',review.id,1,
+  receipt_id,1,correlation,clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_review_applicant_slip(uuid,uuid,text,text,bytea,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_review_applicant_slip(uuid,uuid,text,text,bytea,text)
+ TO schoolos_file_login;
+RESET ROLE;

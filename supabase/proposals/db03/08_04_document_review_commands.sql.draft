@@ -1,0 +1,198 @@
+GRANT USAGE,CREATE ON SCHEMA app_private,app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app_private.db03_review_lock(p_app uuid,p_code text,p_key text)
+RETURNS app_private.admission_applications LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ctx record;
+BEGIN
+ IF p_app IS NULL OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 200 THEN RAISE EXCEPTION 'DB03 document typed intent invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_app;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 document application unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db03_document_review_actor(p_code,a.campus_id);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=a.school_id FOR UPDATE;
+ PERFORM 1 FROM app.campuses WHERE id=a.campus_id AND school_id=a.school_id FOR UPDATE;
+ PERFORM 1 FROM app.academic_years WHERE id=a.academic_year_id AND school_id=a.school_id FOR UPDATE;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_app FOR UPDATE;
+ PERFORM app_private.db03_document_review_actor(p_code,a.campus_id);
+ RETURN a;
+END $body$;
+CREATE OR REPLACE FUNCTION app_private.db03_document_snapshot(p_app uuid) RETURNS bytea
+LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE i app_private.admission_document_intakes%ROWTYPE; required_kind text; result bytea;
+BEGIN
+ SELECT * INTO i FROM app_private.admission_document_intakes WHERE application_id=p_app ORDER BY revision DESC LIMIT 1;
+ IF NOT FOUND OR NOT EXISTS(SELECT 1 FROM app_private.admission_policy_versions p JOIN app_private.admission_applications a ON a.school_id=p.school_id
+  WHERE a.id=p_app AND p.id=i.policy_version_id AND p.state='PUBLISHED') THEN RETURN NULL; END IF;
+ FOR required_kind IN
+  SELECT 'BIRTH_CERTIFICATE' UNION SELECT 'SCHOOL_LEAVING_CERTIFICATE' WHERE i.is_transfer
+  UNION SELECT d.document_kind FROM app_private.admission_policy_document_requirements d JOIN app_private.admission_policy_stages s ON s.id=d.policy_stage_id
+   WHERE s.policy_version_id=i.policy_version_id AND d.requirement='REQUIRED' AND (d.applicability='ALL' OR (d.applicability='TRANSFER' AND i.is_transfer))
+ LOOP
+  IF NOT EXISTS(SELECT 1 FROM app_private.admission_document_links l JOIN app_private.file_objects f ON f.id=l.file_object_id
+   JOIN app_private.admission_applications a ON a.id=l.application_id JOIN app_private.school_profiles school ON school.id=a.school_id
+   WHERE l.application_id=p_app AND l.document_kind=required_kind AND f.state='AVAILABLE' AND f.row_version=l.file_version
+   AND f.classification='PRIVATE' AND f.purpose_code='ADMISSION_DOCUMENT' AND f.campus_id=a.campus_id
+   AND (app_private.db03_document_due(p_app,required_kind) IS NULL OR l.received_on<=app_private.db03_document_due(p_app,required_kind))
+   AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_reviews r WHERE r.link_id=l.id AND r.decision='REJECTED')
+   AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_links n WHERE n.application_id=p_app AND n.document_kind=l.document_kind AND n.revision>l.revision)) THEN RETURN NULL; END IF;
+ END LOOP;
+ SELECT sha256(convert_to(jsonb_build_array(i.id,i.policy_version_id,COALESCE(jsonb_agg(jsonb_build_array(l.id,l.document_kind,l.file_object_id,f.row_version,f.state) ORDER BY l.document_kind),'[]'::jsonb))::text,'UTF8')) INTO result
+ FROM app_private.admission_document_links l JOIN app_private.file_objects f ON f.id=l.file_object_id
+ WHERE l.application_id=p_app AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_links n WHERE n.application_id=p_app AND n.document_kind=l.document_kind AND n.revision>l.revision);
+ RETURN result;
+END $body$;
+
+CREATE FUNCTION app_private.db03_document_required(p_app uuid) RETURNS TABLE(document_kind text)
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ WITH intake AS(SELECT * FROM app_private.admission_document_intakes WHERE application_id=p_app ORDER BY revision DESC LIMIT 1)
+ SELECT 'BIRTH_CERTIFICATE'::text FROM intake UNION SELECT 'SCHOOL_LEAVING_CERTIFICATE' FROM intake WHERE is_transfer
+ UNION SELECT d.document_kind FROM app_private.admission_policy_document_requirements d JOIN app_private.admission_policy_stages s ON s.id=d.policy_stage_id
+ JOIN intake i ON i.policy_version_id=s.policy_version_id WHERE d.requirement='REQUIRED' AND (d.applicability='ALL' OR (d.applicability='TRANSFER' AND i.is_transfer))
+$body$;
+CREATE FUNCTION app_private.db03_review_snapshot(p_forward uuid) RETURNS bytea
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE f app_private.admission_document_forwards%ROWTYPE; a app_private.admission_applications%ROWTYPE;
+ kind text; l app_private.admission_document_links%ROWTYPE; r app_private.admission_document_reviews%ROWTYPE; parts jsonb:='[]';
+BEGIN
+ SELECT * INTO f FROM app_private.admission_document_forwards WHERE id=p_forward;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=f.application_id;
+ IF a.id IS NULL OR NOT app_private.db03_document_target_open(a.id,a.row_version) OR NOT app_private.db03_document_is_forwarded(a.id)
+ OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards n WHERE n.application_id=a.id AND n.revision>f.revision) THEN RETURN NULL; END IF;
+ FOR kind IN SELECT q.document_kind FROM app_private.db03_document_required(a.id) q ORDER BY q.document_kind LOOP
+  SELECT * INTO l FROM app_private.admission_document_links WHERE application_id=a.id AND document_kind=kind ORDER BY revision DESC LIMIT 1;
+  SELECT * INTO r FROM app_private.admission_document_reviews WHERE forward_id=f.id AND link_id=l.id ORDER BY revision DESC LIMIT 1;
+  IF r.id IS NULL OR r.decision<>'VERIFIED' OR r.file_version<>l.file_version OR app_private.db03_same_document_person(r.created_by,l.created_by)
+   OR r.authority_hash IS DISTINCT FROM app_private.db03_document_review_authority(r.created_by,a.campus_id,'admission.document.review') THEN RETURN NULL; END IF;
+  parts:=parts||jsonb_build_array(jsonb_build_array(l.id,r.id,r.authority_hash));
+ END LOOP;
+ RETURN sha256(convert_to(jsonb_build_array(f.id,f.snapshot_hash,parts)::text,'UTF8'));
+END $body$;
+CREATE FUNCTION app_private.db03_documents_cleared(p_app uuid) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c app_private.admission_document_clearances%ROWTYPE; campus uuid; snapshot bytea;
+BEGIN
+ SELECT * INTO c FROM app_private.admission_document_clearances WHERE application_id=p_app ORDER BY application_version DESC LIMIT 1;
+ IF c.id IS NULL THEN RETURN false; END IF;
+ SELECT campus_id INTO campus FROM app_private.admission_applications WHERE id=p_app;
+ snapshot:=app_private.db03_review_snapshot(c.forward_id);
+ RETURN COALESCE(c.review_snapshot_hash=snapshot AND c.authority_hash=app_private.db03_document_review_authority(c.created_by,campus,'admission.document.approve'),false);
+END $body$;
+CREATE FUNCTION app.review_admission_document(p_access_id uuid,p_expected_version bigint,p_decision text,p_reason text,p_idempotency_key text)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE x app_private.admission_document_accesses%ROWTYPE; a app_private.admission_applications%ROWTYPE; ctx record;
+ l app_private.admission_document_links%ROWTYPE; prev app_private.admission_document_reviews%ROWTYPE;
+ v_hash bytea; result jsonb; receipt uuid:=gen_random_uuid(); source uuid; version bigint; read_hash bytea;
+BEGIN
+ IF p_expected_version IS NULL OR p_expected_version<1 OR p_decision IS NULL OR p_decision NOT IN('VERIFIED','REJECTED')
+ OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000 OR p_reason ~ '[[:cntrl:]]' THEN RAISE EXCEPTION 'DB03 document review intent invalid'; END IF;
+ SELECT * INTO x FROM app_private.admission_document_accesses WHERE id=p_access_id;
+ a:=app_private.db03_review_lock(x.application_id,'admission.document.review',p_idempotency_key);
+ SELECT * INTO ctx FROM app_private.db03_document_review_actor('admission.document.review',a.campus_id);
+ v_hash:=sha256(convert_to(jsonb_build_array(p_access_id,p_expected_version,p_decision,p_reason)::text,'UTF8'));
+ result:=app_private.db03_review_receipt('admission.document.review',a.campus_id,p_idempotency_key,v_hash,p_expected_version);
+ IF result IS NOT NULL THEN RETURN result; END IF;
+ SELECT * INTO l FROM app_private.admission_document_links WHERE id=x.link_id;
+ read_hash:=sha256(app_private.db03_document_review_authority(ctx.actor_id,a.campus_id,'admission.document.read')||app_private.db03_document_review_authority(ctx.actor_id,a.campus_id,'file.view'));
+ IF x.created_by<>ctx.actor_id OR x.authority_hash IS DISTINCT FROM read_hash OR app_private.db03_same_document_person(l.created_by,ctx.actor_id)
+ OR EXISTS(SELECT 1 FROM app_private.file_objects f WHERE f.id=l.file_object_id AND app_private.db03_same_document_person(f.uploaded_by_principal_id,ctx.actor_id)) THEN RAISE EXCEPTION 'DB03 independent document reader required'; END IF;
+ IF NOT app_private.db03_document_target_open(a.id,p_expected_version) OR NOT app_private.db03_document_is_forwarded(a.id)
+ OR app_private.db03_documents_cleared(a.id) OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards n WHERE n.application_id=a.id AND n.id<>x.forward_id AND n.application_version>x.application_version)
+ OR NOT EXISTS(SELECT 1 FROM app_private.db03_document_required(a.id) q WHERE q.document_kind=l.document_kind)
+ OR EXISTS(SELECT 1 FROM app_private.admission_document_links n WHERE n.application_id=a.id AND n.document_kind=l.document_kind AND n.revision>l.revision)
+ OR x.file_version<>l.file_version THEN RAISE EXCEPTION 'DB03 document review target stale or closed'; END IF;
+ SELECT * INTO prev FROM app_private.admission_document_reviews WHERE forward_id=x.forward_id AND link_id=l.id ORDER BY revision DESC LIMIT 1;
+ IF prev.id IS NOT NULL AND (prev.decision='REJECTED' OR prev.authority_hash IS NOT DISTINCT FROM app_private.db03_document_review_authority(prev.created_by,a.campus_id,'admission.document.review')) THEN RAISE EXCEPTION 'DB03 document already reviewed'; END IF;
+ UPDATE app_private.admission_applications SET stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version INTO version;
+ INSERT INTO app_private.admission_document_reviews(application_id,forward_id,link_id,access_id,file_version,revision,supersedes_id,decision,reason_private,authority_hash,application_version,command_receipt_id,occurred_at,created_by)
+ VALUES(a.id,x.forward_id,l.id,x.id,x.file_version,COALESCE(prev.revision,0)+1,prev.id,p_decision,p_reason,ctx.authority_hash,version,receipt,clock_timestamp(),ctx.actor_id) RETURNING id INTO source;
+ RETURN app_private.db03_review_receipt('admission.document.review',a.campus_id,p_idempotency_key,v_hash,p_expected_version,receipt,source);
+END $body$;
+CREATE FUNCTION app.approve_admission_documents(p_forward_id uuid,p_expected_version bigint,p_reason text,p_idempotency_key text)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE f app_private.admission_document_forwards%ROWTYPE; a app_private.admission_applications%ROWTYPE; ctx record;
+ prev app_private.admission_document_clearances%ROWTYPE; v_hash bytea; snapshot bytea; result jsonb; receipt uuid:=gen_random_uuid(); source uuid; version bigint;
+BEGIN
+ IF p_expected_version IS NULL OR p_expected_version<1 OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000 OR p_reason ~ '[[:cntrl:]]' THEN RAISE EXCEPTION 'DB03 document approval intent invalid'; END IF;
+ SELECT * INTO f FROM app_private.admission_document_forwards WHERE id=p_forward_id;
+ a:=app_private.db03_review_lock(f.application_id,'admission.document.approve',p_idempotency_key);
+ SELECT * INTO ctx FROM app_private.db03_document_review_actor('admission.document.approve',a.campus_id);
+ v_hash:=sha256(convert_to(jsonb_build_array(p_forward_id,p_expected_version,p_reason)::text,'UTF8'));
+ result:=app_private.db03_review_receipt('admission.document.approve',a.campus_id,p_idempotency_key,v_hash,p_expected_version);
+ IF result IS NOT NULL THEN RETURN result; END IF;
+ snapshot:=app_private.db03_review_snapshot(f.id);
+ IF NOT app_private.db03_document_target_open(a.id,p_expected_version) OR snapshot IS NULL OR app_private.db03_documents_cleared(a.id) THEN RAISE EXCEPTION 'DB03 independent verified documents required'; END IF;
+ IF EXISTS(SELECT 1 FROM app_private.admission_document_links l JOIN app_private.db03_document_required(a.id) q ON q.document_kind=l.document_kind JOIN app_private.file_objects file ON file.id=l.file_object_id
+ WHERE l.application_id=a.id AND (app_private.db03_same_document_person(l.created_by,ctx.actor_id) OR app_private.db03_same_document_person(file.uploaded_by_principal_id,ctx.actor_id))
+ AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_links n WHERE n.application_id=a.id AND n.document_kind=l.document_kind AND n.revision>l.revision)) THEN RAISE EXCEPTION 'DB03 independent document approver required'; END IF;
+ SELECT * INTO prev FROM app_private.admission_document_clearances WHERE forward_id=f.id ORDER BY revision DESC LIMIT 1;
+ UPDATE app_private.admission_applications SET stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version INTO version;
+ INSERT INTO app_private.admission_document_clearances(application_id,forward_id,revision,supersedes_id,review_snapshot_hash,authority_hash,reason_private,application_version,command_receipt_id,occurred_at,created_by)
+ VALUES(a.id,f.id,COALESCE(prev.revision,0)+1,prev.id,snapshot,ctx.authority_hash,p_reason,version,receipt,clock_timestamp(),ctx.actor_id) RETURNING id INTO source;
+ RETURN app_private.db03_review_receipt('admission.document.approve',a.campus_id,p_idempotency_key,v_hash,p_expected_version,receipt,source);
+END $body$;
+CREATE FUNCTION app.read_admission_principal_checklist(p_application_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ctx record; result jsonb;
+BEGIN
+ a:=app_private.db03_review_lock(p_application_id,'admission.document.review','checklist');
+ SELECT * INTO ctx FROM app_private.db03_document_review_actor('admission.document.review',a.campus_id);
+ IF NOT app_private.db03_document_target_open(a.id,a.row_version) OR NOT app_private.db03_document_is_forwarded(a.id) THEN RAISE EXCEPTION 'DB03 document checklist unavailable'; END IF;
+ SELECT jsonb_agg(jsonb_build_object('link_id',l.id,'document_kind',q.document_kind,'file_version',l.file_version,'decision',
+ CASE WHEN r.authority_hash=app_private.db03_document_review_authority(r.created_by,a.campus_id,'admission.document.review') THEN r.decision ELSE 'PENDING' END) ORDER BY q.document_kind) INTO result
+ FROM app_private.db03_document_required(a.id) q JOIN app_private.admission_document_links l ON l.application_id=a.id AND l.document_kind=q.document_kind
+ LEFT JOIN LATERAL(SELECT * FROM app_private.admission_document_reviews v WHERE v.link_id=l.id AND v.forward_id=(SELECT id FROM app_private.admission_document_forwards WHERE application_id=a.id ORDER BY revision DESC LIMIT 1) ORDER BY v.revision DESC LIMIT 1) r ON true
+ WHERE NOT EXISTS(SELECT 1 FROM app_private.admission_document_links n WHERE n.application_id=a.id AND n.document_kind=l.document_kind AND n.revision>l.revision);
+ RETURN jsonb_build_object('application_id',a.id,'application_version',a.row_version,'documents',result,'documents_approved',app_private.db03_documents_cleared(a.id));
+END $body$;
+CREATE FUNCTION app.read_admission_document_feedback(p_application_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; result jsonb;
+BEGIN
+ a:=app_private.db03_document_lock(p_application_id,'admission.document.view','feedback');
+ SELECT COALESCE(jsonb_agg(jsonb_build_object('document_kind',l.document_kind,'reason',r.reason_private) ORDER BY l.document_kind),'[]') INTO result
+ FROM app_private.admission_document_reviews r JOIN app_private.admission_document_links l ON l.id=r.link_id
+ WHERE l.application_id=a.id AND r.decision='REJECTED' AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_links n WHERE n.application_id=a.id AND n.document_kind=l.document_kind AND n.revision>l.revision);
+ RETURN jsonb_build_object('application_id',a.id,'rejections',result);
+END $body$;
+CREATE OR REPLACE FUNCTION app.read_admission_document_queue(p_application_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ready bytea; status text;
+BEGIN
+ a:=app_private.db03_document_lock(p_application_id,'admission.document.view','read');
+ ready:=app_private.db03_document_snapshot(a.id);
+ status:=CASE WHEN a.state='WITHDRAWN' THEN 'WITHDRAWN'
+ WHEN app_private.db03_documents_cleared(a.id) THEN 'DOCUMENTS_APPROVED'
+ WHEN app_private.db03_document_is_forwarded(a.id) THEN 'AWAITING_PRINCIPAL_REVIEW'
+ WHEN ready IS NOT NULL THEN 'READY_TO_FORWARD' ELSE 'PENDING_DOCUMENTS' END;
+ RETURN jsonb_build_object('application_id',a.id,'application_version',a.row_version,'status',status);
+END $body$;
+CREATE OR REPLACE FUNCTION app.list_admission_principal_queue(p_campus_id uuid,p_after_time timestamptz DEFAULT NULL,p_after_id uuid DEFAULT NULL,p_limit integer DEFAULT 50)
+RETURNS TABLE(application_id uuid,application_version bigint,forward_id uuid,forwarded_at timestamptz)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE school uuid;
+BEGIN
+ IF p_campus_id IS NULL OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 100
+  OR (p_after_time IS NULL)<>(p_after_id IS NULL) OR (p_after_time IS NOT NULL AND NOT isfinite(p_after_time)) THEN
+  RAISE EXCEPTION 'DB03 document queue page invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ PERFORM app_private.db03_document_actor_context('admission.document.view',p_campus_id);
+ SELECT c.school_id INTO school FROM app.campuses c WHERE c.id=p_campus_id;
+ IF school IS NULL THEN RAISE EXCEPTION 'DB03 document Campus unavailable'; END IF;
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school FOR UPDATE;
+ PERFORM app_private.db03_document_actor_context('admission.document.view',p_campus_id);
+ RETURN QUERY SELECT a.id,a.row_version,f.id,f.occurred_at
+ FROM app_private.admission_document_forwards f JOIN app_private.admission_applications a ON a.id=f.application_id
+ WHERE a.campus_id=p_campus_id AND a.state='DRAFT'
+ AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_forwards n WHERE n.application_id=a.id AND n.revision>f.revision)
+ AND f.snapshot_hash=app_private.db03_document_snapshot(a.id) AND NOT app_private.db03_documents_cleared(a.id)
+ AND (p_after_time IS NULL OR (f.occurred_at,f.id)>(p_after_time,p_after_id))
+ ORDER BY f.occurred_at,f.id LIMIT p_limit;
+END $body$;
+
+REVOKE ALL ON FUNCTION app_private.db03_review_lock(uuid,text,text),app_private.db03_document_required(uuid),app_private.db03_review_snapshot(uuid),app_private.db03_documents_cleared(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_review_lock(uuid,text,text),app_private.db03_document_required(uuid),app_private.db03_review_snapshot(uuid),app_private.db03_documents_cleared(uuid) TO schoolos_platform_executor;
+REVOKE ALL ON FUNCTION app.review_admission_document(uuid,bigint,text,text,text),app.approve_admission_documents(uuid,bigint,text,text),app.read_admission_principal_checklist(uuid),app.read_admission_document_feedback(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.review_admission_document(uuid,bigint,text,text,text),app.approve_admission_documents(uuid,bigint,text,text),app.read_admission_principal_checklist(uuid),app.read_admission_document_feedback(uuid) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private,app FROM schoolos_workflow_executor;

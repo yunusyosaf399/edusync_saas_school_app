@@ -1,0 +1,94 @@
+-- S11: Finance-owned pre-Student applicant slip evidence storage, inactive.
+-- No file-purpose/operation registration, payment, review or clearance command.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.admission_applications
+ ADD CONSTRAINT db03_app_finance_context UNIQUE(id,school_id,campus_id,academic_year_id);
+
+CREATE TABLE app_private.finance_admission_slip_submissions (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ application_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ academic_year_id uuid NOT NULL,
+ application_version bigint NOT NULL CHECK(application_version>0),
+ submitted_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ claimed_amount_minor numeric NOT NULL CHECK(claimed_amount_minor>0 AND claimed_amount_minor=trunc(claimed_amount_minor)
+  AND claimed_amount_minor<1000000000000000000000000),
+ currency_code text NOT NULL CHECK(currency_code ~ '^[A-Z]{3}$'),
+ paid_on date NOT NULL CHECK(pg_catalog.isfinite(paid_on)),
+ institution_key text NOT NULL CHECK(institution_key ~ '^[A-Z0-9][A-Z0-9_ -]{0,119}$'
+  AND institution_key=upper(btrim(institution_key))),
+ reference_key text NOT NULL CHECK(reference_key ~ '^[A-Z0-9][A-Z0-9_./-]{0,119}$'
+  AND reference_key=upper(btrim(reference_key))),
+ evidence_file_id uuid NOT NULL UNIQUE REFERENCES app_private.file_objects(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ evidence_sha256 bytea NOT NULL CHECK(octet_length(evidence_sha256)=32),
+ submitted_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ CONSTRAINT db03_applicant_slip_application_fk FOREIGN KEY(application_id,school_id,campus_id,academic_year_id)
+  REFERENCES app_private.admission_applications(id,school_id,campus_id,academic_year_id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE INDEX db03_applicant_slip_application ON app_private.finance_admission_slip_submissions
+ (application_id,submitted_at,id);
+CREATE INDEX db03_applicant_slip_duplicate ON app_private.finance_admission_slip_submissions
+ (school_id,institution_key,reference_key,claimed_amount_minor,paid_on);
+CREATE INDEX db03_applicant_slip_hash ON app_private.finance_admission_slip_submissions
+ (school_id,evidence_sha256);
+
+CREATE FUNCTION app_private.db03_applicant_slip_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ f app_private.file_objects%ROWTYPE;
+ school record; principal record;
+BEGIN
+ IF TG_OP<>'INSERT' THEN
+  RAISE EXCEPTION 'DB03 applicant payment evidence is immutable'; END IF;
+ -- A future protected worker must be independently granted and must repeat
+ -- current auth/entitlement checks. No such worker is installed in S11.
+ IF current_user<>'schoolos_schema_owner' THEN
+  RAISE EXCEPTION 'DB03 applicant slip requires Finance source authority'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=NEW.application_id FOR UPDATE;
+ SELECT * INTO f FROM app_private.file_objects WHERE id=NEW.evidence_file_id FOR KEY SHARE;
+ SELECT currency_code,timezone INTO school FROM app_private.school_profiles WHERE id=NEW.school_id;
+ SELECT kind,state INTO principal FROM app_private.principals WHERE id=NEW.submitted_by;
+ IF a.id IS NULL OR a.state<>'DRAFT' OR a.row_version<>NEW.application_version
+  OR a.school_id<>NEW.school_id OR a.campus_id<>NEW.campus_id
+  OR a.academic_year_id<>NEW.academic_year_id
+  OR principal.kind IS DISTINCT FROM 'INDIVIDUAL' OR principal.state IS DISTINCT FROM 'ACTIVE'
+  OR school.currency_code IS DISTINCT FROM NEW.currency_code
+  OR NEW.paid_on>(pg_catalog.clock_timestamp() AT TIME ZONE school.timezone)::date
+  OR f.id IS NULL OR f.state<>'AVAILABLE' OR f.classification<>'PRIVATE'
+  OR f.purpose_code<>'ADMISSION_PAYMENT_EVIDENCE' OR f.campus_id<>NEW.campus_id
+  OR f.uploaded_by_principal_id<>NEW.submitted_by OR f.content_hash<>NEW.evidence_sha256
+  OR f.content_type NOT IN('image/png','image/jpeg','application/pdf')
+  OR f.byte_size NOT BETWEEN 1 AND 1048576 THEN
+  RAISE EXCEPTION 'DB03 applicant slip source mismatch'; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_applicant_slip_guard() FROM PUBLIC,anon,authenticated,service_role;
+ALTER TABLE app_private.finance_admission_slip_submissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_slip_submissions FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.finance_admission_slip_submissions FROM PUBLIC,anon,authenticated,service_role,
+ schoolos_file_login,schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE POLICY db03_applicant_slip_owner ON app_private.finance_admission_slip_submissions
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER db03_applicant_slip_history BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_slip_submissions FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_applicant_slip_guard();
+CREATE TRIGGER db03_applicant_slip_no_truncate BEFORE TRUNCATE
+ ON app_private.finance_admission_slip_submissions FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_applicant_slip_guard();
+CREATE FUNCTION app_private.db03_retain_applicant_slip_file() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF OLD.purpose_code='ADMISSION_PAYMENT_EVIDENCE' AND
+   EXISTS(SELECT 1 FROM app_private.finance_admission_slip_submissions s WHERE s.evidence_file_id=OLD.id) AND
+   (TG_OP='DELETE' OR NEW.state='PURGED' OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
+    OR NEW.object_key IS DISTINCT FROM OLD.object_key OR NEW.purpose_code IS DISTINCT FROM OLD.purpose_code) THEN
+  RAISE EXCEPTION 'DB03 applicant payment proof is retained'; END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_retain_applicant_slip_file() FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER a2_db03_retain_applicant_slip_file BEFORE UPDATE OR DELETE ON app_private.file_objects
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_retain_applicant_slip_file();
+RESET ROLE;

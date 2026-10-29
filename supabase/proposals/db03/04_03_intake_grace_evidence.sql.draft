@@ -1,0 +1,87 @@
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db03_intake_receipts ON app_private.command_receipts FOR ALL TO schoolos_evidence_writer
+ USING(command_kind IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace'))
+ WITH CHECK(command_kind IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace'));
+CREATE POLICY db03_intake_audit ON app_private.audit_events FOR ALL TO schoolos_evidence_writer
+ USING(event_type IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace') AND target_kind='ADMISSION_APPLICATION')
+ WITH CHECK(event_type IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace') AND target_kind='ADMISSION_APPLICATION');
+CREATE POLICY db03_intake_outbox ON app_private.outbox_events FOR ALL TO schoolos_evidence_writer
+ USING(event_type IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace') AND aggregate_kind='ADMISSION_APPLICATION')
+ WITH CHECK(event_type IN('admission.draft.create','admission.draft.withdraw','admission.certificate.grace') AND aggregate_kind='ADMISSION_APPLICATION');
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+-- Lookup and verify an existing receipt, or seal a new server-generated effect.
+CREATE FUNCTION app_private.db03_intake_receipt(
+ p_code text,p_campus uuid,p_key text,p_hash bytea,p_expected bigint,
+ p_receipt uuid DEFAULT NULL,p_application uuid DEFAULT NULL,p_history uuid DEFAULT NULL)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; r record; a record; h record; result_body jsonb; event_body jsonb;
+ v_due date; v_version bigint; v_at timestamptz; v_correlation uuid;
+BEGIN
+ SELECT * INTO ctx FROM app_private.db03_intake_actor_context(p_code,p_campus);
+ IF p_key IS NULL OR pg_catalog.char_length(p_key) NOT BETWEEN 1 AND 200
+  OR p_hash IS NULL OR pg_catalog.octet_length(p_hash)<>32 THEN RAISE EXCEPTION 'DB03 intake receipt intent invalid'; END IF;
+ SELECT * INTO r FROM app_private.command_receipts
+  WHERE principal_id=ctx.actor_id AND operation_id=ctx.operation_id AND idempotency_key=p_key;
+ IF FOUND THEN
+  IF r.canonical_payload_hash IS DISTINCT FROM p_hash OR r.canonicalization_version<>1
+   OR r.expected_target_version IS DISTINCT FROM p_expected THEN RAISE EXCEPTION 'DB03 intake idempotency conflict'; END IF;
+  p_application:=r.result_ref; p_history:=(r.result_summary->>'history_id')::uuid;
+ ELSIF p_receipt IS NULL THEN RETURN NULL;
+ END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF NOT FOUND OR a.campus_id<>p_campus THEN RAISE EXCEPTION 'DB03 intake receipt target proof invalid'; END IF;
+ IF p_code='admission.certificate.grace' THEN
+  SELECT id,application_id,application_version,command_receipt_id,created_by,occurred_at,due_on INTO h
+   FROM app_private.admission_certificate_grace_history WHERE id=p_history;
+  v_due:=h.due_on;
+ ELSE
+  SELECT id,application_id,application_version,command_receipt_id,created_by,occurred_at,to_state INTO h
+   FROM app_private.admission_application_transitions WHERE id=p_history;
+  IF (p_code='admission.draft.create' AND h.to_state IS DISTINCT FROM 'DRAFT')
+   OR (p_code='admission.draft.withdraw' AND h.to_state IS DISTINCT FROM 'WITHDRAWN') THEN
+   RAISE EXCEPTION 'DB03 intake transition receipt proof invalid'; END IF;
+ END IF;
+ v_version:=CASE WHEN p_code='admission.draft.create' THEN 1 ELSE p_expected+1 END;
+ IF h.id IS NULL OR h.application_id IS DISTINCT FROM a.id OR h.application_version IS DISTINCT FROM v_version
+  OR h.created_by IS DISTINCT FROM ctx.actor_id OR a.row_version<v_version
+  OR h.command_receipt_id IS DISTINCT FROM COALESCE(r.id,p_receipt) THEN
+  RAISE EXCEPTION 'DB03 intake history receipt proof invalid'; END IF;
+ v_at:=h.occurred_at;
+ result_body:=pg_catalog.jsonb_build_object('application_id',a.id,'application_version',v_version,'grace_due_on',v_due,'history_id',h.id);
+ event_body:=pg_catalog.jsonb_build_object('application_id',a.id,'application_version',v_version,'history_id',h.id);
+ IF r.id IS NULL THEN
+  v_correlation:=pg_catalog.gen_random_uuid();
+  INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,
+   canonicalization_version,expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES(p_receipt,ctx.actor_id,ctx.operation_id,p_code,p_key,p_hash,1,p_expected,'SUCCEEDED','ADMISSION_DRAFT_EFFECT',a.id,result_body,pg_catalog.clock_timestamp(),ctx.actor_id);
+  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,
+   campus_id,command_receipt_id,source_kind,correlation_id,occurred_at,details,created_by)
+  VALUES(ctx.actor_id,'INDIVIDUAL','SUCCEEDED',pg_catalog.jsonb_build_object('operation',p_code),v_version,p_code,'ADMISSION_APPLICATION',a.id,
+   p_campus,p_receipt,'API',v_correlation,v_at,event_body,ctx.actor_id);
+  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+   event_ordinal,correlation_id,occurred_at,payload,created_by)
+  VALUES(p_code,'ADMISSION_APPLICATION',a.id,v_version,p_receipt,1,v_correlation,v_at,event_body,ctx.actor_id);
+  SELECT * INTO r FROM app_private.command_receipts WHERE id=p_receipt;
+ END IF;
+ IF r.command_kind<>p_code OR r.state<>'SUCCEEDED' OR r.result_kind IS DISTINCT FROM 'ADMISSION_DRAFT_EFFECT'
+  OR r.result_summary IS DISTINCT FROM result_body OR r.created_by<>ctx.actor_id OR r.request_id IS NOT NULL
+  OR (SELECT count(*) FROM app_private.audit_events x WHERE x.command_receipt_id=r.id
+    AND x.actor_id=ctx.actor_id AND x.actor_kind='INDIVIDUAL' AND x.outcome='SUCCEEDED'
+    AND x.event_type=p_code AND x.target_kind='ADMISSION_APPLICATION' AND x.target_ref=a.id
+    AND x.target_version=v_version AND x.campus_id=p_campus AND x.source_kind='API'
+    AND x.authority_evidence=pg_catalog.jsonb_build_object('operation',p_code)
+    AND x.details=event_body AND x.occurred_at=v_at AND x.created_by=ctx.actor_id)<>1
+  OR (SELECT count(*) FROM app_private.outbox_events x WHERE x.command_receipt_id=r.id
+    AND x.event_type=p_code AND x.aggregate_kind='ADMISSION_APPLICATION' AND x.aggregate_ref=a.id
+    AND x.aggregate_version=v_version AND x.schema_version=1 AND x.event_ordinal=1
+    AND x.payload=event_body AND x.occurred_at=v_at AND x.created_by=ctx.actor_id AND x.causation_event_id IS NULL
+    AND EXISTS(SELECT 1 FROM app_private.audit_events e WHERE e.command_receipt_id=r.id AND e.correlation_id=x.correlation_id))<>1 THEN
+  RAISE EXCEPTION 'DB03 intake immutable evidence invalid'; END IF;
+ RETURN result_body;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_intake_receipt(text,uuid,text,bytea,bigint,uuid,uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_intake_receipt(text,uuid,text,bytea,bigint,uuid,uuid,uuid) TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;

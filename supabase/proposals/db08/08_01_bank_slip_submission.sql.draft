@@ -1,0 +1,212 @@
+-- F8 candidate: purpose-bound file worker submits a bank slip as PENDING.
+-- No client RPC, direct payment, review, receipt serial or clearance.
+GRANT EXECUTE ON FUNCTION app_private.d1_authorized(text,text,uuid,uuid,date)
+ TO schoolos_schema_owner;
+GRANT EXECUTE ON FUNCTION app_private.current_principal_id() TO schoolos_schema_owner;
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db08_submit_bank_slip(
+ p_school uuid,p_campus uuid,p_student uuid,p_amount_minor numeric,p_paid_on date,
+ p_bank text,p_reference text,p_type text,p_size bigint,p_sha bytea,
+ p_location text,p_object_key text,p_revision bigint,p_digest bytea,
+ p_snapshot_until timestamptz,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; family uuid; operation uuid; day date; checked_at timestamptz;
+ currency app_private.finance_currency_units%ROWTYPE; prior app_private.command_receipts%ROWTYPE;
+ source app_private.finance_payment_submissions%ROWTYPE; file_id uuid; receipt_id uuid;
+ correlation uuid; result jsonb; payload_hash bytea; worker uuid; bank text; ref text;
+ duplicate_suspected boolean;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR current_setting('transaction_isolation')<>'read committed'
+  OR p_school IS NULL OR p_campus IS NULL OR p_student IS NULL
+  OR p_amount_minor IS NULL OR p_amount_minor<=0 OR p_amount_minor<>trunc(p_amount_minor)
+  OR p_amount_minor>=1000000000000000000000000 OR p_paid_on IS NULL OR NOT isfinite(p_paid_on)
+  OR p_bank IS NULL OR p_reference IS NULL OR p_type NOT IN('image/png','image/jpeg','application/pdf')
+  OR p_size IS NULL OR p_size NOT BETWEEN 1 AND 1048576
+  OR p_sha IS NULL OR octet_length(p_sha)<>32
+  OR p_location IS NULL OR p_location !~ '^[A-Z][A-Z0-9_]{0,63}$'
+  OR p_object_key IS NULL OR p_object_key !~ '^payments/[0-9a-f-]{36}/[0-9a-f]{64}$'
+  OR p_revision IS NULL OR p_revision<1 OR p_digest IS NULL OR octet_length(p_digest)<>32
+  OR p_snapshot_until IS NULL OR NOT isfinite(p_snapshot_until)
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB08 bank slip input invalid'; END IF;
+ bank:=upper(btrim(p_bank)); ref:=upper(btrim(p_reference));
+ IF bank !~ '^[A-Z0-9][A-Z0-9_ -]{0,119}$'
+  OR ref !~ '^[A-Z0-9][A-Z0-9_./-]{0,119}$'
+  OR p_object_key NOT LIKE 'payments/'||p_school::text||'/%' THEN
+  RAISE EXCEPTION 'DB08 bank slip identity invalid'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ IF actor IS NULL OR NOT EXISTS(SELECT 1 FROM app_private.principals
+    WHERE id=actor AND kind='FAMILY' AND state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB08 current family required'; END IF;
+ IF (current_setting('request.jwt.claims',true)::jsonb->>'exp') !~ '^[0-9]{1,12}$'
+  OR to_timestamp((current_setting('request.jwt.claims',true)::jsonb->>'exp')::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB08 authentication expired'; END IF;
+ SELECT o.id INTO operation FROM app_private.operation_contracts o
+  JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='payment.evidence.submit' AND o.contract_version=1
+  AND o.handler_key='payment.evidence.submit' AND o.payload_schema_version=1
+  AND o.enabled AND NOT o.requires_approval AND p.code=o.code
+  AND p.state='ENABLED' AND p.family_safe;
+ IF operation IS NULL THEN RAISE EXCEPTION 'DB08 bank slip command disabled'; END IF;
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||operation::text||':bank-slip:'||p_key));
+ PERFORM pg_advisory_xact_lock(71003,hashtext(p_school::text));
+ -- D1 Family revocation locks Student and Family; lock in the same order.
+ PERFORM 1 FROM app_private.students WHERE id=p_student FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB08 Student unavailable'; END IF;
+ SELECT f.id INTO family FROM app_private.families f
+  JOIN app_private.family_principal_memberships m ON m.family_id=f.id
+ WHERE m.principal_id=actor AND m.principal_kind='FAMILY'
+  AND f.school_id=p_school AND f.state='ACTIVE'
+  AND m.effective_from<=CURRENT_DATE
+  AND (m.effective_until IS NULL OR CURRENT_DATE<m.effective_until)
+ ORDER BY f.id LIMIT 1;
+ IF family IS NULL THEN RAISE EXCEPTION 'DB08 Family unavailable'; END IF;
+ PERFORM 1 FROM app_private.families WHERE id=family FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB08 Family unavailable'; END IF;
+ SELECT (clock_timestamp() AT TIME ZONE timezone)::date INTO day
+  FROM app_private.school_profiles WHERE id=p_school AND state='ACTIVE';
+ checked_at:=clock_timestamp();
+ IF day IS NULL OR p_paid_on>day OR p_snapshot_until<=checked_at
+  OR to_timestamp((current_setting('request.jwt.claims',true)::jsonb->>'exp')::bigint)<=checked_at
+  OR NOT EXISTS(SELECT 1 FROM app.campuses c WHERE c.id=p_campus
+      AND c.school_id=p_school AND c.state='ACTIVE')
+  OR NOT EXISTS(SELECT 1 FROM app_private.family_principal_memberships m
+      JOIN app_private.family_student_access a ON a.family_id=m.family_id
+      JOIN app_private.family_relationships r ON r.family_id=a.family_id AND r.student_id=a.student_id
+      WHERE m.family_id=family AND m.principal_id=actor AND m.principal_kind='FAMILY'
+       AND a.student_id=p_student AND m.effective_from<=day
+       AND (m.effective_until IS NULL OR day<m.effective_until)
+       AND a.effective_from<=day AND (a.effective_until IS NULL OR day<a.effective_until)
+       AND r.effective_from<=day AND (r.effective_until IS NULL OR day<r.effective_until))
+  OR app_private.d1_authorized('payment.evidence.submit','STUDENT',p_student,NULL,day) IS NOT TRUE
+  OR app_private.d1_authorized('file.upload','STUDENT',p_student,NULL,day) IS NOT TRUE
+  OR NOT EXISTS(SELECT 1 FROM app_private.enrollments e
+      JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+      JOIN app_private.class_offerings c ON c.id=s.class_offering_id
+      WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+       AND e.placement_state='ACTIVE' AND e.effective_from<=p_paid_on
+       AND (e.effective_until IS NULL OR p_paid_on<e.effective_until)
+       AND c.school_id=p_school AND c.campus_id=p_campus) THEN
+  RAISE EXCEPTION 'DB08 family bank slip authority denied'; END IF;
+ SELECT * INTO currency FROM app_private.finance_currency_units
+  WHERE school_id=p_school AND minor_unit_scale=2
+   AND currency_code=(SELECT currency_code FROM app_private.school_profiles WHERE id=p_school);
+ IF currency.id IS NULL THEN RAISE EXCEPTION 'DB08 currency unavailable'; END IF;
+ payload_hash:=sha256(convert_to(jsonb_build_array('bank-slip-v1',p_school,p_campus,p_student,
+  p_amount_minor::text,p_paid_on,bank,ref,p_type,p_size,encode(p_sha,'hex'))::text,'UTF8'));
+ SELECT * INTO prior FROM app_private.command_receipts
+  WHERE principal_id=actor AND operation_id=operation AND idempotency_key='bank-slip:'||p_key;
+ IF prior.id IS NOT NULL THEN
+  SELECT * INTO source FROM app_private.finance_payment_submissions WHERE id=prior.result_ref;
+  IF prior.canonical_payload_hash IS DISTINCT FROM payload_hash OR prior.state<>'SUCCEEDED'
+    OR prior.command_kind<>'payment.evidence.submit' OR prior.result_kind<>'FINANCE_PAYMENT_SUBMISSION'
+    OR source.id IS NULL OR source.submitted_by<>actor OR source.student_id<>p_student
+    OR source.school_id<>p_school OR source.campus_id<>p_campus
+    OR (SELECT count(*) FROM app_private.audit_events a WHERE a.command_receipt_id=prior.id)<>1
+    OR (SELECT count(*) FROM app_private.outbox_events e WHERE e.command_receipt_id=prior.id)<>1 THEN
+   RAISE EXCEPTION 'DB08 bank slip replay conflict'; END IF;
+  RETURN prior.result_summary;
+ END IF;
+ SELECT id INTO worker FROM app_private.principals
+  WHERE kind='SYSTEM' AND state='ACTIVE' AND system_purpose='file-validation';
+ IF worker IS NULL THEN RAISE EXCEPTION 'DB08 file worker unavailable'; END IF;
+ SELECT EXISTS(SELECT 1 FROM app_private.finance_payment_submissions prior_source
+  WHERE prior_source.school_id=p_school AND
+   ((prior_source.method='BANK_TRANSFER' AND prior_source.institution_key=bank
+     AND prior_source.reference_key=ref AND prior_source.amount_minor=p_amount_minor
+     AND prior_source.paid_on=p_paid_on)
+    OR prior_source.evidence_sha256=p_sha)) INTO duplicate_suspected;
+ file_id:=gen_random_uuid();
+ INSERT INTO app_private.file_objects(id,uploaded_by_principal_id,campus_id,storage_location_key,
+  purpose_code,object_key,content_type,byte_size,content_hash,classification,created_by)
+ VALUES(file_id,actor,p_campus,p_location,'PAYMENT_EVIDENCE',p_object_key,p_type,p_size,p_sha,'PRIVATE',worker);
+ UPDATE app_private.file_objects SET state='VALIDATED',validated_at=clock_timestamp() WHERE id=file_id;
+ UPDATE app_private.file_objects SET state='AVAILABLE' WHERE id=file_id;
+ INSERT INTO app_private.finance_payment_submissions(school_id,campus_id,student_id,
+  currency_unit_id,submitted_by,method,amount_minor,paid_on,institution_key,
+  reference_key,evidence_file_id,evidence_sha256)
+ VALUES(p_school,p_campus,p_student,currency.id,actor,'BANK_TRANSFER',p_amount_minor,p_paid_on,
+  bank,ref,file_id,p_sha) RETURNING * INTO source;
+ result:=jsonb_build_object('submission_id',source.id,'state','PENDING',
+  'duplicate_suspected',duplicate_suspected);
+ receipt_id:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,
+  idempotency_key,canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,
+  result_summary,completed_at,created_by)
+ VALUES(receipt_id,actor,operation,'payment.evidence.submit','bank-slip:'||p_key,
+  payload_hash,1,'SUCCEEDED','FINANCE_PAYMENT_SUBMISSION',source.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+  target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'FAMILY','SUCCEEDED',jsonb_build_object('operation','payment.evidence.submit',
+  'entitlement_revision',p_revision,'entitlement_digest',encode(p_digest,'hex')),
+  1,'payment.evidence.submit','FINANCE_PAYMENT_SUBMISSION',source.id,p_campus,
+  receipt_id,'WORKER',correlation,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+  aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES('payment.evidence.submit','FINANCE_PAYMENT_SUBMISSION',source.id,1,
+  receipt_id,1,correlation,clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_submit_bank_slip(uuid,uuid,uuid,numeric,date,text,text,
+ text,bigint,bytea,text,text,bigint,bytea,timestamptz,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_submit_bank_slip(uuid,uuid,uuid,numeric,date,text,text,
+ text,bigint,bytea,text,text,bigint,bytea,timestamptz,text) TO schoolos_file_login;
+-- Cheap authorization preflight before the private object is written. The
+-- final command repeats current checks after the object write and locks.
+CREATE FUNCTION app_private.db08_bank_slip_preflight(p_school uuid,p_campus uuid,
+ p_student uuid,p_paid_on date)
+RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; school_day date;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR p_school IS NULL OR p_campus IS NULL
+  OR p_student IS NULL OR p_paid_on IS NULL OR NOT isfinite(p_paid_on)
+  OR current_setting('transaction_isolation')<>'read committed' THEN
+  RAISE EXCEPTION 'DB08 bank slip preflight denied'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ SELECT (clock_timestamp() AT TIME ZONE timezone)::date INTO school_day
+  FROM app_private.school_profiles WHERE id=p_school AND state='ACTIVE';
+ IF actor IS NULL OR school_day IS NULL OR p_paid_on>school_day
+  OR NOT EXISTS(SELECT 1 FROM app_private.principals
+    WHERE id=actor AND kind='FAMILY' AND state='ACTIVE')
+  OR (current_setting('request.jwt.claims',true)::jsonb->>'exp') !~ '^[0-9]{1,12}$'
+  OR to_timestamp((current_setting('request.jwt.claims',true)::jsonb->>'exp')::bigint)<=clock_timestamp()
+  OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+      JOIN app_private.permissions p ON p.id=o.request_permission_id
+      WHERE o.code='payment.evidence.submit' AND o.contract_version=1
+       AND o.handler_key=o.code AND o.payload_schema_version=1
+       AND o.enabled AND NOT o.requires_approval AND p.code=o.code
+       AND p.state='ENABLED' AND p.family_safe)
+  OR NOT EXISTS(SELECT 1 FROM app.campuses c
+      WHERE c.id=p_campus AND c.school_id=p_school AND c.state='ACTIVE')
+  OR NOT EXISTS(SELECT 1 FROM app_private.family_principal_memberships m
+      JOIN app_private.families f ON f.id=m.family_id
+      JOIN app_private.family_student_access a ON a.family_id=f.id
+      JOIN app_private.family_relationships r ON r.family_id=f.id AND r.student_id=a.student_id
+      WHERE m.principal_id=actor AND m.principal_kind='FAMILY'
+       AND f.school_id=p_school AND f.state='ACTIVE' AND a.student_id=p_student
+       AND m.effective_from<=school_day AND (m.effective_until IS NULL OR school_day<m.effective_until)
+       AND a.effective_from<=school_day AND (a.effective_until IS NULL OR school_day<a.effective_until)
+       AND r.effective_from<=school_day AND (r.effective_until IS NULL OR school_day<r.effective_until))
+  OR app_private.d1_authorized('payment.evidence.submit','STUDENT',p_student,NULL,school_day) IS NOT TRUE
+  OR app_private.d1_authorized('file.upload','STUDENT',p_student,NULL,school_day) IS NOT TRUE
+  OR NOT EXISTS(SELECT 1 FROM app_private.enrollments e
+      JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+      JOIN app_private.class_offerings c ON c.id=s.class_offering_id
+      WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+       AND e.placement_state='ACTIVE' AND e.effective_from<=p_paid_on
+       AND (e.effective_until IS NULL OR p_paid_on<e.effective_until)
+       AND c.school_id=p_school AND c.campus_id=p_campus) THEN
+  RAISE EXCEPTION 'DB08 bank slip preflight denied'; END IF;
+ RETURN true;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_bank_slip_preflight(uuid,uuid,uuid,date)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_bank_slip_preflight(uuid,uuid,uuid,date)
+ TO schoolos_file_login;
+RESET ROLE;

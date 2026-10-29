@@ -1,0 +1,79 @@
+GRANT USAGE,CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.publish_admission_policy(
+ p_policy_id uuid,p_expected_version bigint,p_expected_current_policy_id uuid,p_idempotency_key text)
+RETURNS TABLE(policy_id uuid,published_at timestamptz)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; after_wait record; target_school uuid; target record; source record;
+ head_count bigint; last_version integer; n bigint; maximum integer; source_id uuid;
+ v_at timestamptz; intent bytea; receipt uuid;
+BEGIN
+ IF p_policy_id IS NULL OR p_expected_version IS NULL OR p_expected_version<1
+  OR p_idempotency_key IS NULL OR pg_catalog.char_length(p_idempotency_key) NOT BETWEEN 1 AND 200 THEN
+  RAISE EXCEPTION 'DB03 publication typed intent invalid'; END IF;
+ SELECT * INTO ctx FROM app_private.db03_policy_publisher_context();
+ -- Fixed JCS array of UUID/version strings and nullable source UUID, not JSONB text.
+ intent:=pg_catalog.sha256(pg_catalog.convert_to('["'||p_policy_id::text||'","'||p_expected_version::text||'",'
+  ||CASE WHEN p_expected_current_policy_id IS NULL THEN 'null' ELSE '"'||p_expected_current_policy_id::text||'"' END||']','UTF8'));
+ PERFORM pg_catalog.pg_advisory_xact_lock(71002,
+  pg_catalog.hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':'||p_idempotency_key));
+ target_school:=app_private.db03_lock_policy_configuration(p_policy_id);
+ SELECT * INTO after_wait FROM app_private.db03_policy_publisher_context();
+ IF after_wait.actor_id IS DISTINCT FROM ctx.actor_id OR after_wait.operation_id IS DISTINCT FROM ctx.operation_id
+  OR NOT EXISTS(SELECT 1 FROM app_private.school_profiles WHERE id=target_school AND state IN('SETUP','ACTIVE')) THEN
+  RAISE EXCEPTION 'DB03 publication authority or School changed'; END IF;
+ receipt:=app_private.db03_policy_publication_receipt(ctx.actor_id,ctx.operation_id,p_idempotency_key,intent,
+  p_policy_id,p_expected_version,p_expected_current_policy_id,false);
+ SELECT * INTO target FROM app_private.admission_policy_versions WHERE id=p_policy_id;
+ IF receipt IS NOT NULL THEN RETURN QUERY SELECT p_policy_id,target.published_at; RETURN; END IF;
+ IF target.state<>'DRAFT' OR target.row_version<>p_expected_version THEN
+  RAISE EXCEPTION 'DB03 publication draft version stale'; END IF;
+ SELECT count(*),max(version) INTO head_count,last_version
+  FROM app_private.admission_policy_versions
+  WHERE school_id=target_school AND policy_key=target.policy_key AND state IN('PUBLISHED','RETIRED');
+ IF target.version<>COALESCE(last_version,0)+1 THEN RAISE EXCEPTION 'DB03 publication policy revision not next'; END IF;
+ IF head_count=0 THEN
+  IF p_expected_current_policy_id IS NOT NULL THEN RAISE EXCEPTION 'DB03 initial publication source must be absent'; END IF;
+ ELSE
+  SELECT * INTO source FROM app_private.admission_policy_versions
+   WHERE school_id=target_school AND policy_key=target.policy_key AND state='PUBLISHED' FOR UPDATE;
+  IF NOT FOUND OR source.id IS DISTINCT FROM p_expected_current_policy_id OR source.version<>last_version THEN
+   RAISE EXCEPTION 'DB03 publication predecessor stale'; END IF;
+  source_id:=source.id;
+ END IF;
+ IF app_private.db03_required_certificate_roster_valid(p_policy_id) IS DISTINCT FROM true THEN
+  RAISE EXCEPTION 'DB03 publication requires mandatory certificate roster'; END IF;
+ SELECT count(*),max(ordinal) INTO n,maximum FROM app_private.admission_policy_stages WHERE policy_version_id=p_policy_id;
+ IF n<1 OR maximum<>n OR NOT EXISTS(SELECT 1 FROM app_private.admission_policy_stages WHERE policy_version_id=p_policy_id AND ordinal=1) THEN
+  RAISE EXCEPTION 'DB03 publication stage ordinals must be contiguous'; END IF;
+ IF EXISTS(SELECT 1 FROM app_private.admission_policy_stages s WHERE s.policy_version_id=p_policy_id
+   AND s.stage_kind='APPROVAL' AND s.requirement='REQUIRED') THEN
+  RAISE EXCEPTION 'DB03 required approval stage needs separately integrated typed route'; END IF;
+ SELECT count(*),max(d.ordinal) INTO n,maximum FROM app_private.admission_policy_document_requirements d
+  JOIN app_private.admission_policy_stages s ON s.id=d.policy_stage_id WHERE s.policy_version_id=p_policy_id;
+ IF maximum<>n OR n<2 THEN RAISE EXCEPTION 'DB03 publication document ordinals must be contiguous'; END IF;
+ IF EXISTS(SELECT 1 FROM app_private.admission_numbering_profiles p
+   WHERE p.id IN(target.application_numbering_profile_id,target.admission_numbering_profile_id)
+    AND (p.state NOT IN('DRAFT','PUBLISHED') OR pg_catalog.btrim(p.prefix)=''
+     OR p.prefix ~ '[[:cntrl:]]' OR p.separator ~ '[[:cntrl:]]'
+     OR pg_catalog.char_length(p.prefix)+2*pg_catalog.char_length(p.separator)
+       +CASE WHEN p.session_format='FULL_YEAR' THEN 4 ELSE 2 END+p.digits>128)) THEN
+  RAISE EXCEPTION 'DB03 publication number format invalid'; END IF;
+ v_at:=pg_catalog.clock_timestamp();
+ IF source_id IS NOT NULL THEN
+  IF v_at<=source.effective_from THEN RAISE EXCEPTION 'DB03 publication instant not later'; END IF;
+  UPDATE app_private.admission_policy_versions SET state='RETIRED',effective_until=v_at WHERE id=source_id;
+ END IF;
+ UPDATE app_private.admission_numbering_profiles SET state='PUBLISHED',published_at=v_at,published_by=ctx.actor_id
+  WHERE id IN(target.application_numbering_profile_id,target.admission_numbering_profile_id) AND state='DRAFT';
+ UPDATE app_private.admission_policy_versions SET state='PUBLISHED',effective_from=v_at,published_at=v_at,published_by=ctx.actor_id
+  WHERE id=p_policy_id;
+ receipt:=app_private.db03_policy_publication_receipt(ctx.actor_id,ctx.operation_id,p_idempotency_key,intent,
+  p_policy_id,p_expected_version,p_expected_current_policy_id,true);
+ IF receipt IS NULL THEN RAISE EXCEPTION 'DB03 publication receipt missing'; END IF;
+ RETURN QUERY SELECT p_policy_id,v_at;
+END $body$;
+REVOKE ALL ON FUNCTION app.publish_admission_policy(uuid,bigint,uuid,text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.publish_admission_policy(uuid,bigint,uuid,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;

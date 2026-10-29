@@ -1,0 +1,62 @@
+-- DB08 F3 protected price change.
+BEGIN;
+CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
+SET LOCAL search_path=extensions,pg_catalog,public;
+SELECT plan(28);
+SELECT ok(NOT has_table_privilege('authenticated','app_private.finance_fee_change_intents','SELECT,INSERT,UPDATE,DELETE'),'fee change intents are private');
+SELECT ok(NOT has_function_privilege('service_role','app.review_finance_fee_change(uuid,text,bigint,text,text)','EXECUTE'),'service role cannot approve price');
+SELECT ok(has_function_privilege('authenticated','app.request_finance_fee_change(uuid,uuid,numeric,date,date,uuid,uuid,text,text)','EXECUTE'),'request RPC is exposed only through authorization');
+SELECT is((SELECT count(*) FROM pg_class WHERE relname='finance_fee_change_intents' AND relrowsecurity AND relforcerowsecurity),1::bigint,'fee intents use forced RLS');
+\ir fixture_commands.sql
+\ir fixture_change.sql
+SET ROLE authenticated;
+SELECT * FROM jsonb_to_record(app.configure_finance_fee('08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000004','TUITION','Tuition','CHANGE_FEE','MONTHLY',2,10000,'2026-01-01','2026-12-31','Initial tuition','f3-initial')) AS x(source_id uuid,resource_id uuid,campus_id uuid) \gset fee_
+RESET ROLE;
+SELECT throws_ok($test$SELECT app.request_finance_fee_change((SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE'),(SELECT id FROM app_private.finance_fee_rule_revisions WHERE rule_id=(SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE') AND revision=1),12000,'2026-11-01','2026-12-31','08000000-0000-4000-8000-000000000034','08000000-0000-4000-8000-000000000007','Reviewed tuition price', 'price-change')$test$,'P0001'::char(5),NULL::text,'requester cannot nominate self to review');
+SELECT throws_ok($test$SELECT app.request_finance_fee_change((SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE'),(SELECT id FROM app_private.finance_fee_rule_revisions WHERE rule_id=(SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE') AND revision=1),-1,'2026-11-01','2026-12-31','08000000-0000-4000-8000-000000000034','08000000-0000-4000-8000-000000000021','Reviewed tuition price', 'price-change')$test$,'P0001'::char(5),NULL::text,'negative price rejected');
+SELECT id AS rev1 FROM app_private.finance_fee_rule_revisions WHERE rule_id=:'fee_resource_id'::uuid AND revision=1 \gset
+SET ROLE authenticated;
+SELECT * FROM jsonb_to_record(app.request_finance_fee_change(:'fee_resource_id'::uuid,:'rev1'::uuid,12000,'2026-11-01','2026-12-31','08000000-0000-4000-8000-000000000034','08000000-0000-4000-8000-000000000021','Reviewed tuition price','price-change')) AS x(request_id uuid,state text,request_version bigint) \gset pending_
+RESET ROLE;
+SELECT is((SELECT count(*) FROM app_private.finance_fee_rule_revisions WHERE rule_id=:'fee_resource_id'::uuid),1::bigint,'pending change does not publish price');
+SELECT is((SELECT state FROM app_private.approval_requests WHERE id=:'pending_request_id'::uuid),'PENDING'::text,'generic request is pending');
+SELECT is((SELECT count(*) FROM app_private.approval_request_steps WHERE request_id=:'pending_request_id'::uuid AND state='OPEN'),1::bigint,'one configured review step opens');
+SELECT is((SELECT count(*) FROM app_private.approval_step_reviewers v JOIN app_private.approval_request_steps s ON s.id=v.step_id WHERE s.request_id=:'pending_request_id'::uuid AND v.reviewer_id='08000000-0000-4000-8000-000000000021'),1::bigint,'independent reviewer assigned');
+SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE command_kind='finance.fee.change.request'),1::bigint,'pending request has one receipt');
+SELECT is((app.request_finance_fee_change((SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE'),(SELECT id FROM app_private.finance_fee_rule_revisions WHERE rule_id=(SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE') AND revision=1),12000,'2026-11-01','2026-12-31','08000000-0000-4000-8000-000000000034','08000000-0000-4000-8000-000000000021','Reviewed tuition price', 'price-change')->>'request_id')::uuid,:'pending_request_id'::uuid,'exact request replay returns original');
+SELECT throws_ok($test$SELECT app.request_finance_fee_change((SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE'),(SELECT id FROM app_private.finance_fee_rule_revisions WHERE rule_id=(SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE') AND revision=1),13000,'2026-11-01','2026-12-31','08000000-0000-4000-8000-000000000034','08000000-0000-4000-8000-000000000021','Reviewed tuition price', 'price-change')$test$,'P0001'::char(5),NULL::text,'changed price same key conflicts');
+SELECT throws_ok($test$SELECT app.request_finance_fee_change((SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE'),(SELECT id FROM app_private.finance_fee_rule_revisions WHERE rule_id=(SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE') AND revision=1),12000,'2026-11-01','2026-12-31','08000000-0000-4000-8000-000000000034','08000000-0000-4000-8000-000000000021','Reviewed tuition price', 'second-pending')$test$,'P0001'::char(5),NULL::text,'parallel pending request denied');
+SELECT set_config('request.jwt.claim.sub',(SELECT auth_user_id::text FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000022'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object('sub',(SELECT auth_user_id::text FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000022'),'role','authenticated','iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000022'),'exp',floor(extract(epoch FROM clock_timestamp()+interval '1 hour'))::bigint,'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT * FROM jsonb_to_record(app.review_finance_fee_change(:'pending_request_id'::uuid,'APPROVE',:'pending_request_version'::bigint,'Verified proposal','approve-price')) AS x(request_id uuid,state text,request_version bigint,publication_id uuid) \gset approved_
+RESET ROLE;
+SELECT is((SELECT count(*) FROM app_private.finance_fee_rule_revisions WHERE rule_id=:'fee_resource_id'::uuid AND revision=2 AND gross_amount_minor=12000),1::bigint,'approved successor retains reviewed amount');
+SELECT is((SELECT count(*) FROM app_private.finance_fee_publications WHERE approval_request_id=:'pending_request_id'::uuid AND previous_revision=1),1::bigint,'publication links approval and predecessor');
+SELECT is((SELECT state FROM app_private.approval_requests WHERE id=:'pending_request_id'::uuid),'EXECUTED'::text,'approved request executes atomically');
+SELECT is((SELECT count(*) FROM app_private.approval_reviews v JOIN app_private.approval_request_steps s ON s.id=v.step_id WHERE s.request_id=:'pending_request_id'::uuid AND v.decision='APPROVE'),1::bigint,'independent approval decision retained');
+SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE command_kind='finance.fee.change.review'),1::bigint,'approval has receipt');
+SELECT is((app.review_finance_fee_change((SELECT request_id FROM app_private.finance_fee_change_intents ORDER BY created_at LIMIT 1),'APPROVE',(SELECT row_version-2 FROM app_private.approval_requests WHERE id=(SELECT request_id FROM app_private.finance_fee_change_intents ORDER BY created_at LIMIT 1)),'Verified proposal', 'approve-price')->>'publication_id')::uuid,:'approved_publication_id'::uuid,'review retry returns same publication');
+SELECT throws_ok($test$SELECT app.review_finance_fee_change((SELECT request_id FROM app_private.finance_fee_change_intents ORDER BY created_at LIMIT 1),'APPROVE',(SELECT row_version-2 FROM app_private.approval_requests WHERE id=(SELECT request_id FROM app_private.finance_fee_change_intents ORDER BY created_at LIMIT 1)),'Verified proposal', 'second-approval')$test$,'P0001'::char(5),NULL::text,'new key cannot approve twice');
+SELECT set_config('request.jwt.claim.sub',(SELECT auth_user_id::text FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000008'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object('sub',(SELECT auth_user_id::text FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000008'),'role','authenticated','iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000008'),'exp',floor(extract(epoch FROM clock_timestamp()+interval '1 hour'))::bigint,'is_anonymous',false)::text,true);
+SELECT id AS rev1 FROM app_private.finance_fee_rule_revisions WHERE rule_id=:'fee_resource_id'::uuid AND revision=1 \gset
+SELECT id AS rev2 FROM app_private.finance_fee_rule_revisions WHERE rule_id=:'fee_resource_id'::uuid AND revision=2 \gset
+SET ROLE authenticated;
+SELECT app.assess_finance_fee(:'fee_resource_id'::uuid,'08000000-0000-4000-8000-000000000006',:'rev1'::uuid,'2026-04-01','2026-04-30','2026-05-05','08000000-0000-4000-8000-000000000301');
+SELECT app.assess_finance_fee(:'fee_resource_id'::uuid,'08000000-0000-4000-8000-000000000006',:'rev2'::uuid,'2026-11-01','2026-11-30','2026-12-05','08000000-0000-4000-8000-000000000302');
+RESET ROLE;
+SELECT is((SELECT count(*) FROM app_private.finance_fee_obligations WHERE rule_id=:'fee_resource_id'::uuid AND gross_amount_minor=10000 AND period_start='2026-04-01'),1::bigint,'historical April assessment uses original price');
+SELECT is((SELECT count(*) FROM app_private.finance_fee_obligations WHERE rule_id=:'fee_resource_id'::uuid AND gross_amount_minor=12000 AND period_start='2026-11-01'),1::bigint,'November assessment uses approved price');
+SELECT throws_ok($test$SELECT app.assess_finance_fee((SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE'),'08000000-0000-4000-8000-000000000006',(SELECT id FROM app_private.finance_fee_rule_revisions WHERE rule_id=(SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE') AND revision=1),'2026-12-01','2026-12-31','2026-12-15','08000000-0000-4000-8000-000000000303')$test$,'P0001'::char(5),NULL::text,'old price cannot assess after effective change');
+SELECT * FROM jsonb_to_record(app.request_finance_fee_change((SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE'),(SELECT id FROM app_private.finance_fee_rule_revisions WHERE rule_id=(SELECT id FROM app_private.finance_fee_rules WHERE rule_key='CHANGE_FEE') AND revision=2),13000,'2026-12-01','2026-12-31','08000000-0000-4000-8000-000000000034','08000000-0000-4000-8000-000000000021','Reviewed tuition price', 'reject-price')) AS x(request_id uuid,state text,request_version bigint) \gset rejected_
+SELECT set_config('request.jwt.claim.sub',(SELECT auth_user_id::text FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000022'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object('sub',(SELECT auth_user_id::text FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000022'),'role','authenticated','iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint FROM app_private.principal_auth_bindings WHERE id='08000000-0000-4000-8000-000000000022'),'exp',floor(extract(epoch FROM clock_timestamp()+interval '1 hour'))::bigint,'is_anonymous',false)::text,true);
+SELECT app.review_finance_fee_change(:'rejected_request_id'::uuid,'REJECT',:'rejected_request_version'::bigint,'Not approved','reject-price-review');
+SELECT is((SELECT count(*) FROM app_private.finance_fee_rule_revisions WHERE rule_id=:'fee_resource_id'::uuid),2::bigint,'rejected price creates no revision');
+SELECT is((SELECT state FROM app_private.approval_requests WHERE id=:'rejected_request_id'::uuid),'REJECTED'::text,'rejection retained without publication');
+SET ROLE schoolos_schema_owner; UPDATE app_private.assignment_permission_scopes SET revoked_at=clock_timestamp() WHERE id='08000000-0000-4000-8000-000000000032'; RESET ROLE;
+SELECT throws_ok($test$SELECT app.review_finance_fee_change('08000000-0000-4000-8000-000000000099','APPROVE',1,'No access','revoked')$test$,'P0001'::char(5),NULL::text,'reviewer revocation denies review entry');
+SELECT is((SELECT count(*) FROM app_private.command_receipts WHERE command_kind LIKE 'finance.fee.change.%'),4::bigint,'two requests and two decisions retain exact evidence');
+SELECT * FROM finish();
+ROLLBACK;

@@ -1,0 +1,121 @@
+-- S9: additive terminal deadline rejection. No production actor/grant/job seed.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.admission_applications DROP CONSTRAINT admission_applications_state_check;
+ALTER TABLE app_private.admission_applications ADD CONSTRAINT db03_application_state CHECK(state IN('DRAFT','WITHDRAWN','REJECTED'));
+ALTER TABLE app_private.admission_application_transitions DROP CONSTRAINT admission_application_transitions_check;
+ALTER TABLE app_private.admission_application_transitions ADD CONSTRAINT db03_application_transition_shape
+ CHECK((sequence_number=1 AND from_state IS NULL AND to_state='DRAFT' AND reason_private IS NULL)
+ OR (sequence_number=2 AND from_state='DRAFT' AND to_state IN('WITHDRAWN','REJECTED') AND reason_private IS NOT NULL));
+ALTER TABLE app_private.admission_application_transitions ADD UNIQUE(id,application_id,application_version,command_receipt_id,created_by);
+ALTER TABLE app_private.admission_certificate_grace_history ADD UNIQUE(id,application_id),ADD UNIQUE(id,application_id,document_kind);
+CREATE TABLE app_private.admission_deadline_rejections (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ application_id uuid NOT NULL UNIQUE REFERENCES app_private.admission_applications(id),
+ transition_id uuid NOT NULL UNIQUE,
+ grace_head_id uuid NOT NULL,
+ kind_grace_id uuid,
+ intake_id uuid,
+ rejected_link_id uuid,
+ document_kind text NOT NULL CHECK(document_kind IN('BIRTH_CERTIFICATE','SCHOOL_LEAVING_CERTIFICATE','TRANSCRIPT')),
+ due_on date NOT NULL CHECK(isfinite(due_on)),
+ evaluated_on date NOT NULL CHECK(isfinite(evaluated_on) AND evaluated_on>due_on),
+ school_timezone text NOT NULL CHECK(length(btrim(school_timezone)) BETWEEN 1 AND 100),
+ application_version bigint NOT NULL CHECK(application_version>1),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ FOREIGN KEY(transition_id,application_id,application_version,command_receipt_id,created_by)
+ REFERENCES app_private.admission_application_transitions(id,application_id,application_version,command_receipt_id,created_by),
+ FOREIGN KEY(grace_head_id,application_id) REFERENCES app_private.admission_certificate_grace_history(id,application_id),
+ FOREIGN KEY(kind_grace_id,application_id,document_kind) REFERENCES app_private.admission_certificate_grace_history(id,application_id,document_kind),
+ FOREIGN KEY(intake_id,application_id) REFERENCES app_private.admission_document_intakes(id,application_id),
+ FOREIGN KEY(rejected_link_id,application_id,document_kind) REFERENCES app_private.admission_document_links(id,application_id,document_kind)
+);
+ALTER TABLE app_private.admission_deadline_rejections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_deadline_rejections FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_deadline_rejections FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_deadline_owner ON app_private.admission_deadline_rejections TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_deadline_read ON app_private.admission_deadline_rejections FOR SELECT TO schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_deadline_insert ON app_private.admission_deadline_rejections FOR INSERT TO schoolos_platform_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_deadline_rejections TO schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_deadline_rejections TO schoolos_platform_executor;
+CREATE FUNCTION app_private.db03_deadline_history_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 deadline history is immutable'; END IF;
+ IF current_user<>'schoolos_platform_executor' OR session_user<>'schoolos_event_login' THEN RAISE EXCEPTION 'DB03 deadline protected worker required'; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_deadline_history_guard() FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER aa_db03_deadline_history BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_deadline_rejections FOR EACH ROW EXECUTE FUNCTION app_private.db03_deadline_history_guard();
+CREATE TRIGGER db03_deadline_no_truncate BEFORE TRUNCATE ON app_private.admission_deadline_rejections FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_deadline_history_guard();
+GRANT SELECT,INSERT ON app_private.admission_application_transitions TO schoolos_platform_executor;
+CREATE POLICY db03_deadline_transition_read ON app_private.admission_application_transitions FOR SELECT TO schoolos_platform_executor USING(true);
+CREATE POLICY db03_deadline_transition_insert ON app_private.admission_application_transitions FOR INSERT TO schoolos_platform_executor WITH CHECK(to_state='REJECTED' AND sequence_number=2);
+GRANT UPDATE(state) ON app_private.admission_applications TO schoolos_platform_executor;
+CREATE INDEX db03_deadline_pending ON app_private.admission_applications(id) WHERE state='DRAFT';
+CREATE OR REPLACE FUNCTION app_private.db03_guard_intake() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE prior record; parent record;
+BEGIN
+ IF TG_OP IN('DELETE','TRUNCATE') OR (TG_TABLE_NAME<>'admission_applications' AND TG_OP='UPDATE') THEN
+  RAISE EXCEPTION 'DB03 intake history is immutable'; END IF;
+ IF current_user='schoolos_platform_executor' AND session_user='schoolos_event_login' THEN
+  IF TG_TABLE_NAME='admission_applications' AND TG_OP='UPDATE' THEN
+   IF OLD.state<>'DRAFT' OR NEW.state<>'REJECTED' OR NEW.stage_epoch<>OLD.stage_epoch+1
+    OR (to_jsonb(NEW)-ARRAY['state','stage_epoch','row_version','updated_at']) IS DISTINCT FROM (to_jsonb(OLD)-ARRAY['state','stage_epoch','row_version','updated_at']) THEN
+    RAISE EXCEPTION 'DB03 deadline worker may only reject pending application'; END IF;
+  ELSIF TG_TABLE_NAME='admission_application_transitions' AND TG_OP='INSERT' THEN
+   SELECT * INTO parent FROM app_private.admission_applications WHERE id=NEW.application_id FOR UPDATE;
+   IF parent.id IS NULL OR parent.state<>'REJECTED' OR NEW.application_version<>parent.row_version
+    OR NEW.sequence_number<>2 OR NEW.from_state<>'DRAFT' OR NEW.to_state<>'REJECTED' OR NEW.reason_private IS DISTINCT FROM 'MISSING_REQUIRED_CERTIFICATE_DEADLINE'
+    OR NOT EXISTS(SELECT 1 FROM app_private.admission_application_transitions t WHERE t.application_id=parent.id AND t.sequence_number=1) THEN
+    RAISE EXCEPTION 'DB03 deadline terminal transition invalid'; END IF;
+  ELSE RAISE EXCEPTION 'DB03 deadline mutation denied'; END IF;
+  RETURN NEW;
+ END IF;
+ IF current_user='schoolos_identity_executor' AND TG_TABLE_NAME='admission_applications' AND TG_OP='UPDATE' THEN
+  IF OLD.state<>'DRAFT' OR NEW.state<>'DRAFT' OR NEW.person_id IS NULL
+   OR (OLD.person_id IS NOT NULL AND NEW.person_id IS DISTINCT FROM OLD.person_id)
+   OR NEW.stage_epoch<>OLD.stage_epoch+1
+   OR (pg_catalog.to_jsonb(NEW)-ARRAY['person_id','stage_epoch','row_version','updated_at']) IS DISTINCT FROM
+      (pg_catalog.to_jsonb(OLD)-ARRAY['person_id','stage_epoch','row_version','updated_at']) THEN
+   RAISE EXCEPTION 'DB03 identity binding requires same-Person draft attestation'; END IF;
+  RETURN NEW;
+ END IF;
+ IF current_user='schoolos_platform_executor' AND TG_TABLE_NAME='admission_applications' AND TG_OP='UPDATE' THEN
+  IF OLD.state<>'DRAFT' OR NEW.stage_epoch<>OLD.stage_epoch+1
+   OR (pg_catalog.to_jsonb(NEW)-ARRAY['stage_epoch','updated_at','row_version']) IS DISTINCT FROM
+      (pg_catalog.to_jsonb(OLD)-ARRAY['stage_epoch','updated_at','row_version']) THEN
+   RAISE EXCEPTION 'DB03 file worker may only advance draft evidence'; END IF;
+  RETURN NEW;
+ END IF;
+ IF current_user<>'schoolos_workflow_executor' THEN RAISE EXCEPTION 'DB03 intake requires protected command'; END IF;
+ IF TG_TABLE_NAME='admission_applications' THEN
+  IF TG_OP='INSERT' AND (NEW.state<>'DRAFT' OR NEW.row_version<>1 OR NEW.person_id IS NOT NULL OR NEW.policy_version_id IS NOT NULL OR NEW.stage_epoch<>1) THEN RAISE EXCEPTION 'DB03 intake begins unresolved DRAFT'; END IF;
+  IF TG_OP='UPDATE' AND (OLD.state<>'DRAFT' OR NEW.state NOT IN('DRAFT','WITHDRAWN')
+   OR NEW.stage_epoch NOT IN(OLD.stage_epoch,OLD.stage_epoch+1)
+   OR (pg_catalog.to_jsonb(NEW)-ARRAY['state','stage_epoch','row_version','updated_at']) IS DISTINCT FROM
+      (pg_catalog.to_jsonb(OLD)-ARRAY['state','stage_epoch','row_version','updated_at'])) THEN
+   RAISE EXCEPTION 'DB03 intake identity is frozen'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM app.campuses c WHERE c.id=NEW.campus_id AND c.school_id=NEW.school_id) THEN
+   RAISE EXCEPTION 'DB03 intake Campus School mismatch'; END IF;
+ ELSE
+  SELECT * INTO parent FROM app_private.admission_applications WHERE id=NEW.application_id FOR UPDATE;
+  IF NOT FOUND OR parent.row_version<>NEW.application_version THEN RAISE EXCEPTION 'DB03 intake history version mismatch'; END IF;
+  IF TG_TABLE_NAME='admission_application_transitions' THEN
+   IF parent.state<>NEW.to_state OR (NEW.sequence_number=2 AND NOT EXISTS(
+    SELECT 1 FROM app_private.admission_application_transitions t WHERE t.application_id=parent.id AND t.sequence_number=1)) THEN
+    RAISE EXCEPTION 'DB03 intake transition lineage invalid'; END IF;
+  ELSIF TG_TABLE_NAME='admission_certificate_grace_history' THEN
+   IF parent.state<>'DRAFT' THEN RAISE EXCEPTION 'DB03 grace requires pending draft'; END IF;
+   SELECT * INTO prior FROM app_private.admission_certificate_grace_history WHERE application_id=parent.id ORDER BY revision DESC LIMIT 1;
+   IF (NOT FOUND AND (NEW.revision<>1 OR NEW.first_granted_on<>NEW.recorded_on))
+    OR (FOUND AND (NEW.revision<>prior.revision+1 OR NEW.supersedes_id IS DISTINCT FROM prior.id
+      OR NEW.first_granted_on<>prior.first_granted_on OR NEW.recorded_on<prior.recorded_on)) THEN
+    RAISE EXCEPTION 'DB03 grace original anchor and lineage are immutable'; END IF;
+  ELSE RAISE EXCEPTION 'DB03 intake trigger denied'; END IF;
+ END IF;
+ RETURN NEW;
+END $body$;
+RESET ROLE;

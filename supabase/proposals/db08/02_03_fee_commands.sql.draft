@@ -1,0 +1,146 @@
+-- F2: direct initial fee setup and explicit full-price Person assessment.
+-- No fee revision, concession, payment, automatic billing or clearance route.
+GRANT USAGE,CREATE ON SCHEMA app_private,app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.configure_finance_fee(p_campus uuid,p_year uuid,p_category_code text,p_category_label text,
+ p_rule_key text,p_frequency text,p_minor_unit_scale integer,p_gross_minor numeric,
+ p_valid_from date,p_valid_through date,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; school uuid; school_row app_private.school_profiles%ROWTYPE;
+ campus_row app.campuses%ROWTYPE; year_row app.academic_years%ROWTYPE;
+ v_units uuid; v_category uuid; v_label text; v_scale integer;
+ v_rule uuid; v_revision uuid; v_publication uuid; receipt uuid;
+ v_hash bytea; result jsonb;
+BEGIN
+ IF p_campus IS NULL OR p_year IS NULL OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 200
+  OR p_category_code IS NULL OR p_category_code !~ '^[A-Z][A-Z0-9_]{0,63}$'
+  OR p_rule_key IS NULL OR p_rule_key !~ '^[A-Z][A-Z0-9_]{0,63}$'
+  OR p_category_label IS NULL OR length(btrim(p_category_label)) NOT BETWEEN 1 AND 200
+  OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
+  OR p_frequency IS NULL OR p_frequency NOT IN('MONTHLY','QUARTERLY','HALF_YEARLY','ANNUAL','ONE_TIME','CUSTOM')
+  OR p_minor_unit_scale IS NULL OR p_minor_unit_scale NOT BETWEEN 0 AND 6
+  OR p_gross_minor IS NULL OR p_gross_minor<0 OR p_gross_minor>=1000000000000000000000000
+  OR p_gross_minor<>trunc(p_gross_minor)
+  OR p_valid_from IS NULL OR NOT isfinite(p_valid_from) OR p_valid_through IS NULL
+  OR NOT isfinite(p_valid_through) OR p_valid_through<p_valid_from THEN
+  RAISE EXCEPTION 'DB08 initial fee configuration invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO campus_row FROM app.campuses WHERE id=p_campus;
+ IF campus_row.id IS NULL THEN RAISE EXCEPTION 'DB08 Campus unavailable'; END IF;
+ school:=campus_row.school_id;
+ SELECT * INTO ctx FROM app_private.db08_fee_actor('finance.fee.configure',p_campus);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':'||p_key));
+ PERFORM pg_advisory_xact_lock(71003,hashtext(school::text));
+ SELECT * INTO school_row FROM app_private.school_profiles WHERE id=school;
+ SELECT * INTO campus_row FROM app.campuses WHERE id=p_campus AND school_id=school;
+ SELECT * INTO year_row FROM app.academic_years WHERE id=p_year AND school_id=school;
+ PERFORM app_private.db08_fee_actor('finance.fee.configure',p_campus);
+ IF school_row.id IS NULL OR school_row.state NOT IN('SETUP','ACTIVE')
+   OR campus_row.id IS NULL OR campus_row.state<>'ACTIVE'
+   OR year_row.id IS NULL OR year_row.state NOT IN('PLANNED','ACTIVE')
+   OR p_valid_from<year_row.starts_on OR p_valid_through>year_row.ends_on THEN
+  RAISE EXCEPTION 'DB08 fee School/Campus/Year unavailable'; END IF;
+ v_hash:=sha256(convert_to(jsonb_build_array('finance.fee.configure',p_campus,p_year,
+  p_category_code,p_category_label,p_rule_key,p_frequency,p_minor_unit_scale,
+  p_gross_minor::text,p_valid_from,p_valid_through,p_reason)::text,'UTF8'));
+ result:=app_private.db08_fee_receipt('finance.fee.configure',p_campus,p_key,v_hash);
+ IF result IS NOT NULL THEN RETURN result; END IF;
+ SELECT id,minor_unit_scale INTO v_units,v_scale FROM app_private.finance_currency_units
+  WHERE school_id=school AND currency_code=school_row.currency_code;
+ IF v_units IS NULL THEN
+  INSERT INTO app_private.finance_currency_units(school_id,currency_code,minor_unit_scale,created_by)
+  VALUES(school,school_row.currency_code,p_minor_unit_scale,ctx.actor_id) RETURNING id INTO v_units;
+ ELSIF v_scale<>p_minor_unit_scale THEN
+  RAISE EXCEPTION 'DB08 School currency-unit scale conflict'; END IF;
+ SELECT id,label INTO v_category,v_label FROM app_private.finance_fee_categories
+  WHERE school_id=school AND code=p_category_code;
+ IF v_category IS NULL THEN
+  INSERT INTO app_private.finance_fee_categories(school_id,code,label,created_by)
+  VALUES(school,p_category_code,p_category_label,ctx.actor_id) RETURNING id INTO v_category;
+ ELSIF v_label<>p_category_label THEN
+  RAISE EXCEPTION 'DB08 retained fee-category label conflict'; END IF;
+ INSERT INTO app_private.finance_fee_rules(school_id,campus_id,academic_year_id,category_id,
+  currency_unit_id,frequency,rule_key,created_by)
+ VALUES(school,p_campus,p_year,v_category,v_units,p_frequency,p_rule_key,ctx.actor_id)
+ RETURNING id INTO v_rule;
+ INSERT INTO app_private.finance_fee_rule_revisions(rule_id,revision,gross_amount_minor,frequency,
+  valid_from,valid_through,reason,created_by)
+ VALUES(v_rule,1,p_gross_minor,p_frequency,p_valid_from,p_valid_through,p_reason,ctx.actor_id)
+ RETURNING id INTO v_revision;
+ receipt:=gen_random_uuid();
+ INSERT INTO app_private.finance_fee_publications(school_id,rule_id,revision_id,revision,state,
+  command_receipt_id,created_by)
+ VALUES(school,v_rule,v_revision,1,'PUBLISHED',receipt,ctx.actor_id) RETURNING id INTO v_publication;
+ RETURN app_private.db08_fee_receipt('finance.fee.configure',p_campus,p_key,v_hash,receipt,v_publication);
+END $body$;
+
+CREATE FUNCTION app.assess_finance_fee(p_rule uuid,p_person uuid,p_revision uuid,
+ p_period_start date,p_period_end date,p_due_on date,p_key uuid)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; school uuid; campus uuid; yr uuid; fee app_private.finance_fee_rules%ROWTYPE;
+ price app_private.finance_fee_rule_revisions%ROWTYPE; pub app_private.finance_fee_publications%ROWTYPE;
+ school_row app_private.school_profiles%ROWTYPE; campus_row app.campuses%ROWTYPE;
+ year_row app.academic_years%ROWTYPE; person_row app_private.people%ROWTYPE;
+ v_hash bytea; receipt uuid; charge uuid; result jsonb;
+BEGIN
+ IF p_rule IS NULL OR p_person IS NULL OR p_revision IS NULL OR p_key IS NULL
+  OR p_period_start IS NULL OR NOT isfinite(p_period_start)
+  OR p_period_end IS NULL OR NOT isfinite(p_period_end) OR p_period_end<p_period_start
+  OR p_due_on IS NULL OR NOT isfinite(p_due_on) THEN
+  RAISE EXCEPTION 'DB08 charge intent invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO fee FROM app_private.finance_fee_rules WHERE id=p_rule;
+ IF fee.id IS NULL THEN RAISE EXCEPTION 'DB08 fee unavailable'; END IF;
+ school:=fee.school_id; campus:=fee.campus_id; yr:=fee.academic_year_id;
+ SELECT * INTO ctx FROM app_private.db08_fee_actor('finance.charge.assess',campus);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':'||p_key::text));
+ PERFORM pg_advisory_xact_lock(71003,hashtext(school::text));
+ SELECT * INTO person_row FROM app_private.people WHERE id=p_person;
+ SELECT * INTO school_row FROM app_private.school_profiles WHERE id=school;
+ SELECT * INTO campus_row FROM app.campuses WHERE id=campus AND school_id=school;
+ SELECT * INTO year_row FROM app.academic_years WHERE id=yr AND school_id=school;
+ SELECT * INTO fee FROM app_private.finance_fee_rules WHERE id=p_rule;
+ SELECT * INTO price FROM app_private.finance_fee_rule_revisions WHERE id=p_revision AND rule_id=p_rule;
+ SELECT * INTO pub FROM app_private.finance_fee_publications WHERE rule_id=p_rule
+  AND revision_id=p_revision;
+ PERFORM app_private.db08_fee_actor('finance.charge.assess',campus);
+ IF fee.id IS NULL OR fee.school_id<>school OR fee.campus_id<>campus OR fee.academic_year_id<>yr
+   OR school_row.id IS NULL OR school_row.state<>'ACTIVE'
+   OR campus_row.id IS NULL OR campus_row.state<>'ACTIVE'
+   OR year_row.id IS NULL OR year_row.state<>'ACTIVE'
+   OR person_row.id IS NULL OR person_row.state<>'ACTIVE'
+   OR NOT EXISTS(SELECT 1 FROM app_private.finance_currency_units u
+      WHERE u.id=fee.currency_unit_id AND u.school_id=school
+        AND u.currency_code=school_row.currency_code)
+   OR price.id IS NULL OR pub.id IS NULL OR pub.revision_id<>price.id
+   OR pub.state<>'PUBLISHED' OR price.revision<>pub.revision
+   OR EXISTS(SELECT 1 FROM app_private.finance_fee_publications newer_pub
+      JOIN app_private.finance_fee_rule_revisions newer ON newer.id=newer_pub.revision_id
+      WHERE newer_pub.rule_id=p_rule AND newer_pub.state='PUBLISHED'
+        AND newer.revision>price.revision AND newer.valid_from<=p_period_end)
+   OR p_period_start<price.valid_from OR p_period_end>price.valid_through
+   OR p_period_start<year_row.starts_on OR p_period_end>year_row.ends_on THEN
+  RAISE EXCEPTION 'DB08 current full-price assessment source unavailable'; END IF;
+ v_hash:=sha256(convert_to(jsonb_build_array('finance.charge.assess',p_rule,p_person,p_revision,
+  p_period_start,p_period_end,p_due_on,p_key)::text,'UTF8'));
+ result:=app_private.db08_fee_receipt('finance.charge.assess',campus,p_key::text,v_hash);
+ IF result IS NOT NULL THEN RETURN result; END IF;
+ IF EXISTS(SELECT 1 FROM app_private.finance_fee_obligations x
+    WHERE x.rule_id=p_rule AND x.person_id=p_person
+      AND daterange(x.period_start,x.period_end,'[]') && daterange(p_period_start,p_period_end,'[]')) THEN
+    RAISE EXCEPTION 'DB08 overlapping fee period already assessed'; END IF;
+ INSERT INTO app_private.finance_fee_obligations(school_id,campus_id,academic_year_id,person_id,
+  rule_id,rule_revision_id,gross_amount_minor,frequency,period_start,period_end,due_on,
+  assessment_key,created_by)
+ VALUES(school,campus,yr,p_person,p_rule,p_revision,price.gross_amount_minor,fee.frequency,
+  p_period_start,p_period_end,p_due_on,p_key,ctx.actor_id)
+ RETURNING id INTO charge;
+ receipt:=gen_random_uuid();
+ RETURN app_private.db08_fee_receipt('finance.charge.assess',campus,p_key::text,v_hash,receipt,charge);
+END $body$;
+REVOKE ALL ON FUNCTION app.configure_finance_fee(uuid,uuid,text,text,text,text,integer,numeric,date,date,text,text),
+ app.assess_finance_fee(uuid,uuid,uuid,date,date,date,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.configure_finance_fee(uuid,uuid,text,text,text,text,integer,numeric,date,date,text,text),
+ app.assess_finance_fee(uuid,uuid,uuid,date,date,date,uuid) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private,app FROM schoolos_workflow_executor;

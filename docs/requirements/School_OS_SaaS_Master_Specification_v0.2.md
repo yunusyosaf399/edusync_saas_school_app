@@ -741,6 +741,18 @@ Application
 
 However, each stage is optional. A school can skip document verification, test, interview, or other steps depending on its policy.
 
+**Owner clarification — 26 October 2026:** Admission completion requires an administrator-submitted, verified birth certificate for every applicant and a school-leaving certificate for applicants transferring from a previous school. These minimum certificate obligations cannot be removed by a policy's optional-stage configuration. An authorized admission administrator may allow up to two months to arrange missing certificates; the application remains pending and final admission/enrollment waits for verification. First-time applicants do not need a previous-school certificate. Keep the application and grace history; grace does not mark missing documents complete or permit provisional enrollment. See the [recorded requirement and owner selections](../database/db03_required_certificates_two_month_grace_20261026.md) for the bounded calendar interpretation and implementation status.
+
+**Later owner clarification — 26 October 2026:** The admission administrator prepares/creates the application and collects its supporting certificates. Only the school principal may verify admission details, including identity/document attestations, and authorize application completion. An administrator's intake permissions must not confer verification or completion authority. Principal authority still requires a current principal-role assignment, the exact action permission, applicable scope and workflow conditions; a display name or generic staff permission is insufficient. Retain the independent uploader/verifier rule and the required-certificate/grace gates above. This supersedes earlier generic authorized-staff verifier eligibility. The S6 successor restricts S4/S5 candidate SQL to principal-only authority; final completion is not yet implemented. See [authority decision and implementation gap](../database/db03_owner_decision_principal_admission_authority_20261026.md).
+
+**Further owner clarification — 26 October 2026:** Missing required documents block forwarding to the principal's approval queue. The application stays pending with the administrator; when documents arrive within the existing allowed window, the administrator attaches them and forwards the complete application for principal review. Attachment does not constitute verification. Only after principal verification and approval may the application be submitted and the protected Student creation occur, with all other applicable gates still enforced. Forwarding for review is distinct from submission; neither collection nor forwarding creates a Student. Grace does not reset. The later owner selection requires rejection with retained history if required certificates remain missing after the deadline, and permanent retention of uploaded admission certificates, including rejected/withdrawn applications. These requirements are implemented incrementally in inactive candidates. The S7 candidate implements administrator certificate collection, missing-document forwarding checks and a retained principal-review queue. The S8 inactive candidate adds independent principal private-byte review and document-stage clearance, with certificate rejection returning the application to administrator collection. Full principal application approval and final submission/Student creation remain pending. The S9 inactive candidate adds automatic missing-certificate deadline rejection with retained history; see the [S9 worker contract](../database/db03_s9_certificate_deadline_rejection_20261027.md). See the [S8 contract](../database/db03_s8_principal_document_review_20261027.md); runtime acceptance is recorded separately in PR #102. See the [S7 implementation contract](../database/db03_s7_certificate_collection_forwarding_20261026.md) and authority decision above.
+
+**Owner confirmation — 27 October 2026:** Admission certificates may also be supplied as PDF, alongside PNG/JPEG. All formats use the same private collection, 1 MiB size limit, permanent source retention and principal-review requirements. The [PDF support candidate](../database/db03_s7_pdf_support_20261027.md) validates PDF bytes server-side without rewriting the original; accepting the format does not verify certificate authenticity or approve admission.
+
+**Finance rule reconciliation — 27 October 2026:** The approved 21 October school-led Finance clarification requires current **Finance-authorizer clearance in every final admission case**, including an approved fee waiver or zero/no-obligation outcome. A waiver affects Finance-owned terms; it is not an alternative to Finance authorization. Payment evidence, document approval, a skipped fee stage and client paid/waived flags cannot authorize final admission. The S10 inactive candidate provides an explicit unavailable-source status and internal denial boundary while the real Finance obligation/clearance/reversal package is absent. It implements no positive clearance or waiver issuer. See the [owner decision](../database/db03_owner_decision_school_offers_test_skip_finance_changes_20261021.md) and [S10 boundary and remaining prerequisites](../database/db03_s10_finance_gate_boundary_20261027.md).
+
+**Owner choice — 29 October 2026:** Admission fees support both a school-configured automatic rule and an authorized administrator's manual amount for selected applicants. A manual amount is a retained, applicant-specific decision and Finance must independently assess it. An uploaded slip's claimed amount is never the charge. Both modes remain subject to current Finance-authorizer clearance before admission completion. The [S15 decision and open rule-matching dimension](../database/db03_s15_admission_fee_mode_owner_decision_20261029.md) record the implementation boundary.
+
 The admission process can generate:
 
 - Application number
@@ -1181,6 +1193,12 @@ Sibling discounts may be enabled or disabled by the school and can use configura
 
 Discounts can be long-term/recurring or one-time. Sensitive or large adjustments can require approval according to school-defined thresholds.
 
+**Student discount choice — 27 October 2026:** The school may choose either a fixed discount amount or a percentage of the Student's selected full fee. For each assignment it may choose recurring application to monthly tuition or application to one specified charge. The choices are independent, and the selected gross fee remains retained separately from the discount. The later precision/review clarification below resolves the initial rounding and approval questions. See [DB08 F6 inactive candidate](../database/db08_f6_student_discount_choice_20261027.md).
+
+**F6 precision and review clarification — 27 October 2026:** Money is displayed with two digits after the decimal point (for example 9,999.34). Percentage discounts round to the nearest 0.01 of currency with exact halves rounded upward. Every Student discount needs an independent approval before it can take effect. The F6 first increment rejects incompatible currency precision and overlapping discounts; payment and admission clearance remain separate.
+
+**Owner clarification — 29 October 2026:** The Grade 1 amount of 1,000 SAR and Grade 2 amount of 1,200 SAR in the owner's example are **monthly tuition full fees**. An authorized administrator may assign one applicant a scholarship or discount and select the affected fee categories. For Grade 1 Ahmad, a 50% tuition-only scholarship gives 500 SAR monthly tuition while transport and other unselected fees remain full; selecting transport separately also discounts its own assessed charge. Books, materials and other categories follow their configured frequency and must be explicitly selected. The original gross fee remains retained; independent Finance review and actual payment allocation remain separate. See [F15 category-scoped applicant scholarship decision](../database/db08_f15_grade_monthly_fees_and_category_scholarship_owner_decision_20261029.md).
+
 ---
 
 # 32. Invoices
@@ -1221,6 +1239,8 @@ The exact sequence rule is configurable during database design.
 
 **CONFIRMED**
 
+**Initial parent submission clarification — 28 October 2026:** The app does not collect or initiate a payment. A parent pays by bank transfer outside the app, then uploads the transaction slip as a private PDF, JPEG or PNG for a linked Student. The submission remains pending until a school administrator with the specific payment-verification permission reviews it. The administrator may approve, reject or request a corrected slip. Approval must create the official payment and permanent receipt through the protected Finance command; an uploaded slip or review alone is not a paid charge. Role title alone does not confer verification permission. Cash handling and wallet evidence are separate later operational paths; the storage schema's ability to describe them does not enable those parent submission methods.
+
 Initial payment methods:
 
 - Cash
@@ -1229,13 +1249,13 @@ Initial payment methods:
 
 There is no direct online payment gateway in the initial version.
 
-For bank/wallet payments, parents can submit:
+For the initial bank-transfer evidence flow, parents can submit:
 
 - Amount
 - Transaction/reference ID
-- Bank/wallet information
+- Bank information
 - Payment date
-- Screenshot/evidence
+- PDF or image of the bank transaction slip
 
 Workflow:
 
@@ -1246,14 +1266,14 @@ Parent submits payment evidence
 Pending verification
         |
         v
-Accountant review
+Authorized school administrator review
         |
         +-- Approve -> official payment + receipt
         +-- Reject
         `-- Request correction
 ```
 
-Duplicate submissions should be flagged using information such as transaction ID, bank/wallet, and amount.
+Duplicate submissions should be flagged using information such as transaction ID, bank, amount and file hash.
 
 ---
 

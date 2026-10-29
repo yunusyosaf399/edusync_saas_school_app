@@ -1,0 +1,90 @@
+-- Distinct Finance discount request/review permission and live independent authority.
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.db08_discount_actor(p_phase text,p_campus uuid,p_role uuid DEFAULT NULL)
+RETURNS TABLE(actor_id uuid,operation_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; operation uuid; permission uuid; checked_at timestamptz;
+ claims jsonb; exp_text text;
+BEGIN
+ IF p_phase NOT IN('REQUEST','REVIEW') OR p_phase IS NULL OR p_campus IS NULL
+  OR pg_catalog.current_setting('transaction_isolation')<>'read committed' THEN
+  RAISE EXCEPTION 'DB08 discount operation unavailable'; END IF;
+ claims:=NULLIF(pg_catalog.current_setting('request.jwt.claims',true),'')::jsonb;
+ exp_text:=claims->>'exp';
+ IF exp_text IS NULL OR exp_text !~ '^[0-9]{1,12}$'
+  OR pg_catalog.to_timestamp(exp_text::bigint)<=pg_catalog.clock_timestamp() THEN
+  RAISE EXCEPTION 'DB08 discount authentication expired'; END IF;
+ actor:=app_private.current_principal_id();
+ IF actor IS NULL OR NOT EXISTS(SELECT 1 FROM app_private.principals p
+    WHERE p.id=actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB08 active individual Finance staff required'; END IF;
+ SELECT o.id,CASE WHEN p_phase='REQUEST' THEN o.request_permission_id ELSE o.review_permission_id END
+ INTO operation,permission FROM app_private.operation_contracts o
+ WHERE o.code='finance.discount' AND o.contract_version=1 AND o.handler_key=o.code
+  AND o.payload_schema_version=1 AND o.enabled AND o.requires_approval
+  AND o.review_permission_id IS NOT NULL;
+ IF operation IS NULL OR NOT EXISTS(SELECT 1 FROM app_private.permissions p
+  WHERE p.id=permission AND p.code=CASE WHEN p_phase='REQUEST' THEN 'finance.discount'
+    ELSE 'finance.discount.review' END AND p.state='ENABLED' AND NOT p.family_safe) THEN
+  RAISE EXCEPTION 'DB08 discount permission unavailable'; END IF;
+ checked_at:=pg_catalog.clock_timestamp();
+ IF NOT EXISTS(
+  SELECT 1 FROM app_private.assignment_permission_scopes s
+  JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+  JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+  JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+  JOIN app_private.roles r ON r.id=s.role_id
+  WHERE a.principal_id=actor AND a.principal_kind='INDIVIDUAL'
+   AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+   AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+   AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+   AND c.resolver_key=s.resolver_key AND c.enabled
+   AND s.permission_id=permission AND r.state='ACTIVE' AND NOT r.family_only
+   AND (p_role IS NULL OR s.role_id=p_role)
+   AND s.resolver_key='DIRECT' AND s.scope_kind='ALL' AND s.campus_id IS NULL
+   AND a.valid_from<=checked_at AND (a.valid_until IS NULL OR checked_at<a.valid_until)
+   AND (a.revoked_at IS NULL OR checked_at<a.revoked_at)
+   AND g.valid_from<=checked_at AND (g.valid_until IS NULL OR checked_at<g.valid_until)
+   AND (g.revoked_at IS NULL OR checked_at<g.revoked_at)
+   AND s.valid_from<=checked_at AND (s.valid_until IS NULL OR checked_at<s.valid_until)
+   AND (s.revoked_at IS NULL OR checked_at<s.revoked_at)) THEN
+   RAISE EXCEPTION 'DB08 discount School-wide authority denied'; END IF;
+ RETURN QUERY SELECT actor,operation;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_discount_actor(text,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_discount_actor(text,uuid,uuid)
+ TO schoolos_workflow_executor;
+CREATE FUNCTION app_private.db08_discount_reviewer_candidate(p_reviewer uuid,p_role uuid)
+RETURNS boolean LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT EXISTS(
+  SELECT 1 FROM app_private.operation_contracts o
+  JOIN app_private.permissions p ON p.id=o.review_permission_id
+  JOIN app_private.assignment_permission_scopes s ON s.permission_id=p.id
+  JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+  JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+  JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+  JOIN app_private.roles r ON r.id=s.role_id
+  JOIN app_private.principals principal ON principal.id=a.principal_id
+  WHERE o.code='finance.discount' AND o.contract_version=1 AND o.enabled AND o.requires_approval
+   AND p.code='finance.discount.review' AND p.state='ENABLED' AND NOT p.family_safe
+   AND a.principal_id=p_reviewer AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL'
+   AND principal.kind='INDIVIDUAL' AND principal.state='ACTIVE'
+   AND s.role_id=p_role AND a.role_id=s.role_id AND g.role_id=s.role_id AND g.permission_id=p.id
+   AND c.permission_id=p.id AND c.scope_kind=s.scope_kind AND c.resolver_key=s.resolver_key AND c.enabled
+   AND r.id=p_role AND r.state='ACTIVE' AND NOT r.family_only
+   AND s.scope_kind='ALL' AND s.resolver_key='DIRECT' AND s.campus_id IS NULL
+   AND a.valid_from<=clock_timestamp() AND (a.valid_until IS NULL OR clock_timestamp()<a.valid_until)
+   AND (a.revoked_at IS NULL OR clock_timestamp()<a.revoked_at)
+   AND g.valid_from<=clock_timestamp() AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND s.valid_from<=clock_timestamp() AND (s.valid_until IS NULL OR clock_timestamp()<s.valid_until)
+   AND (s.revoked_at IS NULL OR clock_timestamp()<s.revoked_at));
+$body$;
+REVOKE ALL ON FUNCTION app_private.db08_discount_reviewer_candidate(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_discount_reviewer_candidate(uuid,uuid)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;

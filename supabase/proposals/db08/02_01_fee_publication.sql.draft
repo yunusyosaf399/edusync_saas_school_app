@@ -1,0 +1,66 @@
+-- DB08 F2: an initial full-price rule is selectable only after a retained
+-- publication event. Later price revision and correction are separate review routes.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_fee_publications (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ rule_id uuid NOT NULL REFERENCES app_private.finance_fee_rules(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ revision_id uuid NOT NULL,
+ revision bigint NOT NULL CHECK(revision=1),
+ state text NOT NULL CHECK(state='PUBLISHED'),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id)
+   DEFERRABLE INITIALLY DEFERRED,
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(rule_id), UNIQUE(rule_id,revision_id),
+ FOREIGN KEY(revision_id,rule_id,revision) REFERENCES app_private.finance_fee_rule_revisions(id,rule_id,revision)
+   ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE INDEX db08_publication_school ON app_private.finance_fee_publications(school_id,rule_id);
+ALTER TABLE app_private.finance_fee_publications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_fee_publications FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_publication_owner ON app_private.finance_fee_publications
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db08_publication_executor ON app_private.finance_fee_publications
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_publication_insert ON app_private.finance_fee_publications
+ FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+CREATE POLICY db08_publication_evidence ON app_private.finance_fee_publications
+ FOR SELECT TO schoolos_evidence_writer USING(true);
+GRANT SELECT,INSERT ON app_private.finance_fee_publications TO schoolos_workflow_executor;
+GRANT SELECT ON app_private.finance_fee_publications TO schoolos_evidence_writer;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_fee_publications
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+
+-- These executor roles have no LOGIN or client membership; the client obtains
+-- only the two fixed RPCs, with current operation/scope authorization.
+CREATE POLICY db08_executor_read ON app_private.finance_currency_units FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_executor_insert ON app_private.finance_currency_units FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+CREATE POLICY db08_executor_read ON app_private.finance_fee_categories FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_executor_insert ON app_private.finance_fee_categories FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+CREATE POLICY db08_executor_read ON app_private.finance_fee_rules FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_executor_insert ON app_private.finance_fee_rules FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+CREATE POLICY db08_executor_read ON app_private.finance_fee_rule_revisions FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_executor_insert ON app_private.finance_fee_rule_revisions FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+CREATE POLICY db08_executor_read ON app_private.finance_fee_obligations FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_executor_insert ON app_private.finance_fee_obligations FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT,INSERT ON app_private.finance_currency_units,app_private.finance_fee_categories,
+ app_private.finance_fee_rules,app_private.finance_fee_rule_revisions,app_private.finance_fee_obligations
+ TO schoolos_workflow_executor;
+CREATE POLICY db08_evidence_read ON app_private.finance_fee_rules FOR SELECT TO schoolos_evidence_writer USING(true);
+CREATE POLICY db08_evidence_read ON app_private.finance_fee_rule_revisions FOR SELECT TO schoolos_evidence_writer USING(true);
+CREATE POLICY db08_evidence_read ON app_private.finance_fee_obligations FOR SELECT TO schoolos_evidence_writer USING(true);
+GRANT SELECT ON app_private.finance_fee_rules,app_private.finance_fee_rule_revisions,
+ app_private.finance_fee_obligations TO schoolos_evidence_writer;
+
+-- Private workflow reads see only these Foundation ancestors. No client grant.
+CREATE POLICY db08_school_context ON app_private.school_profiles FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_campus_context ON app.campuses FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_year_context ON app.academic_years FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_person_context ON app_private.people FOR SELECT TO schoolos_workflow_executor USING(true);
+GRANT SELECT ON app_private.school_profiles,app.campuses,app.academic_years,
+ app_private.people TO schoolos_workflow_executor;
+GRANT SELECT ON app_private.operation_contracts TO schoolos_authz_reader;
+CREATE POLICY db08_operation_contract ON app_private.operation_contracts FOR SELECT TO schoolos_authz_reader
+ USING(code IN('finance.fee.configure','finance.charge.assess') AND contract_version=1);
+RESET ROLE;

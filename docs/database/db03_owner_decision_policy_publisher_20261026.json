@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "selected_on": "2026-10-26",
+  "owner": "yunusyosaf399",
+  "question": "Who should be allowed to publish a new admission rule set?",
+  "selected_label": "One authorized administrator (Recommended)",
+  "selected_description": "One administrator with the current publishing permission can publish; every change is recorded and published versions are locked.",
+  "status": "OWNER_SELECTED_PRODUCT_RULE",
+  "requires_current_action_permission_and_scope": true,
+  "role_name_alone_is_authority": false,
+  "immediate_publication_choice_unchanged": true,
+  "mandatory_certificate_rules_unchanged": true,
+  "different_person_test_skip_review_unchanged": true,
+  "finance_authorizer_clearance_unchanged": true,
+  "independent_code_acceptance": false,
+  "catalog_activation_authorized": false,
+  "hosted_deployment_authorized": false,
+  "production_authorized": false
+}

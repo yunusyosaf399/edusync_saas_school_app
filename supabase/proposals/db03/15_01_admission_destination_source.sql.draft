@@ -1,0 +1,62 @@
+-- S15 inactive, D1-backed destination source. No client or worker writer yet.
+-- The Class Offering resolves to one School-owned grade and Academic Year.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.admission_destination_intents (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ application_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ academic_year_id uuid NOT NULL,
+ application_version bigint NOT NULL CHECK(application_version>0),
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid UNIQUE REFERENCES app_private.admission_destination_intents(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ class_offering_id uuid NOT NULL REFERENCES app_private.class_offerings(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ reason_private text NOT NULL CHECK(length(btrim(reason_private)) BETWEEN 1 AND 1000),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ UNIQUE(application_id,revision),
+ FOREIGN KEY(application_id,school_id,campus_id,academic_year_id)
+  REFERENCES app_private.admission_applications(id,school_id,campus_id,academic_year_id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CHECK((revision=1)=(supersedes_id IS NULL))
+);
+CREATE INDEX db03_destination_head ON app_private.admission_destination_intents(application_id,revision DESC);
+CREATE FUNCTION app_private.db03_destination_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ prior app_private.admission_destination_intents%ROWTYPE;
+ co app_private.class_offerings%ROWTYPE;
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 destination is immutable'; END IF;
+ -- S15 supplies a typed storage candidate only; no public command is installed.
+ IF current_user<>'schoolos_schema_owner' THEN RAISE EXCEPTION 'DB03 destination writer unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=NEW.application_id FOR UPDATE;
+ SELECT * INTO co FROM app_private.class_offerings WHERE id=NEW.class_offering_id FOR SHARE;
+ SELECT * INTO prior FROM app_private.admission_destination_intents
+  WHERE application_id=NEW.application_id ORDER BY revision DESC LIMIT 1;
+ IF a.id IS NULL OR a.state<>'DRAFT' OR a.row_version<>NEW.application_version
+  OR co.id IS NULL OR co.state<>'OPEN' OR co.school_id<>a.school_id
+  OR co.campus_id<>a.campus_id OR co.academic_year_id<>a.academic_year_id
+  OR NEW.school_id<>a.school_id OR NEW.campus_id<>a.campus_id
+  OR NEW.academic_year_id<>a.academic_year_id
+  OR (prior.id IS NULL AND (NEW.revision<>1 OR NEW.supersedes_id IS NOT NULL))
+  OR (prior.id IS NOT NULL AND (NEW.revision<>prior.revision+1 OR NEW.supersedes_id IS DISTINCT FROM prior.id))
+  THEN RAISE EXCEPTION 'DB03 destination context or revision mismatch'; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_destination_guard() FROM PUBLIC,anon,authenticated,service_role;
+ALTER TABLE app_private.admission_destination_intents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_destination_intents FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_destination_intents FROM PUBLIC,anon,authenticated,service_role,
+ schoolos_workflow_executor,schoolos_file_login,schoolos_platform_executor,schoolos_evidence_writer;
+CREATE POLICY db03_destination_owner ON app_private.admission_destination_intents
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER db03_destination_history BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.admission_destination_intents FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_destination_guard();
+CREATE TRIGGER db03_destination_no_truncate BEFORE TRUNCATE
+ ON app_private.admission_destination_intents FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_destination_guard();
+RESET ROLE;
