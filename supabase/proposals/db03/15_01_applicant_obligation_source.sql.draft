@@ -1,0 +1,92 @@
+-- S15 inactive FINANCE applicant obligation *source baseline*, not an assessment command.
+-- An admitted Student is NOT needed for this separate aggregate. No automatic
+-- balance, clearance, waiver or policy price is inferred from the schema.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_admission_obligation_assessments (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ application_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ academic_year_id uuid NOT NULL,
+ application_version bigint NOT NULL CHECK(application_version>0),
+ policy_version_id uuid NOT NULL,
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid UNIQUE REFERENCES app_private.finance_admission_obligation_assessments(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ gross_amount_minor numeric(20,0) NOT NULL CHECK(gross_amount_minor>=0),
+ currency_code text NOT NULL CHECK(currency_code ~ '^[A-Z]{3}$'),
+ assessed_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ assessed_by uuid NOT NULL REFERENCES app_private.principals(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT db03_applicant_obligation_application_fk
+  FOREIGN KEY(application_id,school_id,campus_id,academic_year_id)
+  REFERENCES app_private.admission_applications(id,school_id,campus_id,academic_year_id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT db03_applicant_obligation_policy_fk
+  FOREIGN KEY(policy_version_id,school_id)
+  REFERENCES app_private.admission_policy_versions(id,school_id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(application_id,revision),
+ CHECK((revision=1)=(supersedes_id IS NULL))
+);
+CREATE INDEX db03_applicant_obligation_history ON
+ app_private.finance_admission_obligation_assessments(application_id,revision DESC);
+CREATE FUNCTION app_private.db03_guard_applicant_obligation_assessment()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp
+AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ p app_private.admission_policy_versions%ROWTYPE;
+ school record;
+ previous_record app_private.finance_admission_obligation_assessments%ROWTYPE;
+BEGIN
+ IF TG_OP<>'INSERT' THEN
+  RAISE EXCEPTION 'DB03 applicant obligation assessment history is immutable';
+ END IF;
+ IF current_user<>'schoolos_schema_owner' THEN
+  RAISE EXCEPTION 'DB03 applicant obligation requires protected Finance authority';
+ END IF;
+ -- This guard is additional defense for a future checked issuer. No issuer or
+ -- INSERT grant is installed in S15. Drafts cannot bootstrap their own price.
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=NEW.application_id FOR UPDATE;
+ SELECT * INTO p FROM app_private.admission_policy_versions
+  WHERE id=NEW.policy_version_id AND school_id=NEW.school_id FOR KEY SHARE;
+ SELECT currency_code INTO school FROM app_private.school_profiles WHERE id=NEW.school_id;
+ IF a.id IS NULL OR a.state<>'DRAFT'
+  OR a.school_id<>NEW.school_id OR a.campus_id<>NEW.campus_id
+  OR a.academic_year_id<>NEW.academic_year_id
+  OR a.row_version<>NEW.application_version
+  OR a.policy_version_id IS DISTINCT FROM NEW.policy_version_id
+  OR p.id IS NULL OR p.state<>'PUBLISHED'
+  OR school.currency_code IS DISTINCT FROM NEW.currency_code THEN
+  RAISE EXCEPTION 'DB03 applicant obligation source context unavailable';
+ END IF;
+ SELECT * INTO previous_record
+  FROM app_private.finance_admission_obligation_assessments
+  WHERE application_id=NEW.application_id ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+ IF (previous_record.id IS NULL AND (NEW.revision<>1 OR NEW.supersedes_id IS NOT NULL))
+  OR (previous_record.id IS NOT NULL AND (NEW.revision<>previous_record.revision+1
+    OR NEW.supersedes_id IS DISTINCT FROM previous_record.id)) THEN
+  RAISE EXCEPTION 'DB03 applicant obligation predecessor mismatch';
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_guard_applicant_obligation_assessment()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+ALTER TABLE app_private.finance_admission_obligation_assessments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_obligation_assessments FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.finance_admission_obligation_assessments
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE POLICY db03_applicant_obligation_owner
+ ON app_private.finance_admission_obligation_assessments
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER db03_applicant_obligation_immutable
+ BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_obligation_assessments FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_guard_applicant_obligation_assessment();
+CREATE TRIGGER db03_applicant_obligation_no_truncate
+ BEFORE TRUNCATE ON app_private.finance_admission_obligation_assessments
+ FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_guard_applicant_obligation_assessment();
+RESET ROLE;
