@@ -11,8 +11,14 @@ SELECT ok(NOT has_function_privilege('service_role',
  'app_private.db03_record_manual_admission_fee(uuid,bigint,numeric,text,text)','EXECUTE'),'service no command');
 SELECT ok(has_function_privilege('schoolos_file_login',
  'app_private.db03_record_manual_admission_fee(uuid,bigint,numeric,text,text)','EXECUTE'),'dedicated verified worker can call');
-SELECT ok((SELECT prosecdef AND proconfig::text LIKE '%search_path=pg_catalog,pg_temp%'
- FROM pg_proc WHERE oid='app_private.db03_record_manual_admission_fee(uuid,bigint,numeric,text,text)'::regprocedure),
+-- PostgreSQL may insert spaces/quotes when serializing GUC arrays. Parse
+-- the actual function options and require exactly these two search path entries.
+SELECT ok((SELECT p.prosecdef AND EXISTS (
+ SELECT 1 FROM pg_catalog.pg_options_to_table(p.proconfig) cfg
+ WHERE cfg.option_name='search_path'
+ AND pg_catalog.replace(cfg.option_value,' ','')='pg_catalog,pg_temp')
+ FROM pg_catalog.pg_proc p
+ WHERE p.oid='app_private.db03_record_manual_admission_fee(uuid,bigint,numeric,text,text)'::regprocedure),
  'command is protected with fixed safe search path');
 SELECT throws_ok('SELECT app_private.db03_record_manual_admission_fee(NULL,NULL,NULL,NULL,NULL)',
  'P0001'::char(5),'DB03 manual fee command invalid'::text,
