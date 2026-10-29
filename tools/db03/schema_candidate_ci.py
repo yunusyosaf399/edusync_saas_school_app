@@ -729,6 +729,10 @@ def main() -> int:
             parse_tap(review_output, 12)
             print("DB03_APPLICANT_REVIEW_DATABASE_PASS 12/12; approved_evidence_is_not_payment=true")
             payment_output = local.run_psql(container, applicant_payment_test, 'DB03_APPLICANT_PAYMENT_TEST')
+            payment_lines = payment_output.splitlines()
+            for i, line in enumerate(payment_lines):
+                if re.match(r'\s*not ok\b', line):
+                    print('DB03_APPLICANT_PAYMENT_ASSERTION_DETAIL ' + '\n'.join(payment_lines[max(0,i-1):i+12]))
             parse_tap(payment_output, 12)
             print('DB03_APPLICANT_PAYMENT_DATABASE_PASS 12/12; clearance=false')
             def fresh_publication_database():
