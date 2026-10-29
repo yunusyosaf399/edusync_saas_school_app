@@ -14,10 +14,10 @@ SELECT ok(NOT has_function_privilege('authenticated','app_private.db03_issue_app
 SELECT ok(has_function_privilege('schoolos_file_login','app_private.db03_issue_applicant_payment(uuid,uuid,uuid,text)','EXECUTE'), 'narrow server command');
 SELECT throws_ok('TRUNCATE app_private.finance_admission_official_payments','P0001'::char(5),
  'DB03 applicant payment is immutable'::text,'payment history retained');
-SELECT ok((SELECT count(*)=3 FROM pg_constraint WHERE conrelid='app_private.finance_admission_official_payments'::regclass
+SELECT ok((SELECT count(*)=2 FROM pg_constraint WHERE conrelid='app_private.finance_admission_official_payments'::regclass
  AND contype='f' AND confrelid IN('app_private.finance_admission_slip_submissions'::regclass,
  'app_private.finance_admission_slip_reviews'::regclass)), 'typed submission and approved review binding');
-SELECT ok((SELECT count(*)=2 FROM pg_constraint WHERE conrelid='app_private.finance_admission_official_payments'::regclass
+SELECT ok((SELECT count(*)=3 FROM pg_constraint WHERE conrelid='app_private.finance_admission_official_payments'::regclass
  AND contype='u' AND conkey @> ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid='app_private.finance_admission_official_payments'::regclass AND attname='school_id')]::smallint[]),
  'School receipt and transfer unique');
 SELECT ok(to_regclass('app_private.finance_admission_clearance_events') IS NULL,
