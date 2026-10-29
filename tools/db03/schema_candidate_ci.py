@@ -342,6 +342,23 @@ def validate_applicant_payment() -> tuple[str, str, str]:
     return sql, test, fixture
 
 
+def validate_destination_source() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/15_01_admission_destination_source.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/15_admission_destination_source.sql').read_text()
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)', sql) != ['admission_destination_intents']:
+        raise RuntimeError('DB03_DESTINATION_TABLE_SCOPE')
+    if re.search(r'(?m)^CREATE FUNCTION app\.', sql) or 'FORCE ROW LEVEL SECURITY;' not in sql:
+        raise RuntimeError('DB03_DESTINATION_NO_PUBLIC_COMMAND')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['15'] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 15 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_DESTINATION_TEST_PLAN')
+    for name in ('policy_publication_actor.sql', 'intake_grace_actor.sql'):
+        test = test.replace('\\ir fixtures/' + name,
+                            (ROOT / 'supabase/tests/db03/fixtures' / name).read_text())
+    print('DB03_DESTINATION_SOURCE_PASS assertions=15 sha256=' + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -362,6 +379,7 @@ def main() -> int:
     applicant_command_sql, applicant_command_test, applicant_fixture = validate_applicant_slip_submission()
     applicant_review_sql, applicant_review_test, applicant_review_fixture = validate_applicant_slip_review()
     applicant_payment_sql, applicant_payment_test, applicant_payment_fixture = validate_applicant_payment()
+    destination_sql, destination_test = validate_destination_source()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -759,6 +777,26 @@ def main() -> int:
             from applicant_slip_ci import run_applicant_slip
             run_applicant_slip(local, fresh_publication_database,
                                document_fixture + "\n" + review_fixture + "\n" + applicant_fixture + "\n" + applicant_review_fixture + "\n" + applicant_payment_fixture)
+            # S15 is the first D1-dependent Admissions increment. Install the
+            # pinned D1 draft only after earlier DB03 acceptance/race fixtures.
+            fresh_publication_database()
+            from domain_local_ci import assemble_draft_chain
+            _, d1_sql = assemble_draft_chain(ROOT)
+            local.run_psql(container, d1_sql, 'DB03_DESTINATION_D1_INSTALL', timeout=1200)
+            try:
+                local.run_psql(container, "BEGIN;\n" + destination_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_DESTINATION_FAILURE'; END $failure$;\nCOMMIT;", 'DB03_DESTINATION_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_DESTINATION_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_DESTINATION_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container, "SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='admission_destination_intents';", 'DB03_DESTINATION_ABSENT', tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_DESTINATION_ROLLBACK_INCOMPLETE')
+            local.run_psql(container, 'BEGIN;\n' + destination_sql + '\nCOMMIT;', 'DB03_DESTINATION_INSTALL')
+            output = local.run_psql(container, destination_test, 'DB03_DESTINATION_TEST')
+            parse_tap(output, 15)
+            print('DB03_DESTINATION_DATABASE_PASS 15/15; D1_typed_grade=true; no_applicant_writer=true')
             return 0
     finally:
         if started:
