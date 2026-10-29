@@ -408,7 +408,18 @@ def main():
             if image not in {p + local.EXPECTED_POSTGRES_TAG for p in ('supabase/postgres:', 'ghcr.io/supabase/postgres:', 'public.ecr.aws/supabase/postgres:')}:
                 raise RuntimeError('DB08_POSTGRES_PIN_MISMATCH')
             run(['supabase', 'db', 'reset', '--local', '--no-seed'], cwd=foundation, timeout=900)
-            baseline = local.run_foundation_regression(contract, catalog_only=True)
+            try:
+                baseline = local.run_foundation_regression(contract, catalog_only=True)
+            except local.DomainLocalCIError:
+                # The pinned Foundation helper suppresses the test process output.
+                # Surface a bounded diagnostic while this disposable stack exists.
+                probe = subprocess.run(
+                    ['supabase', 'test', 'db', 'supabase/tests/database/01_foundation_catalog.sql', '--local'],
+                    cwd=foundation, text=True, capture_output=True, timeout=300,
+                )
+                print('DB08_FOUNDATION_CATALOG_DIAGNOSTIC exit=' + str(probe.returncode), flush=True)
+                print((probe.stdout + '\n' + probe.stderr)[-5000:], flush=True)
+                raise
             try:
                 local.run_psql(container, 'BEGIN;\n' + sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB08_INJECTED_DDL_FAILURE'; END $failure$;\nCOMMIT;", 'DB08_FAILED_INSTALL')
             except local.DomainLocalCIError as exc:
