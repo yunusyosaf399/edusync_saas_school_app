@@ -65,7 +65,7 @@ BEGIN
   RAISE EXCEPTION 'DB03 applicant review source unavailable'; END IF;
  -- Acquire parent locks before the submission lock. Withdrawals and review
  -- serialize through the same School/application boundary.
- PERFORM 1 FROM app_private.school_profiles WHERE id=p_school AND state='ACTIVE' FOR UPDATE;
+ PERFORM 1 FROM app_private.school_profiles WHERE id=p_school AND state IN('SETUP','ACTIVE') FOR UPDATE;
  IF NOT FOUND THEN RAISE EXCEPTION 'DB03 applicant review School unavailable'; END IF;
  PERFORM 1 FROM app.campuses WHERE id=source.campus_id AND school_id=p_school AND state='ACTIVE' FOR UPDATE;
  IF NOT FOUND THEN RAISE EXCEPTION 'DB03 applicant review Campus unavailable'; END IF;

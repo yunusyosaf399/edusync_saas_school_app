@@ -95,7 +95,7 @@ def run_applicant_slip(local, fresh_database, fixture):
             action()
         except (Denied, psycopg.Error) as exc:
             if fragment not in str(exc):
-                raise RuntimeError('DB03_APPLICANT_SLIP_WRONG_DENIAL ' + fragment) from exc
+                raise RuntimeError('DB03_APPLICANT_SLIP_WRONG_DENIAL ' + fragment + ': ' + str(exc)[:300]) from exc
         else:
             raise RuntimeError('DB03_APPLICANT_SLIP_EXPECTED_DENIAL ' + fragment)
         check(True, 'expected denial')
