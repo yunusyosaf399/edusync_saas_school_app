@@ -151,7 +151,7 @@ def run_applicant_slip(local, fresh_database, fixture):
               and str(details['application_id']) == str(app),
               'independent reviewer inspects original private bytes')
         with root() as conn:
-            conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE id=md5('finance.admission.payment.issue:grant')::uuid")
+            conn.execute("UPDATE app_private.permissions SET state='DISABLED' WHERE code='finance.admission.payment.issue'")
         denied(lambda: review.decide(token=reviewer_token, submission_id=str(first['submission_id']),
                decision='APPROVE', reason='Bank transfer confirmed', idempotency_key='review-first'),
                'payment issue authority denied')
@@ -159,7 +159,7 @@ def run_applicant_slip(local, fresh_database, fixture):
             check(conn.execute("SELECT count(*) FROM app_private.finance_admission_slip_reviews WHERE submission_id=%s", (first['submission_id'],)).fetchone()[0] == 0
                   and conn.execute("SELECT count(*) FROM app_private.finance_admission_official_payments").fetchone()[0] == 0,
                   'issuer denial rolled back review and receipt')
-            conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=NULL WHERE id=md5('finance.admission.payment.issue:grant')::uuid")
+            conn.execute("UPDATE app_private.permissions SET state='ENABLED' WHERE code='finance.admission.payment.issue'")
         accepted = review.decide(token=reviewer_token, submission_id=str(first['submission_id']),
                                  decision='APPROVE', reason='Bank transfer confirmed', idempotency_key='review-first')
         check(accepted['decision'] == 'APPROVE' and accepted['state'] == 'VERIFIED'
@@ -221,4 +221,4 @@ def run_applicant_slip(local, fresh_database, fixture):
         denied(lambda: review.inspect(token=reviewer_token, submission_id=str(first['submission_id'])),
                'independent reviewer authority denied')
         check(len(audited) == 1, 'signed storage entitlement activation audited')
-    print(f'DB03_APPLICANT_SLIP_REAL_AUTH_PASS assertions={count} atomic_approval_payment=true clearance=false duplicate_approval_denied=true revoked_issuer_grant_rolls_back=true')
+    print(f'DB03_APPLICANT_SLIP_REAL_AUTH_PASS assertions={count} atomic_approval_payment=true clearance=false duplicate_approval_denied=true disabled_issuer_rolls_back=true')
