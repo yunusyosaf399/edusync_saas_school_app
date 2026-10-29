@@ -350,7 +350,7 @@ def validate_destination_source() -> tuple[str, str]:
     if re.search(r'(?m)^CREATE FUNCTION app\.', sql) or 'FORCE ROW LEVEL SECURITY;' not in sql:
         raise RuntimeError('DB03_DESTINATION_NO_PUBLIC_COMMAND')
     if re.findall(r'SELECT plan\((\d+)\);', test) != ['15'] or len(re.findall(
-        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 15 or not test.rstrip().endswith('ROLLBACK;'):
+        r'(?m)^SELECT (?:extensions\.)?(?:is|ok|throws_ok|lives_ok)\(', test)) != 15 or not test.rstrip().endswith('ROLLBACK;'):
         raise RuntimeError('DB03_DESTINATION_TEST_PLAN')
     for name in ('policy_publication_actor.sql', 'intake_grace_actor.sql'):
         test = test.replace('\\ir fixtures/' + name,

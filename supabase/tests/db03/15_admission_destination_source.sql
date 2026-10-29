@@ -50,19 +50,19 @@ SELECT is((SELECT ac.code FROM app_private.admission_destination_intents i
 SELECT is((SELECT count(*) FROM app_private.admission_destination_intents),1::bigint,
  'one retained intention');
 SET ROLE schoolos_schema_owner;
-SELECT throws_ok(format($q$INSERT INTO app_private.admission_destination_intents
+SELECT extensions.throws_ok(format($q$INSERT INTO app_private.admission_destination_intents
  (application_id,school_id,campus_id,academic_year_id,application_version,revision,class_offering_id,reason_private,created_by)
  VALUES(%L::uuid,'22222222-2222-4222-8222-222222222222','91919191-9191-4191-8191-919191919191',
  '93939393-9393-4393-8393-939393939393',1,2,'15151515-1515-4515-8515-151515151517',
  'Other Campus','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')$q$,:'dest_application_id'),
- 'P0001'::char(5),'DB03 destination context or revision mismatch'::text,
+ 'P0001'::text,'DB03 destination context or revision mismatch'::text,
  'other Campus offering denied');
-SELECT throws_ok(format($q$INSERT INTO app_private.admission_destination_intents
+SELECT extensions.throws_ok(format($q$INSERT INTO app_private.admission_destination_intents
  (application_id,school_id,campus_id,academic_year_id,application_version,revision,class_offering_id,reason_private,created_by)
  VALUES(%L::uuid,'22222222-2222-4222-8222-222222222222','91919191-9191-4191-8191-919191919191',
  '93939393-9393-4393-8393-939393939393',1,2,'15151515-1515-4515-8515-151515151516',
  'Missing predecessor','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')$q$,:'dest_application_id'),
- 'P0001'::char(5),'DB03 destination context or revision mismatch'::text,
+ 'P0001'::text,'DB03 destination context or revision mismatch'::text,
  'revision must point to exact predecessor');
 INSERT INTO app_private.admission_destination_intents(application_id,school_id,campus_id,
  academic_year_id,application_version,revision,supersedes_id,class_offering_id,reason_private,created_by)
