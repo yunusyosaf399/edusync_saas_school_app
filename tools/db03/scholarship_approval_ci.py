@@ -88,16 +88,24 @@ def run_scholarship_approval(root, worker, api, destination, concession, admin_c
     denied(lambda:review(q,'stale-request',expected=q['request_version']+1),'source or workflow changed')
     denied(lambda:review(q,'invalid-review',decision='WAIVE'),'review invalid')
     denied(lambda:review(q,'expired-review',expired=True),'authentication expired')
-    # A complete grant for another Campus must not authorize this request.
+    # Scope facts are immutable: revoke and append a replacement, never rewrite Campus.
+    scope_id=uid('admission.concession.review:assignment-scope:'+uid('scholarship-finance:assignment:'+reviewer))
+    def append_scope(conn, campus, suffix):
+        conn.execute('INSERT INTO app_private.assignment_permission_scopes('
+                     'id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,scope_kind,'
+                     'resolver_key,campus_id,valid_from,created_by) '
+                     'SELECT %s,assignment_id,grant_id,role_id,permission_id,scope_contract_id,scope_kind,'
+                     'resolver_key,%s,clock_timestamp(),created_by '
+                     'FROM app_private.assignment_permission_scopes WHERE id=%s',
+                     (uid('scholarship-finance:replacement-scope:'+suffix),campus,scope_id))
     with root() as conn:
-        conn.execute("UPDATE app_private.assignment_permission_scopes SET campus_id=%s WHERE assignment_id=%s "
-                     "AND permission_id=md5('admission.concession.review:permission')::uuid",
-                     (OTHER,uid('scholarship-finance:assignment:'+reviewer)))
+        with conn.transaction():
+            conn.execute('UPDATE app_private.assignment_permission_scopes SET revoked_at=clock_timestamp() WHERE id=%s',
+                         (scope_id,))
+            append_scope(conn,OTHER,'other')
     denied(lambda:review(q,'wrong-campus'),'approval authority denied')
     with root() as conn:
-        conn.execute("UPDATE app_private.assignment_permission_scopes SET campus_id=%s WHERE assignment_id=%s "
-                     "AND permission_id=md5('admission.concession.review:permission')::uuid",
-                     (CAMPUS,uid('scholarship-finance:assignment:'+reviewer)))
+        append_scope(conn,CAMPUS,'main')
     result=review(q,'review-one')
     check(result['state']=='APPROVED' and result['finance_approved']
           and not result['charge_adjusted'] and not result['clearance_issued'],'approve terms only')
