@@ -119,6 +119,9 @@ def run_concession_command(root, worker, api, destination, claims, fixture):
               'old category selection preserved')
         check(conn.execute('SELECT count(*) FROM app_private.finance_fee_obligations').fetchone()[0]==0,
               'no charge created or reduced')
+    from scholarship_approval_ci import run_scholarship_approval
+    run_scholarship_approval(root,worker,api,destination,record,claims)
+    with root() as conn:
         conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() "
                      "WHERE id=md5('admission.concession.record:grant')::uuid")
     denied(lambda:record(app,newdest,latest['concession_id'],tuition,'revoked'),'administrator scope denied')
