@@ -420,6 +420,28 @@ def validate_finance_assessment_command() -> tuple[str, str, str]:
     return sql, test, fixture
 
 
+def validate_payment_allocation() -> tuple[str,str,str]:
+    source=(ROOT/'supabase/proposals/db03/20_01_applicant_payment_allocation_source.sql.draft').read_text()
+    command=(ROOT/'supabase/proposals/db03/20_02_applicant_payment_allocation_command.sql.draft').read_text()
+    test=(ROOT/'supabase/tests/db03/20_applicant_payment_allocation.sql').read_text()
+    fixture=(ROOT/'supabase/tests/db03/fixtures/payment_allocation_actor.sql').read_text()
+    sql=source+'\n'+command
+    if re.findall(r'(?mi)^CREATE TABLE app_private\.([a-z0-9_]+)\(',source)!=['finance_admission_payment_allocations']:
+        raise RuntimeError('DB03_S20_TABLE_SCOPE')
+    if re.findall(r'(?mi)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)!=[
+        'db03_allocation_guard','db03_allocator_authorized','db03_allocate_admission_payment']:
+        raise RuntimeError('DB03_S20_FUNCTION_SCOPE')
+    outside=re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '',sql,flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE EXTENSION|CREATE FUNCTION app\.)\b',outside):
+        raise RuntimeError('DB03_S20_ACTIVATION_OR_SEED')
+    if re.findall(r'SELECT plan\((\d+)\);',test)!=['17'] or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test))!=17 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_S20_TEST_PLAN')
+    if 'finance.admission.payment.allocate' not in fixture:
+        raise RuntimeError('DB03_S20_FIXTURE_MISSING')
+    print('DB03_S20_ALLOCATION_SOURCE_PASS assertions=17 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test,fixture
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -445,6 +467,7 @@ def main() -> int:
     manual_fee_command_sql, manual_fee_command_test, manual_fee_fixture = validate_manual_fee_command()
     manual_assessment_sql, manual_assessment_test = validate_manual_assessment_binding()
     finance_assessment_sql, finance_assessment_test, finance_assessment_fixture = validate_finance_assessment_command()
+    allocation_sql, allocation_test, allocation_fixture = validate_payment_allocation()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -741,6 +764,17 @@ def main() -> int:
             if absent != '0':
                 raise RuntimeError('DB03_S19_DDL_ROLLBACK_INCOMPLETE')
             local.run_psql(container, "BEGIN;\n" + finance_assessment_sql + "\nCOMMIT;", 'DB03_S19_FINANCE_ASSESSMENT_INSTALL')
+            try:
+                local.run_psql(container, "BEGIN;\n" + allocation_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_S20_INJECTED_FAILURE'; END $failure$;\nCOMMIT;", 'DB03_S20_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_S20_INJECTED_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_S20_INSTALL_ROLLBACK_NOT_OBSERVED')
+            absent=local.run_psql(container, "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='finance_admission_payment_allocations')+(SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_allocation_guard','db03_allocator_authorized','db03_allocate_admission_payment'))+(SELECT count(*) FROM pg_constraint WHERE conname IN('db03_allocation_assessment_context','db03_allocation_payment_context'));", 'DB03_S20_ROLLBACK_ABSENCE', tuples=True).strip()
+            if absent!='0':
+                raise RuntimeError('DB03_S20_ROLLBACK_INCOMPLETE')
+            local.run_psql(container, "BEGIN;\n" + allocation_sql + "\nCOMMIT;", 'DB03_S20_INSTALL')
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -905,9 +939,14 @@ def main() -> int:
                 print('DB03_S19_FINANCE_ASSESSMENT_ASSERTION_DETAIL ' + finance_assessment_output)
             parse_tap(finance_assessment_output, 13)
             print('DB03_S19_FINANCE_ASSESSMENT_DATABASE_PASS 13/13; clearance=false')
+            allocation_output=local.run_psql(container,allocation_test,'DB03_S20_ALLOCATION_TEST')
+            if 'not ok' in allocation_output:
+                print('DB03_S20_ASSERTION_DETAIL '+allocation_output)
+            parse_tap(allocation_output,17)
+            print('DB03_S20_ALLOCATION_DATABASE_PASS 17/17; clearance=false')
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\n" + manual_assessment_sql + "\n" + finance_assessment_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\n" + manual_assessment_sql + "\n" + finance_assessment_sql + "\n" + allocation_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -934,6 +973,12 @@ def main() -> int:
             from finance_assessment_ci import run_finance_assessment
             run_finance_assessment(local, fresh_publication_database,
                                    document_fixture + "\n" + manual_fee_fixture + "\n" + finance_assessment_fixture)
+            from payment_allocation_ci import run_payment_allocation
+            run_payment_allocation(local, fresh_publication_database,
+                document_fixture + "\n" + review_fixture + "\n" +
+                applicant_fixture + "\n" + applicant_review_fixture + "\n" +
+                applicant_payment_fixture + "\n" + manual_fee_fixture + "\n" +
+                finance_assessment_fixture + "\n" + allocation_fixture)
             return 0
     finally:
         if started:

@@ -33,9 +33,11 @@ SELECT ok(NOT has_table_privilege('schoolos_workflow_executor','app_private.fina
 SELECT ok(NOT has_function_privilege('authenticated',
  'app_private.db03_guard_applicant_obligation_assessment()','EXECUTE'),
  'clients cannot run private assessment guard');
+-- S20's official allocation FK prevents TRUNCATE before the S18
+-- immutable-history trigger; the outcome is still a fail-closed rejection.
 SELECT throws_ok('TRUNCATE app_private.finance_admission_obligation_assessments',
- 'P0001'::char(5), 'DB03 applicant obligation assessment history is immutable'::text,
- 'retained assessment cannot be truncated');
+ '0A000'::char(5), 'cannot truncate a table referenced in a foreign key constraint'::text,
+ 'retained assessment cannot be truncated with S20 allocations');
 SELECT ok((SELECT count(*)=1 FROM pg_constraint WHERE
  conrelid='app_private.finance_admission_obligation_assessments'::regclass AND
  conname='db03_applicant_obligation_policy_fk'), 'original automatic-policy provenance retained');

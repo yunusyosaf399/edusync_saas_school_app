@@ -1,0 +1,236 @@
+-- S20 protected allocation issuer: no new operation or permission is seeded.
+-- Only reviewed official ADM receipts, current S19 manual obligation and exact
+-- Finance role grant. No auto-clearance, no negative/implicit allocations.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_allocator_authorized(
+ p_actor uuid,p_campus uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT p_actor IS NOT NULL AND p_actor=app_private.current_principal_id()
+ AND EXISTS(SELECT 1 FROM app_private.principals p WHERE p.id=p_actor
+   AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+ AND app_private.has_complete_grant('finance.admission.payment.allocate',
+   'CAMPUS',p_campus)
+ AND EXISTS(
+  SELECT 1 FROM app_private.principal_role_assignments ra
+  JOIN app_private.roles r ON r.id=ra.role_id
+  JOIN app_private.assignment_permission_scopes sc
+   ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+  JOIN app_private.role_permission_grants g
+   ON g.id=sc.grant_id AND g.role_id=ra.role_id
+   AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts c
+   ON c.id=sc.scope_contract_id AND c.permission_id=sc.permission_id
+   AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key
+  JOIN app_private.permissions pe ON pe.id=sc.permission_id
+  WHERE ra.principal_id=p_actor AND ra.principal_kind='INDIVIDUAL'
+   AND ra.context_kind='INDIVIDUAL'
+   AND r.code='ACCOUNTANT' AND r.state='ACTIVE' AND NOT r.family_only
+   AND pe.code='finance.admission.payment.allocate'
+   AND pe.state='ENABLED' AND NOT pe.family_safe
+   AND c.enabled AND sc.resolver_key='DIRECT'
+   AND ((sc.scope_kind='CAMPUS' AND sc.campus_id=p_campus)
+    OR (sc.scope_kind='ALL' AND sc.campus_id IS NULL))
+   AND ra.valid_from<=clock_timestamp()
+   AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+   AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+   AND g.valid_from<=clock_timestamp()
+   AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND sc.valid_from<=clock_timestamp()
+   AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+   AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at)
+ );
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_allocator_authorized(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_allocate_admission_payment(
+ p_application uuid,p_expected bigint,p_assessment uuid,p_payment uuid,
+ p_amount_minor numeric,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ ass app_private.finance_admission_obligation_assessments%ROWTYPE;
+ newest app_private.finance_admission_obligation_assessments%ROWTYPE;
+ payment app_private.finance_admission_official_payments%ROWTYPE;
+ allocation app_private.finance_admission_payment_allocations%ROWTYPE;
+ old_receipt app_private.command_receipts%ROWTYPE;
+ actor uuid; op uuid; school uuid; campus uuid; year_id uuid;
+ v_hash bytea; v_receipt uuid; v_correlation uuid; v_result jsonb;
+ v_exp text; claims jsonb; app_total numeric; payment_total numeric;
+BEGIN
+ IF session_user<>'schoolos_file_login'
+  OR current_setting('transaction_isolation')<>'read committed'
+  OR p_application IS NULL OR p_expected IS NULL OR p_expected<1
+  OR p_assessment IS NULL OR p_payment IS NULL
+  OR p_amount_minor IS NULL OR p_amount_minor<>trunc(p_amount_minor)
+  OR p_amount_minor<=0 OR p_amount_minor>=100000000000000000000
+  OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB03 allocation input invalid'; END IF;
+ claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
+ v_exp:=claims->>'exp';
+ IF v_exp IS NULL OR v_exp !~ '^[0-9]{1,12}$'
+  OR to_timestamp(v_exp::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 allocation JWT expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ SELECT school_id,campus_id,academic_year_id INTO school,campus,year_id
+  FROM app_private.admission_applications WHERE id=p_application;
+ IF school IS NULL OR NOT app_private.db03_allocator_authorized(actor,campus) THEN
+  RAISE EXCEPTION 'DB03 allocation Finance scope denied'; END IF;
+ SELECT o.id INTO op FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='finance.admission.payment.allocate'
+  AND o.contract_version=1 AND o.handler_key=o.code
+  AND o.payload_schema_version=1 AND o.enabled AND NOT o.requires_approval
+  AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF op IS NULL THEN RAISE EXCEPTION 'DB03 allocation operation unavailable'; END IF;
+ v_hash:=sha256(convert_to(jsonb_build_array('db03-admission-allocation-v1',
+  p_application,p_expected,p_assessment,p_payment,p_amount_minor::text,
+  encode(sha256(convert_to(p_reason,'UTF8')),'hex'))::text,'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||op::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school
+  AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 allocation School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=campus AND school_id=school
+  AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 allocation Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=year_id AND school_id=school
+  AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 allocation Year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=p_application FOR UPDATE;
+ IF a.id IS NULL OR a.school_id<>school OR a.campus_id<>campus
+  OR a.academic_year_id<>year_id
+  OR to_timestamp(v_exp::bigint)<=clock_timestamp()
+  OR NOT app_private.db03_allocator_authorized(actor,campus)
+  OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+   JOIN app_private.permissions p ON p.id=o.request_permission_id
+   WHERE o.id=op AND o.enabled AND NOT o.requires_approval
+    AND p.code=o.code AND p.state='ENABLED') THEN
+  RAISE EXCEPTION 'DB03 allocation authority changed'; END IF;
+
+ SELECT * INTO old_receipt FROM app_private.command_receipts
+  WHERE principal_id=actor AND operation_id=op
+  AND idempotency_key='applicant-allocation:'||p_key;
+ IF old_receipt.id IS NOT NULL THEN
+  SELECT * INTO allocation FROM app_private.finance_admission_payment_allocations
+    WHERE id=old_receipt.result_ref;
+  IF old_receipt.state<>'SUCCEEDED'
+   OR old_receipt.command_kind<>'finance.admission.payment.allocate'
+   OR old_receipt.result_kind<>'FINANCE_ADMISSION_ALLOCATION'
+   OR old_receipt.canonical_payload_hash IS DISTINCT FROM v_hash
+   OR old_receipt.expected_target_version IS DISTINCT FROM p_expected
+   OR allocation.id IS NULL OR allocation.application_id<>p_application
+   OR allocation.assessment_id<>p_assessment OR allocation.payment_id<>p_payment
+   OR allocation.allocated_minor<>p_amount_minor
+   OR allocation.private_reason<>p_reason OR allocation.allocated_by<>actor
+   OR old_receipt.result_summary->>'allocation_id' IS DISTINCT FROM allocation.id::text
+   OR (SELECT count(*) FROM app_private.audit_events
+     WHERE command_receipt_id=old_receipt.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events
+     WHERE command_receipt_id=old_receipt.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 allocation replay conflict'; END IF;
+  -- Replays are historical evidence, never current clearance evidence.
+  RETURN old_receipt.result_summary;
+ END IF;
+ IF a.state<>'DRAFT' OR a.row_version<>p_expected
+  OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards
+   WHERE application_id=p_application) THEN
+  RAISE EXCEPTION 'DB03 allocation application stale or forwarded'; END IF;
+ SELECT * INTO ass FROM app_private.finance_admission_obligation_assessments
+  WHERE id=p_assessment FOR UPDATE;
+ SELECT * INTO newest FROM app_private.finance_admission_obligation_assessments
+  WHERE application_id=p_application ORDER BY revision DESC LIMIT 1;
+ SELECT * INTO payment FROM app_private.finance_admission_official_payments
+  WHERE id=p_payment FOR UPDATE;
+ IF ass.id IS NULL OR newest.id IS DISTINCT FROM ass.id
+  OR ass.source_kind<>'MANUAL' OR ass.application_id<>a.id
+  OR ass.school_id<>school OR ass.campus_id<>campus
+  OR ass.academic_year_id<>year_id
+  OR ass.application_version<>p_expected
+  OR payment.id IS NULL OR payment.application_id<>a.id
+  OR payment.school_id<>school OR payment.campus_id<>campus
+  OR payment.currency_code<>ass.currency_code
+  OR EXISTS(SELECT 1 FROM app_private.finance_admission_payment_allocations x
+   WHERE x.application_id=p_application AND x.assessment_id<>p_assessment) THEN
+  RAISE EXCEPTION 'DB03 allocation source stale or cross-scope'; END IF;
+ IF NOT EXISTS(
+  SELECT 1 FROM app_private.command_receipts r
+  JOIN app_private.operation_contracts o ON o.id=r.operation_id
+  WHERE o.code='finance.admission.obligation.assess'
+   AND r.result_ref=ass.id AND r.result_kind='FINANCE_ADMISSION_MANUAL_ASSESSMENT'
+   AND r.command_kind=o.code AND r.state='SUCCEEDED'
+   AND r.created_by=ass.assessed_by
+   AND r.result_summary->>'assessment_id'=ass.id::text
+   AND (SELECT count(*) FROM app_private.audit_events au
+    WHERE au.command_receipt_id=r.id AND au.target_ref=ass.id
+     AND au.event_type=o.code)=1
+   AND (SELECT count(*) FROM app_private.outbox_events ob
+    WHERE ob.command_receipt_id=r.id AND ob.aggregate_ref=ass.id
+     AND ob.event_type=o.code)=1) OR NOT EXISTS(
+  SELECT 1 FROM app_private.command_receipts r
+  JOIN app_private.operation_contracts o ON o.id=r.operation_id
+  WHERE o.code='finance.admission.payment.issue'
+   AND r.result_ref=payment.id AND r.result_kind='FINANCE_ADMISSION_PAYMENT'
+   AND r.command_kind=o.code AND r.state='SUCCEEDED'
+   AND r.created_by=payment.created_by
+   AND r.result_summary->>'payment_id'=payment.id::text
+   AND (SELECT count(*) FROM app_private.audit_events au
+    WHERE au.command_receipt_id=r.id AND au.target_ref=payment.id
+     AND au.event_type=o.code)=1
+   AND (SELECT count(*) FROM app_private.outbox_events ob
+    WHERE ob.command_receipt_id=r.id AND ob.aggregate_ref=payment.id
+     AND ob.event_type=o.code)=1) THEN
+  RAISE EXCEPTION 'DB03 allocation Finance/payment provenance unavailable'; END IF;
+ SELECT coalesce(sum(allocated_minor),0) INTO app_total
+  FROM app_private.finance_admission_payment_allocations
+  WHERE application_id=p_application;
+ SELECT coalesce(sum(allocated_minor),0) INTO payment_total
+  FROM app_private.finance_admission_payment_allocations WHERE payment_id=p_payment;
+ IF p_amount_minor>ass.gross_amount_minor-app_total
+  OR p_amount_minor>payment.amount_minor-payment_total THEN
+  RAISE EXCEPTION 'DB03 allocation amount exceeds obligation or payment'; END IF;
+ INSERT INTO app_private.finance_admission_payment_allocations(
+  application_id,school_id,campus_id,academic_year_id,application_version,
+  assessment_id,payment_id,allocated_minor,currency_code,private_reason,allocated_by)
+ VALUES(p_application,school,campus,year_id,p_expected,ass.id,payment.id,
+  p_amount_minor,ass.currency_code,p_reason,actor) RETURNING * INTO allocation;
+ v_result:=jsonb_build_object('allocation_id',allocation.id,
+  'application_id',p_application,'assessment_id',ass.id,'payment_id',payment.id,
+  'official_receipt_number',payment.receipt_number,
+  'currency_code',ass.currency_code,'allocated_minor',p_amount_minor,
+  'assessment_unallocated_minor',ass.gross_amount_minor-app_total-p_amount_minor,
+  'payment_unallocated_minor',payment.amount_minor-payment_total-p_amount_minor,
+  'state','ALLOCATED_NOT_CLEARED');
+ v_receipt:=gen_random_uuid();v_correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,
+  command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+  expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(v_receipt,actor,op,'finance.admission.payment.allocate',
+  'applicant-allocation:'||p_key,v_hash,1,p_expected,'SUCCEEDED',
+  'FINANCE_ADMISSION_ALLOCATION',allocation.id,v_result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+  target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',
+  jsonb_build_object('operation','finance.admission.payment.allocate',
+   'assessment_id',ass.id,'payment_id',payment.id),
+  1,'finance.admission.payment.allocate','FINANCE_ADMISSION_ALLOCATION',
+  allocation.id,campus,v_receipt,'WORKER',v_correlation,clock_timestamp(),v_result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+  aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,
+  payload,created_by)
+ VALUES('finance.admission.payment.allocate','FINANCE_ADMISSION_ALLOCATION',
+  allocation.id,1,v_receipt,1,v_correlation,clock_timestamp(),v_result,actor);
+ RETURN v_result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_allocate_admission_payment(
+ uuid,bigint,uuid,uuid,numeric,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_allocate_admission_payment(
+ uuid,bigint,uuid,uuid,numeric,text,text)
+ TO schoolos_file_login;
+RESET ROLE;

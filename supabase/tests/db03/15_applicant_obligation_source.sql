@@ -33,8 +33,9 @@ SELECT ok((SELECT count(*)=1 FROM pg_constraint WHERE
  conrelid='app_private.finance_admission_obligation_assessments'::regclass
  AND contype='u' AND pg_get_constraintdef(oid) LIKE '%application_id, revision%'),
  'applicant revision is unique');
+-- S20's allocation FK rejects TRUNCATE before the assessment history trigger.
 SELECT throws_ok('TRUNCATE app_private.finance_admission_obligation_assessments',
- 'P0001'::char(5), 'DB03 applicant obligation assessment history is immutable'::text,
+ '0A000'::char(5), 'cannot truncate a table referenced in a foreign key constraint'::text,
  'assessment history cannot be truncated');
 SELECT ok(to_regclass('app_private.finance_admission_clearance_events') IS NULL,
  'assessment baseline does not issue clearance');
