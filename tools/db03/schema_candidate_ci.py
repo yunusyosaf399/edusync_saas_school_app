@@ -491,6 +491,33 @@ def validate_payment_return() -> tuple[str,str,str]:
     return sql,test,fixture
 
 
+def validate_independent_return_ledger_review() -> tuple[str,str,str]:
+    folder=ROOT/'supabase/proposals/db03'
+    source=(folder/'23_01_independent_return_ledger_review_source.sql.draft').read_text()
+    command=(folder/'23_02_independent_return_ledger_review_command.sql.draft').read_text()
+    test=(ROOT/'supabase/tests/db03/23_independent_return_ledger_review.sql').read_text()
+    fixture=(ROOT/'supabase/tests/db03/fixtures/independent_return_reviewer_actor.sql').read_text()
+    sql=source+'\n'+command
+    if re.findall(r'(?mi)^CREATE TABLE app_private\.([a-z0-9_]+)\(',sql)!=[
+         'finance_admission_return_ledger_reviews']:
+        raise RuntimeError('DB03_S23_SOURCE_SCOPE')
+    if re.findall(r'(?mi)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)!=[
+        'db03_guard_return_ledger_review',
+        'db03_return_ledger_reviewer_authorized','db03_review_return_ledger']:
+        raise RuntimeError('DB03_S23_FUNCTION_SCOPE')
+    outside=re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '',sql,flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE EXTENSION|CREATE FUNCTION app\.)\b',outside):
+        raise RuntimeError('DB03_S23_PRODUCTION_SEED')
+    if re.findall(r'SELECT plan\((\d+)\);',test)!=['16'] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test))!=16 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_S23_TEST_PLAN')
+    if 'foundation-test-001@example.invalid' not in fixture or 'finance.admission.payment.return.ledger.review' not in fixture:
+        raise RuntimeError('DB03_S23_INDEPENDENT_ACTOR_SCOPE')
+    print('DB03_S23_LEDGER_REVIEW_SOURCE_PASS assertions=16 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test,fixture
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -519,6 +546,7 @@ def main() -> int:
     allocation_sql, allocation_test, allocation_fixture = validate_payment_allocation()
     funding_snapshot_sql, funding_snapshot_test = validate_funding_snapshot()
     payment_return_sql, payment_return_test, payment_return_fixture = validate_payment_return()
+    return_review_sql, return_review_test, return_review_fixture = validate_independent_return_ledger_review()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -853,6 +881,22 @@ def main() -> int:
                 raise RuntimeError('DB03_S22_INCOMPLETE_ROLLBACK')
             local.run_psql(container,"BEGIN;\n"+payment_return_sql+"\nCOMMIT;",
                            'DB03_S22_RETURN_INSTALL')
+            try:
+                local.run_psql(container,"BEGIN;\n"+return_review_sql+
+                 "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_S23_INJECTED_FAILURE'; END $failure$;\nCOMMIT;",
+                 'DB03_S23_ROLLBACK_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_S23_INJECTED_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_S23_ROLLBACK_REHEARSAL_MISSING')
+            remaining=local.run_psql(container,
+              "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='finance_admission_return_ledger_reviews')+(SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN ('db03_review_return_ledger','db03_guard_return_ledger_review','db03_return_ledger_reviewer_authorized'));",
+              'DB03_S23_ROLLBACK_PROBE',tuples=True).strip()
+            if remaining!='0':
+                raise RuntimeError('DB03_S23_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,"BEGIN;\n"+return_review_sql+"\nCOMMIT;",
+                           'DB03_S23_INSTALL')
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -1032,9 +1076,14 @@ def main() -> int:
                 print('DB03_S22_RETURN_ASSERTION_DETAIL '+return_output)
             parse_tap(return_output,19)
             print('DB03_S22_RETURN_DATABASE_PASS 19/19; bank_verified=false clearance=false')
+            return_review_output=local.run_psql(container,return_review_test,'DB03_S23_REVIEW_TEST')
+            if 'not ok' in return_review_output:
+                print('DB03_S23_REVIEW_ASSERTION_DETAIL '+return_review_output)
+            parse_tap(return_review_output,16)
+            print('DB03_S23_REVIEW_DATABASE_PASS 16/16; bank_verified=false clearance=false')
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\n" + manual_assessment_sql + "\n" + finance_assessment_sql + "\n" + allocation_sql + "\n" + funding_snapshot_sql + "\n" + payment_return_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\n" + manual_assessment_sql + "\n" + finance_assessment_sql + "\n" + allocation_sql + "\n" + funding_snapshot_sql + "\n" + payment_return_sql + "\n" + return_review_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -1066,7 +1115,7 @@ def main() -> int:
                 document_fixture + "\n" + review_fixture + "\n" +
                 applicant_fixture + "\n" + applicant_review_fixture + "\n" +
                 applicant_payment_fixture + "\n" + manual_fee_fixture + "\n" +
-                finance_assessment_fixture + "\n" + allocation_fixture + "\n" + payment_return_fixture)
+                finance_assessment_fixture + "\n" + allocation_fixture + "\n" + payment_return_fixture + "\n" + return_review_fixture)
             return 0
     finally:
         if started:
