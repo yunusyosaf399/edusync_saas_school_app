@@ -54,6 +54,7 @@ VALUES('17171717-1717-4717-8717-171717171718',:'concession_application_id'::uuid
 INSERT INTO app_private.admission_concession_categories(concession_id,school_id,category_id)
 VALUES('17171717-1717-4717-8717-171717171718','22222222-2222-4222-8222-222222222222',
  '17171717-1717-4717-8717-171717171701');
+SET CONSTRAINTS db03_concession_selected_category IMMEDIATE;
 RESET ROLE;
 SELECT is((SELECT count(*) FROM app_private.admission_concession_categories),1::bigint,
  'tuition alone selected; transport and books remain unselected');
