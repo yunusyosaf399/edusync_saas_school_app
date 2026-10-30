@@ -2,7 +2,7 @@
 -- A ledger review is NOT verification of external bank settlement and NEVER
 -- unfreezes the applicant, reallocates original credits, or issues clearance.
 SET ROLE schoolos_schema_owner;
-CREATE TABLE app_private.finance_admission_return_ledger_reviews (
+CREATE TABLE app_private.finance_admission_return_ledger_reviews(
  id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
  return_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_admission_payment_returns(id)
    ON UPDATE RESTRICT ON DELETE RESTRICT,
