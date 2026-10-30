@@ -1,0 +1,79 @@
+-- DB03 S23 inactive candidate: independent accounting review of a reported return.
+-- A ledger review is NOT verification of external bank settlement and NEVER
+-- unfreezes the applicant, reallocates original credits, or issues clearance.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_admission_return_ledger_reviews (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ return_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_admission_payment_returns(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ application_id uuid NOT NULL,
+ payment_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ decision text NOT NULL CHECK (decision IN
+  ('LEDGER_MATCHES_REPORT','DISPUTE_REPORTED_RETURN','REQUEST_BANK_EVIDENCE')),
+ observed_return_minor numeric(20,0) NOT NULL CHECK(observed_return_minor>0),
+ observed_compensation_minor numeric(20,0) NOT NULL CHECK(observed_compensation_minor>=0),
+ bank_case_reference_private text NOT NULL CHECK(
+  length(btrim(bank_case_reference_private)) BETWEEN 5 AND 180),
+ review_reason_private text NOT NULL CHECK(
+  length(btrim(review_reason_private)) BETWEEN 8 AND 1000),
+ reviewed_by uuid NOT NULL REFERENCES app_private.principals(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ reviewed_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp()
+);
+CREATE INDEX db03_return_ledger_reviews_app
+ ON app_private.finance_admission_return_ledger_reviews(application_id,reviewed_at,id);
+CREATE FUNCTION app_private.db03_guard_return_ledger_review()
+ RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ ret app_private.finance_admission_payment_returns%ROWTYPE;
+ pay app_private.finance_admission_official_payments%ROWTYPE;
+ v_count bigint; v_reversed bigint; v_sum numeric;
+BEGIN
+ IF TG_OP<>'INSERT' THEN
+  RAISE EXCEPTION 'DB03 return ledger review is immutable'; END IF;
+ IF current_user<>'schoolos_schema_owner' THEN
+  RAISE EXCEPTION 'DB03 return ledger review requires protected Finance source'; END IF;
+ SELECT * INTO ret FROM app_private.finance_admission_payment_returns
+  WHERE id=NEW.return_id FOR UPDATE;
+ SELECT * INTO pay FROM app_private.finance_admission_official_payments
+  WHERE id=ret.payment_id;
+ SELECT count(*),coalesce(sum(allocated_minor),0)
+ INTO v_count,v_sum FROM app_private.finance_admission_payment_allocations
+  WHERE payment_id=ret.payment_id;
+ SELECT count(*) INTO v_reversed
+ FROM app_private.finance_admission_allocation_reversals WHERE return_id=ret.id;
+ IF ret.id IS NULL OR pay.id IS NULL OR pay.id<>NEW.payment_id
+  OR ret.application_id<>NEW.application_id OR ret.school_id<>NEW.school_id
+  OR ret.campus_id<>NEW.campus_id
+  OR ret.amount_minor<>NEW.observed_return_minor
+  OR ret.amount_minor<>pay.amount_minor
+  OR ret.reported_by=NEW.reviewed_by OR pay.created_by=NEW.reviewed_by
+  OR NOT EXISTS(SELECT 1 FROM app_private.principals p
+   WHERE p.id=NEW.reviewed_by AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+  OR v_count<>v_reversed
+  OR v_sum<>NEW.observed_compensation_minor
+  OR (SELECT coalesce(sum(reversal_minor),0) FROM
+    app_private.finance_admission_allocation_reversals
+    WHERE return_id=ret.id)<>v_sum THEN
+  RAISE EXCEPTION 'DB03 independent return ledger evidence mismatch'; END IF;
+ RETURN NEW;
+END $body$;
+ALTER TABLE app_private.finance_admission_return_ledger_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_return_ledger_reviews FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.finance_admission_return_ledger_reviews FROM
+ PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE POLICY db03_return_ledger_review_owner ON app_private.finance_admission_return_ledger_reviews
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER db03_return_ledger_review_immutable BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_return_ledger_reviews FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_guard_return_ledger_review();
+CREATE TRIGGER db03_return_ledger_review_no_truncate BEFORE TRUNCATE
+ ON app_private.finance_admission_return_ledger_reviews FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_guard_return_ledger_review();
+REVOKE ALL ON FUNCTION app_private.db03_guard_return_ledger_review()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+RESET ROLE;
