@@ -1,0 +1,122 @@
+-- S20 inactive candidate. A reviewed ADM official payment is a source, not clearance.
+-- Every allocation is positive, single-School/Campus/applicant and immutable.
+-- Do not automatically transfer allocation balances between revised assessments.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.finance_admission_obligation_assessments
+ ADD CONSTRAINT db03_allocation_assessment_context UNIQUE
+ (id,application_id,school_id,campus_id,academic_year_id,application_version,currency_code);
+ALTER TABLE app_private.finance_admission_official_payments
+ ADD CONSTRAINT db03_allocation_payment_context UNIQUE
+ (id,application_id,school_id,campus_id,currency_code);
+
+CREATE TABLE app_private.finance_admission_payment_allocations(
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ application_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ academic_year_id uuid NOT NULL,
+ application_version bigint NOT NULL CHECK(application_version>0),
+ assessment_id uuid NOT NULL,
+ payment_id uuid NOT NULL,
+ allocated_minor numeric(20,0) NOT NULL CHECK(allocated_minor>0),
+ currency_code text NOT NULL CHECK(currency_code ~ '^[A-Z]{3}$'),
+ private_reason text NOT NULL CHECK(length(btrim(private_reason)) BETWEEN 1 AND 1000),
+ allocated_by uuid NOT NULL REFERENCES app_private.principals(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ CONSTRAINT db03_allocation_assessment_fk FOREIGN KEY
+  (assessment_id,application_id,school_id,campus_id,academic_year_id,application_version,currency_code)
+  REFERENCES app_private.finance_admission_obligation_assessments
+  (id,application_id,school_id,campus_id,academic_year_id,application_version,currency_code)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT db03_allocation_payment_fk FOREIGN KEY
+  (payment_id,application_id,school_id,campus_id,currency_code)
+  REFERENCES app_private.finance_admission_official_payments
+  (id,application_id,school_id,campus_id,currency_code)
+  ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE INDEX db03_allocation_app_history ON app_private.finance_admission_payment_allocations
+ (application_id,created_at,id);
+CREATE INDEX db03_allocation_payment_history ON app_private.finance_admission_payment_allocations(payment_id);
+
+CREATE FUNCTION app_private.db03_allocation_guard()
+ RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ a app_private.admission_applications%ROWTYPE;
+ ass app_private.finance_admission_obligation_assessments%ROWTYPE;
+ latest app_private.finance_admission_obligation_assessments%ROWTYPE;
+ d app_private.finance_admission_manual_fee_decisions%ROWTYPE;
+ newest app_private.finance_admission_manual_fee_decisions%ROWTYPE;
+ payment app_private.finance_admission_official_payments%ROWTYPE;
+ app_total numeric; payment_total numeric;
+BEGIN
+ IF TG_OP<>'INSERT' THEN
+  RAISE EXCEPTION 'DB03 payment allocation is immutable';
+ END IF;
+ IF current_user<>'schoolos_schema_owner' THEN
+  RAISE EXCEPTION 'DB03 allocation requires protected Finance worker';
+ END IF;
+ -- An app-row lock serializes all allocation commands for a single applicant;
+ -- the parent command also locks School/Campus/Year in that order.
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=NEW.application_id FOR UPDATE;
+ SELECT * INTO ass FROM app_private.finance_admission_obligation_assessments
+  WHERE id=NEW.assessment_id FOR UPDATE;
+ SELECT * INTO latest FROM app_private.finance_admission_obligation_assessments
+  WHERE application_id=NEW.application_id ORDER BY revision DESC LIMIT 1;
+ SELECT * INTO payment FROM app_private.finance_admission_official_payments
+  WHERE id=NEW.payment_id FOR UPDATE;
+ SELECT * INTO d FROM app_private.finance_admission_manual_fee_decisions
+  WHERE id=ass.manual_decision_id;
+ SELECT * INTO newest FROM app_private.finance_admission_manual_fee_decisions
+  WHERE application_id=NEW.application_id ORDER BY revision DESC LIMIT 1;
+ SELECT coalesce(sum(allocated_minor),0) INTO app_total
+  FROM app_private.finance_admission_payment_allocations
+  WHERE application_id=NEW.application_id;
+ SELECT coalesce(sum(allocated_minor),0) INTO payment_total
+  FROM app_private.finance_admission_payment_allocations
+  WHERE payment_id=NEW.payment_id;
+ IF a.id IS NULL OR a.state<>'DRAFT'
+  OR a.row_version<>NEW.application_version
+  OR a.school_id<>NEW.school_id OR a.campus_id<>NEW.campus_id
+  OR a.academic_year_id<>NEW.academic_year_id
+  OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards f
+   WHERE f.application_id=a.id)
+  OR ass.id IS NULL OR latest.id IS DISTINCT FROM ass.id
+  OR ass.source_kind<>'MANUAL'
+  OR ass.application_id<>a.id OR ass.application_version<>NEW.application_version
+  OR ass.school_id<>NEW.school_id OR ass.campus_id<>NEW.campus_id
+  OR ass.academic_year_id<>NEW.academic_year_id
+  OR ass.currency_code<>NEW.currency_code
+  OR d.id IS NULL OR newest.id IS DISTINCT FROM d.id
+  OR payment.id IS NULL OR payment.application_id<>a.id
+  OR payment.school_id<>NEW.school_id OR payment.campus_id<>NEW.campus_id
+  OR payment.currency_code<>NEW.currency_code
+  OR NOT EXISTS(SELECT 1 FROM app_private.principals p
+    WHERE p.id=NEW.allocated_by AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+  OR EXISTS(SELECT 1 FROM app_private.finance_admission_payment_allocations x
+    WHERE x.application_id=a.id AND x.assessment_id<>NEW.assessment_id)
+ THEN RAISE EXCEPTION 'DB03 allocation context stale or cross-scope'; END IF;
+ IF NEW.allocated_minor>ass.gross_amount_minor-app_total
+  OR NEW.allocated_minor>payment.amount_minor-payment_total THEN
+  RAISE EXCEPTION 'DB03 allocation amount exceeds obligation or payment';
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_allocation_guard()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+ALTER TABLE app_private.finance_admission_payment_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_payment_allocations FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.finance_admission_payment_allocations FROM
+ PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE POLICY db03_allocation_owner ON app_private.finance_admission_payment_allocations
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER db03_allocation_immutable BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_payment_allocations FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_allocation_guard();
+CREATE TRIGGER db03_allocation_no_truncate BEFORE TRUNCATE
+ ON app_private.finance_admission_payment_allocations FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_allocation_guard();
+RESET ROLE;
