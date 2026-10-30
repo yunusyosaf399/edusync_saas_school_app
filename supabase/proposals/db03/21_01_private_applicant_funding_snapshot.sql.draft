@@ -1,0 +1,95 @@
+-- S21: private, advisory finance funding snapshot for an applicant.
+-- This is NOT the positive clearance issuer and does not attest bank reversals.
+-- The snapshot is read-only and may become stale immediately after the SELECT;
+-- a future issuance command must revalidate under write-serialized locks.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_applicant_funding_snapshot(p_application uuid)
+RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ a app_private.admission_applications%ROWTYPE;
+ ass app_private.finance_admission_obligation_assessments%ROWTYPE;
+ manual app_private.finance_admission_manual_fee_decisions%ROWTYPE;
+ total_official numeric :=0;
+ total_allocated numeric :=0;
+ current_allocated numeric :=0;
+ old_allocated numeric :=0;
+ target_minor numeric :=0;
+ remaining_minor numeric :=0;
+ unallocated_payment_minor numeric :=0;
+ v_state text;
+BEGIN
+ IF p_application IS NULL THEN
+  RETURN jsonb_build_object('state','UNAVAILABLE',
+   'clearance_issued',false,'snapshot_only',true);
+ END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=p_application;
+ IF a.id IS NULL THEN
+  RETURN jsonb_build_object('state','UNAVAILABLE',
+   'clearance_issued',false,'snapshot_only',true);
+ END IF;
+ SELECT * INTO ass FROM app_private.finance_admission_obligation_assessments
+  WHERE application_id=p_application ORDER BY revision DESC LIMIT 1;
+ SELECT * INTO manual FROM app_private.finance_admission_manual_fee_decisions
+  WHERE application_id=p_application ORDER BY revision DESC LIMIT 1;
+ SELECT coalesce(sum(amount_minor),0) INTO total_official
+  FROM app_private.finance_admission_official_payments
+  WHERE application_id=p_application AND school_id=a.school_id
+   AND campus_id=a.campus_id;
+ SELECT coalesce(sum(allocated_minor),0) INTO total_allocated
+  FROM app_private.finance_admission_payment_allocations
+  WHERE application_id=p_application;
+ SELECT coalesce(sum(allocated_minor),0) INTO current_allocated
+  FROM app_private.finance_admission_payment_allocations
+  WHERE application_id=p_application AND assessment_id=ass.id;
+ old_allocated:=total_allocated-current_allocated;
+ unallocated_payment_minor:=greatest(0,total_official-total_allocated);
+ target_minor:=coalesce(ass.gross_amount_minor,0);
+ remaining_minor:=greatest(0,target_minor-current_allocated);
+ IF a.state<>'DRAFT' OR EXISTS(
+  SELECT 1 FROM app_private.admission_document_forwards f
+   WHERE f.application_id=a.id) THEN
+  v_state:='APPLICATION_NOT_ELIGIBLE';
+ ELSIF ass.id IS NULL THEN
+  v_state:='NOT_ASSESSED';
+ ELSIF ass.source_kind<>'MANUAL' THEN
+  v_state:='AUTOMATIC_NOT_SUPPORTED';
+ ELSIF ass.application_version<>a.row_version
+  OR ass.school_id<>a.school_id
+  OR ass.campus_id<>a.campus_id OR ass.academic_year_id<>a.academic_year_id
+  OR manual.id IS DISTINCT FROM ass.manual_decision_id THEN
+  v_state:='STALE_ASSESSMENT';
+ ELSIF old_allocated<>0 THEN
+  v_state:='REASSESSMENT_RECONCILIATION_REQUIRED';
+ ELSIF current_allocated>target_minor OR total_allocated>total_official THEN
+  v_state:='INVALID_LEDGER_BALANCE';
+ ELSIF target_minor=0 THEN
+  v_state:='ZERO_FEE_REQUIRES_FINANCE_CLEARANCE';
+ ELSIF current_allocated=0 THEN
+  v_state:='AWAITING_ALLOCATION';
+ ELSIF current_allocated<target_minor THEN
+  v_state:='PARTIALLY_ALLOCATED';
+ ELSE
+  v_state:='FULLY_ALLOCATED_PENDING_FINANCE_CLEARANCE';
+ END IF;
+ RETURN jsonb_build_object(
+  'application_id',a.id,'school_id',a.school_id,'campus_id',a.campus_id,
+  'academic_year_id',a.academic_year_id,'application_version',a.row_version,
+  'assessment_id',ass.id,'assessment_revision',ass.revision,
+  'manual_decision_id',ass.manual_decision_id,
+  'currency_code',coalesce(ass.currency_code,
+      (SELECT currency_code FROM app_private.school_profiles WHERE id=a.school_id)),
+  'assessed_minor',target_minor,'allocated_to_current_minor',current_allocated,
+  'allocated_to_previous_minor',old_allocated,
+  'official_received_minor',total_official,
+  'unallocated_official_minor',unallocated_payment_minor,
+  'remaining_assessed_minor',remaining_minor,
+  'state',v_state,'clearance_issued',false,'snapshot_only',true,
+  'bank_reversal_reconciliation_implemented',false);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_applicant_funding_snapshot(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,
+ schoolos_file_login,schoolos_platform_executor,
+ schoolos_workflow_executor,schoolos_evidence_writer;
+RESET ROLE;
