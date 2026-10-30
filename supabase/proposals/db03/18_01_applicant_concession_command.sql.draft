@@ -138,6 +138,14 @@ BEGIN
  IF (SELECT count(*) FROM app_private.finance_fee_categories
      WHERE school_id=school AND id=ANY(categories))<>cardinality(categories) THEN
   RAISE EXCEPTION 'DB03 concession command category unavailable'; END IF;
+ -- Recheck natural expiry after all target locks (including category locks).
+ IF app_private.current_principal_id() IS DISTINCT FROM actor
+  OR NOT app_private.has_complete_grant('admission.concession.record','CAMPUS',campus)
+  OR NOT app_private.db03_concession_admin(actor,campus)
+  OR to_timestamp(expires::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 concession command authority or target changed'; END IF;
+ -- This worker command owns the transaction's concession constraint timing.
+ SET CONSTRAINTS app_private.db03_concession_selected_category DEFERRED;
  INSERT INTO app_private.admission_category_concessions(application_id,school_id,campus_id,
   academic_year_id,application_version,destination_id,revision,supersedes_id,percent_hundredths,
   valid_from,valid_through,reason_private,created_by)
@@ -145,6 +153,10 @@ BEGIN
   prior.id,p_percent,p_from,p_through,p_reason,actor) RETURNING * INTO dest;
  INSERT INTO app_private.admission_concession_categories(concession_id,school_id,category_id)
   SELECT dest.id,school,c FROM unnest(categories) c;
+ -- Drain the deferred invoker check while still under the protected owner.
+ -- Never grant the login SELECT merely to satisfy a deferred commit trigger.
+ SET CONSTRAINTS app_private.db03_concession_selected_category IMMEDIATE;
+ SET CONSTRAINTS app_private.db03_concession_selected_category DEFERRED;
  result:=jsonb_build_object('concession_id',dest.id,'application_id',a.id,
   'application_version',p_expected,'revision',dest.revision,'destination_id',d.id,
   'percent_hundredths',p_percent,'category_ids',to_jsonb(categories),
