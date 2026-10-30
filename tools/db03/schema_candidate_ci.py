@@ -359,6 +359,23 @@ def validate_destination_source() -> tuple[str, str]:
     return sql, test
 
 
+def validate_destination_command() -> tuple[str, str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/16_02_admission_destination_command.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/16_admission_destination_command.sql').read_text()
+    fixture = (ROOT / 'supabase/tests/db03/fixtures/destination_actor.sql').read_text()
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)',sql) != [
+        'db03_destination_admin','db03_record_admission_destination'] or re.search(
+            r'(?m)^CREATE FUNCTION app\.',sql):
+        raise RuntimeError('DB03_DESTINATION_COMMAND_SCOPE')
+    if re.findall(r'SELECT plan\((\d+)\);',test) != ['10'] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 10 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_DESTINATION_COMMAND_TEST_PLAN')
+    if 'INSERT INTO app_private.permissions' in sql or 'INSERT INTO app_private.operation_contracts' in sql:
+        raise RuntimeError('DB03_DESTINATION_COMMAND_SEED')
+    print('DB03_DESTINATION_COMMAND_SOURCE_PASS assertions=10 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test,fixture
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -380,6 +397,7 @@ def main() -> int:
     applicant_review_sql, applicant_review_test, applicant_review_fixture = validate_applicant_slip_review()
     applicant_payment_sql, applicant_payment_test, applicant_payment_fixture = validate_applicant_payment()
     destination_sql, destination_test = validate_destination_source()
+    destination_command_sql, destination_command_test, destination_command_fixture = validate_destination_command()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -804,6 +822,29 @@ def main() -> int:
                 raise
             parse_tap(output, 15)
             print('DB03_DESTINATION_DATABASE_PASS 15/15; D1_typed_grade=true; no_applicant_writer=true')
+            try:
+                local.run_psql(container, "BEGIN;\n" + destination_command_sql +
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_DESTINATION_COMMAND_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_DESTINATION_COMMAND_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_DESTINATION_COMMAND_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_DESTINATION_COMMAND_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_destination_admin','db03_record_admission_destination');",
+                'DB03_DESTINATION_COMMAND_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_DESTINATION_COMMAND_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+destination_command_sql+'\nCOMMIT;',
+                           'DB03_DESTINATION_COMMAND_INSTALL')
+            output=local.run_psql(container,destination_command_test,
+                                  'DB03_DESTINATION_COMMAND_TEST')
+            parse_tap(output,10)
+            print('DB03_DESTINATION_COMMAND_DATABASE_PASS 10/10; no_production_seed=true')
+            from destination_command_ci import run_destination_command
+            run_destination_command(local,container,
+                publication_fixture+'\n'+intake_fixture+'\n'+destination_command_fixture)
             return 0
     finally:
         if started:
