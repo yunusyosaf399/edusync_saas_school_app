@@ -169,12 +169,12 @@ BEGIN
  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,
  event_type,target_kind,target_ref,campus_id,command_receipt_id,source_kind,correlation_id,
  occurred_at,details,created_by)
- VALUES(p_actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation',p_kind),p_version,
+ VALUES(p_actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation',p_kind),(p_result->>'request_version')::bigint,
  p_kind,'APPLICANT_CONCESSION_APPROVAL',p_request,p_campus,receipt,'WORKER',correlation,
  clock_timestamp(),p_result,p_actor);
  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,
  command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
- VALUES(p_kind,'APPLICANT_CONCESSION_APPROVAL',p_request,p_version,receipt,1,correlation,
+ VALUES(p_kind,'APPLICANT_CONCESSION_APPROVAL',p_request,(p_result->>'request_version')::bigint,receipt,1,correlation,
  clock_timestamp(),p_result,p_actor);
 END $body$;
 REVOKE ALL ON FUNCTION app_private.db03_concession_approval_evidence(uuid,uuid,text,text,bytea,bigint,uuid,uuid,jsonb)

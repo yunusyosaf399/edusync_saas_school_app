@@ -149,6 +149,13 @@ def run_scholarship_approval(root, worker, api, destination, concession, admin_c
             for code,total in [('admission.concession.submit',5),('admission.concession.review',3)]:
                 check(conn.execute('SELECT count(*) FROM app_private.'+table+' WHERE '+col+'=%s',
                                    (code,)).fetchone()[0]==total,table+' '+code+' atomic evidence')
+        check(conn.execute("SELECT count(*) FROM app_private.command_receipts r "
+            "JOIN app_private.audit_events a ON a.command_receipt_id=r.id "
+            "JOIN app_private.outbox_events o ON o.command_receipt_id=r.id "
+            "WHERE r.command_kind IN('admission.concession.submit','admission.concession.review') "
+            "AND (a.target_version IS DISTINCT FROM (r.result_summary->>'request_version')::bigint "
+            "OR o.aggregate_version IS DISTINCT FROM (r.result_summary->>'request_version')::bigint)"
+            ).fetchone()[0]==0,'resulting workflow versions in audit and outbox')
         check(conn.execute('SELECT state FROM app_private.approval_requests WHERE id=%s',
                            (q['request_id'],)).fetchone()[0]=='APPROVED','approval remains unexecuted')
         check(conn.execute('SELECT count(*) FROM app_private.finance_fee_obligations').fetchone()[0]==0,'no charge or Student handoff')
