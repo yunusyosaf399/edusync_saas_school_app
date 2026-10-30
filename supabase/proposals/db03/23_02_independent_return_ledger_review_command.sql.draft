@@ -1,0 +1,235 @@
+-- S23 protected, independent Finance review of retained *reported* returns.
+-- Does not certify bank statement provenance, resolve disputes, or unfreeze funds.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_return_ledger_reviewer_authorized(
+ p_actor uuid,p_campus uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT p_actor IS NOT NULL AND p_actor=app_private.current_principal_id()
+ AND EXISTS(SELECT 1 FROM app_private.principals p WHERE p.id=p_actor
+   AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+ AND app_private.has_complete_grant('finance.admission.payment.return.ledger.review',
+   'CAMPUS',p_campus)
+ AND EXISTS(
+  SELECT 1 FROM app_private.principal_role_assignments ra
+  JOIN app_private.roles r ON r.id=ra.role_id
+  JOIN app_private.assignment_permission_scopes sc
+   ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+  JOIN app_private.role_permission_grants g
+   ON g.id=sc.grant_id AND g.role_id=ra.role_id
+   AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts c
+   ON c.id=sc.scope_contract_id AND c.permission_id=sc.permission_id
+   AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key
+  JOIN app_private.permissions pe ON pe.id=sc.permission_id
+  WHERE ra.principal_id=p_actor AND ra.principal_kind='INDIVIDUAL'
+   AND ra.context_kind='INDIVIDUAL'
+   AND r.code='ACCOUNTANT' AND r.state='ACTIVE' AND NOT r.family_only
+   AND pe.code='finance.admission.payment.return.ledger.review'
+   AND pe.state='ENABLED' AND NOT pe.family_safe
+   AND c.enabled AND sc.resolver_key='DIRECT'
+   AND ((sc.scope_kind='CAMPUS' AND sc.campus_id=p_campus)
+    OR (sc.scope_kind='ALL' AND sc.campus_id IS NULL))
+   AND ra.valid_from<=clock_timestamp()
+   AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+   AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+   AND g.valid_from<=clock_timestamp()
+   AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND sc.valid_from<=clock_timestamp()
+   AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+   AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at)
+ );
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_return_ledger_reviewer_authorized(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+
+
+CREATE FUNCTION app_private.db03_review_return_ledger(
+ p_application uuid,p_expected bigint,p_return uuid,p_decision text,
+ p_observed_return_minor numeric,p_observed_compensation_minor numeric,
+ p_bank_case_ref text,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ ret app_private.finance_admission_payment_returns%ROWTYPE;
+ pay app_private.finance_admission_official_payments%ROWTYPE;
+ review app_private.finance_admission_return_ledger_reviews%ROWTYPE;
+ receipt app_private.command_receipts%ROWTYPE;
+ actor uuid; op uuid; school uuid; campus uuid; year_id uuid;
+ v_claims jsonb; v_exp text; v_hash bytea;
+ v_result jsonb; v_receipt uuid; v_correlation uuid;
+ original_count bigint; compensated_count bigint;
+ original_sum numeric; compensated_sum numeric;
+BEGIN
+ IF session_user<>'schoolos_file_login'
+  OR current_setting('transaction_isolation')<>'read committed'
+  OR p_application IS NULL OR p_expected IS NULL OR p_expected<1
+  OR p_return IS NULL OR p_decision IS NULL
+  OR p_decision NOT IN ('LEDGER_MATCHES_REPORT','DISPUTE_REPORTED_RETURN',
+   'REQUEST_BANK_EVIDENCE')
+  OR p_observed_return_minor IS NULL
+  OR p_observed_return_minor<=0
+  OR p_observed_return_minor<>trunc(p_observed_return_minor)
+  OR p_observed_compensation_minor IS NULL
+  OR p_observed_compensation_minor<0
+  OR p_observed_compensation_minor<>trunc(p_observed_compensation_minor)
+  OR p_bank_case_ref IS NULL
+  OR length(btrim(p_bank_case_ref)) NOT BETWEEN 5 AND 180
+  OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 8 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB03 return ledger review intent invalid'; END IF;
+ v_claims:=nullif(current_setting('request.jwt.claims',true),'')::jsonb;
+ v_exp:=v_claims->>'exp';
+ IF v_exp IS NULL OR v_exp !~ '^[0-9]{1,12}$'
+  OR to_timestamp(v_exp::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 return ledger reviewer authentication expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ SELECT school_id,campus_id,academic_year_id INTO school,campus,year_id
+ FROM app_private.admission_applications WHERE id=p_application;
+ IF school IS NULL OR NOT app_private.db03_return_ledger_reviewer_authorized(actor,campus) THEN
+  RAISE EXCEPTION 'DB03 return ledger independent reviewer scope denied'; END IF;
+ SELECT o.id INTO op FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='finance.admission.payment.return.ledger.review'
+  AND o.contract_version=1 AND o.handler_key=o.code
+  AND o.payload_schema_version=1 AND o.enabled AND NOT o.requires_approval
+  AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF op IS NULL THEN RAISE EXCEPTION 'DB03 return ledger review operation unavailable'; END IF;
+ v_hash:=sha256(convert_to(jsonb_build_array('s23-return-ledger-v1',
+  p_application,p_expected,p_return,p_decision,p_observed_return_minor::text,
+  p_observed_compensation_minor::text,p_bank_case_ref,
+  encode(sha256(convert_to(p_reason,'UTF8')),'hex'))::text,'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||op::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school
+  AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 return ledger School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=campus AND school_id=school AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 return ledger Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=year_id AND school_id=school
+ AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 return ledger Year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application FOR UPDATE;
+ SELECT * INTO ret FROM app_private.finance_admission_payment_returns
+ WHERE id=p_return FOR UPDATE;
+ SELECT * INTO pay FROM app_private.finance_admission_official_payments
+ WHERE id=ret.payment_id FOR UPDATE;
+ IF a.id IS NULL OR a.school_id<>school OR a.campus_id<>campus
+  OR a.academic_year_id<>year_id OR a.row_version<>p_expected
+  OR ret.id IS NULL OR ret.application_id<>a.id
+  OR ret.school_id<>school OR ret.campus_id<>campus
+  OR pay.id IS NULL OR pay.id<>ret.payment_id
+  OR pay.application_id<>a.id OR pay.amount_minor<>ret.amount_minor
+  OR ret.reported_by=actor OR pay.created_by=actor
+  OR to_timestamp(v_exp::bigint)<=clock_timestamp()
+  OR NOT app_private.db03_return_ledger_reviewer_authorized(actor,campus)
+  OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+    JOIN app_private.permissions p ON p.id=o.request_permission_id
+    WHERE o.id=op AND o.enabled AND NOT o.requires_approval
+      AND p.code=o.code AND p.state='ENABLED') THEN
+  RAISE EXCEPTION 'DB03 return ledger independent review context stale or conflict'; END IF;
+ SELECT * INTO receipt FROM app_private.command_receipts
+ WHERE principal_id=actor AND operation_id=op
+ AND idempotency_key='return-ledger-review:'||p_key;
+ IF receipt.id IS NOT NULL THEN
+  SELECT * INTO review FROM app_private.finance_admission_return_ledger_reviews
+   WHERE id=receipt.result_ref;
+  IF receipt.command_kind<>'finance.admission.payment.return.ledger.review'
+   OR receipt.result_kind<>'FINANCE_ADMISSION_RETURN_LEDGER_REVIEW'
+   OR receipt.state<>'SUCCEEDED'
+   OR receipt.canonical_payload_hash IS DISTINCT FROM v_hash
+   OR receipt.expected_target_version IS DISTINCT FROM p_expected
+   OR review.id IS NULL OR review.return_id<>p_return
+   OR review.application_id<>p_application OR review.reviewed_by<>actor
+   OR review.decision<>p_decision
+   OR review.observed_return_minor<>p_observed_return_minor
+   OR review.observed_compensation_minor<>p_observed_compensation_minor
+   OR review.bank_case_reference_private<>p_bank_case_ref
+   OR review.review_reason_private<>p_reason
+   OR receipt.result_summary->>'review_id' IS DISTINCT FROM review.id::text
+   OR (SELECT count(*) FROM app_private.audit_events
+      WHERE command_receipt_id=receipt.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events
+      WHERE command_receipt_id=receipt.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 return ledger review replay conflict'; END IF;
+  RETURN receipt.result_summary;
+ END IF;
+ IF EXISTS(SELECT 1 FROM app_private.finance_admission_return_ledger_reviews
+  WHERE return_id=p_return) THEN
+  RAISE EXCEPTION 'DB03 return ledger already independently reviewed'; END IF;
+ -- Proof that the S22 return source was issued with a permanent receipt,
+ -- audit and outbox, and was not invented by a database account.
+ IF NOT EXISTS(
+  SELECT 1 FROM app_private.command_receipts r
+  JOIN app_private.operation_contracts o ON o.id=r.operation_id
+  WHERE o.code='finance.admission.payment.return.report'
+   AND r.result_ref=ret.id AND r.result_kind='FINANCE_ADMISSION_PAYMENT_RETURN'
+   AND r.command_kind=o.code AND r.state='SUCCEEDED'
+   AND r.created_by=ret.reported_by
+   AND r.result_summary->>'return_id'=ret.id::text
+   AND (SELECT count(*) FROM app_private.audit_events au
+      WHERE au.command_receipt_id=r.id AND au.target_ref=ret.id
+        AND au.event_type=o.code)=1
+   AND (SELECT count(*) FROM app_private.outbox_events ob
+      WHERE ob.command_receipt_id=r.id AND ob.aggregate_ref=ret.id
+        AND ob.event_type=o.code)=1) THEN
+  RAISE EXCEPTION 'DB03 return ledger S22 report provenance missing'; END IF;
+ SELECT count(*),coalesce(sum(allocated_minor),0) INTO original_count,original_sum
+ FROM app_private.finance_admission_payment_allocations WHERE payment_id=pay.id;
+ SELECT count(*),coalesce(sum(reversal_minor),0) INTO compensated_count,compensated_sum
+ FROM app_private.finance_admission_allocation_reversals WHERE return_id=ret.id;
+ IF p_observed_return_minor<>ret.amount_minor
+  OR p_observed_compensation_minor<>original_sum
+  OR compensated_count<>original_count OR compensated_sum<>original_sum
+  OR EXISTS(SELECT 1 FROM app_private.finance_admission_allocation_reversals v
+    JOIN app_private.finance_admission_payment_allocations x ON x.id=v.allocation_id
+    WHERE v.return_id=ret.id AND
+    (x.payment_id<>pay.id OR v.payment_id<>pay.id OR
+     v.application_id<>a.id OR v.reversal_minor<>x.allocated_minor)) THEN
+  RAISE EXCEPTION 'DB03 return ledger observed amounts or reversal lineage mismatch'; END IF;
+ INSERT INTO app_private.finance_admission_return_ledger_reviews(
+  return_id,application_id,payment_id,school_id,campus_id,decision,
+  observed_return_minor,observed_compensation_minor,
+  bank_case_reference_private,review_reason_private,reviewed_by)
+ VALUES(ret.id,a.id,pay.id,school,campus,p_decision,
+  p_observed_return_minor,p_observed_compensation_minor,
+  p_bank_case_ref,p_reason,actor) RETURNING * INTO review;
+ v_result:=jsonb_build_object('review_id',review.id,
+  'return_id',ret.id,'application_id',a.id,'payment_id',pay.id,
+  'decision',review.decision,'original_receipt_number',pay.receipt_number,
+  'reported_return_minor',ret.amount_minor,
+  'compensated_allocation_minor',original_sum,
+  'reviewed_by_independent_finance',true,'external_bank_verified',false,
+  'funding_hold_active',true,'clearance_issued',false);
+ v_receipt:=gen_random_uuid();v_correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,
+  command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+  expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(v_receipt,actor,op,'finance.admission.payment.return.ledger.review',
+  'return-ledger-review:'||p_key,v_hash,1,p_expected,'SUCCEEDED',
+  'FINANCE_ADMISSION_RETURN_LEDGER_REVIEW',review.id,v_result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+  target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',
+  jsonb_build_object('operation','finance.admission.payment.return.ledger.review',
+    'return_id',ret.id,'payment_id',pay.id),1,
+  'finance.admission.payment.return.ledger.review','FINANCE_ADMISSION_RETURN_LEDGER_REVIEW',
+  review.id,campus,v_receipt,'WORKER',v_correlation,clock_timestamp(),v_result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+  aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,
+  payload,created_by)
+ VALUES('finance.admission.payment.return.ledger.review',
+  'FINANCE_ADMISSION_RETURN_LEDGER_REVIEW',review.id,1,
+  v_receipt,1,v_correlation,clock_timestamp(),v_result,actor);
+ RETURN v_result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_review_return_ledger(
+ uuid,bigint,uuid,text,numeric,numeric,text,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_review_return_ledger(
+ uuid,bigint,uuid,text,numeric,numeric,text,text,text)
+ TO schoolos_file_login;
+RESET ROLE;
