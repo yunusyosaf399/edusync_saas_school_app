@@ -395,6 +395,22 @@ def validate_applicant_concession_source() -> tuple[str, str]:
     return sql, test
 
 
+def validate_concession_command() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/18_01_applicant_concession_command.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/18_applicant_concession_command.sql').read_text()
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)',sql) != [
+        'db03_concession_admin','db03_record_applicant_concession'] or re.search(
+            r'(?m)^CREATE FUNCTION app\.',sql):
+        raise RuntimeError('DB03_CONCESSION_COMMAND_SCOPE')
+    if re.findall(r'SELECT plan\((\d+)\);',test) != ['10'] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 10 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_CONCESSION_COMMAND_TEST_PLAN')
+    if 'INSERT INTO app_private.permissions' in sql or 'INSERT INTO app_private.operation_contracts' in sql:
+        raise RuntimeError('DB03_CONCESSION_COMMAND_SEED')
+    print('DB03_CONCESSION_COMMAND_SOURCE_PASS assertions=10 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -418,6 +434,7 @@ def main() -> int:
     destination_sql, destination_test = validate_destination_source()
     destination_command_sql, destination_command_test, destination_command_fixture = validate_destination_command()
     concession_sql, concession_test = validate_applicant_concession_source()
+    concession_command_sql, concession_command_test = validate_concession_command()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -890,6 +907,25 @@ def main() -> int:
                 print('DB03_CONCESSION_TAP_DIAGNOSTIC\n' + output[-10000:], flush=True)
                 raise
             print('DB03_CONCESSION_DATABASE_PASS 15/15; typed_category=true; no_writer=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+concession_command_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_CONCESSION_COMMAND_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_CONCESSION_COMMAND_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_CONCESSION_COMMAND_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_CONCESSION_COMMAND_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_concession_admin','db03_record_applicant_concession');",
+                'DB03_CONCESSION_COMMAND_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_CONCESSION_COMMAND_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+concession_command_sql+'\nCOMMIT;',
+                           'DB03_CONCESSION_COMMAND_INSTALL')
+            output=local.run_psql(container,concession_command_test,'DB03_CONCESSION_COMMAND_TEST')
+            parse_tap(output,10)
+            print('DB03_CONCESSION_COMMAND_DATABASE_PASS 10/10; no_production_seed=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
