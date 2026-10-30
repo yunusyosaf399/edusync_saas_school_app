@@ -230,6 +230,43 @@ def run_payment_allocation(local, fresh_database, fixture):
                   for k,v in results)==1,
           'concurrent attempts cannot exceed the assessed amount or official receipt')
 
+        # S21: read-only Finance funding snapshot. Never a clearance event.
+        def snapshot(target):
+            with root() as conn:
+                return conn.execute(
+                    'SELECT app_private.db03_applicant_funding_snapshot(%s)',
+                    (target,)).fetchone()[0]
+        fully_reassessed=snapshot(app)
+        check(fully_reassessed['state']=='REASSESSMENT_RECONCILIATION_REQUIRED'
+              and fully_reassessed['allocated_to_previous_minor']==10000
+              and fully_reassessed['remaining_assessed_minor']==8000
+              and fully_reassessed['unallocated_official_minor']==15000
+              and fully_reassessed['snapshot_only'] is True
+              and fully_reassessed['clearance_issued'] is False,
+              'reassessment cannot silently move fully allocated earlier funds')
+        partially_paid=snapshot(other)
+        check(partially_paid['state']=='PARTIALLY_ALLOCATED'
+              and partially_paid['remaining_assessed_minor']==3000
+              and partially_paid['allocated_to_current_minor']==2000
+              and partially_paid['unallocated_official_minor']==0
+              and partially_paid['clearance_issued'] is False,
+              'partial payment remains Finance-unapproved')
+        race_paid=snapshot(race_app)
+        check(race_paid['state']=='PARTIALLY_ALLOCATED'
+              and race_paid['allocated_to_current_minor']==7000
+              and race_paid['remaining_assessed_minor']==3000,
+              'competing backend outcome is reflected in source snapshot')
+        zero_app=create_app('s21-zero-app')
+        zero_manual=manual(zero_app,'0','s21-zero-manual')
+        assess(zero_app,zero_manual['decision_id'],'s21-zero-assessment')
+        no_fee=snapshot(zero_app)
+        check(no_fee['state']=='ZERO_FEE_REQUIRES_FINANCE_CLEARANCE'
+              and no_fee['clearance_issued'] is False
+              and no_fee['remaining_assessed_minor']==0,
+              'zero admission fee still requires independently issued Finance clearance')
+        check(snapshot(None)['state']=='UNAVAILABLE',
+              'unknown applicant does not reveal Finance information')
+
         with root() as conn:
             check(conn.execute("SELECT sum(allocated_minor) FROM "
                 "app_private.finance_admission_payment_allocations WHERE application_id=%s",
