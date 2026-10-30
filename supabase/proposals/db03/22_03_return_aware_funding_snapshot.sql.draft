@@ -1,0 +1,63 @@
+-- S22 overlays S21 advisory read model without changing historic S21 source.
+-- A report always blocks a positive funding interpretation. The report is NOT
+-- independently bank-verified; another review workflow is still required.
+SET ROLE schoolos_schema_owner;
+ALTER FUNCTION app_private.db03_applicant_funding_snapshot(uuid)
+ RENAME TO db03_applicant_funding_snapshot_pre_s22;
+REVOKE ALL ON FUNCTION app_private.db03_applicant_funding_snapshot_pre_s22(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,
+ schoolos_file_login,schoolos_platform_executor,
+ schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE FUNCTION app_private.db03_applicant_funding_snapshot(p_application uuid)
+RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE base jsonb;
+ total_returned numeric:=0;
+ total_compensated numeric:=0;
+ net_current numeric:=0;
+ net_previous numeric:=0;
+ gross_official numeric:=0;
+ net_official numeric:=0;
+BEGIN
+ base:=app_private.db03_applicant_funding_snapshot_pre_s22(p_application);
+ IF p_application IS NULL OR base->>'state'='UNAVAILABLE' THEN RETURN base; END IF;
+ SELECT coalesce(sum(amount_minor),0) INTO total_returned
+  FROM app_private.finance_admission_payment_returns
+  WHERE application_id=p_application;
+ SELECT coalesce(sum(reversal_minor),0) INTO total_compensated
+  FROM app_private.finance_admission_allocation_reversals
+  WHERE application_id=p_application;
+ net_current:=(base->>'allocated_to_current_minor')::numeric -
+  coalesce((SELECT sum(v.reversal_minor)
+   FROM app_private.finance_admission_allocation_reversals v
+   JOIN app_private.finance_admission_payment_allocations x ON x.id=v.allocation_id
+   WHERE v.application_id=p_application
+     AND x.assessment_id=(base->>'assessment_id')::uuid),0);
+ net_previous:=(base->>'allocated_to_previous_minor')::numeric -
+  (total_compensated -
+    ((base->>'allocated_to_current_minor')::numeric-net_current));
+ gross_official:=(base->>'official_received_minor')::numeric;
+ net_official:=greatest(0,gross_official-total_returned);
+ base:=base||jsonb_build_object(
+  'returned_official_minor',total_returned,
+  'compensated_allocation_minor',total_compensated,
+  'net_available_official_minor',net_official,
+  'allocated_to_current_minor',net_current,
+  'allocated_to_previous_minor',net_previous,
+  'unallocated_official_minor',greatest(0,net_official-net_current-net_previous),
+  'remaining_assessed_minor',greatest(0,(base->>'assessed_minor')::numeric-net_current),
+  'bank_return_reporting_implemented',true,
+  'bank_reversal_reconciliation_implemented',false,
+  'clearance_issued',false,'snapshot_only',true);
+ IF total_returned<>0 THEN
+  base:=base||jsonb_build_object(
+   'state','BANK_RETURN_RECONCILIATION_REQUIRED',
+   'independently_bank_verified',false);
+ END IF;
+ RETURN base;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_applicant_funding_snapshot(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,
+ schoolos_file_login,schoolos_platform_executor,
+ schoolos_workflow_executor,schoolos_evidence_writer;
+RESET ROLE;
