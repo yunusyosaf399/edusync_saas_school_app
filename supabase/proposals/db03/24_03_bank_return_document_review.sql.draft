@@ -1,0 +1,257 @@
+-- S24 independent reviewer of the exact uploaded, privately stored bytes.
+-- A HUMAN document interpretation is NOT authoritative bank ledger settlement.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_bank_document_reviewer_authorized(
+ p_actor uuid,p_campus uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT p_actor IS NOT NULL AND p_actor=app_private.current_principal_id()
+ AND EXISTS(SELECT 1 FROM app_private.principals p WHERE p.id=p_actor
+   AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+ AND app_private.has_complete_grant('finance.admission.payment.return.evidence.review',
+   'CAMPUS',p_campus)
+ AND EXISTS(
+  SELECT 1 FROM app_private.principal_role_assignments ra
+  JOIN app_private.roles r ON r.id=ra.role_id
+  JOIN app_private.assignment_permission_scopes sc
+   ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+  JOIN app_private.role_permission_grants g
+   ON g.id=sc.grant_id AND g.role_id=ra.role_id
+   AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts c
+   ON c.id=sc.scope_contract_id AND c.permission_id=sc.permission_id
+   AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key
+  JOIN app_private.permissions pe ON pe.id=sc.permission_id
+  WHERE ra.principal_id=p_actor AND ra.principal_kind='INDIVIDUAL'
+   AND ra.context_kind='INDIVIDUAL'
+   AND r.code='ACCOUNTANT' AND r.state='ACTIVE' AND NOT r.family_only
+   AND pe.code='finance.admission.payment.return.evidence.review'
+   AND pe.state='ENABLED' AND NOT pe.family_safe
+   AND c.enabled AND sc.resolver_key='DIRECT'
+   AND ((sc.scope_kind='CAMPUS' AND sc.campus_id=p_campus)
+    OR (sc.scope_kind='ALL' AND sc.campus_id IS NULL))
+   AND ra.valid_from<=clock_timestamp()
+   AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+   AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+   AND g.valid_from<=clock_timestamp()
+   AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND sc.valid_from<=clock_timestamp()
+   AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+   AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at)
+ );
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_bank_document_reviewer_authorized(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+
+
+
+CREATE FUNCTION app_private.db03_bank_document_review_details(
+ p_application uuid,p_evidence uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ev app_private.finance_admission_bank_return_evidence%ROWTYPE;
+ r app_private.finance_admission_payment_returns%ROWTYPE;
+ a app_private.admission_applications%ROWTYPE;
+ f app_private.file_objects%ROWTYPE;
+ actor uuid; claims jsonb; exp_str text;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR
+ current_setting('transaction_isolation')<>'read committed'
+ OR p_application IS NULL OR p_evidence IS NULL THEN
+ RAISE EXCEPTION 'DB03 bank-document inspect worker denied'; END IF;
+ claims:=nullif(current_setting('request.jwt.claims',true),'')::jsonb;
+ exp_str:=claims->>'exp';
+ IF exp_str IS NULL OR exp_str !~ '^[0-9]{1,12}$'
+ OR to_timestamp(exp_str::bigint)<=clock_timestamp() THEN
+ RAISE EXCEPTION 'DB03 bank-document inspect JWT expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ SELECT * INTO ev FROM app_private.finance_admission_bank_return_evidence
+ WHERE id=p_evidence;
+ SELECT * INTO r FROM app_private.finance_admission_payment_returns WHERE id=ev.return_id;
+ SELECT * INTO f FROM app_private.file_objects WHERE id=ev.evidence_file_id;
+ IF a.id IS NULL OR ev.id IS NULL OR r.id IS NULL OR f.id IS NULL
+ OR ev.application_id<>a.id OR ev.school_id<>a.school_id OR ev.campus_id<>a.campus_id
+ OR r.application_id<>a.id OR r.reported_by=actor OR ev.submitted_by=actor
+ OR f.state<>'AVAILABLE' OR f.classification<>'PRIVATE'
+ OR f.purpose_code<>'ADMISSION_BANK_RETURN_EVIDENCE'
+ OR f.campus_id<>a.campus_id OR f.content_hash<>ev.evidence_sha256
+ OR f.content_type NOT IN('application/pdf','image/png','image/jpeg')
+ OR NOT app_private.db03_bank_document_reviewer_authorized(actor,a.campus_id)
+ OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='finance.admission.payment.return.evidence.review'
+ AND o.enabled AND NOT o.requires_approval AND o.handler_key=o.code
+ AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe) THEN
+ RAISE EXCEPTION 'DB03 bank-document inspect reviewer or evidence denied'; END IF;
+ RETURN jsonb_build_object('evidence_id',ev.id,'return_id',r.id,
+ 'application_id',a.id,'object_key',f.object_key,
+ 'content_type',f.content_type,'byte_size',f.byte_size,
+ 'sha256',encode(f.content_hash,'hex'),
+ 'evidence_kind',ev.evidence_kind,'reviewed',false,
+ 'funding_hold_active',true);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_bank_document_review_details(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_bank_document_review_details(uuid,uuid)
+ TO schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_review_return_bank_document(
+ p_application uuid,p_expected bigint,p_evidence uuid,p_decision text,
+ p_seen_sha bytea,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ ev app_private.finance_admission_bank_return_evidence%ROWTYPE;
+ ret app_private.finance_admission_payment_returns%ROWTYPE;
+ pay app_private.finance_admission_official_payments%ROWTYPE;
+ f app_private.file_objects%ROWTYPE;
+ rev app_private.finance_admission_bank_return_evidence_reviews%ROWTYPE;
+ old app_private.command_receipts%ROWTYPE;
+ actor uuid; op uuid; school uuid; campus uuid; year_id uuid;
+ claims jsonb; exp_str text; digest bytea;
+ result jsonb; receipt_id uuid; correlation uuid;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR
+ current_setting('transaction_isolation')<>'read committed'
+ OR p_application IS NULL OR p_expected IS NULL OR p_expected<1
+ OR p_evidence IS NULL OR p_decision IS NULL
+ OR p_decision NOT IN('DOCUMENT_SUPPORTS_RETURN','DOCUMENT_DISPUTES_RETURN',
+ 'MORE_BANK_PROOF_REQUIRED') OR p_seen_sha IS NULL OR octet_length(p_seen_sha)<>32
+ OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 8 AND 1000
+ OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+ RAISE EXCEPTION 'DB03 bank-document review input invalid'; END IF;
+ claims:=nullif(current_setting('request.jwt.claims',true),'')::jsonb;
+ exp_str:=claims->>'exp';
+ IF exp_str IS NULL OR exp_str !~ '^[0-9]{1,12}$'
+ OR to_timestamp(exp_str::bigint)<=clock_timestamp() THEN
+ RAISE EXCEPTION 'DB03 bank-document review JWT expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ SELECT school_id,campus_id,academic_year_id INTO school,campus,year_id
+ FROM app_private.admission_applications WHERE id=p_application;
+ IF school IS NULL OR NOT app_private.db03_bank_document_reviewer_authorized(actor,campus) THEN
+ RAISE EXCEPTION 'DB03 bank-document independent review scope denied'; END IF;
+ SELECT o.id INTO op FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='finance.admission.payment.return.evidence.review'
+ AND o.contract_version=1 AND o.handler_key=o.code AND o.payload_schema_version=1
+ AND o.enabled AND NOT o.requires_approval AND p.code=o.code
+ AND p.state='ENABLED' AND NOT p.family_safe;
+ IF op IS NULL THEN RAISE EXCEPTION 'DB03 bank-document review operation unavailable'; END IF;
+ digest:=sha256(convert_to(jsonb_build_array('db03-return-document-review-v1',
+ p_application,p_expected,p_evidence,p_decision,encode(p_seen_sha,'hex'),
+ encode(sha256(convert_to(p_reason,'UTF8')),'hex'))::text,'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||op::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school
+ AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank-document review School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=campus AND school_id=school
+ AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank-document review Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=year_id AND school_id=school
+ AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank-document review Year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application FOR UPDATE;
+ SELECT * INTO ev FROM app_private.finance_admission_bank_return_evidence
+ WHERE id=p_evidence FOR UPDATE;
+ SELECT * INTO ret FROM app_private.finance_admission_payment_returns
+ WHERE id=ev.return_id FOR UPDATE;
+ SELECT * INTO pay FROM app_private.finance_admission_official_payments
+ WHERE id=ret.payment_id FOR UPDATE;
+ SELECT * INTO f FROM app_private.file_objects WHERE id=ev.evidence_file_id FOR KEY SHARE;
+ IF a.id IS NULL OR a.school_id<>school OR a.campus_id<>campus
+ OR a.academic_year_id<>year_id OR a.row_version<>p_expected
+ OR ev.id IS NULL OR ret.id IS NULL OR pay.id IS NULL OR f.id IS NULL
+ OR ev.application_id<>a.id OR ev.school_id<>school OR ev.campus_id<>campus
+ OR ret.application_id<>a.id OR ret.school_id<>school OR ret.campus_id<>campus
+ OR pay.id<>ret.payment_id
+ OR ev.submitted_by=actor OR ret.reported_by=actor OR pay.created_by=actor
+ OR ev.evidence_sha256<>p_seen_sha
+ OR f.state<>'AVAILABLE' OR f.classification<>'PRIVATE'
+ OR f.purpose_code<>'ADMISSION_BANK_RETURN_EVIDENCE'
+ OR f.content_hash<>p_seen_sha OR f.campus_id<>campus
+ OR to_timestamp(exp_str::bigint)<=clock_timestamp()
+ OR NOT app_private.db03_bank_document_reviewer_authorized(actor,campus)
+ OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.id=op AND o.enabled AND NOT o.requires_approval
+ AND p.code=o.code AND p.state='ENABLED') THEN
+ RAISE EXCEPTION 'DB03 bank-document reviewer or sealed source context stale'; END IF;
+ SELECT * INTO old FROM app_private.command_receipts WHERE principal_id=actor
+ AND operation_id=op AND idempotency_key='bank-doc-review:'||p_key;
+ IF old.id IS NOT NULL THEN
+ SELECT * INTO rev FROM app_private.finance_admission_bank_return_evidence_reviews
+ WHERE id=old.result_ref;
+ IF old.state<>'SUCCEEDED'
+ OR old.command_kind<>'finance.admission.payment.return.evidence.review'
+ OR old.result_kind<>'FINANCE_ADMISSION_BANK_DOCUMENT_REVIEW'
+ OR old.canonical_payload_hash IS DISTINCT FROM digest
+ OR rev.id IS NULL OR rev.evidence_id<>ev.id OR rev.return_id<>ret.id
+ OR rev.decision<>p_decision OR rev.seen_sha256<>p_seen_sha
+ OR rev.reason_private<>p_reason OR rev.reviewer_id<>actor
+ OR old.result_summary->>'review_id' IS DISTINCT FROM rev.id::text
+ OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=old.id)<>1
+ OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=old.id)<>1 THEN
+ RAISE EXCEPTION 'DB03 bank-document review replay conflict'; END IF;
+ RETURN old.result_summary;
+ END IF;
+ IF EXISTS(SELECT 1 FROM app_private.finance_admission_bank_return_evidence_reviews
+  WHERE evidence_id=ev.id) THEN
+ RAISE EXCEPTION 'DB03 bank-document evidence already reviewed'; END IF;
+ IF NOT EXISTS(
+ SELECT 1 FROM app_private.command_receipts cr
+ JOIN app_private.operation_contracts o ON o.id=cr.operation_id
+ WHERE o.code='finance.admission.payment.return.evidence.submit'
+ AND cr.result_ref=ev.id AND cr.result_kind='FINANCE_ADMISSION_RETURN_BANK_DOCUMENT'
+ AND cr.command_kind=o.code AND cr.state='SUCCEEDED'
+ AND cr.created_by=ev.submitted_by
+ AND cr.result_summary->>'evidence_id'=ev.id::text
+ AND (SELECT count(*) FROM app_private.audit_events au
+ WHERE au.command_receipt_id=cr.id AND au.target_ref=ev.id)=1
+ AND (SELECT count(*) FROM app_private.outbox_events ob
+ WHERE ob.command_receipt_id=cr.id AND ob.aggregate_ref=ev.id)=1) THEN
+ RAISE EXCEPTION 'DB03 bank-document evidence provenance absent'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM app_private.finance_admission_return_ledger_reviews lr
+ WHERE lr.return_id=ret.id) THEN
+ RAISE EXCEPTION 'DB03 bank-document requires independent S23 ledger review'; END IF;
+ INSERT INTO app_private.finance_admission_bank_return_evidence_reviews(
+ evidence_id,return_id,decision,seen_sha256,reason_private,reviewer_id)
+ VALUES(ev.id,ret.id,p_decision,p_seen_sha,p_reason,actor) RETURNING * INTO rev;
+ result:=jsonb_build_object('review_id',rev.id,'evidence_id',ev.id,
+ 'return_id',ret.id,'application_id',a.id,'decision',p_decision,
+ 'document_byte_hash_verified',true,'external_bank_settlement_verified',false,
+ 'funding_hold_active',true,'cleared',false);
+ receipt_id:=gen_random_uuid();correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,
+ command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+ expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(receipt_id,actor,op,'finance.admission.payment.return.evidence.review',
+ 'bank-doc-review:'||p_key,digest,1,p_expected,'SUCCEEDED',
+ 'FINANCE_ADMISSION_BANK_DOCUMENT_REVIEW',rev.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+ target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+ source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',
+ jsonb_build_object('operation','finance.admission.payment.return.evidence.review',
+ 'return_id',ret.id),1,'finance.admission.payment.return.evidence.review',
+ 'FINANCE_ADMISSION_BANK_DOCUMENT_REVIEW',rev.id,campus,receipt_id,
+ 'WORKER',correlation,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+ aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,
+ payload,created_by)
+ VALUES('finance.admission.payment.return.evidence.review',
+ 'FINANCE_ADMISSION_BANK_DOCUMENT_REVIEW',rev.id,1,receipt_id,1,correlation,
+ clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_review_return_bank_document(
+ uuid,bigint,uuid,text,bytea,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_review_return_bank_document(
+ uuid,bigint,uuid,text,bytea,text,text)
+ TO schoolos_file_login;
+RESET ROLE;
