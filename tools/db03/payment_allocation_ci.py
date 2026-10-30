@@ -63,7 +63,8 @@ def run_payment_allocation(local, fresh_database, fixture):
     for email,ident in (
         ('foundation-rbac-001@example.invalid','admin'),
         ('foundation-own-001@example.invalid','reviewer'),
-        ('foundation-own-002@example.invalid','finance')):
+        ('foundation-own-002@example.invalid','finance'),
+        ('foundation-test-001@example.invalid','bank_reviewer')):
         with root() as conn:
             subject=conn.execute(
               'SELECT id::text FROM auth.users WHERE email=%s',(email,)).fetchone()[0]
@@ -105,6 +106,14 @@ def run_payment_allocation(local, fresh_database, fixture):
                            reason='Finance reports an official returned transfer'):
         return cmd('SELECT app_private.db03_report_admission_payment_return(%s,%s,%s,%s,%s,%s,%s)',
           (app,1,payment,kind,reference,reason,key),ident)
+
+    def review_return_ledger(app,ret,minor,compensated,key,
+            outcome='LEDGER_MATCHES_REPORT',ident='bank_reviewer',
+            case='BANK-CASE-S23-001',reason='Independent Finance ledger evidence reviewed'):
+        return cmd(
+          'SELECT app_private.db03_review_return_ledger(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+          (app,1,ret,outcome,Decimal(minor),Decimal(compensated),
+           case,reason,key),ident)
 
     checks=0
     def check(condition,tag):
@@ -372,6 +381,90 @@ def run_payment_allocation(local, fresh_database, fixture):
         denied(lambda:report_bank_return(other,pay_other,'RETURN-REVOKED','s22-revoked'),
                'Finance scope denied')
 
+        # S23: an entirely separate Auth-bound Finance principal reviews
+        # the immutable S22 ledger. This is *not* external bank verification.
+        denied(lambda:review_return_ledger(app,original_return['return_id'],
+          '25000','10000','s23-original-actor',ident='finance'),
+          'independent reviewer scope denied')
+        denied(lambda:review_return_ledger(app,original_return['return_id'],
+          '25000','10000','s23-admin',ident='admin'),
+          'independent reviewer scope denied')
+        denied(lambda:review_return_ledger(other,original_return['return_id'],
+          '25000','10000','s23-cross-app'),
+          'context stale or conflict')
+        denied(lambda:review_return_ledger(app,original_return['return_id'],
+          '25001','10000','s23-wrong-return'),
+          'observed amounts or reversal lineage mismatch')
+        denied(lambda:review_return_ledger(app,original_return['return_id'],
+          '25000','10001','s23-wrong-reversal'),
+          'observed amounts or reversal lineage mismatch')
+        first_ledger_review=review_return_ledger(app,original_return['return_id'],
+          '25000','10000','s23-review-first')
+        check(first_ledger_review['decision']=='LEDGER_MATCHES_REPORT'
+          and first_ledger_review['compensated_allocation_minor']==10000
+          and first_ledger_review['reported_return_minor']==25000
+          and first_ledger_review['reviewed_by_independent_finance'] is True
+          and first_ledger_review['external_bank_verified'] is False
+          and first_ledger_review['funding_hold_active'] is True
+          and first_ledger_review['clearance_issued'] is False,
+          'third real Auth accountant reviews return ledger without releasing funds')
+        check(review_return_ledger(app,original_return['return_id'],
+          '25000','10000','s23-review-first')==first_ledger_review,
+          'exact review replay preserves immutable history')
+        denied(lambda:review_return_ledger(app,original_return['return_id'],
+          '25000','10000','s23-review-first',case='BANK-CHANGED-S23'),
+          'replay conflict')
+        denied(lambda:review_return_ledger(app,original_return['return_id'],
+          '25000','10000','s23-review-duplicate'),
+          'already independently reviewed')
+        disputed=review_return_ledger(zero_app,no_allocation_return['return_id'],
+          '3000','0','s23-dispute-zero',outcome='DISPUTE_REPORTED_RETURN',
+          case='BANK-DISPUTE-S23')
+        check(disputed['decision']=='DISPUTE_REPORTED_RETURN'
+           and disputed['external_bank_verified'] is False
+           and disputed['funding_hold_active'] is True
+           and snapshot(zero_app)['state']=='BANK_RETURN_RECONCILIATION_REQUIRED',
+           'disputed reported return remains blocked and neither verified nor cleared')
+        with root() as conn:
+            race_return_id=conn.execute(
+             "SELECT id FROM app_private.finance_admission_payment_returns "
+             "WHERE payment_id=%s",(race_payment,)).fetchone()[0]
+        def competing_reviews(i):
+            try:
+                return ('ok',review_return_ledger(race_app,race_return_id,
+                   '10000','7000','s23-race-'+str(i),
+                   outcome='REQUEST_BANK_EVIDENCE',case='BANK-RACE-S23-'+str(i)))
+            except psycopg.Error as exc:
+                return ('denied',str(exc))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            race_reviews=list(pool.map(competing_reviews,[1,2]))
+        check(sum(kind=='ok' for kind,_ in race_reviews)==1
+           and sum(kind=='denied' and 'already independently reviewed' in msg
+                  for kind,msg in race_reviews)==1,
+           'competing independent Finance reviews record one terminal decision')
+        check(snapshot(race_app)['state']=='BANK_RETURN_RECONCILIATION_REQUIRED',
+           'request for bank evidence never unfreezes an applicant')
+        with root() as conn:
+            check(conn.execute("SELECT count(*) FROM "
+             "app_private.finance_admission_return_ledger_reviews"
+             ).fetchone()[0]==3
+             and conn.execute("SELECT count(*) FROM app_private.command_receipts "
+              "WHERE command_kind='finance.admission.payment.return.ledger.review'"
+              ).fetchone()[0]==3
+             and conn.execute("SELECT count(*) FROM app_private.audit_events "
+              "WHERE event_type='finance.admission.payment.return.ledger.review'"
+              ).fetchone()[0]==3
+             and conn.execute("SELECT count(*) FROM app_private.outbox_events "
+              "WHERE event_type='finance.admission.payment.return.ledger.review'"
+              ).fetchone()[0]==3,
+             'three independent decisions have exactly three receipts audits and outbox events')
+            conn.execute("UPDATE app_private.role_permission_grants "
+              "SET revoked_at=clock_timestamp() WHERE id="
+              "md5('finance.admission.payment.return.ledger.review:grant')::uuid")
+        denied(lambda:review_return_ledger(app,original_return['return_id'],
+           '25000','10000','s23-review-first'),
+           'independent reviewer scope denied')
+
         with root() as conn:
             check(conn.execute("SELECT sum(allocated_minor) FROM "
                 "app_private.finance_admission_payment_allocations WHERE application_id=%s",
@@ -400,6 +493,7 @@ def run_payment_allocation(local, fresh_database, fixture):
         denied(lambda:allocate(race_app,race_ass['assessment_id'],race_payment,
                                 '100','s20-revoked-new'),'Finance scope denied')
 
+    print('DB03_S23_RETURN_LEDGER_REVIEW_AUTH_PASS bank_verified=false clearance=false holds_active=true')
     print('DB03_S22_PAYMENT_RETURN_REAL_AUTH_PASS confirmed_bank_truth=false clearance=false')
     print(f'DB03_S20_PAYMENT_ALLOCATION_AUTH_PASS checks={checks} '
           'partial=true overpayment_unallocated=true races=true clearance=false')
