@@ -376,6 +376,25 @@ def validate_destination_command() -> tuple[str, str, str]:
     return sql,test,fixture
 
 
+def validate_applicant_concession_source() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/17_01_applicant_category_concession_source.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/17_applicant_category_concession_source.sql').read_text()
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)', sql) != [
+        'admission_category_concessions', 'admission_concession_categories']:
+        raise RuntimeError('DB03_CONCESSION_TABLE_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE FUNCTION app\.)\b', outside):
+        raise RuntimeError('DB03_CONCESSION_NO_SEED_OR_PUBLIC_COMMAND')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['15'] or len(re.findall(
+        r'(?m)^SELECT (?:extensions\.)?(?:is|ok|throws_ok|lives_ok)\(', test)) != 15 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_CONCESSION_TEST_PLAN')
+    for name in ('policy_publication_actor.sql', 'intake_grace_actor.sql'):
+        test = test.replace('\\ir fixtures/' + name,
+                            (ROOT / 'supabase/tests/db03/fixtures' / name).read_text())
+    print('DB03_CONCESSION_SOURCE_PASS assertions=15 sha256=' + hashlib.sha256(sql.encode()).hexdigest())
+    return sql, test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -398,6 +417,7 @@ def main() -> int:
     applicant_payment_sql, applicant_payment_test, applicant_payment_fixture = validate_applicant_payment()
     destination_sql, destination_test = validate_destination_source()
     destination_command_sql, destination_command_test, destination_command_fixture = validate_destination_command()
+    concession_sql, concession_test = validate_applicant_concession_source()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -842,6 +862,34 @@ def main() -> int:
                                   'DB03_DESTINATION_COMMAND_TEST')
             parse_tap(output,10)
             print('DB03_DESTINATION_COMMAND_DATABASE_PASS 10/10; no_production_seed=true')
+            # DB08 owns category identity; this disposable catalog install does
+            # not activate a school fee rule or a Finance discount.
+            fee_catalog_sql = (ROOT / 'supabase/proposals/db08/01_fee_obligation_baseline.sql.draft').read_text()
+            local.run_psql(container,'BEGIN;\n'+fee_catalog_sql+'\nCOMMIT;',
+                           'DB03_CONCESSION_FEE_CATALOG_INSTALL')
+            try:
+                local.run_psql(container,'BEGIN;\n'+concession_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_CONCESSION_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_CONCESSION_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_CONCESSION_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_CONCESSION_EXPECTED_FAILURE_ABSENT')
+            absent = local.run_psql(container,
+                "SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN ('admission_category_concessions','admission_concession_categories');",
+                'DB03_CONCESSION_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_CONCESSION_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+concession_sql+'\nCOMMIT;',
+                           'DB03_CONCESSION_INSTALL')
+            output=local.run_psql(container,concession_test,'DB03_CONCESSION_TEST')
+            try:
+                parse_tap(output,15)
+            except RuntimeError:
+                print('DB03_CONCESSION_TAP_DIAGNOSTIC\n' + output[-10000:], flush=True)
+                raise
+            print('DB03_CONCESSION_DATABASE_PASS 15/15; typed_category=true; no_writer=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
