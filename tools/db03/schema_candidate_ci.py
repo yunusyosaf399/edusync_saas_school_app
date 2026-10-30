@@ -884,7 +884,11 @@ def main() -> int:
             local.run_psql(container,'BEGIN;\n'+concession_sql+'\nCOMMIT;',
                            'DB03_CONCESSION_INSTALL')
             output=local.run_psql(container,concession_test,'DB03_CONCESSION_TEST')
-            parse_tap(output,15)
+            try:
+                parse_tap(output,15)
+            except RuntimeError:
+                print('DB03_CONCESSION_TAP_DIAGNOSTIC\n' + output[-10000:], flush=True)
+                raise
             print('DB03_CONCESSION_DATABASE_PASS 15/15; typed_category=true; no_writer=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
