@@ -28,6 +28,9 @@ def run_payment_allocation(local, fresh_database, fixture):
     from services.admission_documents.service import Entitlements, canonical
     from services.payment_evidence.applicant import ApplicantSlipService
     from services.payment_evidence.applicant_review import ApplicantSlipReviewService
+    from services.payment_evidence.bank_return import (
+        BankReturnDocumentService, BankReturnDocumentReviewService)
+    from services.admission_documents.service import Denied
     from prepare_local_auth_fixtures import local_status, NoRedirect
 
     fresh_database()
@@ -465,6 +468,185 @@ def run_payment_allocation(local, fresh_database, fixture):
            '25000','10000','s23-review-first'),
            'independent reviewer scope denied')
 
+        # S24: independently re-open actual sealed private bank-document bytes.
+        # The upload is not bank-settlement confirmation. All outcomes preserve
+        # previously reported return holds, ledger history and no clearance.
+        evidence_uploader=BankReturnDocumentService(
+            school_id=SCHOOL,campus_id=CAMPUS,authenticate=authenticator,
+            connect=worker,entitlements=ent,objects=archive,
+            location_key='PRIVATE_PAYMENTS')
+        evidence_reviewer=BankReturnDocumentReviewService(
+            school_id=SCHOOL,authenticate=authenticator,connect=worker,
+            objects=archive)
+        def proof_img(value):
+            image=BytesIO()
+            Image.new('RGB',(18,18),(value,90,115)).save(image,format='PNG')
+            return image.getvalue()
+        proof_a=proof_img(44)
+        def submit_bank_evidence(app_id,return_id,payload,key,token='finance',
+                                 kind='BANK_RETURN_NOTICE'):
+            return evidence_uploader.submit(
+               token=login[token]['token'],application_id=str(app_id),
+               expected_version=1,return_id=str(return_id),kind=kind,
+               bank_reference='BANK-S24-CASE-'+key,document=payload,
+               idempotency_key=key)
+        denied(lambda:submit_bank_evidence(app,original_return['return_id'],
+             proof_a,'s24-admin',token='admin'),
+             'submit authority or context denied')
+        denied(lambda:submit_bank_evidence(other,original_return['return_id'],
+             proof_a,'s24-cross-app'),
+             'submit authority or context denied')
+        a_evidence=submit_bank_evidence(app,original_return['return_id'],
+             proof_a,'s24-a')
+        check(a_evidence['document_reviewed'] is False
+           and a_evidence['funding_hold_active'] is True
+           and a_evidence['external_bank_verified'] is False
+           and a_evidence['state']=='PRIVATE_EVIDENCE_PENDING_INDEPENDENT_REVIEW',
+           'reporter attaches sealed pending private bank-return document')
+        check(submit_bank_evidence(app,original_return['return_id'],
+             proof_a,'s24-a')==a_evidence,
+             'identical bank document submission replay returns same source')
+        # The write-once archive detects altered bytes before SQL replay.
+        try:
+            submit_bank_evidence(app,original_return['return_id'],
+               proof_img(57),'s24-a')
+        except Denied:
+            check(True,'same-key changed bank evidence is rejected by private archive')
+        else:
+            raise RuntimeError('DB03_S24_CHANGED_ARCHIVE_REPLAY_ACCEPTED')
+        denied(lambda:submit_bank_evidence(app,original_return['return_id'],
+             proof_img(57),'s24-dupe'),
+             'already submitted for return')
+        denied(lambda:evidence_reviewer.inspect(
+             token=login['finance']['token'],application_id=str(app),
+             evidence_id=a_evidence['evidence_id']),
+             'inspect reviewer or evidence denied')
+        inspected=evidence_reviewer.inspect(
+             token=login['bank_reviewer']['token'],application_id=str(app),
+             evidence_id=a_evidence['evidence_id'])
+        check(inspected['document']==proof_a
+           and inspected['sha256']==a_evidence['evidence_sha256'],
+           'independent reviewer sees exact stored file and SHA-256 digest')
+        # Corrupt-read adapter demonstrates a forged or replaced archive byte
+        # cannot be accepted as an independent review.
+        class CorruptRead:
+            def read(self, key, limit):
+                return proof_img(67)
+        forged_reader=BankReturnDocumentReviewService(
+            school_id=SCHOOL,authenticate=authenticator,connect=worker,
+            objects=CorruptRead())
+        try:
+            forged_reader.decide(token=login['bank_reviewer']['token'],
+                application_id=str(app),expected_version=1,
+                evidence_id=a_evidence['evidence_id'],
+                decision='DOCUMENT_SUPPORTS_RETURN',
+                reason='Independent bank return document inspection',
+                idempotency_key='s24-corrupt')
+        except Denied:
+            check(True,'tampered private byte read rejected before database command')
+        else:
+            raise RuntimeError('DB03_S24_PRIVATE_ARCHIVE_TAMPER_NOT_REJECTED')
+        denied(lambda:cmd('SELECT app_private.db03_review_return_bank_document('
+              '%s,%s,%s,%s,%s,%s,%s)',
+              (app,1,a_evidence['evidence_id'],'DOCUMENT_SUPPORTS_RETURN',
+               bytes(32),'Intentional invalid digest','s24-bad-digest'),
+              'bank_reviewer'), 'sealed source context stale')
+        def decide_bank_evidence(app_id,evidence_id,outcome,key,
+                                 token='bank_reviewer'):
+            return evidence_reviewer.decide(
+             token=login[token]['token'],application_id=str(app_id),
+             expected_version=1,evidence_id=str(evidence_id),
+             decision=outcome,
+             reason='Independent bank documentary evidence inspected',
+             idempotency_key=key)
+        denied(lambda:decide_bank_evidence(app,a_evidence['evidence_id'],
+             'DOCUMENT_SUPPORTS_RETURN','s24-reporter-review',token='finance'),
+             'inspect reviewer or evidence denied')
+        reviewed_a=decide_bank_evidence(app,a_evidence['evidence_id'],
+             'DOCUMENT_SUPPORTS_RETURN','s24-review-a')
+        check(reviewed_a['document_byte_hash_verified'] is True
+          and reviewed_a['external_bank_settlement_verified'] is False
+          and reviewed_a['funding_hold_active'] is True
+          and reviewed_a['cleared'] is False
+          and snapshot(app)['state']=='BANK_RETURN_RECONCILIATION_REQUIRED',
+          'document supporting return does not verify bank settlement or clear hold')
+        check(decide_bank_evidence(app,a_evidence['evidence_id'],
+             'DOCUMENT_SUPPORTS_RETURN','s24-review-a')==reviewed_a,
+          'exact document review replay is idempotent')
+        denied(lambda:decide_bank_evidence(app,a_evidence['evidence_id'],
+             'DOCUMENT_DISPUTES_RETURN','s24-review-a'),
+             'review replay conflict')
+        denied(lambda:decide_bank_evidence(app,a_evidence['evidence_id'],
+             'DOCUMENT_SUPPORTS_RETURN','s24-review-a-new'),
+             'evidence already reviewed')
+
+        proof_b=proof_img(104)
+        b_evidence=submit_bank_evidence(race_app,race_return_id,proof_b,
+               's24-race',kind='BANK_STATEMENT')
+        def race_document_decision(i):
+            try:
+                return ('ok',decide_bank_evidence(race_app,b_evidence['evidence_id'],
+                    'MORE_BANK_PROOF_REQUIRED','s24-review-race-'+str(i)))
+            except psycopg.Error as exc:
+                return ('deny',str(exc))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            decisions=list(pool.map(race_document_decision,[0,1]))
+        check(sum(k=='ok' for k,_ in decisions)==1
+            and sum(k=='deny' and 'evidence already reviewed' in v for k,v in decisions)==1,
+            'competing independent bank-document reviews record exactly one result')
+        check(snapshot(race_app)['state']=='BANK_RETURN_RECONCILIATION_REQUIRED',
+            'additional bank proof required never unfreezes return')
+
+        proof_c=proof_img(174)
+        c_evidence=submit_bank_evidence(zero_app,no_allocation_return['return_id'],
+             proof_c,'s24-zero',kind='BANK_CASE_CORRESPONDENCE')
+        reviewed_c=decide_bank_evidence(zero_app,c_evidence['evidence_id'],
+             'DOCUMENT_DISPUTES_RETURN','s24-review-dispute')
+        check(reviewed_c['decision']=='DOCUMENT_DISPUTES_RETURN'
+           and reviewed_c['cleared'] is False
+           and snapshot(zero_app)['state']=='BANK_RETURN_RECONCILIATION_REQUIRED',
+           'independent document dispute maintains original reported-return hold')
+        with root() as conn:
+            check(conn.execute("SELECT count(*) FROM "
+                "app_private.finance_admission_bank_return_evidence"
+                ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM "
+                "app_private.finance_admission_bank_return_evidence_reviews"
+                ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.file_objects "
+                "WHERE purpose_code='ADMISSION_BANK_RETURN_EVIDENCE' "
+                "AND state='AVAILABLE' AND classification='PRIVATE'"
+                ).fetchone()[0]==3,
+               'three original sealed private files with one independent review each')
+            check(conn.execute("SELECT count(*) FROM app_private.command_receipts "
+                "WHERE command_kind='finance.admission.payment.return.evidence.submit'"
+                ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.audit_events "
+                "WHERE event_type='finance.admission.payment.return.evidence.submit'"
+                ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.outbox_events "
+                "WHERE event_type='finance.admission.payment.return.evidence.submit'"
+                ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.command_receipts "
+                "WHERE command_kind='finance.admission.payment.return.evidence.review'"
+                ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.audit_events "
+                "WHERE event_type='finance.admission.payment.return.evidence.review'"
+                ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.outbox_events "
+                "WHERE event_type='finance.admission.payment.return.evidence.review'"
+                ).fetchone()[0]==3,
+               'each submission and independent review has exact audit outbox and receipt')
+            conn.execute("UPDATE app_private.role_permission_grants "
+                "SET revoked_at=clock_timestamp() WHERE id IN ("
+                "md5('finance.admission.payment.return.evidence.submit:grant')::uuid,"
+                "md5('finance.admission.payment.return.evidence.review:grant')::uuid)")
+        denied(lambda:submit_bank_evidence(app,original_return['return_id'],
+               proof_a,'s24-a'), 'submit authority or context denied')
+        denied(lambda:decide_bank_evidence(app,a_evidence['evidence_id'],
+               'DOCUMENT_SUPPORTS_RETURN','s24-review-a'),
+               'inspect reviewer or evidence denied')
+
         with root() as conn:
             check(conn.execute("SELECT sum(allocated_minor) FROM "
                 "app_private.finance_admission_payment_allocations WHERE application_id=%s",
@@ -493,6 +675,7 @@ def run_payment_allocation(local, fresh_database, fixture):
         denied(lambda:allocate(race_app,race_ass['assessment_id'],race_payment,
                                 '100','s20-revoked-new'),'Finance scope denied')
 
+    print('DB03_S24_BANK_DOCUMENT_AUTH_PASS original_bytes_private=true independently_reviewed=true settlement_verified=false clearance=false')
     print('DB03_S23_RETURN_LEDGER_REVIEW_AUTH_PASS bank_verified=false clearance=false holds_active=true')
     print('DB03_S22_PAYMENT_RETURN_REAL_AUTH_PASS confirmed_bank_truth=false clearance=false')
     print(f'DB03_S20_PAYMENT_ALLOCATION_AUTH_PASS checks={checks} '
