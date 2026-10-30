@@ -1,0 +1,144 @@
+-- S16: inactive worker command. The permission and operation are test-only.
+-- A retained grade intention never creates a Student or a Finance charge.
+GRANT EXECUTE ON FUNCTION app_private.current_principal_id(),
+ app_private.has_complete_grant(text,text,uuid) TO schoolos_schema_owner;
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_destination_admin(p_actor uuid,p_campus uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT EXISTS(SELECT 1 FROM app_private.principal_role_assignments ra
+  JOIN app_private.roles r ON r.id=ra.role_id
+  JOIN app_private.assignment_permission_scopes sc ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+  JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+   AND g.role_id=ra.role_id AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts pc ON pc.id=sc.scope_contract_id
+   AND pc.permission_id=sc.permission_id AND pc.scope_kind=sc.scope_kind
+   AND pc.resolver_key=sc.resolver_key
+  JOIN app_private.permissions pe ON pe.id=sc.permission_id
+  WHERE ra.principal_id=p_actor AND ra.principal_kind='INDIVIDUAL'
+   AND ra.context_kind='INDIVIDUAL' AND r.code='ADMINISTRATOR'
+   AND r.state='ACTIVE' AND NOT r.family_only
+   AND pe.code='admission.destination.record' AND pe.state='ENABLED' AND NOT pe.family_safe
+   AND pc.enabled AND sc.resolver_key='DIRECT'
+   AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+     OR (sc.scope_kind='CAMPUS' AND sc.campus_id=p_campus))
+   AND ra.valid_from<=clock_timestamp()
+   AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+   AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+   AND g.valid_from<=clock_timestamp()
+   AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND sc.valid_from<=clock_timestamp()
+   AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+   AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at));
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_destination_admin(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_record_admission_destination(
+ p_application uuid,p_expected bigint,p_offering uuid,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ co app_private.class_offerings%ROWTYPE;
+ prior app_private.admission_destination_intents%ROWTYPE;
+ dest app_private.admission_destination_intents%ROWTYPE;
+ replay app_private.command_receipts%ROWTYPE;
+ actor uuid; operation uuid; school uuid; campus uuid; year_id uuid;
+ claims jsonb; expires text; v_hash bytea; receipt uuid; correlation uuid; result jsonb;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR current_setting('transaction_isolation')<>'read committed'
+  OR p_application IS NULL OR p_expected IS NULL OR p_expected<1 OR p_offering IS NULL
+  OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB03 destination command invalid'; END IF;
+ claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
+ expires:=claims->>'exp';
+ IF expires IS NULL OR expires !~ '^[0-9]{1,12}$'
+  OR to_timestamp(expires::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 destination authentication expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ IF actor IS NULL OR NOT EXISTS(SELECT 1 FROM app_private.principals
+  WHERE id=actor AND kind='INDIVIDUAL' AND state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB03 destination staff authentication required'; END IF;
+ SELECT school_id,campus_id,academic_year_id INTO school,campus,year_id
+  FROM app_private.admission_applications WHERE id=p_application;
+ IF school IS NULL THEN RAISE EXCEPTION 'DB03 destination application unavailable'; END IF;
+ SELECT o.id INTO operation FROM app_private.operation_contracts o
+  JOIN app_private.permissions p ON p.id=o.request_permission_id
+  WHERE o.code='admission.destination.record' AND o.contract_version=1
+   AND o.handler_key=o.code AND o.payload_schema_version=1
+   AND o.enabled AND NOT o.requires_approval
+   AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF operation IS NULL THEN RAISE EXCEPTION 'DB03 destination operation disabled'; END IF;
+ IF NOT app_private.has_complete_grant('admission.destination.record','CAMPUS',campus)
+  OR NOT app_private.db03_destination_admin(actor,campus) THEN
+  RAISE EXCEPTION 'DB03 destination administrator scope denied'; END IF;
+ v_hash:=sha256(convert_to(jsonb_build_array('db03-destination-v1',
+  p_application,p_expected,p_offering,encode(sha256(convert_to(p_reason,'UTF8')),'hex'))::text,'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||operation::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 destination School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=campus AND school_id=school AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 destination Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=year_id AND school_id=school
+  AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 destination Year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application FOR UPDATE;
+ SELECT * INTO co FROM app_private.class_offerings WHERE id=p_offering FOR SHARE;
+ IF a.id IS NULL OR a.school_id<>school OR a.campus_id<>campus OR a.academic_year_id<>year_id
+  OR app_private.current_principal_id() IS DISTINCT FROM actor
+  OR NOT app_private.has_complete_grant('admission.destination.record','CAMPUS',campus)
+  OR NOT app_private.db03_destination_admin(actor,campus)
+  OR to_timestamp(expires::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 destination authority or target changed'; END IF;
+ SELECT * INTO replay FROM app_private.command_receipts WHERE principal_id=actor
+  AND operation_id=operation AND idempotency_key='destination:'||p_key;
+ IF replay.id IS NOT NULL THEN
+  SELECT * INTO dest FROM app_private.admission_destination_intents WHERE id=replay.result_ref;
+  IF replay.state<>'SUCCEEDED' OR replay.command_kind<>'admission.destination.record'
+   OR replay.result_kind<>'ADMISSION_DESTINATION' OR replay.canonical_payload_hash IS DISTINCT FROM v_hash
+   OR replay.expected_target_version IS DISTINCT FROM p_expected
+   OR dest.id IS NULL OR dest.application_id<>p_application OR dest.class_offering_id<>p_offering
+   OR dest.application_version<>p_expected OR dest.created_by<>actor OR dest.reason_private<>p_reason
+   OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=replay.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=replay.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 destination replay conflict'; END IF;
+  RETURN replay.result_summary;
+ END IF;
+ IF a.state<>'DRAFT' OR a.row_version<>p_expected OR co.id IS NULL OR co.state<>'OPEN'
+  OR co.school_id<>school OR co.campus_id<>campus OR co.academic_year_id<>year_id
+  OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards WHERE application_id=a.id) THEN
+  RAISE EXCEPTION 'DB03 destination context changed or forwarded'; END IF;
+ SELECT * INTO prior FROM app_private.admission_destination_intents
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+ INSERT INTO app_private.admission_destination_intents(application_id,school_id,campus_id,
+  academic_year_id,application_version,revision,supersedes_id,class_offering_id,reason_private,created_by)
+ VALUES(a.id,school,campus,year_id,p_expected,coalesce(prior.revision,0)+1,
+  prior.id,p_offering,p_reason,actor) RETURNING * INTO dest;
+ result:=jsonb_build_object('destination_id',dest.id,'application_id',a.id,
+  'application_version',p_expected,'revision',dest.revision,'class_offering_id',p_offering,
+  'source_kind','ADMISSION_DESTINATION_INTENT');
+ receipt:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,
+  canonical_payload_hash,canonicalization_version,expected_target_version,state,
+  result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(receipt,actor,operation,'admission.destination.record','destination:'||p_key,
+  v_hash,1,p_expected,'SUCCEEDED','ADMISSION_DESTINATION',dest.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,
+  event_type,target_kind,target_ref,campus_id,command_receipt_id,source_kind,correlation_id,
+  occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation','admission.destination.record'),
+  dest.revision,'admission.destination.record','ADMISSION_DESTINATION',dest.id,campus,
+  receipt,'WORKER',correlation,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,
+  command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES('admission.destination.record','ADMISSION_DESTINATION',dest.id,dest.revision,
+  receipt,1,correlation,clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_record_admission_destination(uuid,bigint,uuid,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_record_admission_destination(uuid,bigint,uuid,text,text)
+ TO schoolos_file_login;
+RESET ROLE;
