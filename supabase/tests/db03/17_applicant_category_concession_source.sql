@@ -64,7 +64,8 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA extensions TO schoolos_schema_owner;
 SET ROLE schoolos_schema_owner;
 SELECT extensions.throws_ok($q$INSERT INTO app_private.admission_concession_categories
  VALUES('17171717-1717-4717-8717-171717171718','22222222-2222-4222-8222-222222222222',
- '17171717-1717-4717-8717-171717171701')$q$,'23505'::text,NULL::text,
+ '17171717-1717-4717-8717-171717171701')$q$,'23505'::text,
+ 'duplicate key value violates unique constraint "admission_concession_categories_pkey"'::text,
  'duplicate category denied');
 SELECT extensions.throws_ok($q$INSERT INTO app_private.admission_concession_categories
  VALUES('17171717-1717-4717-8717-171717171718','22222222-2222-4222-8222-222222222222',
