@@ -862,9 +862,6 @@ def main() -> int:
                                   'DB03_DESTINATION_COMMAND_TEST')
             parse_tap(output,10)
             print('DB03_DESTINATION_COMMAND_DATABASE_PASS 10/10; no_production_seed=true')
-            from destination_command_ci import run_destination_command
-            run_destination_command(local,container,
-                intake_fixture+'\n'+destination_command_fixture)
             # DB08 owns category identity; this disposable catalog install does
             # not activate a school fee rule or a Finance discount.
             fee_catalog_sql = (ROOT / 'supabase/proposals/db08/01_fee_obligation_baseline.sql.draft').read_text()
@@ -889,6 +886,9 @@ def main() -> int:
             output=local.run_psql(container,concession_test,'DB03_CONCESSION_TEST')
             parse_tap(output,15)
             print('DB03_CONCESSION_DATABASE_PASS 15/15; typed_category=true; no_writer=true')
+            from destination_command_ci import run_destination_command
+            run_destination_command(local,container,
+                intake_fixture+'\n'+destination_command_fixture)
             return 0
     finally:
         if started:
