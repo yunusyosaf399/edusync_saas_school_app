@@ -124,6 +124,11 @@ def run_destination_command(local, container, fixture):
         check(conn.execute('SELECT count(*) FROM app_private.finance_admission_official_payments '
                   'WHERE application_id=%s',(app,)).fetchone()[0]==0,
                   'no payment fabricated')
+    from concession_command_ci import run_concession_command
+    from pathlib import Path
+    run_concession_command(root,worker,api,record,claims,
+        (Path(__file__).resolve().parents[2] / 'supabase/tests/db03/fixtures/concession_command_actor.sql').read_text())
+    with root() as conn:
         conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() "
                      "WHERE id=md5('admission.destination.record:grant')::uuid")
     denied(lambda:record(app,1,OFFERING,'Revoked','destination-revoked'),
