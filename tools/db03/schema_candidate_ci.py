@@ -844,7 +844,7 @@ def main() -> int:
             print('DB03_DESTINATION_COMMAND_DATABASE_PASS 10/10; no_production_seed=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
-                publication_fixture+'\n'+intake_fixture+'\n'+destination_command_fixture)
+                intake_fixture+'\n'+destination_command_fixture)
             return 0
     finally:
         if started:
