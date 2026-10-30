@@ -442,6 +442,23 @@ def validate_payment_allocation() -> tuple[str,str,str]:
     return sql,test,fixture
 
 
+def validate_funding_snapshot() -> tuple[str,str]:
+    sql=(ROOT/'supabase/proposals/db03/21_01_private_applicant_funding_snapshot.sql.draft').read_text()
+    test=(ROOT/'supabase/tests/db03/21_private_applicant_funding_snapshot.sql').read_text()
+    if re.findall(r'(?mi)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)!=[
+        'db03_applicant_funding_snapshot']:
+        raise RuntimeError('DB03_S21_FUNDING_SNAPSHOT_SCOPE')
+    outside=re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '',sql,flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE EXTENSION|CREATE FUNCTION app\.)\b',outside):
+        raise RuntimeError('DB03_S21_FUNDING_SNAPSHOT_WRITE')
+    if re.findall(r'SELECT plan\((\d+)\);',test)!=['12'] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test))!=12 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_S21_FUNDING_SNAPSHOT_TEST_PLAN')
+    print('DB03_S21_FUNDING_SNAPSHOT_SOURCE_PASS assertions=12 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -468,6 +485,7 @@ def main() -> int:
     manual_assessment_sql, manual_assessment_test = validate_manual_assessment_binding()
     finance_assessment_sql, finance_assessment_test, finance_assessment_fixture = validate_finance_assessment_command()
     allocation_sql, allocation_test, allocation_fixture = validate_payment_allocation()
+    funding_snapshot_sql, funding_snapshot_test = validate_funding_snapshot()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -775,6 +793,17 @@ def main() -> int:
             if absent!='0':
                 raise RuntimeError('DB03_S20_ROLLBACK_INCOMPLETE')
             local.run_psql(container, "BEGIN;\n" + allocation_sql + "\nCOMMIT;", 'DB03_S20_INSTALL')
+            try:
+                local.run_psql(container, "BEGIN;\n" + funding_snapshot_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_S21_INJECTED_FAILURE'; END $failure$;\nCOMMIT;", 'DB03_S21_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_S21_INJECTED_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_S21_ROLLBACK_ABSENT')
+            absent=local.run_psql(container,"SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_applicant_funding_snapshot';",'DB03_S21_ROLLBACK_PROBE',tuples=True).strip()
+            if absent!='0':
+                raise RuntimeError('DB03_S21_ROLLBACK_INCOMPLETE')
+            local.run_psql(container, "BEGIN;\n" + funding_snapshot_sql + "\nCOMMIT;", 'DB03_S21_INSTALL')
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -944,9 +973,14 @@ def main() -> int:
                 print('DB03_S20_ASSERTION_DETAIL '+allocation_output)
             parse_tap(allocation_output,17)
             print('DB03_S20_ALLOCATION_DATABASE_PASS 17/17; clearance=false')
+            snapshot_output=local.run_psql(container,funding_snapshot_test,'DB03_S21_FUNDING_SNAPSHOT_TEST')
+            if 'not ok' in snapshot_output:
+                print('DB03_S21_SNAPSHOT_ASSERTION_DETAIL '+snapshot_output)
+            parse_tap(snapshot_output,12)
+            print('DB03_S21_FUNDING_SNAPSHOT_DATABASE_PASS 12/12; clearance=false')
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\n" + manual_assessment_sql + "\n" + finance_assessment_sql + "\n" + allocation_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\n" + manual_assessment_sql + "\n" + finance_assessment_sql + "\n" + allocation_sql + "\n" + funding_snapshot_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
