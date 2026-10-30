@@ -125,7 +125,7 @@ def run_payment_allocation(local, fresh_database, fixture):
         ent=Entitlements(tmp/'coordinator'/'state.sqlite',school_id=SCHOOL,
           issuer='disposable-control-plane',
           keys={'test':secret.public_key().public_bytes(Encoding.Raw,PublicFormat.Raw)},
-          maximum_age=600,maximum_ttl=900,
+          maximum_age=600,maximum_ttl=900,audit=lambda *args: None,
           capability='storage.payment_evidence.upload',module='finance')
         payload=canonical(dict(schema_version=1,issuer='disposable-control-plane',
           audience=SCHOOL,revision=1,subscription_state='ACTIVE',
