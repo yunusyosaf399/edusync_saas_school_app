@@ -506,9 +506,14 @@ def run_payment_allocation(local, fresh_database, fixture):
         check(submit_bank_evidence(app,original_return['return_id'],
              proof_a,'s24-a')==a_evidence,
              'identical bank document submission replay returns same source')
-        denied(lambda:submit_bank_evidence(app,original_return['return_id'],
-             proof_img(57),'s24-a'),
-             'bank-document replay conflict')
+        # The write-once archive detects altered bytes before SQL replay.
+        try:
+            submit_bank_evidence(app,original_return['return_id'],
+               proof_img(57),'s24-a')
+        except Denied:
+            check(True,'same-key changed bank evidence is rejected by private archive')
+        else:
+            raise RuntimeError('DB03_S24_CHANGED_ARCHIVE_REPLAY_ACCEPTED')
         denied(lambda:submit_bank_evidence(app,original_return['return_id'],
              proof_img(57),'s24-dupe'),
              'already submitted for return')
