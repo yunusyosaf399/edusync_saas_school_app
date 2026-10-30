@@ -411,6 +411,24 @@ def validate_concession_command() -> tuple[str, str]:
     return sql,test
 
 
+def validate_scholarship_approval() -> tuple[str, str]:
+    paths = ['19_01_applicant_scholarship_approval_source.sql.draft',
+             '19_02_applicant_scholarship_approval_commands.sql.draft']
+    sql = '\n'.join((ROOT / 'supabase/proposals/db03' / p).read_text() for p in paths)
+    test = (ROOT / 'supabase/tests/db03/19_applicant_scholarship_approval.sql').read_text()
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)',sql) != ['admission_concession_approval_bindings']:
+        raise RuntimeError('DB03_SCHOLARSHIP_APPROVAL_TABLE_SCOPE')
+    if re.search(r'(?m)^CREATE FUNCTION app\.',sql):
+        raise RuntimeError('DB03_SCHOLARSHIP_APPROVAL_NO_PUBLIC_COMMAND')
+    if 'INSERT INTO app_private.permissions' in sql or 'INSERT INTO app_private.operation_contracts' in sql:
+        raise RuntimeError('DB03_SCHOLARSHIP_APPROVAL_NO_SEED')
+    if re.findall(r'SELECT plan\((\d+)\);',test) != ['16'] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 16 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_SCHOLARSHIP_APPROVAL_TEST_PLAN')
+    print('DB03_SCHOLARSHIP_APPROVAL_SOURCE_PASS assertions=16 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -435,6 +453,7 @@ def main() -> int:
     destination_command_sql, destination_command_test, destination_command_fixture = validate_destination_command()
     concession_sql, concession_test = validate_applicant_concession_source()
     concession_command_sql, concession_command_test = validate_concession_command()
+    scholarship_approval_sql, scholarship_approval_test = validate_scholarship_approval()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -926,6 +945,25 @@ def main() -> int:
             output=local.run_psql(container,concession_command_test,'DB03_CONCESSION_COMMAND_TEST')
             parse_tap(output,10)
             print('DB03_CONCESSION_COMMAND_DATABASE_PASS 10/10; no_production_seed=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+scholarship_approval_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_SCHOLARSHIP_APPROVAL_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_SCHOLARSHIP_APPROVAL_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_SCHOLARSHIP_APPROVAL_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_SCHOLARSHIP_APPROVAL_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='admission_concession_approval_bindings')+(SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND (proname LIKE 'db03_%concession%approval%' OR proname IN('db03_concession_binding_guard','db03_concession_record_receipt')));",
+                'DB03_SCHOLARSHIP_APPROVAL_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_SCHOLARSHIP_APPROVAL_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+scholarship_approval_sql+'\nCOMMIT;',
+                           'DB03_SCHOLARSHIP_APPROVAL_INSTALL')
+            output=local.run_psql(container,scholarship_approval_test,'DB03_SCHOLARSHIP_APPROVAL_TEST')
+            parse_tap(output,16)
+            print('DB03_SCHOLARSHIP_APPROVAL_DATABASE_PASS 16/16; no_production_seed=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)

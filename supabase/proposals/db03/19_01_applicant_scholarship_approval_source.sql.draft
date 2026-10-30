@@ -1,0 +1,182 @@
+-- Inactive applicant scholarship approval. Requires S15-S18 and Foundation workflow.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.admission_concession_approval_bindings (
+ request_id uuid PRIMARY KEY REFERENCES app_private.approval_requests(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ concession_id uuid NOT NULL UNIQUE,
+ school_id uuid NOT NULL,
+ source_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ created_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
+ FOREIGN KEY(concession_id,school_id) REFERENCES app_private.admission_category_concessions(id,school_id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+ALTER TABLE app_private.admission_concession_approval_bindings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_concession_approval_bindings FORCE ROW LEVEL SECURITY;
+CREATE POLICY db03_concession_binding_owner ON app_private.admission_concession_approval_bindings
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+REVOKE ALL ON app_private.admission_concession_approval_bindings FROM PUBLIC,anon,authenticated,service_role,
+ schoolos_file_login,schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer;
+CREATE FUNCTION app_private.db03_concession_binding_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 scholarship approval binding is immutable'; END IF;
+ IF current_user<>'schoolos_schema_owner' OR NOT EXISTS(
+  SELECT 1 FROM app_private.admission_category_concessions c
+  JOIN app_private.approval_requests q ON q.id=NEW.request_id
+  JOIN app_private.command_receipts r ON r.id=NEW.source_receipt_id
+  JOIN app_private.operation_contracts o ON o.id=q.operation_id
+  WHERE c.id=NEW.concession_id AND c.school_id=NEW.school_id
+   AND q.target_ref=c.id AND q.expected_target_version=c.revision
+   AND q.requester_id=c.created_by AND NEW.created_by=c.created_by
+   AND q.campus_id=c.campus_id AND q.reason=c.reason_private
+   AND q.state='DRAFT' AND o.code='admission.concession.approval'
+   AND r.command_kind='admission.concession.record' AND r.state='SUCCEEDED'
+   AND r.result_kind='APPLICANT_CONCESSION' AND r.result_ref=c.id
+   AND r.principal_id=c.created_by AND r.expected_target_version=c.application_version
+ ) THEN RAISE EXCEPTION 'DB03 scholarship approval source mismatch'; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_concession_binding_guard() FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+CREATE TRIGGER db03_concession_binding_history BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.admission_concession_approval_bindings FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_concession_binding_guard();
+CREATE TRIGGER db03_concession_binding_truncate BEFORE TRUNCATE
+ ON app_private.admission_concession_approval_bindings FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_concession_binding_guard();
+CREATE FUNCTION app_private.db03_concession_approval_grant(p_actor uuid,p_campus uuid,p_phase text,p_role uuid DEFAULT NULL)
+RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT EXISTS(SELECT 1 FROM app_private.principal_role_assignments ra
+  JOIN app_private.roles r ON r.id=ra.role_id
+  JOIN app_private.assignment_permission_scopes sc ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+  JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+   AND g.role_id=ra.role_id AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts pc ON pc.id=sc.scope_contract_id
+   AND pc.permission_id=sc.permission_id AND pc.scope_kind=sc.scope_kind
+   AND pc.resolver_key=sc.resolver_key
+  JOIN app_private.permissions pe ON pe.id=sc.permission_id
+  WHERE ra.principal_id=p_actor AND ra.principal_kind='INDIVIDUAL'
+   AND ra.context_kind='INDIVIDUAL' AND r.code=CASE p_phase WHEN 'SUBMIT' THEN 'ADMINISTRATOR' WHEN 'REVIEW' THEN 'ACCOUNTANT' END
+   AND (p_role IS NULL OR r.id=p_role) AND EXISTS(SELECT 1 FROM app_private.principals p
+    WHERE p.id=p_actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+   AND r.state='ACTIVE' AND NOT r.family_only
+   AND pe.code=CASE p_phase WHEN 'SUBMIT' THEN 'admission.concession.submit'
+    WHEN 'REVIEW' THEN 'admission.concession.review' END AND pe.state='ENABLED' AND NOT pe.family_safe
+   AND pc.enabled AND sc.resolver_key='DIRECT'
+   AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+     OR (sc.scope_kind='CAMPUS' AND sc.campus_id=p_campus))
+   AND ra.valid_from<=clock_timestamp()
+   AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+   AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+   AND g.valid_from<=clock_timestamp()
+   AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND sc.valid_from<=clock_timestamp()
+   AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+   AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at));
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_concession_approval_grant(uuid,uuid,text,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_concession_approval_actor(p_phase text,p_campus uuid,p_role uuid DEFAULT NULL)
+RETURNS TABLE(actor_id uuid,operation_id uuid) LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; operation uuid; expiry text;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR current_setting('transaction_isolation')<>'read committed'
+  OR p_phase IS NULL OR p_phase NOT IN('SUBMIT','REVIEW') THEN
+  RAISE EXCEPTION 'DB03 scholarship protected worker required'; END IF;
+ expiry:=(NULLIF(current_setting('request.jwt.claims',true),'')::jsonb)->>'exp';
+ IF expiry IS NULL OR expiry !~ '^[0-9]{1,12}$' OR to_timestamp(expiry::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 scholarship authentication expired'; END IF;
+ actor:=app_private.current_principal_id();
+ SELECT o.id INTO operation FROM app_private.operation_contracts o
+ JOIN app_private.permissions req ON req.id=o.request_permission_id
+ JOIN app_private.permissions rev ON rev.id=o.review_permission_id
+ WHERE o.code='admission.concession.approval' AND o.handler_key=o.code
+  AND o.contract_version=1 AND o.payload_schema_version=1 AND o.enabled AND o.requires_approval
+  AND req.code='admission.concession.submit' AND req.state='ENABLED' AND NOT req.family_safe
+  AND rev.code='admission.concession.review' AND rev.state='ENABLED' AND NOT rev.family_safe;
+ IF operation IS NULL THEN RAISE EXCEPTION 'DB03 scholarship approval operation unavailable'; END IF;
+ IF actor IS NULL OR NOT app_private.db03_concession_approval_grant(actor,p_campus,p_phase,p_role) THEN
+  RAISE EXCEPTION 'DB03 scholarship approval authority denied'; END IF;
+ RETURN QUERY SELECT actor,operation;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_concession_approval_actor(text,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_concession_approval_terms(p_concession uuid) RETURNS jsonb
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT jsonb_build_object('concession_id',c.id,'application_id',c.application_id,
+  'application_version',c.application_version,'destination_id',c.destination_id,
+  'revision',c.revision,'percent_hundredths',c.percent_hundredths,
+  'valid_from',c.valid_from,'valid_through',c.valid_through,
+  'category_ids',(SELECT jsonb_agg(category_id ORDER BY category_id)
+   FROM app_private.admission_concession_categories WHERE concession_id=c.id))
+ FROM app_private.admission_category_concessions c WHERE c.id=p_concession;
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_concession_approval_terms(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_concession_approval_current(p_concession uuid) RETURNS boolean
+LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT EXISTS(SELECT 1 FROM app_private.admission_category_concessions c
+ JOIN app_private.admission_applications a ON a.id=c.application_id AND a.school_id=c.school_id
+  AND a.campus_id=c.campus_id AND a.academic_year_id=c.academic_year_id
+ JOIN app_private.admission_destination_intents d ON d.id=c.destination_id AND d.application_id=a.id
+  AND d.application_version=c.application_version
+ JOIN app_private.class_offerings co ON co.id=d.class_offering_id AND co.school_id=a.school_id
+  AND co.campus_id=a.campus_id AND co.academic_year_id=a.academic_year_id
+ WHERE c.id=p_concession AND a.state='DRAFT' AND a.row_version=c.application_version AND co.state='OPEN'
+  AND NOT EXISTS(SELECT 1 FROM app_private.admission_category_concessions x
+   WHERE x.application_id=a.id AND x.revision>c.revision)
+  AND NOT EXISTS(SELECT 1 FROM app_private.admission_destination_intents x
+   WHERE x.application_id=a.id AND x.revision>d.revision)
+  AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_forwards WHERE application_id=a.id)
+  AND EXISTS(SELECT 1 FROM app_private.admission_concession_categories WHERE concession_id=c.id));
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_concession_approval_current(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+-- Shared exact source provenance check: typed receipt and one audit/outbox.
+CREATE FUNCTION app_private.db03_concession_record_receipt(p_concession uuid) RETURNS uuid
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT r.id FROM app_private.command_receipts r
+ JOIN app_private.admission_category_concessions c ON c.id=p_concession
+ JOIN app_private.operation_contracts o ON o.id=r.operation_id
+ WHERE r.result_ref=c.id AND r.result_kind='APPLICANT_CONCESSION'
+  AND r.command_kind='admission.concession.record' AND r.state='SUCCEEDED'
+  AND r.principal_id=c.created_by AND r.created_by=c.created_by
+  AND r.expected_target_version=c.application_version AND r.canonicalization_version=1
+  AND o.code='admission.concession.record'
+  AND (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=r.id
+    AND actor_id=c.created_by AND target_ref=c.id AND event_type=r.command_kind)=1
+  AND (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=r.id
+    AND aggregate_ref=c.id AND event_type=r.command_kind)=1;
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_concession_record_receipt(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_concession_approval_evidence(p_actor uuid,p_operation uuid,p_kind text,
+ p_key text,p_hash bytea,p_version bigint,p_request uuid,p_campus uuid,p_result jsonb) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE receipt uuid:=gen_random_uuid(); correlation uuid:=gen_random_uuid();
+BEGIN
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,
+ canonical_payload_hash,canonicalization_version,expected_target_version,state,result_kind,result_ref,
+ result_summary,completed_at,created_by)
+ VALUES(receipt,p_actor,p_operation,p_kind,p_kind||':'||p_key,p_hash,1,p_version,
+ 'SUCCEEDED','APPLICANT_CONCESSION_APPROVAL',p_request,p_result,clock_timestamp(),p_actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,
+ event_type,target_kind,target_ref,campus_id,command_receipt_id,source_kind,correlation_id,
+ occurred_at,details,created_by)
+ VALUES(p_actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation',p_kind),p_version,
+ p_kind,'APPLICANT_CONCESSION_APPROVAL',p_request,p_campus,receipt,'WORKER',correlation,
+ clock_timestamp(),p_result,p_actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,
+ command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES(p_kind,'APPLICANT_CONCESSION_APPROVAL',p_request,p_version,receipt,1,correlation,
+ clock_timestamp(),p_result,p_actor);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_concession_approval_evidence(uuid,uuid,text,text,bytea,bigint,uuid,uuid,jsonb)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+RESET ROLE;
