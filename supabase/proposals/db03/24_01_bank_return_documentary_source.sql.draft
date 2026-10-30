@@ -1,0 +1,119 @@
+-- S24 inactive: submitted private bank-return documentary evidence and independent review.
+-- Evidence is PRIVATE, byte-hashed and append-only. Documentary review does not
+-- certify third-party bank settlement and NEVER releases funds or issues clearance.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_admission_bank_return_evidence(
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ return_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_admission_payment_returns(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ application_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ evidence_file_id uuid NOT NULL UNIQUE REFERENCES app_private.file_objects(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ evidence_sha256 bytea NOT NULL CHECK(octet_length(evidence_sha256)=32),
+ evidence_kind text NOT NULL CHECK(evidence_kind IN
+  ('BANK_STATEMENT','BANK_RETURN_NOTICE','BANK_CASE_CORRESPONDENCE')),
+ bank_reference_private text NOT NULL CHECK(length(btrim(bank_reference_private)) BETWEEN 5 AND 160),
+ submitted_by uuid NOT NULL REFERENCES app_private.principals(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ submitted_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp()
+);
+CREATE INDEX db03_bank_evidence_application
+ ON app_private.finance_admission_bank_return_evidence(application_id,submitted_at,id);
+
+CREATE TABLE app_private.finance_admission_bank_return_evidence_reviews(
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ evidence_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_admission_bank_return_evidence(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ return_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_admission_payment_returns(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ decision text NOT NULL CHECK(decision IN
+  ('DOCUMENT_SUPPORTS_RETURN','DOCUMENT_DISPUTES_RETURN','MORE_BANK_PROOF_REQUIRED')),
+ seen_sha256 bytea NOT NULL CHECK(octet_length(seen_sha256)=32),
+ reason_private text NOT NULL CHECK(length(btrim(reason_private)) BETWEEN 8 AND 1000),
+ reviewer_id uuid NOT NULL REFERENCES app_private.principals(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ reviewed_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp()
+);
+
+CREATE FUNCTION app_private.db03_guard_bank_return_document()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE r app_private.finance_admission_payment_returns%ROWTYPE;
+ f app_private.file_objects%ROWTYPE;
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 bank-return evidence is immutable'; END IF;
+ IF current_user<>'schoolos_schema_owner' THEN
+  RAISE EXCEPTION 'DB03 bank-return evidence requires protected Finance worker'; END IF;
+ SELECT * INTO r FROM app_private.finance_admission_payment_returns
+  WHERE id=NEW.return_id FOR UPDATE;
+ SELECT * INTO f FROM app_private.file_objects WHERE id=NEW.evidence_file_id FOR KEY SHARE;
+ IF r.id IS NULL OR r.application_id<>NEW.application_id
+  OR r.school_id<>NEW.school_id OR r.campus_id<>NEW.campus_id
+  OR r.reported_by<>NEW.submitted_by
+  OR f.id IS NULL OR f.uploaded_by_principal_id<>NEW.submitted_by
+  OR f.campus_id<>r.campus_id OR f.purpose_code<>'ADMISSION_BANK_RETURN_EVIDENCE'
+  OR f.classification<>'PRIVATE' OR f.state<>'AVAILABLE'
+  OR f.content_hash<>NEW.evidence_sha256
+  OR f.content_type NOT IN ('application/pdf','image/png','image/jpeg')
+  OR f.byte_size NOT BETWEEN 1 AND 1048576
+  OR NOT EXISTS(SELECT 1 FROM app_private.principals p
+    WHERE p.id=NEW.submitted_by AND p.kind='INDIVIDUAL' AND p.state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB03 bank-return private evidence provenance mismatch'; END IF;
+ RETURN NEW;
+END $body$;
+CREATE FUNCTION app_private.db03_guard_bank_return_document_review()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ev app_private.finance_admission_bank_return_evidence%ROWTYPE;
+ f app_private.file_objects%ROWTYPE;
+ r app_private.finance_admission_payment_returns%ROWTYPE;
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 bank-return document review is immutable'; END IF;
+ IF current_user<>'schoolos_schema_owner' THEN
+  RAISE EXCEPTION 'DB03 bank-return document review requires trusted worker'; END IF;
+ SELECT * INTO ev FROM app_private.finance_admission_bank_return_evidence
+ WHERE id=NEW.evidence_id FOR UPDATE;
+ SELECT * INTO r FROM app_private.finance_admission_payment_returns WHERE id=ev.return_id;
+ SELECT * INTO f FROM app_private.file_objects WHERE id=ev.evidence_file_id FOR KEY SHARE;
+ IF ev.id IS NULL OR r.id IS NULL OR f.id IS NULL
+  OR NEW.return_id<>ev.return_id OR NEW.seen_sha256<>ev.evidence_sha256
+  OR f.state<>'AVAILABLE' OR f.classification<>'PRIVATE'
+  OR f.purpose_code<>'ADMISSION_BANK_RETURN_EVIDENCE'
+  OR f.content_hash<>ev.evidence_sha256
+  OR NEW.reviewer_id IN (r.reported_by,ev.submitted_by)
+  OR NOT EXISTS(SELECT 1 FROM app_private.principals p
+   WHERE p.id=NEW.reviewer_id AND p.kind='INDIVIDUAL' AND p.state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB03 bank-return independent document review evidence mismatch'; END IF;
+ RETURN NEW;
+END $body$;
+
+ALTER TABLE app_private.finance_admission_bank_return_evidence ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_bank_return_evidence FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_bank_return_evidence_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_bank_return_evidence_reviews FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.finance_admission_bank_return_evidence,
+ app_private.finance_admission_bank_return_evidence_reviews
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE POLICY db03_bank_return_document_owner
+ ON app_private.finance_admission_bank_return_evidence
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_bank_return_doc_review_owner
+ ON app_private.finance_admission_bank_return_evidence_reviews
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER db03_bank_evidence_immutable BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_bank_return_evidence FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_guard_bank_return_document();
+CREATE TRIGGER db03_bank_evidence_no_truncate BEFORE TRUNCATE
+ ON app_private.finance_admission_bank_return_evidence FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_guard_bank_return_document();
+CREATE TRIGGER db03_bank_evidence_review_immutable BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_bank_return_evidence_reviews FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_guard_bank_return_document_review();
+CREATE TRIGGER db03_bank_evidence_review_no_truncate BEFORE TRUNCATE
+ ON app_private.finance_admission_bank_return_evidence_reviews FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_guard_bank_return_document_review();
+REVOKE ALL ON FUNCTION app_private.db03_guard_bank_return_document(),
+ app_private.db03_guard_bank_return_document_review()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+RESET ROLE;
