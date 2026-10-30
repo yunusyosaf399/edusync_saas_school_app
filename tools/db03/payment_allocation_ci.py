@@ -101,6 +101,11 @@ def run_payment_allocation(local, fresh_database, fixture):
         return cmd('SELECT app_private.db03_allocate_admission_payment(%s,%s,%s,%s,%s,%s,%s)',
           (app,1,assessment,payment,Decimal(minor),reason,key_name),ident)
 
+    def report_bank_return(app,payment,reference,key,kind='BANK_RETURN_REPORTED',ident='finance',
+                           reason='Finance reports an official returned transfer'):
+        return cmd('SELECT app_private.db03_report_admission_payment_return(%s,%s,%s,%s,%s,%s,%s)',
+          (app,1,payment,kind,reference,reason,key),ident)
+
     checks=0
     def check(condition,tag):
         nonlocal checks
@@ -267,6 +272,106 @@ def run_payment_allocation(local, fresh_database, fixture):
         check(snapshot(None)['state']=='UNAVAILABLE',
               'unknown applicant does not reveal Finance information')
 
+        # S22: a reported *full* bank return compensates the immutable source,
+        # does not modify original ADM receipts or claim independent bank proof.
+        denied(lambda:report_bank_return(app,pay,'RETURN-ADMIN-01','s22-admin',ident='admin'),
+               'Finance scope denied')
+        denied(lambda:report_bank_return(other,pay,'RETURN-CROSS-01','s22-cross'),
+               'payment or authority stale')
+        denied(lambda:report_bank_return(app,pay,'RETURN-BAD-01','s22-bad-kind',
+                                         kind='UNKNOWN_RETURN'), 'intent invalid')
+        original_return=report_bank_return(app,pay,'RETURN-APP-01','s22-first')
+        check(original_return['reported_return_minor']==25000
+          and original_return['compensated_allocation_minor']==10000
+          and original_return['compensated_allocation_count']==2
+          and original_return['independently_bank_verified'] is False
+          and original_return['clearance_issued'] is False,
+          'full reported return compensates precisely the two original allocations')
+        check(report_bank_return(app,pay,'RETURN-APP-01','s22-first')==original_return,
+          'return exact replay preserves single immutable report')
+        denied(lambda:report_bank_return(app,pay,'RETURN-APP-CHANGED','s22-first'),
+               'replay conflict')
+        denied(lambda:report_bank_return(app,pay,'RETURN-APP-NEW','s22-new'),
+               'already recorded for payment')
+        after_return=snapshot(app)
+        check(after_return['state']=='BANK_RETURN_RECONCILIATION_REQUIRED'
+          and after_return['returned_official_minor']==25000
+          and after_return['compensated_allocation_minor']==10000
+          and after_return['allocated_to_previous_minor']==0
+          and after_return['allocated_to_current_minor']==0
+          and after_return['unallocated_official_minor']==0
+          and after_return['net_available_official_minor']==0
+          and after_return['remaining_assessed_minor']==8000
+          and after_return['clearance_issued'] is False
+          and after_return['independently_bank_verified'] is False,
+          'reported return removes all effective funds and forces Finance reconciliation')
+        with root() as conn:
+            check(conn.execute("SELECT amount_minor FROM app_private.finance_admission_official_payments "
+                 "WHERE id=%s",(pay,)).fetchone()[0]==25000
+              and conn.execute("SELECT sum(allocated_minor) FROM "
+                 "app_private.finance_admission_payment_allocations WHERE payment_id=%s",
+                 (pay,)).fetchone()[0]==10000
+              and conn.execute("SELECT sum(reversal_minor) FROM "
+                 "app_private.finance_admission_allocation_reversals WHERE payment_id=%s",
+                 (pay,)).fetchone()[0]==10000,
+              'original permanent receipt and allocations remain retained beside compensations')
+
+        # Concurrent return reports for the same paid transfer: only one report.
+        def race_return(i):
+            try:
+                return ('ok',report_bank_return(race_app,race_payment,
+                    'RETURN-RACE-'+str(i),'s22-race-'+str(i)))
+            except psycopg.Error as exc:
+                return ('deny',str(exc))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            bank_return_race=list(pool.map(race_return,[0,1]))
+        check(sum(t=='ok' for t,_ in bank_return_race)==1
+          and sum(t=='deny' and 'already recorded for payment' in v
+                  for t,v in bank_return_race)==1,
+          'racing different-key return requests record one bank-return report')
+        with root() as conn:
+            check(conn.execute("SELECT count(*) FROM app_private.finance_admission_payment_returns "
+               "WHERE payment_id=%s",(race_payment,)).fetchone()[0]==1
+              and conn.execute("SELECT sum(reversal_minor) FROM "
+               "app_private.finance_admission_allocation_reversals "
+               "WHERE payment_id=%s",(race_payment,)).fetchone()[0]==7000,
+              'racing return reports retain exactly one set of matching reversals')
+        denied(lambda:allocate(race_app,race_ass['assessment_id'],race_payment,
+                               '100','s22-allocation-blocked'),
+               'allocation suspended: bank return reconciliation required')
+        race_returned=snapshot(race_app)
+        check(race_returned['state']=='BANK_RETURN_RECONCILIATION_REQUIRED'
+          and race_returned['allocated_to_current_minor']==0
+          and race_returned['remaining_assessed_minor']==10000
+          and race_returned['net_available_official_minor']==0,
+          'reported return after competing allocation revokes effective partial payment')
+
+        # Even a receipt with zero allocations can be reported as returned.
+        unpaid_payment,_=official(zero_app,'30.00')
+        no_allocation_return=report_bank_return(zero_app,unpaid_payment,
+          'RETURN-ZERO-01','s22-zero')
+        check(no_allocation_return['compensated_allocation_count']==0
+          and no_allocation_return['reported_return_minor']==3000
+          and snapshot(zero_app)['state']=='BANK_RETURN_RECONCILIATION_REQUIRED',
+          'unallocated official receipt return remains a reconciled pending case')
+        with root() as conn:
+            check(conn.execute("SELECT count(*) FROM app_private.command_receipts "
+              "WHERE command_kind='finance.admission.payment.return.report'"
+              ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.audit_events "
+              "WHERE event_type='finance.admission.payment.return.report'"
+              ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.outbox_events "
+              "WHERE event_type='finance.admission.payment.return.report'"
+              ).fetchone()[0]==3,
+              'one matching receipt, audit and outbox for each successful return report')
+            conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() "
+              "WHERE id=md5('finance.admission.payment.return.report:grant')::uuid")
+        denied(lambda:report_bank_return(app,pay,'RETURN-APP-01','s22-first'),
+               'Finance scope denied')
+        denied(lambda:report_bank_return(other,pay_other,'RETURN-REVOKED','s22-revoked'),
+               'Finance scope denied')
+
         with root() as conn:
             check(conn.execute("SELECT sum(allocated_minor) FROM "
                 "app_private.finance_admission_payment_allocations WHERE application_id=%s",
@@ -295,5 +400,6 @@ def run_payment_allocation(local, fresh_database, fixture):
         denied(lambda:allocate(race_app,race_ass['assessment_id'],race_payment,
                                 '100','s20-revoked-new'),'Finance scope denied')
 
+    print('DB03_S22_PAYMENT_RETURN_REAL_AUTH_PASS confirmed_bank_truth=false clearance=false')
     print(f'DB03_S20_PAYMENT_ALLOCATION_AUTH_PASS checks={checks} '
           'partial=true overpayment_unallocated=true races=true clearance=false')

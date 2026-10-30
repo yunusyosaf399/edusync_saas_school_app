@@ -30,9 +30,11 @@ SELECT ok((SELECT count(*)=1 FROM pg_constraint
 SELECT ok((SELECT data_type='numeric' AND numeric_scale=0 FROM information_schema.columns
  WHERE table_schema='app_private' AND table_name='finance_admission_payment_allocations'
  AND column_name='allocated_minor'), 'allocation amount stores exact minor units');
+-- S22 adds a genuine compensation FK; PostgreSQL protects allocation
+-- history from TRUNCATE before the S20 immutability trigger can run.
 SELECT throws_ok('TRUNCATE app_private.finance_admission_payment_allocations',
- 'P0001'::char(5),'DB03 payment allocation is immutable'::text,
- 'immutable history cannot be truncated');
+ '0A000'::char(5),'cannot truncate a table referenced in a foreign key constraint'::text,
+ 'immutable allocation history cannot be truncated with S22 reversals');
 SELECT ok(to_regprocedure('app_private.db03_allocate_admission_payment(uuid,bigint,uuid,uuid,numeric,text,text)') IS NOT NULL,
  'typed internal allocation command exists');
 SELECT ok(NOT has_function_privilege('authenticated',

@@ -1,0 +1,218 @@
+-- S22: worker-only full bank-return *report*. The reported reference is a
+-- Finance observation, not independent bank proof or clearance.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_bank_return_reporter_authorized(
+ p_actor uuid,p_campus uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT p_actor IS NOT NULL AND p_actor=app_private.current_principal_id()
+ AND EXISTS(SELECT 1 FROM app_private.principals p WHERE p.id=p_actor
+   AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+ AND app_private.has_complete_grant('finance.admission.payment.return.report',
+   'CAMPUS',p_campus)
+ AND EXISTS(
+  SELECT 1 FROM app_private.principal_role_assignments ra
+  JOIN app_private.roles r ON r.id=ra.role_id
+  JOIN app_private.assignment_permission_scopes sc
+   ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+  JOIN app_private.role_permission_grants g
+   ON g.id=sc.grant_id AND g.role_id=ra.role_id
+   AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts c
+   ON c.id=sc.scope_contract_id AND c.permission_id=sc.permission_id
+   AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key
+  JOIN app_private.permissions pe ON pe.id=sc.permission_id
+  WHERE ra.principal_id=p_actor AND ra.principal_kind='INDIVIDUAL'
+   AND ra.context_kind='INDIVIDUAL'
+   AND r.code='ACCOUNTANT' AND r.state='ACTIVE' AND NOT r.family_only
+   AND pe.code='finance.admission.payment.return.report'
+   AND pe.state='ENABLED' AND NOT pe.family_safe
+   AND c.enabled AND sc.resolver_key='DIRECT'
+   AND ((sc.scope_kind='CAMPUS' AND sc.campus_id=p_campus)
+    OR (sc.scope_kind='ALL' AND sc.campus_id IS NULL))
+   AND ra.valid_from<=clock_timestamp()
+   AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+   AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+   AND g.valid_from<=clock_timestamp()
+   AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND sc.valid_from<=clock_timestamp()
+   AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+   AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at)
+ );
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_bank_return_reporter_authorized(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+
+CREATE FUNCTION app_private.db03_report_admission_payment_return(
+ p_application uuid,p_expected bigint,p_payment uuid,p_kind text,
+ p_bank_reference text,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ pay app_private.finance_admission_official_payments%ROWTYPE;
+ ret app_private.finance_admission_payment_returns%ROWTYPE;
+ receipt app_private.command_receipts%ROWTYPE;
+ actor uuid; op uuid; v_school uuid; v_campus uuid; v_year uuid;
+ exp_str text; claims jsonb; hash_value bytea;
+ receipt_id uuid; correlation uuid; result jsonb; reversed_minor numeric;
+ reversed_count bigint; allocated_count bigint;
+BEGIN
+ IF session_user<>'schoolos_file_login'
+  OR current_setting('transaction_isolation')<>'read committed'
+  OR p_application IS NULL OR p_expected IS NULL OR p_expected<1
+  OR p_payment IS NULL
+  OR p_kind IS NULL OR p_kind NOT IN('BANK_RETURN_REPORTED',
+   'CHARGEBACK_REPORTED','DUPLICATE_TRANSFER_REPORTED')
+  OR p_bank_reference IS NULL OR length(btrim(p_bank_reference)) NOT BETWEEN 4 AND 160
+  OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 5 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB03 bank return report intent invalid'; END IF;
+ claims:=nullif(current_setting('request.jwt.claims',true),'')::jsonb;
+ exp_str:=claims->>'exp';
+ IF exp_str IS NULL OR exp_str !~ '^[0-9]{1,12}$'
+  OR to_timestamp(exp_str::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 bank return authentication expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ SELECT school_id,campus_id,academic_year_id INTO v_school,v_campus,v_year
+  FROM app_private.admission_applications WHERE id=p_application;
+ IF v_school IS NULL
+  OR NOT app_private.db03_bank_return_reporter_authorized(actor,v_campus) THEN
+  RAISE EXCEPTION 'DB03 bank return Finance scope denied'; END IF;
+ SELECT o.id INTO op FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='finance.admission.payment.return.report'
+  AND o.contract_version=1 AND o.handler_key=o.code
+  AND o.payload_schema_version=1 AND o.enabled AND NOT o.requires_approval
+  AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF op IS NULL THEN RAISE EXCEPTION 'DB03 bank return operation unavailable'; END IF;
+ hash_value:=sha256(convert_to(jsonb_build_array('db03-bank-return-v1',
+  p_application,p_expected,p_payment,p_kind,p_bank_reference,
+  encode(sha256(convert_to(p_reason,'UTF8')),'hex'))::text,'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||op::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=v_school
+  AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank return School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=v_campus AND school_id=v_school
+  AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank return Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=v_year AND school_id=v_school
+  AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank return year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=p_application FOR UPDATE;
+ SELECT * INTO pay FROM app_private.finance_admission_official_payments
+  WHERE id=p_payment FOR UPDATE;
+ IF a.id IS NULL OR a.school_id<>v_school OR a.campus_id<>v_campus
+  OR a.academic_year_id<>v_year OR a.row_version<>p_expected
+  OR pay.id IS NULL OR pay.application_id<>a.id
+  OR pay.school_id<>a.school_id OR pay.campus_id<>a.campus_id
+  OR pay.created_by=actor
+  OR to_timestamp(exp_str::bigint)<=clock_timestamp()
+  OR NOT app_private.db03_bank_return_reporter_authorized(actor,v_campus)
+  OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+   JOIN app_private.permissions p ON p.id=o.request_permission_id
+   WHERE o.id=op AND o.enabled AND NOT o.requires_approval
+    AND p.code=o.code AND p.state='ENABLED') THEN
+  RAISE EXCEPTION 'DB03 bank return payment or authority stale'; END IF;
+ SELECT * INTO receipt FROM app_private.command_receipts
+  WHERE principal_id=actor AND operation_id=op
+   AND idempotency_key='bank-return:'||p_key;
+ IF receipt.id IS NOT NULL THEN
+  SELECT * INTO ret FROM app_private.finance_admission_payment_returns
+    WHERE id=receipt.result_ref;
+  IF receipt.command_kind<>'finance.admission.payment.return.report'
+   OR receipt.result_kind<>'FINANCE_ADMISSION_PAYMENT_RETURN'
+   OR receipt.state<>'SUCCEEDED'
+   OR receipt.canonical_payload_hash IS DISTINCT FROM hash_value
+   OR receipt.expected_target_version IS DISTINCT FROM p_expected
+   OR ret.id IS NULL OR ret.application_id<>p_application
+   OR ret.payment_id<>p_payment OR ret.reported_by<>actor
+   OR ret.return_kind<>p_kind OR ret.bank_reference_private<>p_bank_reference
+   OR ret.reason_private<>p_reason
+   OR receipt.result_summary->>'return_id' IS DISTINCT FROM ret.id::text
+   OR (SELECT count(*) FROM app_private.audit_events
+      WHERE command_receipt_id=receipt.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events
+      WHERE command_receipt_id=receipt.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 bank return report replay conflict'; END IF;
+  RETURN receipt.result_summary;
+ END IF;
+ IF EXISTS(SELECT 1 FROM app_private.finance_admission_payment_returns
+   WHERE payment_id=pay.id) THEN
+  RAISE EXCEPTION 'DB03 bank return already recorded for payment'; END IF;
+ -- Provenance of the immutable official reviewed payment source is mandatory.
+ IF NOT EXISTS(
+  SELECT 1 FROM app_private.command_receipts r
+  JOIN app_private.operation_contracts o ON o.id=r.operation_id
+  WHERE o.code='finance.admission.payment.issue'
+   AND r.result_ref=pay.id AND r.result_kind='FINANCE_ADMISSION_PAYMENT'
+   AND r.command_kind=o.code AND r.state='SUCCEEDED'
+   AND r.created_by=pay.created_by
+   AND r.result_summary->>'payment_id'=pay.id::text
+   AND (SELECT count(*) FROM app_private.audit_events au
+      WHERE au.command_receipt_id=r.id AND au.target_ref=pay.id
+       AND au.event_type=o.code)=1
+   AND (SELECT count(*) FROM app_private.outbox_events ob
+      WHERE ob.command_receipt_id=r.id AND ob.aggregate_ref=pay.id
+       AND ob.event_type=o.code)=1) THEN
+  RAISE EXCEPTION 'DB03 bank return original payment provenance missing';
+ END IF;
+ INSERT INTO app_private.finance_admission_payment_returns(
+  application_id,school_id,campus_id,payment_id,amount_minor,currency_code,
+  return_kind,bank_reference_private,reason_private,reported_by)
+ VALUES(a.id,a.school_id,a.campus_id,pay.id,pay.amount_minor,pay.currency_code,
+  p_kind,p_bank_reference,p_reason,actor) RETURNING * INTO ret;
+ INSERT INTO app_private.finance_admission_allocation_reversals(
+  return_id,allocation_id,application_id,payment_id,reversal_minor,recorded_by)
+ SELECT ret.id,x.id,a.id,pay.id,x.allocated_minor,actor
+ FROM app_private.finance_admission_payment_allocations x
+ WHERE x.payment_id=pay.id ORDER BY x.created_at,x.id;
+ GET DIAGNOSTICS reversed_count=ROW_COUNT;
+ SELECT coalesce(sum(x.allocated_minor),0),count(*)
+ INTO reversed_minor,allocated_count
+ FROM app_private.finance_admission_payment_allocations x
+ WHERE x.payment_id=pay.id;
+ IF reversed_count<>allocated_count
+  OR coalesce((SELECT sum(v.reversal_minor)
+   FROM app_private.finance_admission_allocation_reversals v
+   WHERE v.return_id=ret.id),0)<>reversed_minor THEN
+  RAISE EXCEPTION 'DB03 bank return incomplete allocation compensation'; END IF;
+ result:=jsonb_build_object('return_id',ret.id,'application_id',a.id,
+  'payment_id',pay.id,'official_receipt_number',pay.receipt_number,
+  'currency_code',pay.currency_code,'reported_return_minor',pay.amount_minor,
+  'compensated_allocation_minor',reversed_minor,
+  'compensated_allocation_count',reversed_count,
+  'state','RETURN_REPORTED_RECONCILIATION_REQUIRED',
+  'independently_bank_verified',false,'clearance_issued',false);
+ receipt_id:=gen_random_uuid();correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,
+  command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+  expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(receipt_id,actor,op,'finance.admission.payment.return.report',
+  'bank-return:'||p_key,hash_value,1,p_expected,'SUCCEEDED',
+  'FINANCE_ADMISSION_PAYMENT_RETURN',ret.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+  target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',
+  jsonb_build_object('operation','finance.admission.payment.return.report',
+   'payment_id',pay.id),1,'finance.admission.payment.return.report',
+  'FINANCE_ADMISSION_PAYMENT_RETURN',ret.id,v_campus,receipt_id,
+  'WORKER',correlation,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+  aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,
+  payload,created_by)
+ VALUES('finance.admission.payment.return.report','FINANCE_ADMISSION_PAYMENT_RETURN',
+  ret.id,1,receipt_id,1,correlation,clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_report_admission_payment_return(
+ uuid,bigint,uuid,text,text,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_report_admission_payment_return(
+ uuid,bigint,uuid,text,text,text,text)
+ TO schoolos_file_login;
+RESET ROLE;
