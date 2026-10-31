@@ -29,6 +29,10 @@ def run_document_review(local, fresh_database, fixture):
     from prepare_local_auth_fixtures import local_status,NoRedirect
 
     fresh_database()
+    principal_source=(Path(__file__).resolve().parents[2] /
+        'supabase/proposals/db03/21_01_principal_final_source_snapshot.sql.draft').read_text()
+    local.run_psql('supabase_db_'+local.EXPECTED_PROJECT_ID,
+        'BEGIN;\n'+principal_source+'\nCOMMIT;','DB03_REVIEW_PRINCIPAL_SOURCE_INSTALL')
     local.run_psql('supabase_db_'+local.EXPECTED_PROJECT_ID,
         'BEGIN;\n'+fixture+"\nUPDATE app_private.operation_contracts SET enabled=true WHERE code LIKE 'admission.%';\nCOMMIT;",'DB03_REVIEW_SERVICE_FIXTURE')
     def connection():
