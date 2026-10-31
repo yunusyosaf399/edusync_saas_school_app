@@ -19,6 +19,7 @@ YEAR='93939393-9393-4393-8393-939393939393'
 
 def run_payment_allocation(local, fresh_database, fixture):
     import psycopg
+    from uuid import uuid4
     from psycopg import sql
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -67,7 +68,8 @@ def run_payment_allocation(local, fresh_database, fixture):
         ('foundation-rbac-001@example.invalid','admin'),
         ('foundation-own-001@example.invalid','reviewer'),
         ('foundation-own-002@example.invalid','finance'),
-        ('foundation-test-001@example.invalid','bank_reviewer')):
+        ('foundation-test-001@example.invalid','bank_reviewer'),
+        ('foundation-family-001@example.invalid','release')):
         with root() as conn:
             subject=conn.execute(
               'SELECT id::text FROM auth.users WHERE email=%s',(email,)).fetchone()[0]
@@ -117,6 +119,38 @@ def run_payment_allocation(local, fresh_database, fixture):
           'SELECT app_private.db03_review_return_ledger(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
           (app,1,ret,outcome,Decimal(minor),Decimal(compensated),
            case,reason,key),ident)
+
+    def signed_bank_proof(app,ret,outcome,event_id=None,epoch=None):
+        event_id=event_id or uuid4()
+        epoch=epoch or int(time.time())
+        signer='64646464-6464-4646-8646-646464646464'
+        trace='S25-BANK-TRACE-'+str(event_id)
+        with root() as conn:
+            details=conn.execute(
+                "SELECT r.school_id,r.campus_id,r.application_id,r.id,"
+                "r.payment_id,r.amount_minor,r.currency_code FROM "
+                "app_private.finance_admission_payment_returns r WHERE r.id=%s",
+                (ret,)).fetchone()
+            assert details is not None
+            payload=details[:5]+(signer,event_id,trace,outcome,details[5],
+                                details[6],epoch)
+            mac=conn.execute("SELECT extensions.hmac("
+                "convert_to(app_private.db03_bank_attestation_payload("
+                "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s),'UTF8'),"
+                "decode(repeat('ab',32),'hex'),'sha256')",payload
+                ).fetchone()[0]
+        return (app,1,ret,signer,event_id,trace,outcome,details[5],epoch,mac)
+    def settle_from_proof(proof,key,ident='bank_reviewer'):
+        return cmd(
+           'SELECT app_private.db03_record_signed_bank_settlement('
+           '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+           proof+(key,),ident)
+    def reinstate(app,ret,attestation,key,ident='release',
+                  reason='Separate independent Finance reversal reinstatement'):
+        return cmd(
+           'SELECT app_private.db03_reinstate_disproven_bank_return('
+           '%s,%s,%s,%s,%s,%s)',
+           (app,1,ret,attestation,reason,key),ident)
 
     checks=0
     def check(condition,tag):
@@ -647,6 +681,136 @@ def run_payment_allocation(local, fresh_database, fixture):
                'DOCUMENT_SUPPORTS_RETURN','s24-review-a'),
                'inspect reviewer or evidence denied')
 
+        # S25 signed bank trust: never construct a bank claim from uploaded
+        # document text. Synthetic key is fixture-only and never provisioned
+        # to any production bank or exposed to the worker.
+        race_signed=signed_bank_proof(race_app,race_return_id,
+              'BANK_CONFIRMS_NO_RETURN')
+        denied(lambda:settle_from_proof(race_signed,'s25-reporter',ident='finance'),
+               'independent scope denied')
+        denied(lambda:settle_from_proof(race_signed,'s25-admin',ident='admin'),
+               'independent scope denied')
+        denied(lambda:settle_from_proof(
+             race_signed[:9]+(bytes(32),),'s25-tampered-signature'),
+               'HMAC invalid')
+        stale_signed=signed_bank_proof(race_app,race_return_id,
+             'BANK_CONFIRMS_NO_RETURN',epoch=int(time.time())-1500)
+        denied(lambda:settle_from_proof(stale_signed,'s25-expired-event'),
+               'signed timestamp outside validity')
+        denied(lambda:settle_from_proof(
+             (app,)+race_signed[1:],'s25-cross-app'),
+               'source or authority unavailable')
+        result_race_bank=settle_from_proof(race_signed,'s25-race-bank')
+        check(result_race_bank['bank_signature_verified'] is True
+          and result_race_bank['funds_reinstated'] is False
+          and result_race_bank['funding_hold_active'] is True
+          and result_race_bank['clearance_issued'] is False
+          and snapshot(race_app)['state']=='BANK_RETURN_RECONCILIATION_REQUIRED',
+          'valid signed bank event records truth but cannot auto-release funds')
+        check(settle_from_proof(race_signed,'s25-race-bank')==result_race_bank,
+              'signed bank attestation exact-key replay remains single')
+        denied(lambda:settle_from_proof(
+             race_signed[:6]+('BANK_TRACE_CHANGED',)+race_signed[7:],
+             's25-race-bank'),'replay conflict')
+        denied(lambda:settle_from_proof(race_signed,'s25-new-key-duplicate'),
+              'already recorded')
+        app_signed=signed_bank_proof(app,original_return['return_id'],
+              'BANK_CONFIRMS_RETURN_SETTLED')
+        app_bank=settle_from_proof(app_signed,'s25-app-confirmed-return')
+        check(app_bank['bank_decision']=='BANK_CONFIRMS_RETURN_SETTLED'
+              and snapshot(app)['state']=='BANK_RETURN_RECONCILIATION_REQUIRED'
+              and snapshot(app)['allocated_to_current_minor']==0,
+              'bank-confirmed executed return cannot reinstate funds')
+        zero_signed=signed_bank_proof(zero_app,no_allocation_return['return_id'],
+               'BANK_CONFIRMS_NO_RETURN')
+        zero_bank=settle_from_proof(zero_signed,'s25-zero-bank')
+        check(zero_bank['bank_signature_verified'] is True,
+              'separate no-return bank attestation has cryptographic proof')
+        with root() as conn:
+            check(conn.execute(
+              "SELECT count(*) FROM app_private.finance_admission_bank_settlement_attestations"
+              ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.command_receipts "
+               "WHERE command_kind='finance.admission.payment.bank.settlement.record'"
+               ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.audit_events "
+               "WHERE event_type='finance.admission.payment.bank.settlement.record'"
+               ).fetchone()[0]==3
+              and conn.execute("SELECT count(*) FROM app_private.outbox_events "
+               "WHERE event_type='finance.admission.payment.bank.settlement.record'"
+               ).fetchone()[0]==3,
+              'three signed bank attestations have exact receipts audit and outbox')
+        denied(lambda:reinstate(app,original_return['return_id'],
+             app_bank['attestation_id'],'s25-executed-return'),
+             'source or authority stale')
+        denied(lambda:reinstate(race_app,race_return_id,
+             result_race_bank['attestation_id'],'s25-reporter-release',ident='finance'),
+             'independent Finance scope denied')
+        denied(lambda:reinstate(race_app,race_return_id,
+             result_race_bank['attestation_id'],'s25-signer-release',ident='bank_reviewer'),
+             'independent Finance scope denied')
+        def competing_release(i):
+            try:
+                return ('ok',reinstate(race_app,race_return_id,
+                   result_race_bank['attestation_id'],'s25-race-release-'+str(i)))
+            except psycopg.Error as exc:
+                return ('deny',str(exc))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            release_race=list(pool.map(competing_release,[0,1]))
+        check(sum(kind=='ok' for kind,_ in release_race)==1
+              and sum(kind=='deny' and 'already reinstated' in msg
+                     for kind,msg in release_race)==1,
+              'two backends cannot double-credit the same reversed allocation')
+        winning_release=next(r for kind,r in release_race if kind=='ok')
+        check(winning_release['reinstated_minor']==7000
+              and winning_release['reinstated_allocations']==1
+              and winning_release['clearance_issued'] is False
+              and winning_release['new_allocations_unblocked'] is False,
+              'separate accountant restores exactly old 70 SAR credit, no clearance')
+        race_credit=snapshot(race_app)
+        check(race_credit['allocated_to_current_minor']==7000
+              and race_credit['net_available_official_minor']==10000
+              and race_credit['remaining_assessed_minor']==3000
+              and race_credit['outstanding_return_hold_count']==0
+              and race_credit['state']=='PARTIALLY_ALLOCATED'
+              and race_credit['new_allocations_unblocked'] is False
+              and race_credit['clearance_issued'] is False,
+              'snapshot credits only independently released signed bank funds')
+        denied(lambda:allocate(race_app,race_ass['assessment_id'],
+           race_payment,'100','s25-legacy-allocator-still-fenced'),
+           'Finance scope denied')
+        release_zero=reinstate(zero_app,no_allocation_return['return_id'],
+           zero_bank['attestation_id'],'s25-no-credit-zero')
+        check(release_zero['reinstated_minor']==0
+           and release_zero['reinstated_allocations']==0
+           and snapshot(zero_app)['outstanding_return_hold_count']==0
+           and snapshot(zero_app)['clearance_issued'] is False,
+           'zero prior allocations can be reconciled but never auto-cleared')
+        with root() as conn:
+            check(conn.execute("SELECT sum(reversal_minor) FROM "
+               "app_private.finance_admission_allocation_reversals "
+               "WHERE payment_id=%s",(race_payment,)).fetchone()[0]==7000
+             and conn.execute("SELECT sum(reinstated_minor) FROM "
+               "app_private.finance_admission_allocation_reinstatements "
+               "WHERE application_id=%s",(race_app,)).fetchone()[0]==7000
+             and conn.execute("SELECT sum(allocated_minor) FROM "
+               "app_private.finance_admission_payment_allocations "
+               "WHERE payment_id=%s",(race_payment,)).fetchone()[0]==7000
+             and conn.execute("SELECT count(*) FROM "
+               "app_private.finance_admission_return_release_approvals"
+               ).fetchone()[0]==2,
+             'original allocations and reversals remain immutable beside exact credits')
+            conn.execute("UPDATE app_private.role_permission_grants "
+              "SET revoked_at=clock_timestamp() WHERE id IN ("
+              "md5('finance.admission.payment.bank.settlement.record:grant')::uuid,"
+              "md5('finance.admission.payment.return.reinstate:grant')::uuid)")
+        denied(lambda:settle_from_proof(app_signed,'s25-app-confirmed-return'),
+               'independent scope denied')
+        denied(lambda:reinstate(race_app,race_return_id,
+           result_race_bank['attestation_id'],'s25-after-revocation'),
+               'independent Finance scope denied')
+
+
         with root() as conn:
             check(conn.execute("SELECT sum(allocated_minor) FROM "
                 "app_private.finance_admission_payment_allocations WHERE application_id=%s",
@@ -675,6 +839,7 @@ def run_payment_allocation(local, fresh_database, fixture):
         denied(lambda:allocate(race_app,race_ass['assessment_id'],race_payment,
                                 '100','s20-revoked-new'),'Finance scope denied')
 
+    print('DB03_S25_BANK_SETTLEMENT_AUTH_PASS signed_hmac=true separate_release=true no_clearance=true')
     print('DB03_S24_BANK_DOCUMENT_AUTH_PASS original_bytes_private=true independently_reviewed=true settlement_verified=false clearance=false')
     print('DB03_S23_RETURN_LEDGER_REVIEW_AUTH_PASS bank_verified=false clearance=false holds_active=true')
     print('DB03_S22_PAYMENT_RETURN_REAL_AUTH_PASS confirmed_bank_truth=false clearance=false')
