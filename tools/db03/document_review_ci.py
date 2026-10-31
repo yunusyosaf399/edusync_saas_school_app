@@ -181,23 +181,6 @@ def run_document_review(local, fresh_database, fixture):
         denied(lambda:api('SELECT app_private.db03_record_initial_assessment(%s,%s,%s,%s,%s,%s,%s,%s,%s)',(app,expected,test_stage,'ADMISSION_TEST','PASSED',8,10,'Examiner observed','direct')),'permission denied')
 
         denied(lambda:assessment(app,expected+1,interview_stage,'INTERVIEW','PASSED',None,None,'Stale version','wrong-version'),'stage or version unavailable')
-        race_app,_,_,_=bundle('assessment-race')
-        race_version=version(race_app)
-        gate=threading.Barrier(2)
-        def compete(outcome):
-            gate.wait()
-            try:
-                return assessment(race_app,race_version,test_stage,'ADMISSION_TEST',outcome,None,None,
-                                  'Independent assessment', 'race-'+outcome)
-            except psycopg.Error as exc:
-                return str(exc)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            races=list(pool.map(compete,('PASSED','FAILED')))
-        check(sum(isinstance(item,dict) for item in races)==1 and
-              any('stage or version unavailable' in item for item in races if isinstance(item,str)),
-              'serialized competing decisions leave one result')
-        with connection() as root:
-            check(root.execute('SELECT count(*) FROM app_private.admission_assessments WHERE application_id=%s',(race_app,)).fetchone()[0]==1,'race leaves one immutable source')
         with connection() as root:
             source=root.execute('SELECT app_private.db03_principal_final_source_snapshot(%s)',(app,)).fetchone()[0]
             check(source['application_id']==str(app) and not source['identity_current']
@@ -230,6 +213,23 @@ def run_document_review(local, fresh_database, fixture):
         check(rapi('SELECT app.approve_admission_documents(%s,%s,%s,%s)',(forward,expected,'All required original certificates checked','clearance'))==clearance,'clearance retry exact effect')
         denied(lambda:approve(forward,app),'independent verified documents required')
         check(api('SELECT count(*) FROM app.list_admission_principal_queue(%s,NULL,NULL,100)',(CAMPUS,))==0,'cleared bundle leaves effective principal queue')
+        race_app,_,_,_=bundle('assessment-race')
+        race_version=version(race_app)
+        gate=threading.Barrier(2)
+        def compete(outcome):
+            gate.wait()
+            try:
+                return assessment(race_app,race_version,test_stage,'ADMISSION_TEST',outcome,None,None,
+                                  'Independent assessment', 'race-'+outcome)
+            except psycopg.Error as exc:
+                return str(exc)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            races=list(pool.map(compete,('PASSED','FAILED')))
+        check(sum(isinstance(item,dict) for item in races)==1 and
+              any('stage or version unavailable' in item for item in races if isinstance(item,str)),
+              'serialized competing decisions leave one result')
+        with connection() as root:
+            check(root.execute('SELECT count(*) FROM app_private.admission_assessments WHERE application_id=%s',(race_app,)).fetchone()[0]==1,'race leaves one immutable source')
         with connection() as root:
             check(root.execute('SELECT state,person_id FROM app_private.admission_applications WHERE id=%s',(app,)).fetchone()==('DRAFT',None),'document clearance does not submit or create Student identity')
             check(root.execute("SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_document_accesses','admission_document_reviews','admission_document_clearances') AND relrowsecurity AND relforcerowsecurity").fetchone()[0]==3,'all review sources force RLS')
