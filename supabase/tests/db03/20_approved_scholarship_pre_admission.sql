@@ -1,0 +1,14 @@
+BEGIN;
+CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
+SET LOCAL search_path=extensions,pg_catalog,public;
+SELECT plan(8);
+SELECT ok(to_regprocedure('app_private.db03_pre_admission_approved_concession(uuid)') IS NOT NULL,'pre-admission reader exists');
+SELECT ok(NOT has_function_privilege('anon','app_private.db03_pre_admission_approved_concession(uuid)','EXECUTE'),'anon denied');
+SELECT ok(NOT has_function_privilege('authenticated','app_private.db03_pre_admission_approved_concession(uuid)','EXECUTE'),'authenticated denied');
+SELECT ok(NOT has_function_privilege('service_role','app_private.db03_pre_admission_approved_concession(uuid)','EXECUTE'),'service role denied');
+SELECT ok(NOT has_function_privilege('schoolos_file_login','app_private.db03_pre_admission_approved_concession(uuid)','EXECUTE'),'worker denied');
+SELECT ok(NOT has_function_privilege('schoolos_workflow_executor','app_private.db03_pre_admission_approved_concession(uuid)','EXECUTE'),'workflow role denied');
+SELECT is(app_private.db03_pre_admission_approved_concession(NULL)::text,NULL::text,'missing request denied');
+SELECT ok(to_regclass('app_private.admission_scholarship_student_bindings') IS NULL,'no Student binding invented');
+SELECT * FROM finish();
+ROLLBACK;
