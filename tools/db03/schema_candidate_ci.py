@@ -429,6 +429,19 @@ def validate_scholarship_approval() -> tuple[str, str]:
     return sql,test
 
 
+def validate_approved_scholarship_read() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/20_01_approved_scholarship_pre_admission.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/20_approved_scholarship_pre_admission.sql').read_text()
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != [
+            'db03_pre_admission_approved_concession'] or re.search(r'(?m)^CREATE (?:TABLE|FUNCTION app\.)', sql):
+        raise RuntimeError('DB03_APPROVED_SCHOLARSHIP_READ_SCOPE')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['8'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 8 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_APPROVED_SCHOLARSHIP_READ_TEST_PLAN')
+    print('DB03_APPROVED_SCHOLARSHIP_READ_SOURCE_PASS assertions=8 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -454,6 +467,7 @@ def main() -> int:
     concession_sql, concession_test = validate_applicant_concession_source()
     concession_command_sql, concession_command_test = validate_concession_command()
     scholarship_approval_sql, scholarship_approval_test = validate_scholarship_approval()
+    approved_scholarship_read_sql, approved_scholarship_read_test = validate_approved_scholarship_read()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -964,6 +978,25 @@ def main() -> int:
             output=local.run_psql(container,scholarship_approval_test,'DB03_SCHOLARSHIP_APPROVAL_TEST')
             parse_tap(output,16)
             print('DB03_SCHOLARSHIP_APPROVAL_DATABASE_PASS 16/16; no_production_seed=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+approved_scholarship_read_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_APPROVED_SCHOLARSHIP_READ_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_APPROVED_SCHOLARSHIP_READ_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_APPROVED_SCHOLARSHIP_READ_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_APPROVED_SCHOLARSHIP_READ_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_pre_admission_approved_concession';",
+                'DB03_APPROVED_SCHOLARSHIP_READ_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_APPROVED_SCHOLARSHIP_READ_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+approved_scholarship_read_sql+'\nCOMMIT;',
+                           'DB03_APPROVED_SCHOLARSHIP_READ_INSTALL')
+            output=local.run_psql(container,approved_scholarship_read_test,'DB03_APPROVED_SCHOLARSHIP_READ_TEST')
+            parse_tap(output,8)
+            print('DB03_APPROVED_SCHOLARSHIP_READ_DATABASE_PASS 8/8; no_production_seed=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)

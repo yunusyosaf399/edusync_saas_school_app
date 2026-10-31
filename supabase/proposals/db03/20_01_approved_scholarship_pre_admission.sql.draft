@@ -1,0 +1,53 @@
+-- Read-only pre-admission eligibility. This is a snapshot, never a Student or billing authorization.
+-- Requires DB03 S19; only the schema owner can evaluate it inside a protected, locked consumer.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_pre_admission_approved_concession(p_request uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE b app_private.admission_concession_approval_bindings%ROWTYPE;
+ c app_private.admission_category_concessions%ROWTYPE;
+ q app_private.approval_requests%ROWTYPE;
+ terms jsonb;
+BEGIN
+ IF p_request IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO b FROM app_private.admission_concession_approval_bindings WHERE request_id=p_request;
+ SELECT * INTO c FROM app_private.admission_category_concessions WHERE id=b.concession_id;
+ SELECT * INTO q FROM app_private.approval_requests WHERE id=p_request;
+ IF b.request_id IS NULL OR c.id IS NULL OR q.id IS NULL THEN RETURN NULL; END IF;
+ terms:=app_private.db03_concession_approval_terms(c.id);
+ IF b.school_id<>c.school_id OR b.created_by<>c.created_by
+  OR b.source_receipt_id IS DISTINCT FROM app_private.db03_concession_record_receipt(c.id)
+  OR NOT app_private.db03_concession_approval_current(c.id)
+  OR q.state<>'APPROVED' OR q.target_ref<>c.id OR q.expected_target_version<>c.revision
+  OR q.requester_id<>c.created_by OR q.campus_id<>c.campus_id OR q.reason<>c.reason_private
+  OR q.requested_payload IS DISTINCT FROM terms
+  OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+   WHERE o.id=q.operation_id AND o.code='admission.concession.approval')
+  OR (SELECT count(*) FROM app_private.approval_request_steps s WHERE s.request_id=q.id)<>1
+  OR NOT EXISTS(SELECT 1 FROM app_private.approval_request_steps s
+   JOIN app_private.approval_step_templates t ON t.id=s.template_id AND t.policy_id=q.policy_id
+   JOIN app_private.approval_step_reviewers r ON r.step_id=s.id
+   JOIN app_private.approval_reviews v ON v.reviewer_assignment_id=r.id AND v.step_id=s.id
+   WHERE s.request_id=q.id AND s.step_number=1 AND s.required_reviews=1 AND s.state='APPROVED'
+    AND t.required_reviews=1 AND t.selection_resolver_key='DIRECT_ROLE'
+    AND r.assignment_reason='DB03_APPLICANT_CONCESSION_FINANCE' AND r.withdrawn_at IS NULL
+    AND r.reviewer_id<>q.requester_id AND v.reviewer_id=r.reviewer_id
+    AND v.decision='APPROVE' AND v.created_by=r.reviewer_id)
+  OR (SELECT count(*) FROM app_private.approval_reviews v
+   JOIN app_private.approval_request_steps s ON s.id=v.step_id WHERE s.request_id=q.id)<>1
+  OR NOT EXISTS(SELECT 1 FROM app_private.school_profiles school
+   WHERE school.id=c.school_id AND school.state IN('ACTIVE','SETUP'))
+  OR NOT EXISTS(SELECT 1 FROM app.campuses campus
+   WHERE campus.id=c.campus_id AND campus.school_id=c.school_id AND campus.state='ACTIVE')
+  OR NOT EXISTS(SELECT 1 FROM app.academic_years year
+   WHERE year.id=c.academic_year_id AND year.school_id=c.school_id AND year.state IN('PLANNED','ACTIVE'))
+ THEN RETURN NULL; END IF;
+ RETURN jsonb_build_object('request_id',q.id,'request_version',q.row_version,
+  'school_id',c.school_id,'campus_id',c.campus_id,'academic_year_id',c.academic_year_id,
+  'application_id',c.application_id,'concession_id',c.id,
+  'source_receipt_id',b.source_receipt_id,'approved_terms',terms);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_pre_admission_approved_concession(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,schoolos_workflow_executor,
+ schoolos_platform_executor,schoolos_evidence_writer;
+RESET ROLE;
