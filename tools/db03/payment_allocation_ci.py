@@ -778,7 +778,7 @@ def run_payment_allocation(local, fresh_database, fixture):
               'snapshot credits only independently released signed bank funds')
         denied(lambda:allocate(race_app,race_ass['assessment_id'],
            race_payment,'100','s25-legacy-allocator-still-fenced'),
-           'Finance scope denied')
+           'allocation suspended: bank return reconciliation required')
         release_zero=reinstate(zero_app,no_allocation_return['return_id'],
            zero_bank['attestation_id'],'s25-no-credit-zero')
         check(release_zero['reinstated_minor']==0
