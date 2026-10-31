@@ -1,0 +1,215 @@
+-- DB03 S25 inactive candidate: keyed bank settlement attestations and exact
+-- append-only restoration of S22 compensations. NO BANK KEY IN PRODUCTION.
+-- Bank trust keys MUST be provisioned directly by a verified banking partner.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_admission_bank_signers(
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ bank_code text NOT NULL CHECK(bank_code ~ '^[A-Z0-9_]{3,50}$'),
+ hmac_key_private bytea NOT NULL CHECK(octet_length(hmac_key_private)=32),
+ enabled boolean NOT NULL DEFAULT false,
+ valid_from timestamptz NOT NULL,
+ valid_until timestamptz NOT NULL CHECK(valid_until>valid_from),
+ revoked_at timestamptz,
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ UNIQUE(school_id,bank_code,id)
+);
+-- Owner-only key rotation/revocation; no worker or client direct SELECT.
+CREATE TABLE app_private.finance_admission_bank_settlement_attestations(
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ return_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_admission_payment_returns(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ application_id uuid NOT NULL,
+ payment_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ signer_id uuid NOT NULL REFERENCES app_private.finance_admission_bank_signers(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ bank_event_id uuid NOT NULL,
+ bank_trace_private text NOT NULL CHECK(length(btrim(bank_trace_private)) BETWEEN 5 AND 160),
+ decision text NOT NULL CHECK(decision IN
+  ('BANK_CONFIRMS_RETURN_SETTLED','BANK_CONFIRMS_NO_RETURN')),
+ settled_amount_minor numeric(20,0) NOT NULL CHECK(settled_amount_minor>0),
+ currency_code text NOT NULL CHECK(currency_code ~ '^[A-Z]{3}$'),
+ signed_epoch bigint NOT NULL CHECK(signed_epoch>0),
+ verified_mac bytea NOT NULL CHECK(octet_length(verified_mac)=32),
+ confirmed_by uuid NOT NULL REFERENCES app_private.principals(id),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ CONSTRAINT db03_bank_event_unique UNIQUE(signer_id,bank_event_id)
+);
+CREATE INDEX db03_bank_settlement_app ON app_private.finance_admission_bank_settlement_attestations(application_id);
+
+CREATE TABLE app_private.finance_admission_return_release_approvals(
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ return_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_admission_payment_returns(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ attestation_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_admission_bank_settlement_attestations(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ application_id uuid NOT NULL,
+ released_by uuid NOT NULL REFERENCES app_private.principals(id),
+ reason_private text NOT NULL CHECK(length(btrim(reason_private)) BETWEEN 8 AND 1000),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp()
+);
+CREATE TABLE app_private.finance_admission_allocation_reinstatements(
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ release_id uuid NOT NULL REFERENCES app_private.finance_admission_return_release_approvals(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ reversal_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_admission_allocation_reversals(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ allocation_id uuid NOT NULL REFERENCES app_private.finance_admission_payment_allocations(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ application_id uuid NOT NULL,
+ reinstated_minor numeric(20,0) NOT NULL CHECK(reinstated_minor>0),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp()
+);
+CREATE INDEX db03_bank_reinstatement_app ON app_private.finance_admission_allocation_reinstatements(application_id);
+
+-- This is a protocol canonicalization rule, not a public signing oracle.
+CREATE FUNCTION app_private.db03_bank_attestation_payload(
+ p_school uuid,p_campus uuid,p_application uuid,p_return uuid,
+ p_payment uuid,p_signer uuid,p_bank_event uuid,p_trace text,
+ p_decision text,p_amount numeric,p_currency text,p_signed_epoch bigint)
+RETURNS text LANGUAGE sql IMMUTABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT jsonb_build_array('db03-bank-settlement-v1',p_school,p_campus,
+  p_application,p_return,p_payment,p_signer,p_bank_event,p_trace,p_decision,
+  p_amount::text,p_currency,p_signed_epoch)::text
+$body$;
+
+CREATE FUNCTION app_private.db03_guard_bank_settlement() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ret app_private.finance_admission_payment_returns%ROWTYPE;
+ pay app_private.finance_admission_official_payments%ROWTYPE;
+ signer app_private.finance_admission_bank_signers%ROWTYPE;
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 bank settlement history immutable'; END IF;
+ IF current_user<>'schoolos_schema_owner' THEN
+  RAISE EXCEPTION 'DB03 signed bank settlement requires trusted command'; END IF;
+ SELECT * INTO ret FROM app_private.finance_admission_payment_returns
+  WHERE id=NEW.return_id FOR UPDATE;
+ SELECT * INTO pay FROM app_private.finance_admission_official_payments
+  WHERE id=ret.payment_id;
+ SELECT * INTO signer FROM app_private.finance_admission_bank_signers
+  WHERE id=NEW.signer_id FOR KEY SHARE;
+ IF ret.id IS NULL OR pay.id IS NULL OR signer.id IS NULL
+  OR ret.application_id<>NEW.application_id OR ret.school_id<>NEW.school_id
+  OR ret.campus_id<>NEW.campus_id OR ret.payment_id<>NEW.payment_id
+  OR ret.currency_code<>NEW.currency_code
+  OR pay.amount_minor<>NEW.settled_amount_minor
+  OR signer.school_id<>ret.school_id
+  OR ret.reported_by=NEW.confirmed_by OR pay.created_by=NEW.confirmed_by
+  OR NOT EXISTS(SELECT 1 FROM app_private.principals p
+     WHERE p.id=NEW.confirmed_by AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+  OR extensions.hmac(
+    pg_catalog.convert_to(app_private.db03_bank_attestation_payload(
+     NEW.school_id,NEW.campus_id,NEW.application_id,NEW.return_id,
+     NEW.payment_id,NEW.signer_id,NEW.bank_event_id,NEW.bank_trace_private,
+     NEW.decision,NEW.settled_amount_minor,NEW.currency_code,NEW.signed_epoch),'UTF8'),
+    signer.hmac_key_private,'sha256')<>NEW.verified_mac THEN
+  RAISE EXCEPTION 'DB03 bank settlement provenance mismatch'; END IF;
+ RETURN NEW;
+END $body$;
+
+CREATE FUNCTION app_private.db03_guard_bank_reinstatement() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE release_row app_private.finance_admission_return_release_approvals%ROWTYPE;
+ att app_private.finance_admission_bank_settlement_attestations%ROWTYPE;
+ v app_private.finance_admission_allocation_reversals%ROWTYPE;
+ allocation app_private.finance_admission_payment_allocations%ROWTYPE;
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 reinstatement history immutable'; END IF;
+ IF current_user<>'schoolos_schema_owner' THEN
+  RAISE EXCEPTION 'DB03 reinstatement requires protected Finance command'; END IF;
+ SELECT * INTO release_row FROM app_private.finance_admission_return_release_approvals
+ WHERE id=NEW.release_id;
+ SELECT * INTO att FROM app_private.finance_admission_bank_settlement_attestations
+ WHERE id=release_row.attestation_id;
+ SELECT * INTO v FROM app_private.finance_admission_allocation_reversals
+ WHERE id=NEW.reversal_id;
+ SELECT * INTO allocation FROM app_private.finance_admission_payment_allocations
+ WHERE id=v.allocation_id;
+ IF release_row.id IS NULL OR att.id IS NULL OR v.id IS NULL OR allocation.id IS NULL
+  OR att.decision<>'BANK_CONFIRMS_NO_RETURN'
+  OR att.return_id<>release_row.return_id
+  OR release_row.application_id<>NEW.application_id
+  OR att.application_id<>NEW.application_id OR v.application_id<>NEW.application_id
+  OR allocation.application_id<>NEW.application_id
+  OR v.return_id<>release_row.return_id
+  OR v.allocation_id<>NEW.allocation_id
+  OR v.reversal_minor<>NEW.reinstated_minor
+  OR NEW.created_by<>release_row.released_by THEN
+   RAISE EXCEPTION 'DB03 reinstatement lineage or amount invalid'; END IF;
+ RETURN NEW;
+END $body$;
+CREATE FUNCTION app_private.db03_guard_bank_release() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE att app_private.finance_admission_bank_settlement_attestations%ROWTYPE;
+ ret app_private.finance_admission_payment_returns%ROWTYPE;
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 bank release history immutable'; END IF;
+ IF current_user<>'schoolos_schema_owner' THEN
+ RAISE EXCEPTION 'DB03 release requires Finance command'; END IF;
+ SELECT * INTO att FROM app_private.finance_admission_bank_settlement_attestations
+ WHERE id=NEW.attestation_id;
+ SELECT * INTO ret FROM app_private.finance_admission_payment_returns
+ WHERE id=NEW.return_id FOR UPDATE;
+ IF att.id IS NULL OR ret.id IS NULL OR att.return_id<>ret.id
+  OR att.application_id<>NEW.application_id
+  OR att.decision<>'BANK_CONFIRMS_NO_RETURN'
+  OR att.confirmed_by=NEW.released_by OR ret.reported_by=NEW.released_by
+  OR NOT EXISTS(SELECT 1 FROM app_private.principals p
+   WHERE p.id=NEW.released_by AND p.kind='INDIVIDUAL' AND p.state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB03 bank release independent source invalid'; END IF;
+ RETURN NEW;
+END $body$;
+
+ALTER TABLE app_private.finance_admission_bank_signers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_bank_signers FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_bank_settlement_attestations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_bank_settlement_attestations FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_return_release_approvals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_return_release_approvals FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_allocation_reinstatements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_admission_allocation_reinstatements FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.finance_admission_bank_signers,
+ app_private.finance_admission_bank_settlement_attestations,
+ app_private.finance_admission_return_release_approvals,
+ app_private.finance_admission_allocation_reinstatements
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE POLICY bank_signer_owner ON app_private.finance_admission_bank_signers
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY bank_attestation_owner ON app_private.finance_admission_bank_settlement_attestations
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY bank_release_owner ON app_private.finance_admission_return_release_approvals
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY bank_reinstatement_owner ON app_private.finance_admission_allocation_reinstatements
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER db03_bank_settlement_immutable BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_bank_settlement_attestations FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_guard_bank_settlement();
+CREATE TRIGGER db03_bank_settlement_no_truncate BEFORE TRUNCATE
+ ON app_private.finance_admission_bank_settlement_attestations FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_guard_bank_settlement();
+CREATE TRIGGER db03_bank_release_immutable BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_return_release_approvals FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_guard_bank_release();
+CREATE TRIGGER db03_bank_release_no_truncate BEFORE TRUNCATE
+ ON app_private.finance_admission_return_release_approvals FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_guard_bank_release();
+CREATE TRIGGER db03_bank_reinstatement_immutable BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.finance_admission_allocation_reinstatements FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_guard_bank_reinstatement();
+CREATE TRIGGER db03_bank_reinstatement_no_truncate BEFORE TRUNCATE
+ ON app_private.finance_admission_allocation_reinstatements FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_guard_bank_reinstatement();
+REVOKE ALL ON FUNCTION app_private.db03_guard_bank_settlement(),
+ app_private.db03_guard_bank_release(),
+ app_private.db03_guard_bank_reinstatement(),
+ app_private.db03_bank_attestation_payload(
+ uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text,numeric,text,bigint)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+RESET ROLE;
