@@ -1,6 +1,9 @@
 -- DB03 S25 inactive candidate: keyed bank settlement attestations and exact
 -- append-only restoration of S22 compensations. NO BANK KEY IN PRODUCTION.
 -- Bank trust keys MUST be provisioned directly by a verified banking partner.
+-- pgcrypto lives in the trusted extensions schema; only the private DDL owner
+-- receives schema usage for SECURITY DEFINER HMAC checks, never the file worker.
+GRANT USAGE ON SCHEMA extensions TO schoolos_schema_owner;
 SET ROLE schoolos_schema_owner;
 CREATE TABLE app_private.finance_admission_bank_signers(
  id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
