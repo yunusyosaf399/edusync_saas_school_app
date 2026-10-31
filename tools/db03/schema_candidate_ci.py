@@ -558,6 +558,43 @@ def validate_bank_return_document() -> tuple[str,str,str]:
     return sql,test,fixture
 
 
+def validate_signed_bank_settlement() -> tuple[str,str,str]:
+    folder=ROOT/'supabase/proposals/db03'
+    parts=[(folder/name).read_text() for name in (
+        '25_01_signed_bank_settlement_source.sql.draft',
+        '25_02_signed_bank_settlement_command.sql.draft',
+        '25_03_controlled_bank_reinstatement_command.sql.draft',
+        '25_04_bank_signed_funding_snapshot.sql.draft')]
+    sql='\n'.join(parts)
+    test=(ROOT/'supabase/tests/db03/25_signed_bank_settlement_and_reinstatement.sql').read_text()
+    fixture=(ROOT/'supabase/tests/db03/fixtures/signed_bank_settlement_actor.sql').read_text()
+    if re.findall(r'(?mi)^CREATE TABLE app_private\.([a-z0-9_]+)\(',sql)!=[
+        'finance_admission_bank_signers',
+        'finance_admission_bank_settlement_attestations',
+        'finance_admission_return_release_approvals',
+        'finance_admission_allocation_reinstatements']:
+        raise RuntimeError('DB03_S25_TABLE_SCOPE')
+    if re.findall(r'(?mi)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)!=[
+        'db03_bank_attestation_payload','db03_guard_bank_settlement',
+        'db03_guard_bank_reinstatement','db03_guard_bank_release',
+        'db03_bank_settlement_actor_authorized','db03_bank_reinstatement_actor_authorized',
+        'db03_record_signed_bank_settlement','db03_reinstate_disproven_bank_return',
+        'db03_applicant_funding_snapshot']:
+        raise RuntimeError('DB03_S25_FUNCTION_SCOPE')
+    outside=re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '',sql,flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE|CREATE EXTENSION|CREATE FUNCTION app\.)\b',outside):
+        raise RuntimeError('DB03_S25_PRODUCTION_SEED')
+    if re.findall(r'SELECT plan\((\d+)\);',test)!=['23'] or len(re.findall(
+        r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test))!=23 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_S25_TEST_PLAN')
+    if 'SYNTHETIC_BANK' not in fixture or (
+       'foundation-family-001@example.invalid' not in fixture):
+        raise RuntimeError('DB03_S25_REAL_BANK_PRODUCTION_KEY_MISSING_FENCE')
+    print('DB03_S25_BANK_SETTLEMENT_SOURCE_PASS assertions=23 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test,fixture
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -588,6 +625,7 @@ def main() -> int:
     payment_return_sql, payment_return_test, payment_return_fixture = validate_payment_return()
     return_review_sql, return_review_test, return_review_fixture = validate_independent_return_ledger_review()
     bank_document_sql, bank_document_test, bank_document_fixture = validate_bank_return_document()
+    bank_settlement_sql, bank_settlement_test, bank_settlement_fixture = validate_signed_bank_settlement()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -954,6 +992,22 @@ def main() -> int:
                 raise RuntimeError('DB03_S24_ROLLBACK_INCOMPLETE')
             local.run_psql(container,"BEGIN;\n"+bank_document_sql+"\nCOMMIT;",
                            'DB03_S24_INSTALL')
+            try:
+                local.run_psql(container,"BEGIN;\n"+bank_settlement_sql+
+                 "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_S25_INJECTED_FAILURE'; END $failure$;\nCOMMIT;",
+                 'DB03_S25_ROLLBACK_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_S25_INJECTED_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_S25_ROLLBACK_REHEARSAL_MISSING')
+            remaining=local.run_psql(container,
+              "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN ('finance_admission_bank_signers','finance_admission_bank_settlement_attestations','finance_admission_return_release_approvals','finance_admission_allocation_reinstatements'))+(SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN ('db03_record_signed_bank_settlement','db03_reinstate_disproven_bank_return','db03_applicant_funding_snapshot_pre_s25'));",
+              'DB03_S25_ROLLBACK_PROBE',tuples=True).strip()
+            if remaining!='0':
+                raise RuntimeError('DB03_S25_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,"BEGIN;\n"+bank_settlement_sql+"\nCOMMIT;",
+                           'DB03_S25_INSTALL')
             from foundation_local_ci import ensure_local_auth_route
             from prepare_local_auth_fixtures import local_status, prepare
             def prepare_auth():
@@ -1143,9 +1197,14 @@ def main() -> int:
                 print('DB03_S24_DOCUMENT_ASSERTION_DETAIL '+bank_document_output)
             parse_tap(bank_document_output,20)
             print('DB03_S24_BANK_DOCUMENT_DATABASE_PASS 20/20; settlement_verified=false clearance=false')
+            bank_settlement_output=local.run_psql(container,bank_settlement_test,'DB03_S25_SETTLEMENT_TEST')
+            if 'not ok' in bank_settlement_output:
+                print('DB03_S25_SETTLEMENT_ASSERTION_DETAIL '+bank_settlement_output)
+            parse_tap(bank_settlement_output,23)
+            print('DB03_S25_BANK_SETTLEMENT_DATABASE_PASS 23/23; production_trust_key=false clearance=false')
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\n" + manual_assessment_sql + "\n" + finance_assessment_sql + "\n" + allocation_sql + "\n" + funding_snapshot_sql + "\n" + payment_return_sql + "\n" + return_review_sql + "\n" + bank_document_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\n" + applicant_obligation_sql + "\n" + manual_fee_sql + "\n" + manual_fee_command_sql + "\n" + manual_assessment_sql + "\n" + finance_assessment_sql + "\n" + allocation_sql + "\n" + funding_snapshot_sql + "\n" + payment_return_sql + "\n" + return_review_sql + "\n" + bank_document_sql + "\n" + bank_settlement_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -1177,7 +1236,7 @@ def main() -> int:
                 document_fixture + "\n" + review_fixture + "\n" +
                 applicant_fixture + "\n" + applicant_review_fixture + "\n" +
                 applicant_payment_fixture + "\n" + manual_fee_fixture + "\n" +
-                finance_assessment_fixture + "\n" + allocation_fixture + "\n" + payment_return_fixture + "\n" + return_review_fixture + "\n" + bank_document_fixture)
+                finance_assessment_fixture + "\n" + allocation_fixture + "\n" + payment_return_fixture + "\n" + return_review_fixture + "\n" + bank_document_fixture + "\n" + bank_settlement_fixture)
             return 0
     finally:
         if started:

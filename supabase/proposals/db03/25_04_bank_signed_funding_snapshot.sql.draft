@@ -1,0 +1,67 @@
+-- S25 private read-model overlay: S22 remains the ledger-history authority.
+-- Only an actual, separately approved reinstatement restores net funds.
+SET ROLE schoolos_schema_owner;
+ALTER FUNCTION app_private.db03_applicant_funding_snapshot(uuid)
+ RENAME TO db03_applicant_funding_snapshot_pre_s25;
+REVOKE ALL ON FUNCTION app_private.db03_applicant_funding_snapshot_pre_s25(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE FUNCTION app_private.db03_applicant_funding_snapshot(p_application uuid)
+RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE s jsonb; original jsonb; restored numeric:=0; current_restored numeric:=0;
+ recovered_receipts numeric:=0; remaining_returns bigint:=0; verified_events bigint:=0;
+BEGIN
+ s:=app_private.db03_applicant_funding_snapshot_pre_s25(p_application);
+ IF p_application IS NULL OR s->>'state'='UNAVAILABLE' THEN RETURN s; END IF;
+ SELECT coalesce(sum(x.reinstated_minor),0),
+ coalesce(sum(x.reinstated_minor) FILTER (
+  WHERE a.assessment_id=(s->>'assessment_id')::uuid),0)
+ INTO restored,current_restored
+ FROM app_private.finance_admission_allocation_reinstatements x
+ JOIN app_private.finance_admission_payment_allocations a ON a.id=x.allocation_id
+ WHERE x.application_id=p_application;
+ SELECT coalesce(sum(att.settled_amount_minor),0)
+ INTO recovered_receipts
+ FROM app_private.finance_admission_return_release_approvals r
+ JOIN app_private.finance_admission_bank_settlement_attestations att
+  ON att.id=r.attestation_id
+ WHERE r.application_id=p_application AND att.decision='BANK_CONFIRMS_NO_RETURN';
+ SELECT count(*) INTO remaining_returns
+ FROM app_private.finance_admission_payment_returns r
+ WHERE r.application_id=p_application AND NOT EXISTS(
+  SELECT 1 FROM app_private.finance_admission_return_release_approvals v
+   WHERE v.return_id=r.id);
+ SELECT count(*) INTO verified_events
+ FROM app_private.finance_admission_bank_settlement_attestations att
+ WHERE att.application_id=p_application;
+ s:=s||jsonb_build_object(
+  'bank_signed_settlement_event_count',verified_events,
+  'separately_approved_reinstated_minor',restored,
+  'outstanding_return_hold_count',remaining_returns,
+  'net_available_official_minor',((s->>'net_available_official_minor')::numeric+recovered_receipts),
+  'allocated_to_current_minor',((s->>'allocated_to_current_minor')::numeric+current_restored),
+  'allocated_to_previous_minor',((s->>'allocated_to_previous_minor')::numeric+
+     restored-current_restored),
+  'unallocated_official_minor',greatest(0,
+   (s->>'net_available_official_minor')::numeric+recovered_receipts
+   -(s->>'allocated_to_current_minor')::numeric-current_restored
+   -(s->>'allocated_to_previous_minor')::numeric-(restored-current_restored)),
+  'remaining_assessed_minor',greatest(0,
+   (s->>'assessed_minor')::numeric-(s->>'allocated_to_current_minor')::numeric-current_restored),
+  'bank_reversal_reconciliation_implemented',true,
+  'bank_partner_production_integrated',false,
+  'new_allocations_unblocked',false,
+  'clearance_issued',false,'snapshot_only',true);
+ IF remaining_returns>0 THEN
+  s:=s||jsonb_build_object('state','BANK_RETURN_RECONCILIATION_REQUIRED');
+ ELSE
+  original:=app_private.db03_applicant_funding_snapshot_pre_s22(p_application);
+  s:=s||jsonb_build_object('state',original->>'state');
+ END IF;
+ RETURN s;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_applicant_funding_snapshot(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+RESET ROLE;

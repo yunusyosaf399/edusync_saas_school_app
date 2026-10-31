@@ -1,0 +1,185 @@
+-- S25 controlled reinstatement is separate from signed-bank ingestion.
+-- No fresh S20 allocation, bank refund, or Finance/admission clearance.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_reinstate_disproven_bank_return(
+ p_application uuid,p_expected bigint,p_return uuid,p_attestation uuid,
+ p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ ret app_private.finance_admission_payment_returns%ROWTYPE;
+ pay app_private.finance_admission_official_payments%ROWTYPE;
+ att app_private.finance_admission_bank_settlement_attestations%ROWTYPE;
+ signer app_private.finance_admission_bank_signers%ROWTYPE;
+ doc_rev app_private.finance_admission_bank_return_evidence_reviews%ROWTYPE;
+ release_row app_private.finance_admission_return_release_approvals%ROWTYPE;
+ old app_private.command_receipts%ROWTYPE;
+ actor uuid; op uuid; school uuid; campus uuid; year_id uuid;
+ claims jsonb; exp_str text; intent_hash bytea; result jsonb;
+ original_minor numeric; restored_minor numeric; original_count bigint; restored_count bigint;
+ receipt_id uuid; corr uuid;
+BEGIN
+ IF session_user<>'schoolos_file_login'
+ OR current_setting('transaction_isolation')<>'read committed'
+ OR p_application IS NULL OR p_expected IS NULL OR p_expected<1
+ OR p_return IS NULL OR p_attestation IS NULL
+ OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 8 AND 1000
+ OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+ RAISE EXCEPTION 'DB03 bank reinstatement intent invalid'; END IF;
+ claims:=nullif(current_setting('request.jwt.claims',true),'')::jsonb;
+ exp_str:=claims->>'exp';
+ IF exp_str IS NULL OR exp_str !~ '^[0-9]{1,12}$'
+ OR to_timestamp(exp_str::bigint)<=clock_timestamp() THEN
+ RAISE EXCEPTION 'DB03 bank reinstatement Auth expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ SELECT school_id,campus_id,academic_year_id INTO school,campus,year_id
+ FROM app_private.admission_applications WHERE id=p_application;
+ IF school IS NULL OR NOT app_private.db03_bank_reinstatement_actor_authorized(actor,campus) THEN
+ RAISE EXCEPTION 'DB03 bank reinstatement independent Finance scope denied'; END IF;
+ SELECT o.id INTO op FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='finance.admission.payment.return.reinstate'
+ AND o.contract_version=1 AND o.handler_key=o.code
+ AND o.payload_schema_version=1 AND o.enabled AND NOT o.requires_approval
+ AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF op IS NULL THEN RAISE EXCEPTION 'DB03 bank reinstatement operation unavailable'; END IF;
+ intent_hash:=sha256(convert_to(jsonb_build_array(
+ 'db03-bank-reinstatement-v1',p_application,p_expected,p_return,p_attestation,
+ encode(sha256(convert_to(p_reason,'UTF8')),'hex'))::text,'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||op::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank reinstatement School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=campus AND school_id=school AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank reinstatement Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=year_id AND school_id=school
+ AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank reinstatement Year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application FOR UPDATE;
+ SELECT * INTO ret FROM app_private.finance_admission_payment_returns
+ WHERE id=p_return FOR UPDATE;
+ SELECT * INTO pay FROM app_private.finance_admission_official_payments
+ WHERE id=ret.payment_id FOR UPDATE;
+ SELECT * INTO att FROM app_private.finance_admission_bank_settlement_attestations
+ WHERE id=p_attestation FOR UPDATE;
+ SELECT * INTO signer FROM app_private.finance_admission_bank_signers
+ WHERE id=att.signer_id FOR KEY SHARE;
+ SELECT rv.* INTO doc_rev FROM app_private.finance_admission_bank_return_evidence_reviews rv
+ JOIN app_private.finance_admission_bank_return_evidence ev ON ev.id=rv.evidence_id
+ WHERE ev.return_id=p_return;
+ IF a.id IS NULL OR a.school_id<>school OR a.campus_id<>campus
+ OR a.academic_year_id<>year_id OR a.row_version<>p_expected
+ OR a.state<>'DRAFT'
+ OR ret.id IS NULL OR ret.application_id<>a.id OR ret.school_id<>school
+ OR ret.campus_id<>campus OR pay.id IS NULL OR pay.id<>ret.payment_id
+ OR att.id IS NULL OR att.return_id<>ret.id OR att.application_id<>a.id
+ OR att.payment_id<>pay.id OR att.school_id<>school OR att.campus_id<>campus
+ OR att.currency_code<>pay.currency_code OR att.settled_amount_minor<>pay.amount_minor
+ OR att.decision<>'BANK_CONFIRMS_NO_RETURN'
+ OR signer.id IS NULL OR signer.school_id<>school
+ OR NOT signer.enabled OR signer.valid_from>clock_timestamp()
+ OR signer.valid_until<=clock_timestamp()
+ OR (signer.revoked_at IS NOT NULL AND signer.revoked_at<=clock_timestamp())
+ OR doc_rev.id IS NULL OR doc_rev.decision='DOCUMENT_SUPPORTS_RETURN'
+ OR ret.reported_by=actor OR pay.created_by=actor OR att.confirmed_by=actor
+ OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards f
+ WHERE f.application_id=a.id)
+ OR to_timestamp(exp_str::bigint)<=clock_timestamp()
+ OR NOT app_private.db03_bank_reinstatement_actor_authorized(actor,campus)
+ OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.id=op AND o.enabled AND NOT o.requires_approval
+ AND p.code=o.code AND p.state='ENABLED') THEN
+ RAISE EXCEPTION 'DB03 bank reinstatement source or authority stale'; END IF;
+ SELECT * INTO old FROM app_private.command_receipts
+ WHERE principal_id=actor AND operation_id=op
+ AND idempotency_key='bank-reinstatement:'||p_key;
+ IF old.id IS NOT NULL THEN
+ SELECT * INTO release_row FROM app_private.finance_admission_return_release_approvals
+ WHERE id=old.result_ref;
+ IF old.state<>'SUCCEEDED' OR
+ old.command_kind<>'finance.admission.payment.return.reinstate'
+ OR old.result_kind<>'FINANCE_BANK_RETURN_REINSTATEMENT'
+ OR old.canonical_payload_hash IS DISTINCT FROM intent_hash
+ OR old.expected_target_version IS DISTINCT FROM p_expected
+ OR release_row.id IS NULL OR release_row.return_id<>ret.id
+ OR release_row.attestation_id<>att.id OR release_row.released_by<>actor
+ OR old.result_summary->>'release_id' IS DISTINCT FROM release_row.id::text
+ OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=old.id)<>1
+ OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=old.id)<>1 THEN
+ RAISE EXCEPTION 'DB03 bank reinstatement replay conflict'; END IF;
+ RETURN old.result_summary;
+ END IF;
+ IF EXISTS(SELECT 1 FROM app_private.finance_admission_return_release_approvals
+ WHERE return_id=ret.id) THEN
+ RAISE EXCEPTION 'DB03 bank return already reinstated'; END IF;
+ -- Check original signed bank event provenance (audit receipts) and pin
+ -- the MAC against its signer again while key remains valid.
+ IF extensions.hmac(convert_to(app_private.db03_bank_attestation_payload(
+ att.school_id,att.campus_id,att.application_id,att.return_id,att.payment_id,
+ att.signer_id,att.bank_event_id,att.bank_trace_private,
+ att.decision,att.settled_amount_minor,att.currency_code,att.signed_epoch),'UTF8'),
+ signer.hmac_key_private,'sha256') IS DISTINCT FROM att.verified_mac
+ OR NOT EXISTS(SELECT 1 FROM app_private.command_receipts cr
+ JOIN app_private.operation_contracts o ON o.id=cr.operation_id
+ WHERE o.code='finance.admission.payment.bank.settlement.record'
+ AND cr.result_ref=att.id AND cr.command_kind=o.code
+ AND cr.result_kind='FINANCE_BANK_SETTLEMENT_ATTESTATION'
+ AND cr.state='SUCCEEDED' AND cr.created_by=att.confirmed_by
+ AND (SELECT count(*) FROM app_private.audit_events au
+ WHERE au.command_receipt_id=cr.id AND au.target_ref=att.id)=1
+ AND (SELECT count(*) FROM app_private.outbox_events ob
+ WHERE ob.command_receipt_id=cr.id AND ob.aggregate_ref=att.id)=1) THEN
+ RAISE EXCEPTION 'DB03 bank reinstatement attestation provenance invalid'; END IF;
+ INSERT INTO app_private.finance_admission_return_release_approvals(
+ return_id,attestation_id,application_id,released_by,reason_private)
+ VALUES(ret.id,att.id,a.id,actor,p_reason) RETURNING * INTO release_row;
+ INSERT INTO app_private.finance_admission_allocation_reinstatements(
+ release_id,reversal_id,allocation_id,application_id,reinstated_minor,created_by)
+ SELECT release_row.id,v.id,v.allocation_id,a.id,v.reversal_minor,actor
+ FROM app_private.finance_admission_allocation_reversals v
+ WHERE v.return_id=ret.id ORDER BY v.created_at,v.id;
+ GET DIAGNOSTICS restored_count=ROW_COUNT;
+ SELECT count(*),coalesce(sum(reversal_minor),0)
+ INTO original_count,original_minor
+ FROM app_private.finance_admission_allocation_reversals WHERE return_id=ret.id;
+ SELECT coalesce(sum(reinstated_minor),0) INTO restored_minor
+ FROM app_private.finance_admission_allocation_reinstatements
+ WHERE release_id=release_row.id;
+ IF restored_count<>original_count OR restored_minor<>original_minor THEN
+ RAISE EXCEPTION 'DB03 bank reinstatement incomplete compensation'; END IF;
+ result:=jsonb_build_object('release_id',release_row.id,
+ 'attestation_id',att.id,'return_id',ret.id,'application_id',a.id,
+ 'reinstated_minor',restored_minor,'reinstated_allocations',restored_count,
+ 'bank_signed_no_return_confirmed',true,'original_adm_receipt_preserved',true,
+ 'new_allocations_unblocked',false,'clearance_issued',false);
+ receipt_id:=gen_random_uuid();corr:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,
+ idempotency_key,canonical_payload_hash,canonicalization_version,
+ expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(receipt_id,actor,op,'finance.admission.payment.return.reinstate',
+ 'bank-reinstatement:'||p_key,intent_hash,1,p_expected,'SUCCEEDED',
+ 'FINANCE_BANK_RETURN_REINSTATEMENT',release_row.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+ target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+ source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',
+ jsonb_build_object('operation','finance.admission.payment.return.reinstate',
+ 'attestation_id',att.id),1,'finance.admission.payment.return.reinstate',
+ 'FINANCE_BANK_RETURN_REINSTATEMENT',release_row.id,campus,receipt_id,'WORKER',
+ corr,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+ aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,
+ payload,created_by)
+ VALUES('finance.admission.payment.return.reinstate',
+ 'FINANCE_BANK_RETURN_REINSTATEMENT',release_row.id,1,receipt_id,1,corr,
+ clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_reinstate_disproven_bank_return(
+ uuid,bigint,uuid,uuid,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_reinstate_disproven_bank_return(
+ uuid,bigint,uuid,uuid,text,text)
+ TO schoolos_file_login;
+RESET ROLE;
