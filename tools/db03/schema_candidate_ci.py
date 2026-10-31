@@ -455,6 +455,22 @@ def validate_principal_final_source() -> tuple[str, str]:
     return sql,test
 
 
+def validate_assessment_source() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/22_01_admission_assessment_source.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/22_admission_assessment_source.sql').read_text()
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)', sql) != ['admission_assessments']:
+        raise RuntimeError('DB03_ASSESSMENT_SOURCE_TABLE_SCOPE')
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != ['db03_assessment_source_guard']:
+        raise RuntimeError('DB03_ASSESSMENT_SOURCE_FUNCTION_SCOPE')
+    if re.search(r'(?m)^CREATE FUNCTION app\.', sql) or 'INSERT INTO app_private.permissions' in sql:
+        raise RuntimeError('DB03_ASSESSMENT_SOURCE_NO_CUSTOMER_COMMAND')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['14'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 14 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_ASSESSMENT_SOURCE_TEST_PLAN')
+    print('DB03_ASSESSMENT_SOURCE_PASS assertions=14 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -482,6 +498,7 @@ def main() -> int:
     scholarship_approval_sql, scholarship_approval_test = validate_scholarship_approval()
     approved_scholarship_read_sql, approved_scholarship_read_test = validate_approved_scholarship_read()
     principal_final_sql, principal_final_test = validate_principal_final_source()
+    assessment_source_sql, assessment_source_test = validate_assessment_source()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1030,6 +1047,25 @@ def main() -> int:
             output=local.run_psql(container,principal_final_test,'DB03_PRINCIPAL_FINAL_SOURCE_TEST')
             parse_tap(output,10)
             print('DB03_PRINCIPAL_FINAL_SOURCE_DATABASE_PASS 10/10; can_finalize=false')
+            try:
+                local.run_psql(container,'BEGIN;\n'+assessment_source_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_ASSESSMENT_SOURCE_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_ASSESSMENT_SOURCE_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_ASSESSMENT_SOURCE_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_ASSESSMENT_SOURCE_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='admission_assessments')+(SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_assessment_source_guard');",
+                'DB03_ASSESSMENT_SOURCE_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_ASSESSMENT_SOURCE_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+assessment_source_sql+'\nCOMMIT;',
+                           'DB03_ASSESSMENT_SOURCE_INSTALL')
+            output=local.run_psql(container,assessment_source_test,'DB03_ASSESSMENT_SOURCE_TEST')
+            parse_tap(output,14)
+            print('DB03_ASSESSMENT_SOURCE_DATABASE_PASS 14/14; no_examiner_command=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
