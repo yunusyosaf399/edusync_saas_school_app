@@ -471,6 +471,20 @@ def validate_assessment_source() -> tuple[str, str]:
     return sql,test
 
 
+def validate_assessment_command() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/23_01_admission_assessment_command.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/23_admission_assessment_command.sql').read_text()
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != ['db03_record_initial_assessment']:
+        raise RuntimeError('DB03_ASSESSMENT_COMMAND_FUNCTION_SCOPE')
+    if 'INSERT INTO app_private.permissions' in sql or 'INSERT INTO app_private.operation_contracts' in sql:
+        raise RuntimeError('DB03_ASSESSMENT_COMMAND_PRODUCTION_SEED')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['8'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 8 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_ASSESSMENT_COMMAND_TEST_PLAN')
+    print('DB03_ASSESSMENT_COMMAND_PASS assertions=8 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -499,6 +513,7 @@ def main() -> int:
     approved_scholarship_read_sql, approved_scholarship_read_test = validate_approved_scholarship_read()
     principal_final_sql, principal_final_test = validate_principal_final_source()
     assessment_source_sql, assessment_source_test = validate_assessment_source()
+    assessment_command_sql, assessment_command_test = validate_assessment_command()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1065,7 +1080,26 @@ def main() -> int:
                            'DB03_ASSESSMENT_SOURCE_INSTALL')
             output=local.run_psql(container,assessment_source_test,'DB03_ASSESSMENT_SOURCE_TEST')
             parse_tap(output,14)
-            print('DB03_ASSESSMENT_SOURCE_DATABASE_PASS 14/14; no_examiner_command=true')
+            print('DB03_ASSESSMENT_SOURCE_DATABASE_PASS 14/14')
+            try:
+                local.run_psql(container,'BEGIN;\n'+assessment_command_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_ASSESSMENT_COMMAND_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_ASSESSMENT_COMMAND_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_ASSESSMENT_COMMAND_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_ASSESSMENT_COMMAND_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_record_initial_assessment';",
+                'DB03_ASSESSMENT_COMMAND_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_ASSESSMENT_COMMAND_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+assessment_command_sql+'\nCOMMIT;',
+                           'DB03_ASSESSMENT_COMMAND_INSTALL')
+            output=local.run_psql(container,assessment_command_test,'DB03_ASSESSMENT_COMMAND_TEST')
+            parse_tap(output,8)
+            print('DB03_ASSESSMENT_COMMAND_DATABASE_PASS 8/8; no_production_seed=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
