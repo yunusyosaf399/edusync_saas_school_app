@@ -29,6 +29,10 @@ def run_document_review(local, fresh_database, fixture):
     from prepare_local_auth_fixtures import local_status,NoRedirect
 
     fresh_database()
+    principal_source=(Path(__file__).resolve().parents[2] /
+        'supabase/proposals/db03/21_01_principal_final_source_snapshot.sql.draft').read_text()
+    local.run_psql('supabase_db_'+local.EXPECTED_PROJECT_ID,
+        'BEGIN;\n'+principal_source+'\nCOMMIT;','DB03_REVIEW_PRINCIPAL_SOURCE_INSTALL')
     local.run_psql('supabase_db_'+local.EXPECTED_PROJECT_ID,
         'BEGIN;\n'+fixture+"\nUPDATE app_private.operation_contracts SET enabled=true WHERE code LIKE 'admission.%';\nCOMMIT;",'DB03_REVIEW_SERVICE_FIXTURE')
     def connection():
@@ -133,6 +137,11 @@ def run_document_review(local, fresh_database, fixture):
         def approve(forward,app,key=None):return rapi('SELECT app.approve_admission_documents(%s,%s,%s,%s)',(forward,version(app),'All required original certificates checked',key or secrets.token_hex(10)))
         def queue(app):return api('SELECT app.read_admission_document_queue(%s)',(app,))['status']
         app,forward,links,file_id=bundle('complete','Previous School')
+        with connection() as root:
+            source=root.execute('SELECT app_private.db03_principal_final_source_snapshot(%s)',(app,)).fetchone()[0]
+            check(source['application_id']==str(app) and not source['identity_current']
+                  and not source['documents_current'] and not source['finance_clearance_current']
+                  and not source['can_finalize'],'pending final sources fail closed')
         checklist=rapi('SELECT app.read_admission_principal_checklist(%s)',(app,))
         check(len(checklist['documents'])==2 and not checklist['documents_approved'],'principal sees required transfer checklist')
         denied(lambda:approve(forward,app),'independent verified documents required')
@@ -152,6 +161,11 @@ def run_document_review(local, fresh_database, fixture):
         denied(lambda:api('SELECT app.approve_admission_documents(%s,%s,%s,%s)',(forward,version(app),'Own upload','self-approve')),'independent document approver required')
         expected=version(app);clearance=approve(forward,app,key='clearance')
         check(queue(app)=='DOCUMENTS_APPROVED','verified required documents allow document-only clearance')
+        with connection() as root:
+            source=root.execute('SELECT app_private.db03_principal_final_source_snapshot(%s)',(app,)).fetchone()[0]
+            check(source['documents_current'] and source['document_clearance_id']==clearance['source_id']
+                  and not source['identity_current'] and not source['finance_clearance_current']
+                  and not source['can_finalize'],'document proof is bound without final admission')
         check(rapi('SELECT app.approve_admission_documents(%s,%s,%s,%s)',(forward,expected,'All required original certificates checked','clearance'))==clearance,'clearance retry exact effect')
         denied(lambda:approve(forward,app),'independent verified documents required')
         check(api('SELECT count(*) FROM app.list_admission_principal_queue(%s,NULL,NULL,100)',(CAMPUS,))==0,'cleared bundle leaves effective principal queue')
@@ -163,6 +177,10 @@ def run_document_review(local, fresh_database, fixture):
             denied(lambda:root.execute('DELETE FROM app_private.admission_document_accesses WHERE application_id=%s',(app,)),'history is immutable')
             root.execute("UPDATE app_private.file_objects SET state='QUARANTINED' WHERE id=%s",(file_id,))
         check(queue(app)=='PENDING_DOCUMENTS','quarantine invalidates prior clearance')
+        with connection() as root:
+            source=root.execute('SELECT app_private.db03_principal_final_source_snapshot(%s)',(app,)).fetchone()[0]
+            check(not source['documents_current'] and source['document_clearance_id'] is None
+                  and not source['can_finalize'],'quarantined bytes invalidate final document source')
         # Rejection is a certificate decision, with actionable scoped feedback.
         rejected,rf,rl,unused=bundle('reject')
         denied(lambda:read(rf,links[0]),'target stale or unavailable')
@@ -173,6 +191,10 @@ def run_document_review(local, fresh_database, fixture):
         rx=read(rf,rl[0]);check(rx.data==pdf_data,'upload downgrade preserves separately authorized reads')
         review(rx,rejected,'REJECTED')
         check(queue(rejected)=='PENDING_DOCUMENTS','rejected required file returns to collection')
+        with connection() as root:
+            source=root.execute('SELECT app_private.db03_principal_final_source_snapshot(%s)',(rejected,)).fetchone()[0]
+            check(not source['documents_current'] and not source['can_finalize'],
+                  'rejected document cannot satisfy final source')
         check(api('SELECT app.read_admission_document_feedback(%s)',(rejected,))['rejections'][0]['reason']=='Birth date is unreadable','admin receives scoped private rejection reason')
         denied(lambda:api('SELECT app.forward_admission_to_principal(%s,%s,%s)',(rejected,version(rejected),'reforward-rejected')),'required documents missing')
         ent.activate(*snapshot(3))
