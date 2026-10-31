@@ -1,0 +1,16 @@
+BEGIN;
+CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
+SET LOCAL search_path=extensions,pg_catalog,public;
+SELECT plan(10);
+SELECT ok(to_regprocedure('app_private.db03_principal_final_source_snapshot(uuid)') IS NOT NULL,'private final source snapshot exists');
+SELECT ok(NOT has_function_privilege('anon','app_private.db03_principal_final_source_snapshot(uuid)','EXECUTE'),'anon denied');
+SELECT ok(NOT has_function_privilege('authenticated','app_private.db03_principal_final_source_snapshot(uuid)','EXECUTE'),'authenticated denied');
+SELECT ok(NOT has_function_privilege('service_role','app_private.db03_principal_final_source_snapshot(uuid)','EXECUTE'),'service role denied');
+SELECT ok(NOT has_function_privilege('schoolos_file_login','app_private.db03_principal_final_source_snapshot(uuid)','EXECUTE'),'worker denied');
+SELECT ok(NOT has_function_privilege('schoolos_workflow_executor','app_private.db03_principal_final_source_snapshot(uuid)','EXECUTE'),'workflow executor denied');
+SELECT ok(NOT has_function_privilege('schoolos_identity_executor','app_private.db03_principal_final_source_snapshot(uuid)','EXECUTE'),'identity executor denied');
+SELECT is(app_private.db03_principal_final_source_snapshot(NULL)::text,NULL::text,'null application returns null');
+SELECT ok(to_regclass('app_private.admission_handoffs') IS NULL,'no fabricated final handoff');
+SELECT ok(to_regclass('app_private.finance_admission_clearance_events') IS NULL,'no fabricated Finance clearance');
+SELECT * FROM finish();
+ROLLBACK;

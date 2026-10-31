@@ -442,6 +442,19 @@ def validate_approved_scholarship_read() -> tuple[str, str]:
     return sql,test
 
 
+def validate_principal_final_source() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/21_01_principal_final_source_snapshot.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/21_principal_final_source_snapshot.sql').read_text()
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != [
+            'db03_principal_final_source_snapshot'] or re.search(r'(?m)^CREATE (?:TABLE|FUNCTION app\.)', sql):
+        raise RuntimeError('DB03_PRINCIPAL_FINAL_SOURCE_SCOPE')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['10'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 10 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_PRINCIPAL_FINAL_SOURCE_TEST_PLAN')
+    print('DB03_PRINCIPAL_FINAL_SOURCE_PASS assertions=10 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -468,6 +481,7 @@ def main() -> int:
     concession_command_sql, concession_command_test = validate_concession_command()
     scholarship_approval_sql, scholarship_approval_test = validate_scholarship_approval()
     approved_scholarship_read_sql, approved_scholarship_read_test = validate_approved_scholarship_read()
+    principal_final_sql, principal_final_test = validate_principal_final_source()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -843,7 +857,7 @@ def main() -> int:
             print('DB03_APPLICANT_PAYMENT_DATABASE_PASS 12/12; clearance=false')
             def fresh_publication_database():
                 run(["supabase", "db", "reset", "--local", "--no-seed"], cwd=foundation_root, timeout=900)
-                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
+                local.run_psql(container, "BEGIN;\n" + sql + "\n" + certificate_sql + "\n" + publication_sql + "\n" + intake_sql + "\n" + identity_sql + "\n" + person_sql + "\n" + document_sql + "\n" + review_sql + "\n" + deadline_sql + "\n" + finance_boundary_sql + "\n" + principal_final_sql + "\n" + applicant_slip_sql + "\n" + applicant_command_sql + "\n" + applicant_review_sql + "\n" + applicant_payment_sql + "\nCOMMIT;", "DB03_PUBLICATION_RACE_INSTALL")
                 prepare_auth()
             from policy_publication_races_ci import run_publication_races
             run_publication_races(local, fresh_publication_database, publication_fixture)
@@ -997,6 +1011,25 @@ def main() -> int:
             output=local.run_psql(container,approved_scholarship_read_test,'DB03_APPROVED_SCHOLARSHIP_READ_TEST')
             parse_tap(output,8)
             print('DB03_APPROVED_SCHOLARSHIP_READ_DATABASE_PASS 8/8; no_production_seed=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_final_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PRINCIPAL_FINAL_SOURCE_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_PRINCIPAL_FINAL_SOURCE_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_PRINCIPAL_FINAL_SOURCE_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_PRINCIPAL_FINAL_SOURCE_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_principal_final_source_snapshot';",
+                'DB03_PRINCIPAL_FINAL_SOURCE_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_PRINCIPAL_FINAL_SOURCE_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_final_sql+'\nCOMMIT;',
+                           'DB03_PRINCIPAL_FINAL_SOURCE_INSTALL')
+            output=local.run_psql(container,principal_final_test,'DB03_PRINCIPAL_FINAL_SOURCE_TEST')
+            parse_tap(output,10)
+            print('DB03_PRINCIPAL_FINAL_SOURCE_DATABASE_PASS 10/10; can_finalize=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
