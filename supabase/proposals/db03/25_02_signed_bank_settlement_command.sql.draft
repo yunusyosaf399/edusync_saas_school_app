@@ -1,0 +1,269 @@
+-- S25 signed authoritative bank event ingestion, with private trusted key
+-- provisioned ONLY out of band. No bank partner or key is configured by draft.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_bank_settlement_actor_authorized(
+ p_actor uuid,p_campus uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT p_actor IS NOT NULL AND p_actor=app_private.current_principal_id()
+ AND EXISTS(SELECT 1 FROM app_private.principals p WHERE p.id=p_actor
+   AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+ AND app_private.has_complete_grant('finance.admission.payment.bank.settlement.record',
+   'CAMPUS',p_campus)
+ AND EXISTS(
+  SELECT 1 FROM app_private.principal_role_assignments ra
+  JOIN app_private.roles r ON r.id=ra.role_id
+  JOIN app_private.assignment_permission_scopes sc
+   ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+  JOIN app_private.role_permission_grants g
+   ON g.id=sc.grant_id AND g.role_id=ra.role_id
+   AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts c
+   ON c.id=sc.scope_contract_id AND c.permission_id=sc.permission_id
+   AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key
+  JOIN app_private.permissions pe ON pe.id=sc.permission_id
+  WHERE ra.principal_id=p_actor AND ra.principal_kind='INDIVIDUAL'
+   AND ra.context_kind='INDIVIDUAL'
+   AND r.code='ACCOUNTANT' AND r.state='ACTIVE' AND NOT r.family_only
+   AND pe.code='finance.admission.payment.bank.settlement.record'
+   AND pe.state='ENABLED' AND NOT pe.family_safe
+   AND c.enabled AND sc.resolver_key='DIRECT'
+   AND ((sc.scope_kind='CAMPUS' AND sc.campus_id=p_campus)
+    OR (sc.scope_kind='ALL' AND sc.campus_id IS NULL))
+   AND ra.valid_from<=clock_timestamp()
+   AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+   AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+   AND g.valid_from<=clock_timestamp()
+   AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND sc.valid_from<=clock_timestamp()
+   AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+   AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at)
+ );
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_bank_settlement_actor_authorized(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+
+
+CREATE FUNCTION app_private.db03_bank_reinstatement_actor_authorized(
+ p_actor uuid,p_campus uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT p_actor IS NOT NULL AND p_actor=app_private.current_principal_id()
+ AND EXISTS(SELECT 1 FROM app_private.principals p WHERE p.id=p_actor
+   AND p.kind='INDIVIDUAL' AND p.state='ACTIVE')
+ AND app_private.has_complete_grant('finance.admission.payment.return.reinstate',
+   'CAMPUS',p_campus)
+ AND EXISTS(
+  SELECT 1 FROM app_private.principal_role_assignments ra
+  JOIN app_private.roles r ON r.id=ra.role_id
+  JOIN app_private.assignment_permission_scopes sc
+   ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+  JOIN app_private.role_permission_grants g
+   ON g.id=sc.grant_id AND g.role_id=ra.role_id
+   AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts c
+   ON c.id=sc.scope_contract_id AND c.permission_id=sc.permission_id
+   AND c.scope_kind=sc.scope_kind AND c.resolver_key=sc.resolver_key
+  JOIN app_private.permissions pe ON pe.id=sc.permission_id
+  WHERE ra.principal_id=p_actor AND ra.principal_kind='INDIVIDUAL'
+   AND ra.context_kind='INDIVIDUAL'
+   AND r.code='ACCOUNTANT' AND r.state='ACTIVE' AND NOT r.family_only
+   AND pe.code='finance.admission.payment.return.reinstate'
+   AND pe.state='ENABLED' AND NOT pe.family_safe
+   AND c.enabled AND sc.resolver_key='DIRECT'
+   AND ((sc.scope_kind='CAMPUS' AND sc.campus_id=p_campus)
+    OR (sc.scope_kind='ALL' AND sc.campus_id IS NULL))
+   AND ra.valid_from<=clock_timestamp()
+   AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+   AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+   AND g.valid_from<=clock_timestamp()
+   AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND sc.valid_from<=clock_timestamp()
+   AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+   AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at)
+ );
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_bank_reinstatement_actor_authorized(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+
+
+
+CREATE FUNCTION app_private.db03_record_signed_bank_settlement(
+ p_application uuid,p_expected bigint,p_return uuid,p_signer uuid,
+ p_bank_event uuid,p_trace text,p_decision text,p_amount numeric,
+ p_signed_epoch bigint,p_mac bytea,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ actor uuid; op uuid; school uuid; campus uuid; year_id uuid;
+ a app_private.admission_applications%ROWTYPE;
+ ret app_private.finance_admission_payment_returns%ROWTYPE;
+ pay app_private.finance_admission_official_payments%ROWTYPE;
+ signer app_private.finance_admission_bank_signers%ROWTYPE;
+ att app_private.finance_admission_bank_settlement_attestations%ROWTYPE;
+ old app_private.command_receipts%ROWTYPE;
+ doc app_private.finance_admission_bank_return_evidence%ROWTYPE;
+ doc_review app_private.finance_admission_bank_return_evidence_reviews%ROWTYPE;
+ claims jsonb; exp_str text; intent_hash bytea; expected_mac bytea;
+ result jsonb; receipt_id uuid; corr uuid;
+BEGIN
+ IF session_user<>'schoolos_file_login'
+ OR current_setting('transaction_isolation')<>'read committed'
+ OR p_application IS NULL OR p_expected IS NULL OR p_expected<1
+ OR p_return IS NULL OR p_signer IS NULL OR p_bank_event IS NULL
+ OR p_decision IS NULL OR p_decision NOT IN(
+  'BANK_CONFIRMS_RETURN_SETTLED','BANK_CONFIRMS_NO_RETURN')
+ OR p_trace IS NULL OR length(btrim(p_trace)) NOT BETWEEN 5 AND 160
+ OR p_amount IS NULL OR p_amount<=0 OR p_amount<>trunc(p_amount)
+ OR p_signed_epoch IS NULL OR p_signed_epoch<=0
+ OR p_mac IS NULL OR octet_length(p_mac)<>32
+ OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB03 signed bank event invalid'; END IF;
+ claims:=nullif(current_setting('request.jwt.claims',true),'')::jsonb;
+ exp_str:=claims->>'exp';
+ IF exp_str IS NULL OR exp_str !~ '^[0-9]{1,12}$'
+ OR to_timestamp(exp_str::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 signed bank event Auth expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ SELECT school_id,campus_id,academic_year_id INTO school,campus,year_id
+ FROM app_private.admission_applications WHERE id=p_application;
+ IF school IS NULL
+ OR NOT app_private.db03_bank_settlement_actor_authorized(actor,campus) THEN
+  RAISE EXCEPTION 'DB03 bank settlement independent scope denied'; END IF;
+ SELECT o.id INTO op FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='finance.admission.payment.bank.settlement.record'
+ AND o.contract_version=1 AND o.handler_key=o.code
+ AND o.payload_schema_version=1 AND o.enabled AND NOT o.requires_approval
+ AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF op IS NULL THEN RAISE EXCEPTION 'DB03 bank settlement operation unavailable'; END IF;
+ intent_hash:=sha256(convert_to(jsonb_build_array('db03-bank-s25-intent',
+  p_application,p_expected,p_return,p_signer,p_bank_event,p_trace,
+  p_decision,p_amount::text,p_signed_epoch,encode(p_mac,'hex'))::text,'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||op::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school
+ AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank settlement School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=campus AND school_id=school
+ AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank settlement Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=year_id AND school_id=school
+ AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 bank settlement year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+ WHERE id=p_application FOR UPDATE;
+ SELECT * INTO ret FROM app_private.finance_admission_payment_returns
+ WHERE id=p_return FOR UPDATE;
+ SELECT * INTO pay FROM app_private.finance_admission_official_payments
+ WHERE id=ret.payment_id FOR UPDATE;
+ SELECT * INTO signer FROM app_private.finance_admission_bank_signers
+ WHERE id=p_signer FOR KEY SHARE;
+ SELECT * INTO doc FROM app_private.finance_admission_bank_return_evidence
+ WHERE return_id=p_return;
+ SELECT * INTO doc_review FROM app_private.finance_admission_bank_return_evidence_reviews
+ WHERE evidence_id=doc.id;
+ IF a.id IS NULL OR a.school_id<>school OR a.campus_id<>campus
+ OR a.academic_year_id<>year_id OR a.row_version<>p_expected
+ OR ret.id IS NULL OR ret.application_id<>a.id OR ret.school_id<>school
+ OR ret.campus_id<>campus OR pay.id IS NULL OR pay.id<>ret.payment_id
+ OR pay.application_id<>a.id OR ret.reported_by=actor OR pay.created_by=actor
+ OR signer.id IS NULL OR signer.school_id<>school OR NOT signer.enabled
+ OR signer.valid_from>clock_timestamp() OR signer.valid_until<=clock_timestamp()
+ OR (signer.revoked_at IS NOT NULL AND signer.revoked_at<=clock_timestamp())
+ OR doc.id IS NULL OR doc_review.id IS NULL
+ OR doc.return_id<>ret.id OR doc_review.return_id<>ret.id
+ OR NOT EXISTS(SELECT 1 FROM app_private.finance_admission_return_ledger_reviews
+   WHERE return_id=ret.id)
+ OR p_amount<>ret.amount_minor OR p_amount<>pay.amount_minor
+ OR to_timestamp(exp_str::bigint)<=clock_timestamp()
+ OR NOT app_private.db03_bank_settlement_actor_authorized(actor,campus)
+ OR NOT EXISTS(SELECT 1 FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.id=op AND o.enabled AND NOT o.requires_approval
+ AND p.code=o.code AND p.state='ENABLED') THEN
+  RAISE EXCEPTION 'DB03 bank settlement source or authority unavailable'; END IF;
+ SELECT * INTO old FROM app_private.command_receipts
+ WHERE principal_id=actor AND operation_id=op
+ AND idempotency_key='bank-settlement:'||p_key;
+ IF old.id IS NOT NULL THEN
+  SELECT * INTO att FROM app_private.finance_admission_bank_settlement_attestations
+   WHERE id=old.result_ref;
+  IF old.command_kind<>'finance.admission.payment.bank.settlement.record'
+   OR old.state<>'SUCCEEDED'
+   OR old.result_kind<>'FINANCE_BANK_SETTLEMENT_ATTESTATION'
+   OR old.canonical_payload_hash IS DISTINCT FROM intent_hash
+   OR old.expected_target_version IS DISTINCT FROM p_expected
+   OR att.id IS NULL OR att.return_id<>p_return OR att.signer_id<>p_signer
+   OR att.bank_event_id<>p_bank_event OR att.confirmed_by<>actor
+   OR att.decision<>p_decision OR att.settled_amount_minor<>p_amount
+   OR att.verified_mac<>p_mac
+   OR old.result_summary->>'attestation_id' IS DISTINCT FROM att.id::text
+   OR (SELECT count(*) FROM app_private.audit_events
+    WHERE command_receipt_id=old.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events
+    WHERE command_receipt_id=old.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 bank settlement replay conflict'; END IF;
+   RETURN old.result_summary;
+ END IF;
+ IF EXISTS(SELECT 1 FROM app_private.finance_admission_bank_settlement_attestations
+ WHERE return_id=ret.id OR (signer_id=p_signer AND bank_event_id=p_bank_event)) THEN
+  RAISE EXCEPTION 'DB03 bank settlement already recorded'; END IF;
+ -- Delayed or future bank events are not accepted; bank partner must sign
+ -- new current event even when the original transfer is historical.
+ IF abs(extract(epoch from clock_timestamp())-p_signed_epoch)>600 THEN
+  RAISE EXCEPTION 'DB03 bank settlement signed timestamp outside validity'; END IF;
+ expected_mac:=extensions.hmac(
+  convert_to(app_private.db03_bank_attestation_payload(
+   school,campus,a.id,ret.id,pay.id,p_signer,p_bank_event,p_trace,
+   p_decision,p_amount,ret.currency_code,p_signed_epoch),'UTF8'),
+  signer.hmac_key_private,'sha256');
+ IF expected_mac IS DISTINCT FROM p_mac THEN
+  RAISE EXCEPTION 'DB03 bank settlement HMAC invalid'; END IF;
+ INSERT INTO app_private.finance_admission_bank_settlement_attestations(
+ return_id,application_id,payment_id,school_id,campus_id,signer_id,
+ bank_event_id,bank_trace_private,decision,settled_amount_minor,
+ currency_code,signed_epoch,verified_mac,confirmed_by)
+ VALUES(ret.id,a.id,pay.id,school,campus,signer.id,
+ p_bank_event,p_trace,p_decision,p_amount,ret.currency_code,
+ p_signed_epoch,p_mac,actor) RETURNING * INTO att;
+ result:=jsonb_build_object('attestation_id',att.id,'return_id',ret.id,
+ 'application_id',a.id,'payment_id',pay.id,'bank_event_id',p_bank_event,
+ 'bank_decision',att.decision,'bank_signature_verified',true,
+ 'bank_partner_provisioned_in_candidate',false,
+ 'funds_reinstated',false,'funding_hold_active',true,'clearance_issued',false);
+ receipt_id:=gen_random_uuid();corr:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,
+ idempotency_key,canonical_payload_hash,canonicalization_version,
+ expected_target_version,state,result_kind,result_ref,result_summary,
+ completed_at,created_by)
+ VALUES(receipt_id,actor,op,'finance.admission.payment.bank.settlement.record',
+ 'bank-settlement:'||p_key,intent_hash,1,p_expected,'SUCCEEDED',
+ 'FINANCE_BANK_SETTLEMENT_ATTESTATION',att.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+ target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+ source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',
+ jsonb_build_object('operation','finance.admission.payment.bank.settlement.record',
+ 'return_id',ret.id),1,'finance.admission.payment.bank.settlement.record',
+ 'FINANCE_BANK_SETTLEMENT_ATTESTATION',att.id,campus,receipt_id,
+ 'WORKER',corr,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+ aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,
+ payload,created_by)
+ VALUES('finance.admission.payment.bank.settlement.record',
+ 'FINANCE_BANK_SETTLEMENT_ATTESTATION',att.id,1,receipt_id,1,corr,
+ clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_record_signed_bank_settlement(
+ uuid,bigint,uuid,uuid,uuid,text,text,numeric,bigint,bytea,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_record_signed_bank_settlement(
+ uuid,bigint,uuid,uuid,uuid,text,text,numeric,bigint,bytea,text)
+ TO schoolos_file_login;
+RESET ROLE;
