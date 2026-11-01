@@ -9,7 +9,7 @@ This documentation branch starts at the validated owner-composition commit `f472
 - **Foundation / Section 02:** nine frozen executable migrations; auth identities, permissions, workflow approvals, command receipts, audit and outbox are not to be copied or rewritten.
 - **DB01 / Section 01:** roll correction and placement use the School → policy → pool / academic ancestry lock ordering. DB01-10 requires consumer handoffs and DB01-11/12 review and release.
 - **DB02 / Section 02:** School Roll Policy and allocator, including the Academic Offering pool hook, are composed in PR #168. G04–G06 integration, contract freeze and deployment are still open. Do not reset allocator high-water counters or enable `student.roll_policy.change` independently.
-- **DB03 / Section 04:** the latest visible #199/#202 owner decision permits incomplete administrator DRAFTs; missing birth and leaving certificates prevent forwarding; Principal alone approves final admission; admission fee is SKIPPED, MARKED_PAID or UNPAID and UNPAID does not automatically block approval. MARKED_PAID is not a bank settlement. #202 does not yet create Student records. The old deny-only Finance clearance gate must be replaced by an approved positive handoff; do not assume an approved payment receipt or Student discount is admission clearance.
+- **DB03 / Section 04:** #199/#202 permit incomplete administrator DRAFTs and record SKIPPED, MARKED_PAID or UNPAID admission-fee disposition. The newer stacked PR #203 (`fabaaeb871874107db28346ef4db688eb34e837e`) requires current receipt-backed destination, explicit fee disposition and required documents before administrator Forward, exposing PENDING_DETAILS and can_forward; it is not yet exact-head database-CI accepted. UNPAID may forward. MARKED_PAID is not a bank settlement. Principal alone approves final admission, and #203 still does not create Student records. The old deny-only Finance clearance gate must be replaced by an approved positive handoff; do not assume an approved payment receipt or Student discount is admission clearance.
 - **DB04 / Curriculum:** later curriculum/class assignment consumer acceptance must run against the same reconciled D1 catalog and final student placement state.
 - **DB08 / Finance:** bank-slip evidence and student fees remain separately approved/reviewed flows; do not infer payment from a school administrator's fee declaration. No gateway, bank cryptography or purchase-linking activation.
 
@@ -42,6 +42,10 @@ This defines integration acceptance, **not permission to implement a new paralle
 - DB03 Principal-final command lacks a positive, atomic Student/Enrollment/Roll contract: DB-030, DB-035, DB-039 and DB-029 remain open.
 - DB04 curriculum selection could invalidate catalogs/teaching assignment ancestry: freeze and validate its exact consumer contract before final rollout.
 - Missing authorized non-author review, final staged upgrade, recovery evidence or explicit production GO: no deployment/merge claim.
+
+## Cross-chat update protocol
+
+At each Section 03 increment, query latest open PRs and actual head SHAs of DB01, DB02, DB03 and DB04. Review changed filenames and effective SQL ownership before editing. Treat a newer stacked PR as *candidate*, not as merged, executable or tested evidence; capture exact-head CI before integrating it. In particular, #203 changes Forward readiness and must be reflected by eventual Student-create handoff tests. Never rewrite an active owner branch or assert another chat has finished based on a draft PR alone.
 
 ## Next safe Section 03 engineering increment
 
