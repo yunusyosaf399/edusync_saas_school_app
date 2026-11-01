@@ -15,8 +15,9 @@ from services.school_identity.login import (
 )
 from _process import run
 from foundation_local_ci import ensure_local_auth_route
-from prepare_local_auth_fixtures import local_status
-from domain_local_ci import EXPECTED_PROJECT_ID, run_psql
+from prepare_local_auth_fixtures import local_status, prepare
+from foundation_guard import load_contract
+from domain_local_ci import EXPECTED_PROJECT_ID, run_psql, run_foundation_regression
 
 SCHOOL = UUID('22222222-2222-4222-8222-222222222222')
 FAMILY = UUID('44444444-4444-4444-8444-444444444444')
@@ -191,6 +192,14 @@ def main():
         if probe.strip()!='0':raise RuntimeError('SECTION02_ROLLBACK_ROLE_LEAK')
         stage='candidate_install'
         run_psql(container,'BEGIN;\n'+candidate+'\nCOMMIT;','SECTION02_INSTALL')
+        stage='post_extension_foundation_regression'
+        fixture_url, fixture_key=local_status()
+        ensure_local_auth_route(fixture_url)
+        prepare(fixture_url,fixture_key).clear()
+        fixture_key=None
+        total=run_foundation_regression(load_contract())
+        if total!=176:raise RuntimeError('POST_EXTENSION_FOUNDATION_COUNT')
+        print('SECTION02_POST_EXTENSION_FOUNDATION_PASS 176/176',flush=True)
         stage='auth_database_acceptance'
         acceptance()
         return 0

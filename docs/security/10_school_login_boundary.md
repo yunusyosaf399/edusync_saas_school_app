@@ -95,6 +95,8 @@ verification before interpreting claims.
 isolated loopback school and runs real Auth/password and private PostgreSQL
 tests. It injects a failed candidate install and verifies rollback, authenticates
 as the worker, tests client privilege denial and concurrent rate admission.
+The 176 frozen behavior assertions also rerun after candidate installation;
+the catalog's original 33-table baseline is tested before extensions, unchanged.
 Only CI source/fixtures run; no hosted school, production account, SMTP, owner
 PC or external infrastructure is provisioned. Exact-head results belong in the
 PR and Section 02 ledger, never inferred from unit tests alone.
