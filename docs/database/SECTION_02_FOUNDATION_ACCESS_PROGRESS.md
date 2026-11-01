@@ -34,7 +34,7 @@ original one-child revocation/receipt assertions. Whole-suite rollback remains.
 |---|---|
 | DB-012 Frozen Foundation | Nine migrations and nine frozen suites retained. Source/config guard passes locally. Exact-head runtime evidence is recorded in the PR. |
 | DB-013 Identity / username-email login | Server-only login service, private worker resolver and committed rate counters implemented as an inactive candidate; 24 unit tests PASS. Exact real Auth/PostgreSQL results are tracked in [PR #200](https://github.com/yunusyosaf399/edusync_saas_school_app/pull/200). See the [login boundary](../security/10_school_login_boundary.md). HTTP hosting and release activation remain OPEN. |
-| DB-014 Staff/shared-family credentials | Existing principal states, unique bindings, binding events and token cutoff support the model. Protected create/suspend/revoke/recover orchestration and Auth failure recovery remain OPEN; fixture updates are not lifecycle acceptance. |
+| DB-014 Staff/shared-family credentials | A new inactive, protected suspension-command candidate checks current individual authority, locks the school, and appends receipt/audit/outbox. Disposable Auth/PostgreSQL CI now exercises its live denial and replay. Creation, revocation, recovery and Auth session cleanup remain OPEN; no production operation or permission is seeded. |
 | DB-015 Authorized multiple children | PR #198 merged at 3b13992. Suite 28 passed 79/79, full D1 business 3270/3270 and Foundation 220/220 on tested head 30f1218. D1 migration release remains separate. |
 | DB-016 Planned-role/action catalog | Current master specification role catalog and D1 97 permissions exist. Later module action catalogs/default role mappings need domain-specific registration and acceptance; no blanket role grants added. OPEN across planned modules. |
 | DB-017 Typed scopes | Existing Foundation/D1 ALL/CAMPUS/CLASS/SECTION/SUBJECT/OWN/ASSIGNED contracts reused; academic year derives from typed offering ancestry. Later consumer acceptance stays OPEN. |
@@ -84,12 +84,18 @@ D1 static source guard PASS (243 fragments, 34 relations, 97 permissions,
 322 scope alternatives). These are source/tool checks, not PostgreSQL runtime.
 The PR must record exact-head Foundation and D1 runtime status separately.
 
-Current Section 02 implementation adds the protected school-local username/email
-login boundary (DB-013). Credential lifecycle commands (DB-014) remain next, with generic
-failure, isolated individual/FAMILY credentials, live binding/token fencing,
-idempotent provisioning/recovery and audit. Existing alias constraints are the
-starting point, not permission to expose alias-to-email lookup. Independent
-work can continue without waiting for the complete Section 03 release.
+The next DB-014 slice is `supabase/proposals/section02_credential_suspend.sql.draft`.
+It requires an explicit live non-family `identity.credential.suspend` ALL grant,
+the matching enabled direct operation contract, a different active individual
+actor, active School and exact target version. Both family and staff targets
+can be suspended; an actor cannot suspend itself. A replay with the same intent
+returns the original receipt without another event. The school-wide exclusive
+authority lock serializes the state change with grant and binding changes.
+The candidate installs no catalog rows or grants. The disposable test creates
+its own synthetic role, permission, operation and Auth accounts. Its direct
+SQL JWT fixture models trusted gateway claims and is not a production auth path.
+Existing alias constraints remain private. Other DB-014 creation/recovery work
+continues independently of the Section 03 Admissions release.
 
 No owner PC, hosted Supabase activation, SMTP subscription or other external
 service is required for the current disposable GitHub Actions tests. Actual
