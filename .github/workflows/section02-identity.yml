@@ -6,6 +6,7 @@ on:
       - 'services/school_identity/**'
       - 'supabase/proposals/section02_identity_login.sql.draft'
       - 'supabase/proposals/section02_credential_suspend.sql.draft'
+      - 'supabase/proposals/section02_credential_revoke.sql.draft'
       - 'tools/supabase/section02_identity_login_ci.py'
   pull_request:
     paths:
@@ -13,6 +14,7 @@ on:
       - 'services/school_identity/**'
       - 'supabase/proposals/section02_identity_login.sql.draft'
       - 'supabase/proposals/section02_credential_suspend.sql.draft'
+      - 'supabase/proposals/section02_credential_revoke.sql.draft'
       - 'tools/supabase/section02_identity_login_ci.py'
   workflow_dispatch:
 jobs:

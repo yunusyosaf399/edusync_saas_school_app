@@ -23,6 +23,7 @@ from domain_local_ci import EXPECTED_PROJECT_ID, run_psql, run_foundation_regres
 SCHOOL = UUID('22222222-2222-4222-8222-222222222222')
 FAMILY = UUID('44444444-4444-4444-8444-444444444444')
 STAFF = UUID('55555555-5555-4555-8555-555555555555')
+REVIEWER = UUID('66666666-6666-4666-8666-666666666666')
 SYSTEM = UUID('11111111-1111-4111-8111-111111111111')
 checks = 0
 
@@ -77,15 +78,18 @@ def acceptance():
     admin = SupabasePasswordAuth(url, admin_key, local_test=True)
     password = secrets.token_urlsafe(36)
     users = []
-    for email in ('identity-family@example.invalid', 'identity-staff@example.invalid'):
+    for email in ('identity-family@example.invalid', 'identity-staff@example.invalid',
+                  'identity-security@example.invalid'):
         users.append(UUID(admin._request('POST', '/admin/users', payload={
             'email': email, 'password': password, 'email_confirm': True},token=admin_key)['id']))
     # Auth admin create returns 200 in the pinned local Auth version.
     sql("INSERT INTO app_private.principals(id,kind,label,system_purpose,state,created_by) VALUES(%s,'SYSTEM','Synthetic identity reconciliation','identity-reconciliation','ACTIVE',%s)", (SYSTEM,SYSTEM))
     sql("INSERT INTO app_private.school_profiles(id,code,name,timezone,currency_code,locale,state,created_by) VALUES(%s,'IDENTITY-TEST','Synthetic school','UTC','USD','en','ACTIVE',%s)", (SCHOOL,SYSTEM))
     sql("INSERT INTO app_private.people(id,display_name,created_by) VALUES(%s,'Synthetic staff',%s)", (STAFF,SYSTEM))
+    sql("INSERT INTO app_private.people(id,display_name,created_by) VALUES(%s,'Synthetic independent reviewer',%s)", (REVIEWER,SYSTEM))
     sql("INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by) VALUES(%s,'FAMILY',NULL,'Family','ACTIVE',%s),(%s,'INDIVIDUAL',%s,'Staff','ACTIVE',%s)", (FAMILY,SYSTEM,STAFF,STAFF,SYSTEM))
-    for principal, kind, subject, alias in ((FAMILY,'FAMILY',users[0],'parent.one'),(STAFF,'INDIVIDUAL',users[1],'teacher.one')):
+    sql("INSERT INTO app_private.principals(id,kind,person_id,label,state,created_by) VALUES(%s,'INDIVIDUAL',%s,'Independent reviewer','ACTIVE',%s)",(REVIEWER,REVIEWER,SYSTEM))
+    for principal, kind, subject, alias in ((FAMILY,'FAMILY',users[0],'parent.one'),(STAFF,'INDIVIDUAL',users[1],'teacher.one'),(REVIEWER,'INDIVIDUAL',users[2],'security.one')):
         sql("INSERT INTO app_private.principal_auth_bindings(principal_id,principal_kind,auth_user_id,bound_at,tokens_valid_from,created_by) VALUES(%s,%s,%s,clock_timestamp(),to_timestamp(floor(extract(epoch FROM clock_timestamp()))-2),%s)", (principal,kind,subject,SYSTEM))
         sql("INSERT INTO app_private.login_aliases(principal_id,normalized_alias,state,created_by) VALUES(%s,%s,'ACTIVE',%s)", (principal,alias,SYSTEM))
     # Disposable deployment catalog: absent in the candidate and in every real school.
@@ -106,6 +110,23 @@ def acceptance():
       FROM app_private.principal_role_assignments a,app_private.role_permission_grants g,
            app_private.permission_scope_contracts c WHERE a.principal_id=%s AND g.role_id=%s
            AND c.permission_id=%s""",(role,perm,SYSTEM,STAFF,role,perm))
+    revoke_perm=sql("INSERT INTO app_private.permissions(code,state,created_by) VALUES('identity.credential.revoke','ENABLED',%s) RETURNING id",(SYSTEM,))[0][0]
+    sql("INSERT INTO app_private.operation_contracts(code,handler_key,request_permission_id,enabled,created_by) VALUES('identity.credential.revoke','SECTION02_REVOKE_V1',%s,true,%s)",(revoke_perm,SYSTEM))
+    sql("INSERT INTO app_private.permission_scope_contracts(permission_id,scope_kind,resolver_key,enabled,created_by) VALUES(%s,'ALL','DIRECT',true,%s)",(revoke_perm,SYSTEM))
+    sql("INSERT INTO app_private.role_permission_grants(role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by) VALUES(%s,false,%s,false,clock_timestamp()-interval '1 minute',%s)",(role,revoke_perm,SYSTEM))
+    sql("INSERT INTO app_private.principal_role_assignments(principal_id,principal_kind,role_id,role_family_only,context_kind,valid_from,created_by) VALUES(%s,'INDIVIDUAL',%s,false,'INDIVIDUAL',clock_timestamp()-interval '1 minute',%s)",(REVIEWER,role,SYSTEM))
+    sql("""INSERT INTO app_private.assignment_permission_scopes
+      (assignment_id,grant_id,role_id,permission_id,scope_contract_id,scope_kind,resolver_key,valid_from,created_by)
+      SELECT a.id,g.id,%s,%s,c.id,'ALL','DIRECT',clock_timestamp()-interval '1 minute',%s
+      FROM app_private.principal_role_assignments a,app_private.role_permission_grants g,
+           app_private.permission_scope_contracts c WHERE a.principal_id=%s AND g.role_id=%s
+           AND g.permission_id=%s AND c.permission_id=%s""",(role,revoke_perm,SYSTEM,REVIEWER,role,revoke_perm,revoke_perm))
+    sql("""INSERT INTO app_private.assignment_permission_scopes
+      (assignment_id,grant_id,role_id,permission_id,scope_contract_id,scope_kind,resolver_key,valid_from,created_by)
+      SELECT a.id,g.id,%s,%s,c.id,'ALL','DIRECT',clock_timestamp()-interval '1 minute',%s
+      FROM app_private.principal_role_assignments a,app_private.role_permission_grants g,
+           app_private.permission_scope_contracts c WHERE a.principal_id=%s AND g.role_id=%s
+           AND g.permission_id=%s AND c.permission_id=%s""",(role,revoke_perm,SYSTEM,STAFF,role,revoke_perm,revoke_perm))
     store = PostgresLoginStore(lambda: connection('schoolos_identity_login'))
     auth = SupabasePasswordAuth(url, anon_key, admin_key=admin_key, local_test=True)
     login = SchoolLogin(SCHOOL, store, auth, secrets.token_bytes(32))
@@ -171,6 +192,13 @@ def acceptance():
             q.execute('SET LOCAL ROLE authenticated')
             q.execute('SELECT app.section02_suspend_credential(%s,%s,%s,%s)',(target,expected,reason,key))
             return q.fetchone()[0]
+    def revoke(subject,receipt,target=FAMILY,expected=1,key='revoke-1',reason='Confirmed account compromise'):
+        with connection() as c,c.cursor() as q:
+            q.execute("SELECT set_config('request.jwt.claim.sub',%s,true)",(str(subject),))
+            q.execute("SELECT set_config('request.jwt.claims',jsonb_build_object('sub',%s::text,'role','authenticated','is_anonymous',false,'iat',floor(extract(epoch FROM clock_timestamp()))::bigint)::text,true)",(str(subject),))
+            q.execute('SET LOCAL ROLE authenticated')
+            q.execute('SELECT app.section02_revoke_credential(%s,%s,%s,%s,%s)',(target,expected,receipt,reason,key))
+            return q.fetchone()[0]
     def rejected(callback,label):
         try: callback()
         except psycopg.Error: check(True,label)
@@ -190,6 +218,7 @@ def acceptance():
     sql("UPDATE app_private.permissions SET state='DISABLED' WHERE id=%s",(perm,))
     rejected(lambda:suspend(users[1],expected=family_version,key='disabled-grant'),'disabled_permission_denied')
     sql("UPDATE app_private.permissions SET state='ENABLED' WHERE id=%s",(perm,))
+    rejected(lambda:revoke(users[2],UUID('77777777-7777-4777-8777-777777777777'),expected=family_version,key='before-suspend'),'revoke_requires_suspension')
     receipt=suspend(users[1],expected=family_version)
     check(receipt==suspend(users[1],expected=family_version),'suspend_idempotent_replay')
     check(sql("SELECT state FROM app_private.principals WHERE id=%s",(FAMILY,))[0][0]=='SUSPENDED','protected_suspension_live')
@@ -198,9 +227,25 @@ def acceptance():
     check(sql('SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=%s',(receipt,))[0][0]==1,'suspend_one_outbox')
     rejected(lambda:suspend(users[1],expected=family_version,key='suspend-1',reason='Different reason'),'changed_intent_denied')
     rejected(lambda:suspend(users[1],expected=family_version,key='second-key'),'repeat_effect_denied')
+    check(sql("SELECT has_function_privilege('anon','app.section02_revoke_credential(uuid,bigint,uuid,text,text)','EXECUTE')")[0][0] is False,'anonymous_cannot_revoke')
+    check(sql("SELECT has_function_privilege('authenticated','app_private.section02_revocation_evidence(uuid,uuid,uuid,bigint,text,text,bytea,uuid,uuid,uuid,bigint)','EXECUTE')")[0][0] is False,'client_cannot_write_revocation_evidence')
+    rejected(lambda:revoke(users[1],receipt,expected=family_version+1,key='same-actor'),'suspender_cannot_revoke')
+    rejected(lambda:revoke(users[0],receipt,expected=family_version+1,key='family-revoker'),'family_cannot_revoke')
+    rejected(lambda:revoke(users[2],receipt,expected=family_version,key='stale-revoke'),'revoke_stale_version_denied')
+    old_cutoff=sql('SELECT tokens_valid_from,binding_version FROM app_private.principal_auth_bindings WHERE principal_id=%s',(FAMILY,))[0]
+    revoked=revoke(users[2],receipt,expected=family_version+1)
+    check(revoked==revoke(users[2],receipt,expected=family_version+1),'revoke_idempotent_replay')
+    check(sql('SELECT auth_user_id IS NULL,binding_version,tokens_valid_from FROM app_private.principal_auth_bindings WHERE principal_id=%s',(FAMILY,))[0][0] is True,'revoke_unbinds')
+    new_binding=sql('SELECT binding_version,tokens_valid_from FROM app_private.principal_auth_bindings WHERE principal_id=%s',(FAMILY,))[0]
+    check(new_binding[0]==old_cutoff[1]+1 and new_binding[1]>old_cutoff[0],'revoke_cutoff_advances')
+    check(sql("SELECT state FROM app_private.login_aliases WHERE principal_id=%s",(FAMILY,))[0][0]=='RETIRED','revoke_retires_alias')
+    check(sql('SELECT count(*) FROM app_private.principal_binding_events WHERE principal_id=%s AND event_kind=%s',(FAMILY,'UNBOUND'))[0][0]==1,'revoke_preserves_unbound_history')
+    check(sql('SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=%s',(revoked,))[0][0]==1,'revoke_one_audit')
+    check(sql('SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=%s',(revoked,))[0][0]==1,'revoke_one_outbox')
+    rejected(lambda:revoke(users[2],receipt,expected=family_version+1,reason='Different revocation reason'),'revoke_changed_intent_denied')
+    rejected(lambda:revoke(users[2],receipt,expected=family_version+1,key='second-revoke'),'revoke_repeat_effect_denied')
     sql("UPDATE app_private.principals SET state='ACTIVE' WHERE id=%s",(FAMILY,))
-    sql("UPDATE app_private.principal_auth_bindings SET auth_user_id=NULL WHERE principal_id=%s",(FAMILY,))
-    denied(lambda:sign(),'unbound_credential')
+    denied(lambda:sign('identity-family@example.invalid'),'unbound_credential')
     check(sql('SELECT count(*) FROM app_private.principal_binding_events WHERE principal_id=%s',(FAMILY,))[0][0] == 2,'binding_history_retained')
     # No alias lookup, throttle manipulation or private mapping reads by clients.
     for role in ('authenticated','anon','service_role'):
@@ -271,6 +316,17 @@ def _main():
         if probe.strip()!='0':raise RuntimeError('CREDENTIAL_ROLLBACK_LEAK')
         stage='credential_candidate_install'
         run_psql(container,'BEGIN;\n'+lifecycle+'\nCOMMIT;','SECTION02_CREDENTIAL_INSTALL')
+        stage='revocation_failed_install_rollback'
+        revocation=(ROOT/'supabase/proposals/section02_credential_revoke.sql.draft').read_text()
+        try:
+            run_psql(container,'BEGIN;\n'+revocation+'\nSELECT 1/0; COMMIT;','SECTION02_REVOKE_ROLLBACK')
+        except RuntimeError:
+            pass
+        else:raise RuntimeError('REVOKE_INJECTED_FAILURE_MISSING')
+        probe=run_psql(container,"SELECT count(*) FROM pg_proc WHERE proname='section02_revoke_credential';",'SECTION02_REVOKE_PROBE',tuples=True)
+        if probe.strip()!='0':raise RuntimeError('REVOKE_ROLLBACK_LEAK')
+        stage='revocation_candidate_install'
+        run_psql(container,'BEGIN;\n'+revocation+'\nCOMMIT;','SECTION02_REVOKE_INSTALL')
         stage='post_extension_foundation_regression'
         fixture_url, fixture_key=local_status()
         ensure_local_auth_route(fixture_url)
@@ -295,7 +351,9 @@ def _main():
             print('SECTION02_PRIVILEGE_OBJECT '+str(error.diag.message_primary),file=sys.stderr)
         if str(error).startswith('IDENTITY_'):
             print(str(error),file=sys.stderr)
-        if stage in ('candidate_install','failed_install_rollback','credential_candidate_install','credential_failed_install_rollback'):
+        if stage in ('candidate_install','failed_install_rollback','credential_candidate_install',
+                     'credential_failed_install_rollback','revocation_candidate_install',
+                     'revocation_failed_install_rollback'):
             # This stage executes static source only, never secret parameters.
             print(str(error)[-2000:],file=sys.stderr)
         if started:
