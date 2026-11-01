@@ -4,7 +4,7 @@ Status: **BLOCKED BY CROSS-PACKAGE DEPENDENCY**, not a runnable D1 mutation (202
 
 ## Frozen non-negotiable transaction
 
-1. A trusted Admissions domain, **not a Flutter/client boolean, arbitrary JSON or admin override**, issues a server-verifiable final **unused** handoff for an accepted application, exact resolved Person/identity, approved year/campus/class/section placement and required fee/stage/approval state.
+1. A trusted Admissions domain, **not a Flutter/client boolean, arbitrary JSON or admin override**, issues a server-verifiable final **unused** handoff for an accepted application, exact resolved Person/identity, approved year/campus/class/section placement, required document/stage outcome state, an explicit current admission-fee disposition, and Principal approval. Admission fee UNPAID is not equivalent to failed Finance clearance (see 2026-11-01 owner decision below).
 2. Current authenticated staff actor must have BOTH `student.create` and `student.enrollment.place` permission/scope for the target destination; no Family role or job title shortcut. Handoff and identity/placement ancestry must be locked and **revalidated** after lock waits.
 3. In one protected transaction allocate permanent `school_student_id` from D1 server logic, create the Student/Person relation and Admissions identifiers, append initial status/projection, create PRIMARY enrollment with exact Class/Section capacity rules, allocate correct roll and mark the handoff consumed exactly once.
 4. Store accepted typed command receipt, minimal `student.created` audit/outbox; no sensitive applicant identity/contact/document/payment payload in broad evidence. Failure rolls back every Student, status, placement, roll, numbering, handoff and evidence effect.
@@ -20,7 +20,7 @@ The [Admissions intake physical design #79](79_admissions_student_intake_physica
 |---|---|---|
 | SC-01 | Approved final Admissions policy/stages and identity-resolution source | Authoritative table/command/contract version, verified Person binding, unexpired exact outcome; no client flags |
 | SC-02 | Final handoff issuance and consumption | Durable READY/CONSUMED/INVALIDATED state machine, unique single-consumption and actor/receipt binding with real database constraints |
-| SC-03 | Correct fee clearance/approval and version snapshots | Finance-owned current clearance and configured reviewer evidence cannot be forged by admin override |
+| SC-03 | Current administrator admission-fee disposition and version snapshots | Require receipt-backed SKIPPED, MARKED_PAID or UNPAID from the current application. UNPAID may be approved by the Principal; MARKED_PAID is only an administrative declaration, never a bank-confirmed payment or Finance settlement. Any separate configured Finance charge/clearance requirement must be implemented as its own independently verified source, not inferred from this status. |
 | SC-04 | Atomic destination and Student numbering handoff | Effective Academic Year/Campus/Class/Section with current capacity and approved roll policy; D1 school Student ID allocator serializes correctly |
 | SC-05 | Typed D1 P0 command and result | Verified handoff ID, expected versions, idempotency key, server-validated placement, typed result/receipt with no sensitive broad payload |
 | SC-06 | Cross-package lock order and race outcomes | Competing intake, handoff invalidation, payment reversal, Student creation replay, School permissions revoke races have explicit serialization/invalidation rules |
@@ -29,8 +29,21 @@ The [Admissions intake physical design #79](79_admissions_student_intake_physica
 ## Mandatory tests after Admissions is approved and implemented
 
 - Successful authenticated accepted Admissions-to-Student handoff builds Student core, first status, initial PRIMARY placement and roll, consumes handoff, allocates permanent Student ID and emits exactly one `student.created` event/receipt.
-- Deny draft/rejected/withdrawn/used/invalidated handoff, incomplete stage, wrong Person/year/section, stale identity, missing Finance clearance, wrong campus/permission, disabled policy, capacity full and duplicate competing intake key, all with zero partial effects.
+- Deny draft/rejected/withdrawn/used/invalidated handoff, incomplete stage, wrong Person/year/section, stale identity, missing or stale admission-fee disposition, invalid status, wrong campus/permission, disabled policy, capacity full and duplicate competing intake key, all with zero partial effects.
 - Independent two-session verified Student creation/creation and creation/Admissions invalidation races plus receipt terminal replay, exact blocking evidence, crash/retry and no double consumption.
 - The physical Admissions proposal must pass its own Foundation/RLS/role tests and receive separate approval; it cannot be smuggled into inactive D1 migration as a fabricated test fixture.
+
+
+## 2026-11-01 owner decision superseding the old blanket Finance prerequisite
+
+The owner's later Admissions decision and inactive PRs #199, #202 and #203 supersede any interpretation of SC-03 that **always** requires a settled admission fee before the Principal may approve. An administrator maintains an incomplete DRAFT; Forward becomes eligible only after the required birth and previous-school leaving certificates, current grade destination and explicit fee disposition exist. The Principal alone gives final approval. The possible admission-fee dispositions are:
+
+- `SKIPPED`: the school waived the admission-fee collection step for this application; this does not change future tuition.
+- `MARKED_PAID`: staff recorded a declaration. It is not a verified bank transfer, official payment, invoice, allocation or Finance clearance.
+- `UNPAID`: an outstanding obligation may remain, but this is **not by itself** a blocker to Forward or Principal approval.
+
+The future final Student-create command must lock and revalidate the **current exact declaration/receipt/application revision**, rather than relying on a client boolean. It must not silently generate a Finance payment or clear debt. Existing independent Finance scholarship review, monthly pricing, bank-slip review and invoice issuance remain distinct workflows. All original documentary evidence must retain private file identity and lineage on the subsequent Student link.
+
+The proposed atomic creation still needs the real final Principal approval source and correct DB01/DB02 School-policy/roll locks; #203 is Forward readiness only, and is **not** an accepted single-consumption final handoff. SC-01, SC-02 and SC-04–07 therefore remain open. This refinement is a source-contract reconciliation, not operation activation or a passing runtime business test.
 
 **Decision gate:** SC-01…SC-07 depend on a separately frozen, installed and accepted Admissions package. Until then `student.create` remains intentionally disabled, with **no** plausible authorized success path. Do not count a denial-only placeholder as completed.
