@@ -24,6 +24,10 @@ DOMAIN_TESTS.extend([["75_db01_allocator_retained_history.sql",12],
                      ["87_db01_direct_atomic_success_evidence.sql",23],
                      ["88_db01_roll_correct_direct_authenticated.sql",48],["89_db01_roll_correct_p1_approval_submit.sql",33],["90_db01_roll_correct_p1_review.sql",41],["91_db01_roll_correct_p1_live_multistep.sql",43],["92_db01_roll_correct_p1_apply.sql",117]])
 
+# DB01-DB02 R10-01: retained historical Roll versus private policy cutover (23 assertions).
+# Keep suite #94 scoped to owner db01; it coexists with 94_db02 by full filename.
+DOMAIN_TESTS.append(["94_db01_db02_retired_policy_cutover.sql",23])
+
 # DB01↔DB02 integration: preserve DB-02 independent School policy fixtures
 # by full filename, including its distinct "92_db02" suite beside "92_db01".
 DOMAIN_TESTS.extend([

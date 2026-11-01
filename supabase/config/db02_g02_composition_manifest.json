@@ -382,6 +382,10 @@
       117
     ],
     [
+      "94_db01_db02_retired_policy_cutover.sql",
+      23
+    ],
+    [
       "82_db02_school_reviewer_candidates.sql",
       10
     ],
@@ -462,7 +466,7 @@
       12
     ]
   ],
-  "business_assertions": 4292,
+  "business_assertions": 4315,
   "runtime_metrics": {
     "postgres_major": 17,
     "d1_tables": 34,
