@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ from _process import run
 from foundation_local_ci import ensure_local_auth_route
 from prepare_local_auth_fixtures import local_status, prepare
 from foundation_guard import load_contract
-from domain_local_ci import EXPECTED_PROJECT_ID, run_psql, run_foundation_regression
+from domain_local_ci import EXPECTED_PROJECT_ID, run_psql, run_foundation_regression, local_postgres_image_pin
 
 SCHOOL = UUID('22222222-2222-4222-8222-222222222222')
 FAMILY = UUID('44444444-4444-4444-8444-444444444444')
@@ -184,7 +185,7 @@ def acceptance():
     print('SECTION02_IDENTITY_LOGIN_PASS '+str(checks)+' real Auth/PostgreSQL assertions; no hosted access')
 
 
-def main():
+def _main():
     started=False
     stage='start'
     try:
@@ -221,6 +222,7 @@ def main():
         # The fixture contains transient passwords/keys. Never dump locals,
         # HTTP errors, SQL parameters, driver connection details or traceback.
         print('SECTION02_IDENTITY_LOGIN_FAIL stage='+stage+' checks='+str(checks)
+              +' error_class='+type(error).__name__
               +' sqlstate='+str(getattr(error,'sqlstate',None))
               +' constraint='+str(getattr(getattr(error,'diag',None),'constraint_name',None)),file=sys.stderr)
         if str(error).startswith('IDENTITY_'):
@@ -228,9 +230,24 @@ def main():
         if stage in ('candidate_install','failed_install_rollback'):
             # This stage executes static source only, never secret parameters.
             print(str(error)[-2000:],file=sys.stderr)
+        if started:
+            # Log engine failure categories only, never SQL/credentials/requests.
+            result=subprocess.run(['docker','logs','--tail','120','supabase_db_'+EXPECTED_PROJECT_ID],
+                cwd=ROOT,text=True,capture_output=True,timeout=20)
+            for line in (result.stdout+'\n'+result.stderr).splitlines():
+                if any(marker in line.lower() for marker in
+                       ('terminated by signal','segmentation fault','panic:', 'reinitializing')):
+                    print('SECTION02_DB_ENGINE_DIAGNOSTIC '+line,file=sys.stderr)
         return 1
     finally:
         if started:run(['supabase','stop','--project-id',EXPECTED_PROJECT_ID],cwd=ROOT,timeout=300)
+
+
+def main():
+    # Use the same reviewed disposable PostgreSQL image as D1 acceptance.
+    # Restore any prior CLI cache bytes on success or failure.
+    with local_postgres_image_pin():
+        return _main()
 
 
 if __name__=='__main__':sys.exit(main())
