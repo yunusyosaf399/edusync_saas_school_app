@@ -108,6 +108,16 @@ class Section03CrossDomainContractTests(unittest.TestCase):
         self.assertIn("fail-closed probes created no Student core rows", source)
         self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
 
+    def test_admissions_fee_disposition_does_not_forge_finance_clearance(self):
+        contract = (ROOT / "docs" / "database" /
+                    "155_d1_student_create_admissions_handoff_contract_readiness.md").read_text(
+                        encoding="utf-8")
+        for value in ("SKIPPED", "MARKED_PAID", "UNPAID", "Principal"):
+            self.assertIn(value, contract)
+        self.assertIn("not a verified bank transfer", contract)
+        self.assertIn("single-consumption final handoff", contract)
+        self.assertIn("not operation activation", contract)
+
     def test_exact_g02_suite_registry_is_not_silently_redefined(self):
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         suites = manifest["business_suites"]
