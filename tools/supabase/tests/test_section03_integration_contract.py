@@ -72,6 +72,14 @@ class Section03CrossDomainContractTests(unittest.TestCase):
         self.assertIn("one retained roll allocation with exact first number, no replay duplicate", source)
         self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
 
+    def test_section_move_preserves_exact_persistent_roll_number(self):
+        source = sql_test("63_student_enrollment_move_p1_direct_section_history.sql")
+        self.assertIn("student.enrollment.move", source)
+        self.assertIn("origin_allocation_id", source)
+        self.assertIn("both retained Roll records keep the identical original persistent number", source)
+        self.assertIn("numeric_value=(SELECT numeric_value", source)
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+
     def test_family_portal_checks_current_child_entitlement(self):
         sources = {
             "28_family_portal_student_roster_profile_disclosure.sql": (
