@@ -522,6 +522,24 @@ def validate_fee_disposition() -> tuple[str, str]:
     return sql,test
 
 
+def validate_forward_readiness() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/26_01_admission_forward_readiness.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/26_admission_forward_readiness.sql').read_text()
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != ['db03_forward_details_current']:
+        raise RuntimeError('DB03_FORWARD_HELPER_SCOPE')
+    if re.findall(r'(?m)^CREATE OR REPLACE FUNCTION app\.([a-z0-9_]+)', sql) != [
+            'forward_admission_to_principal','read_admission_document_queue','list_admission_principal_queue']:
+        raise RuntimeError('DB03_FORWARD_COMMAND_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|CREATE TABLE|CREATE ROLE|ALTER ROLE)\b', outside):
+        raise RuntimeError('DB03_FORWARD_NO_NEW_SOURCE')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['12'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 12 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_FORWARD_TEST_PLAN')
+    print('DB03_FORWARD_READINESS_SOURCE_PASS assertions=12 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -553,6 +571,7 @@ def main() -> int:
     assessment_command_sql, assessment_command_test = validate_assessment_command()
     stage_outcome_sql, stage_outcome_test = validate_assessment_stage_outcome_source()
     fee_disposition_sql, fee_disposition_test = validate_fee_disposition()
+    forward_readiness_sql, forward_readiness_test = validate_forward_readiness()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1177,6 +1196,25 @@ def main() -> int:
             output=local.run_psql(container,fee_disposition_test,'DB03_FEE_DISPOSITION_TEST')
             parse_tap(output,12)
             print('DB03_FEE_DISPOSITION_DATABASE_PASS 12/12; no_payment_or_clearance=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+forward_readiness_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_FORWARD_READINESS_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_FORWARD_READINESS_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_FORWARD_READINESS_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_FORWARD_READINESS_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_forward_details_current';",
+                'DB03_FORWARD_READINESS_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_FORWARD_READINESS_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+forward_readiness_sql+'\nCOMMIT;',
+                           'DB03_FORWARD_READINESS_INSTALL')
+            output=local.run_psql(container,forward_readiness_test,'DB03_FORWARD_READINESS_TEST')
+            parse_tap(output,12)
+            print('DB03_FORWARD_READINESS_DATABASE_PASS 12/12; Principal_decision_unavailable=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
