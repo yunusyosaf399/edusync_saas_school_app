@@ -1,8 +1,8 @@
 # Section 01 - Architecture, decisions and requirements
 
-Version 1.0, 1 November 2026. Source backlog: *EduSync / Ilmora Complete Database Backlog & Remaining Tasks*, detailed checklist 01, DB-001 through DB-011 (page 4). This is the detailed workstream, not the report's introductory executive-status section.
+Version 1.1, 1 November 2026. Source backlog: *EduSync / Ilmora Complete Database Backlog & Remaining Tasks*, detailed checklist 01, DB-001 through DB-011 (page 4). This is the detailed workstream, not the report's introductory executive-status section.
 
-**Progress: 7 of 11 architecture tasks verified/documented; 4 remain open. Section 01 is not complete. Section 02 has not started under this assignment.** Counts describe this architecture checklist, not database implementation, merge or deployment completion. Existing accepted decisions are consolidated; none is newly approved by this report.
+**Progress: 11 of 11 Section 01 architecture decisions and inventories closed under the owner-selected architecture gate. Database implementation and release acceptance remain open in their owning later sections.** This scope decision and the admission identity rules are recorded in [ADR-007](../decisions/ADR-007-section01-architecture-gate-and-admissions-identity.md). Counts describe architecture preparation, not database implementation, merge or deployment.
 
 Baseline inspected: main `df1c98d5c2d19424946986fc6ba7615202b0a443`. The [branch snapshot](section01_branch_snapshot_20261101.json) pins all 78 open PRs returned by the API (one page, limit 100). A PR head records source identity, not passing tests, approval, merge compatibility or hosted state. Recheck it before integration.
 
@@ -13,16 +13,16 @@ Baseline inspected: main `df1c98d5c2d19424946986fc6ba7615202b0a443`. The [branch
 | DB-001 One customer school per project | VERIFIED / DOCUMENTED | AGENTS.md SaaS model; master specification sections 3 and 6; boundary below. Campus is not a customer tenant. |
 | DB-002 Separate control plane | VERIFIED / DOCUMENTED | Master sections 3-4; approved invariants; control plane holds routing/subscription/deployment/version facts only. |
 | DB-003 Global and campus/assignment/child scope | VERIFIED / DOCUMENTED | Scope matrix below; existing security resolver and permission catalogs. Role name alone never grants global scope. |
-| DB-004 Feature-to-requirement/package/migration/test trace | IN PROGRESS | [Feature trace](section01_feature_trace_20261101.csv) inventories every current catalog row. Unimplemented migration/test links stay explicitly MISSING. Close only when exact per-feature artifacts and acceptance evidence exist. |
+| DB-004 Feature trace | CLOSED - ARCHITECTURE GATE | [Feature trace](section01_feature_trace_20261101.csv) maps all 76 catalog rows to requirement sections, package, candidate migration/test provenance or explicit missing release evidence. Per-feature executable acceptance remains in owning modules and the final database gate (ADR-007). |
 | DB-005 Preserve years, progression and profile history | VERIFIED / DOCUMENTED | Master sections 9-13; approved invariants; authoritative history contract below. Implementation acceptance remains with each owning package. |
 | DB-006 Configurable currency/timezone/calendar/levels | VERIFIED / DOCUMENTED | Master sections 7-9; Foundation school_profiles currency_code/timezone; D1 academic catalogs. Contract below records configurability without inventing customer values or an implemented term calendar. |
-| DB-007 Remaining owner decisions | OPEN | CUR-07 product options remain unapproved; physical/consumer and activation choices remain visible in the decision register below. Existing admissions and finance instructions take precedence over old generic stages. |
-| DB-008 Final ERDs/catalogs/lifecycles/dependencies | IN PROGRESS | Versioned artifact register below identifies Foundation/D1 catalogs and proposed later designs. No final whole-school ERD or accepted cross-domain lifecycle exists yet. |
-| DB-009 Parallel draft reconciliation | IN PROGRESS | Exact branch inventory and conflict evidence below; DB01/02 composition exists only in drafts. DB03/DB04/Finance are not one accepted source. No merge performed. |
+| DB-007 Owner product direction | CLOSED - ARCHITECTURE GATE | ADR-007 records owner selection of recommended CUR-07 A1-G1 and admission identity/application invariants. Exact consumer checkpoints, identity claim shape and technical activation remain in DB03/DB04 and consumer packages. |
+| DB-008 Architecture artifact inventory | CLOSED - ARCHITECTURE GATE | Versioned catalog/ERD/lifecycle/dependency inventory and package order below; final physical artifacts remain a release gate for their owning modules under ADR-007. |
+| DB-009 Source comparison | CLOSED - ARCHITECTURE GATE | 78 pinned open PR heads and 21 pairwise current-tip comparisons with differing paths. Actual branch composition and exact-source integration tests remain separate implementation gates under ADR-007. |
 | DB-010 Receipt-only boundary | VERIFIED / DOCUMENTED | Owner's 1 November instruction, PR #195 scope and #196 byte validation. Private upload and manual review; PR #190 bank signing and purchase/gateway integration deferred. |
 | DB-011 Module class and release responsibility | VERIFIED / DOCUMENTED | Feature trace classifies CORE, OPTIONAL or FUTURE DATA DESIGN. Product/release decision owner: Younas Khan (`yunusyosaf399`); package/domain responsibility is separate from approval evidence. |
 
-VERIFIED / DOCUMENTED here closes a requirement-definition task using existing authority. It does not mean the related operational database feature is deployed or fully tested.
+CLOSED - ARCHITECTURE GATE closes design inventory/decision work as approved in ADR-007. VERIFIED / DOCUMENTED closes a requirement-definition task using existing authority. It does not mean the related operational database feature is deployed or fully tested.
 
 ## 2. School and control-plane boundary (DB-001/002)
 
@@ -77,7 +77,7 @@ Later explicit owner decisions narrow the original v0.2 generic optional-admissi
 | Scholarship | Fixed amount or percentage for selected applicant/student and selected categories; monthly/time-limited rules and two decimals | Final approved scholarship-to-Student handoff and assessed charge acceptance still open. |
 | CUR-01 through CUR-06 | PR #103 includes actual recorded product approvals, including CUR-01 timing and CUR-03 BF-1/B-M1 | Do not ask the owner to approve these again. Physical SQL, registered permissions and consumer acceptance remain separate. |
 | CUR-08 | P01A/P02A whole-revision accepted generation and unique effective head approved | P03-P08 physical constraints, lock/ACL/install and consumer proof remain open. |
-| CUR-07 | A1-G1 are prepared, NOT approved | Owner choice remains: trusted eligibility resolver, early Exam snapshot, fixed published homework audience, Section-only timetable, retained old snapshots, purpose-scoped access, fail-closed unsafe new use. Exact checkpoints and cross-domain contracts also remain open. |
+| CUR-07 | Owner selected recommended A1-G1 product direction in ADR-007 | Trusted eligibility source, prepublication Exam basis, fixed published homework audience, Section-only timetable, retained old snapshots, purpose-scoped access and fail-closed new use. Exact checkpoints, signatures and consumer tests remain open. |
 | DB02 development review | PR #170 ADR-006 records solo-maintainer policy and owner acceptance of PR #168 at f472f2ab | Do not call it independent review or reopen G03 for another contributor. It does not approve other domains, merge or hosted activation. |
 | Storage | Private school storage for current bank-slip evidence; existing server validation, entitlement and domain controls retained | No new bank-signature/cryptography, wallet/gateway intake or purchase linkage. Existing stored-byte SHA checks describe file integrity, not bank authentication. Provider activation/retention choices still need evidence. |
 
@@ -116,17 +116,17 @@ Before DB-009 closes, choose exact accepted per-domain sources, compose on a sep
 
 Example: merging #196 would validate stored bytes in its candidate service but would not import #195's policy document, #194's assessment source or #168's DB02 composition. Every required slice must be deliberately assembled and retested.
 
-## 8. Release ownership and exit conditions (DB-011)
+## 8. Release ownership and transferred implementation gates (DB-011)
 
 The [feature trace](section01_feature_trace_20261101.csv) gives every current catalog row a classification, requirement sections, responsible package, release decision owner and current migration/test evidence. Optional modules still require database coverage before the final database gate when applicable; FUTURE DATA DESIGN does not authorize implementing hardware/vendors. Cross-cutting engines are CORE. Android/Windows/Web implementation remains after database acceptance.
 
 Younas Khan (`yunusyosaf399`) is the product/release decision owner. Domain owner labels indicate engineering responsibility, not a second named approver, a signature or production access. The assistant prepares source and verification; it does not fabricate product choices, independent approval or deployment authorization.
 
-To complete Section 01:
+Transferred implementation gates under ADR-007:
 
-1. DB-007: obtain remaining actual product decisions, starting with CUR-07; settle affected technical contracts and record explicit deferrals only where authorized.
-2. DB-009: complete the accepted source composition, with exact tests and no deferred #190 activation.
-3. DB-008: freeze final affected catalogs, ERDs, lifecycles and dependency contracts against that source.
-4. DB-004: replace every applicable MISSING migration/test entry with accepted exact artifacts/evidence, or record an explicitly accepted phase deferral. The feature CSV is a starting inventory, not proof that every feature is implemented.
+1. DB03/D1: implement and prove one open application per applicant, exact identity resolution before and after verified Person binding, one immutable Student/Student ID/admission number after Principal approval, and one effective roll per active placement.
+2. DB04/Exams/Learning/Timetable: implement selected CUR-07 A1-G1, settle exact consumer checkpoints and signatures, and run negative and concurrency tests.
+3. DB01/DB02/Admissions/Finance: compose selected draft sources, exclude deferred #190, run exact-source release tests, fresh install and populated upgrade.
+4. Every module: replace MISSING feature migration/test evidence, freeze final physical ERDs/catalogs/lifecycles and pass the whole database release gate.
 
-Stop at Section 01 until those tasks close. A new update must state task counts, changes, a plain-language example and remaining blockers; never report an implementation percentage derived from document counts.
+Section 01 architecture is closed. Section 02 and later implementation work remains independently tracked. Every progress report should state design completion separately from implementation completion and give a plain-language example.

@@ -17,7 +17,9 @@ The original Markdown specification under `reference/` retains the earlier secti
 
 ## Documentation
 
-- [Section 01 architecture progress and acceptance ledger](../database/SECTION_01_ARCHITECTURE_PROGRESS.md) - 1 November 2026: 7/11 architecture requirements documented, 4 open; exact branch inventory, current decision corrections and feature trace. This is not a merged database release.
+- [ADR-007 Section 01 architecture gate and admission identity](../decisions/ADR-007-section01-architecture-gate-and-admissions-identity.md) - owner-selected design boundary; one active application per applicant and separate permanent/placement identifiers.
+
+- [Section 01 architecture progress and acceptance ledger](../database/SECTION_01_ARCHITECTURE_PROGRESS.md) - 1 November 2026: 11/11 architecture gate closed under ADR-007; implementation gates transferred; exact branch inventory, current decision corrections and feature trace. This is not a merged database release.
 - [docs/architecture/FUTURE_ARCHITECTURE_ROADMAP.md](../../docs/architecture/FUTURE_ARCHITECTURE_ROADMAP.md)
 - [docs/architecture/REPOSITORY_STRUCTURE.md](../../docs/architecture/REPOSITORY_STRUCTURE.md)
 - [docs/database/DATABASE_DESIGN_NEXT_PHASE.md](../../docs/database/DATABASE_DESIGN_NEXT_PHASE.md)
