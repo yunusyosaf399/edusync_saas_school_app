@@ -39,7 +39,7 @@ def run_identity_races(local, fresh_database, fixture):
         else:
             raise RuntimeError('DB03_IDENTITY_EXPECTED_DENIAL_ABSENT')
 
-    for case in ('same_key', 'competing_attestations', 'person_edit_first', 'attest_first_person_edit', 'revocation_first', 'principal_assignment_revoke_first', 'principal_role_retire_first'):
+    for case in ('same_key', 'competing_attestations', 'competing_applications', 'person_edit_first', 'attest_first_person_edit', 'revocation_first', 'principal_assignment_revoke_first', 'principal_role_retire_first'):
         # Each race starts without an earlier open application for this Person.
         fresh_database()
         local.run_psql('supabase_db_' + local.EXPECTED_PROJECT_ID,
@@ -72,18 +72,25 @@ def run_identity_races(local, fresh_database, fixture):
                 expected = (1, 1, 0)
             else:
                 actor(a)
+                if case == 'competing_applications':
+                    actor(b)
+                    second = b.execute("SELECT application_id FROM app.create_admission_draft('91919191-9191-4191-8191-919191919191','93939393-9393-4393-8393-939393939393',%s)", ('create-second-' + case,)).fetchone()[0]
+                    b.execute('COMMIT')
+                    actor(b)
                 result = a.execute(CALL, (application, PERSON, version, case + '-a')).fetchone()
                 if case == 'attest_first_person_edit':
                     b.execute('BEGIN')
                     b.execute('SET LOCAL ROLE schoolos_schema_owner')
                     future = pool.submit(b.execute, 'UPDATE app_private.people SET display_name=%s WHERE id=%s', ('Synthetic changed after inspection', PERSON))
                 else:
-                    actor(b)
-                    future = pool.submit(lambda: b.execute(CALL, (application, PERSON, version, case + ('-a' if case == 'same_key' else '-b'))).fetchone())
+                    if case != 'competing_applications':
+                        actor(b)
+                    target = second if case == 'competing_applications' else application
+                    future = pool.submit(lambda: b.execute(CALL, (target, PERSON, version, case + ('-a' if case == 'same_key' else '-b'))).fetchone())
                 blocked(control, b, a)
                 a.execute('COMMIT')
-                if case == 'competing_attestations':
-                    denied(future, 'draft version stale or withdrawn')
+                if case in ('competing_attestations', 'competing_applications'):
+                    denied(future, 'binding unavailable' if case == 'competing_applications' else 'draft version stale or withdrawn')
                     b.execute('ROLLBACK')
                 else:
                     replay = future.result(timeout=15)
@@ -99,10 +106,14 @@ def run_identity_races(local, fresh_database, fixture):
             receipts = control.execute("SELECT count(*) FROM app_private.command_receipts WHERE result_ref=%s AND command_kind='admission.identity.attest'", (application,)).fetchone()[0]
             if actual != expected or receipts != expected[2]:
                 raise RuntimeError('DB03_IDENTITY_DURABLE_RACE_RESULT')
+            if case == 'competing_applications':
+                other = control.execute('SELECT person_id,row_version FROM app_private.admission_applications WHERE id=%s', (second,)).fetchone()
+                if other != (None, 1):
+                    raise RuntimeError('DB03_IDENTITY_SECOND_APPLICATION_MUTATED')
             print('DB03_IDENTITY_RACE_PASS ' + case + ' observed_block=true exact_effect=true')
         finally:
             a.close()
             b.close()
             control.close()
             pool.shutdown(wait=True, cancel_futures=True)
-    print('DB03_IDENTITY_RACES_PASS 7 genuine PostgreSQL backend schedules')
+    print('DB03_IDENTITY_RACES_PASS 8 genuine PostgreSQL backend schedules')
