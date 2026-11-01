@@ -585,6 +585,34 @@ def validate_principal_final_decision_contract() -> tuple[str, str]:
     return sql,test
 
 
+
+def validate_principal_decision_history() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/29_01_principal_decision_history.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/29_principal_decision_history.sql').read_text()
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z0-9_]+)', sql) != [
+            'admission_principal_decisions']:
+        raise RuntimeError('DB03_P29_PRIVATE_TABLE_SCOPE')
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql) != [
+            'db03_guard_principal_decision_history']:
+        raise RuntimeError('DB03_P29_PRIVATE_GUARD_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE ROLE|ALTER ROLE|CREATE OR REPLACE FUNCTION)\b', outside):
+        raise RuntimeError('DB03_P29_MUTATION_OR_ACTIVATION')
+    for value in ('FORCE ROW LEVEL SECURITY', "'RETURN','REJECT'",
+                  'DB03 Principal decision history requires protected operation',
+                  'db03_document_snapshot', 'BEFORE TRUNCATE',
+                  'schoolos_workflow_executor'):
+        if value not in sql:
+            raise RuntimeError('DB03_P29_HISTORY_GUARD_'+value)
+    if re.search(r'(?mi)^\s*GRANT\s+(INSERT|UPDATE|DELETE)\s+ON\s+app_private\.admission_principal_decisions', sql):
+        raise RuntimeError('DB03_P29_NO_WRITER_GRANT')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['20'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 20 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P29_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_HISTORY_SOURCE_PASS assertions=20 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -619,6 +647,7 @@ def main() -> int:
     forward_readiness_sql, forward_readiness_test = validate_forward_readiness()
     principal_preflight_sql, principal_preflight_test = validate_principal_review_preflight()
     principal_contract_sql, principal_contract_test = validate_principal_final_decision_contract()
+    principal_history_sql, principal_history_test = validate_principal_decision_history()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1300,6 +1329,25 @@ def main() -> int:
             output=local.run_psql(container,principal_contract_test,'DB03_PRINCIPAL_DECISION_CONTRACT_TEST')
             parse_tap(output,20)
             print('DB03_PRINCIPAL_DECISION_CONTRACT_DATABASE_PASS 20/20; no_final_approval=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_history_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PRINCIPAL_HISTORY_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_PRINCIPAL_HISTORY_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_PRINCIPAL_HISTORY_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_PRINCIPAL_HISTORY_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='admission_principal_decisions';",
+                'DB03_PRINCIPAL_HISTORY_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_PRINCIPAL_HISTORY_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_history_sql+'\nCOMMIT;',
+                           'DB03_PRINCIPAL_HISTORY_INSTALL')
+            output=local.run_psql(container,principal_history_test,'DB03_PRINCIPAL_HISTORY_TEST')
+            parse_tap(output,20)
+            print('DB03_PRINCIPAL_HISTORY_DATABASE_PASS 20/20; no_writer_or_accepted_decision=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
