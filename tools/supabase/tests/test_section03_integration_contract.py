@@ -86,7 +86,7 @@ class Section03CrossDomainContractTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(dict(suites)[name], count)
                 source = sql_test(name)
-                self.assertEqual(re.findall(r"(?mi)^\\s*SELECT\\s+plan\\((\\d+)\\);", source), [str(count)])
+                self.assertEqual(re.findall(r"(?mi)^\s*SELECT\s+plan\((\d+)\);", source), [str(count)])
         self.assertEqual(manifest["draft_fragments"], 291)
         runner = RUNNER.read_text(encoding="utf-8")
         for name in expected:
