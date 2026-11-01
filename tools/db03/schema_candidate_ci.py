@@ -501,6 +501,26 @@ def validate_assessment_stage_outcome_source() -> tuple[str, str]:
     return sql,test
 
 
+def validate_fee_disposition() -> tuple[str, str]:
+    paths = [ROOT / 'supabase/proposals/db03/25_01_admission_fee_disposition.sql.draft',
+             ROOT / 'supabase/proposals/db03/25_02_admission_fee_disposition_command.sql.draft']
+    sql = '\n'.join(p.read_text() for p in paths)
+    test = (ROOT / 'supabase/tests/db03/25_admission_fee_disposition.sql').read_text()
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)', sql) != ['admission_fee_dispositions']:
+        raise RuntimeError('DB03_FEE_DISPOSITION_TABLE_SCOPE')
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != [
+            'db03_fee_disposition_guard','db03_fee_disposition_admin','db03_record_admission_fee_disposition']:
+        raise RuntimeError('DB03_FEE_DISPOSITION_FUNCTION_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE)\b', outside):
+        raise RuntimeError('DB03_FEE_DISPOSITION_NO_PRODUCTION_SEED')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['12'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 12 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_FEE_DISPOSITION_TEST_PLAN')
+    print('DB03_FEE_DISPOSITION_SOURCE_PASS assertions=12 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -531,6 +551,7 @@ def main() -> int:
     assessment_source_sql, assessment_source_test = validate_assessment_source()
     assessment_command_sql, assessment_command_test = validate_assessment_command()
     stage_outcome_sql, stage_outcome_test = validate_assessment_stage_outcome_source()
+    fee_disposition_sql, fee_disposition_test = validate_fee_disposition()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1136,6 +1157,25 @@ def main() -> int:
             output=local.run_psql(container,stage_outcome_test,'DB03_STAGE_OUTCOME_SOURCE_TEST')
             parse_tap(output,12)
             print('DB03_STAGE_OUTCOME_SOURCE_DATABASE_PASS 12/12; no_evaluator_or_skip=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+fee_disposition_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_FEE_DISPOSITION_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_FEE_DISPOSITION_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_FEE_DISPOSITION_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_FEE_DISPOSITION_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='admission_fee_dispositions')+(SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname LIKE 'db03_%fee_disposition%');",
+                'DB03_FEE_DISPOSITION_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_FEE_DISPOSITION_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+fee_disposition_sql+'\nCOMMIT;',
+                           'DB03_FEE_DISPOSITION_INSTALL')
+            output=local.run_psql(container,fee_disposition_test,'DB03_FEE_DISPOSITION_TEST')
+            parse_tap(output,12)
+            print('DB03_FEE_DISPOSITION_DATABASE_PASS 12/12; no_payment_or_clearance=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
