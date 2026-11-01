@@ -1,4 +1,20 @@
 -- Inactive, worker-only administrator command. No Finance ledger/payment effect.
+GRANT CREATE ON SCHEMA app_private TO schoolos_platform_executor;
+SET ROLE schoolos_platform_executor;
+CREATE FUNCTION app_private.db03_fee_disposition_advance(p_application uuid) RETURNS bigint
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE version bigint;
+BEGIN
+ IF session_user<>'schoolos_file_login' THEN RAISE EXCEPTION 'DB03 fee disposition worker required'; END IF;
+ UPDATE app_private.admission_applications SET stage_epoch=stage_epoch+1
+  WHERE id=p_application AND state='DRAFT' RETURNING row_version INTO version;
+ IF version IS NULL THEN RAISE EXCEPTION 'DB03 fee disposition draft changed'; END IF;
+ RETURN version;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_fee_disposition_advance(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_fee_disposition_advance(uuid) TO schoolos_schema_owner;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_platform_executor;
 GRANT EXECUTE ON FUNCTION app_private.current_principal_id(),
  app_private.has_complete_grant(text,text,uuid) TO schoolos_schema_owner;
 SET ROLE schoolos_schema_owner;
@@ -99,8 +115,7 @@ BEGIN
  SELECT * INTO prior FROM app_private.admission_fee_dispositions
   WHERE application_id=a.id ORDER BY revision DESC LIMIT 1 FOR UPDATE;
  receipt:=gen_random_uuid(); correlation:=gen_random_uuid(); source:=gen_random_uuid();
- UPDATE app_private.admission_applications SET stage_epoch=stage_epoch+1
-  WHERE id=a.id RETURNING row_version INTO version;
+ version:=app_private.db03_fee_disposition_advance(a.id);
  INSERT INTO app_private.admission_fee_dispositions(id,application_id,revision,supersedes_id,
   disposition,reason_private,application_version,command_receipt_id,created_by)
  VALUES(source,a.id,coalesce(prior.revision,0)+1,prior.id,p_disposition,p_reason,version,receipt,actor);
