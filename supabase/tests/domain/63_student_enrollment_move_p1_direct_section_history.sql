@@ -237,8 +237,10 @@ SELECT is((SELECT count(*) FROM app_private.enrollments
  WHERE student_id='b1000000-0000-4000-8000-000000000001'),2::bigint,
  'source and successor Enrollments retained exactly once');
 SELECT is((SELECT count(*) FROM app_private.roll_allocations
- WHERE student_id='b1000000-0000-4000-8000-000000000001'),2::bigint,
- 'source and successor Rolls retained exactly once');
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'
+   AND numeric_value=(SELECT numeric_value FROM app_private.roll_allocations
+                      WHERE id=:'placed_roll_allocation_id'::uuid)),2::bigint,
+ 'both retained Roll records keep the identical original persistent number');
 SELECT is((SELECT current_status FROM app_private.students
  WHERE id='b1000000-0000-4000-8000-000000000001'),'ACTIVE'::text,
  'internal move keeps Student lifecycle ACTIVE');
