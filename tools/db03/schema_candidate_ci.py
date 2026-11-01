@@ -562,6 +562,29 @@ def validate_principal_review_preflight() -> tuple[str, str]:
     return sql,test
 
 
+
+def validate_principal_final_decision_contract() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/28_01_principal_final_decision_contract.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/28_principal_final_decision_contract.sql').read_text()
+    names = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if names != ['db03_principal_final_decision_contract']:
+        raise RuntimeError('DB03_P28_PRIVATE_FUNCTION_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|CREATE ROLE|ALTER ROLE|GRANT|CREATE OR REPLACE FUNCTION)\b', outside):
+        raise RuntimeError('DB03_P28_MUTATION_OR_ACTIVATION')
+    for value in ('SECURITY INVOKER', 'db03_principal_review_preflight',
+                  "'APPROVE','RETURN','REJECT'", "'can_apply',false",
+                  "'can_create_student',false",
+                  "'atomic_student_handoff_available',false"):
+        if value not in sql:
+            raise RuntimeError('DB03_P28_FAIL_CLOSED_SOURCE_'+value)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['20'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 20 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P28_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_DECISION_CONTRACT_SOURCE_PASS assertions=20 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -595,6 +618,7 @@ def main() -> int:
     fee_disposition_sql, fee_disposition_test = validate_fee_disposition()
     forward_readiness_sql, forward_readiness_test = validate_forward_readiness()
     principal_preflight_sql, principal_preflight_test = validate_principal_review_preflight()
+    principal_contract_sql, principal_contract_test = validate_principal_final_decision_contract()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1257,6 +1281,25 @@ def main() -> int:
             output=local.run_psql(container,principal_preflight_test,'DB03_PRINCIPAL_PREFLIGHT_TEST')
             parse_tap(output,18)
             print('DB03_PRINCIPAL_PREFLIGHT_DATABASE_PASS 18/18; final_approval_unavailable=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_contract_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PRINCIPAL_DECISION_CONTRACT_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_PRINCIPAL_DECISION_CONTRACT_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_PRINCIPAL_DECISION_CONTRACT_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_PRINCIPAL_DECISION_CONTRACT_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_principal_final_decision_contract';",
+                'DB03_PRINCIPAL_DECISION_CONTRACT_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_PRINCIPAL_DECISION_CONTRACT_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_contract_sql+'\nCOMMIT;',
+                           'DB03_PRINCIPAL_DECISION_CONTRACT_INSTALL')
+            output=local.run_psql(container,principal_contract_test,'DB03_PRINCIPAL_DECISION_CONTRACT_TEST')
+            parse_tap(output,20)
+            print('DB03_PRINCIPAL_DECISION_CONTRACT_DATABASE_PASS 20/20; no_final_approval=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
