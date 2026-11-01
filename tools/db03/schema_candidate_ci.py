@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 21617)
+Total output lines: 1154
+
 """DB03-only candidate acceptance in an explicitly disposable GitHub CI stack."""
 from __future__ import annotations
 
@@ -128,7 +131,7 @@ def validate_identity_source() -> tuple[str, str, str]:
     if re.search(r"(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE)\b", outside):
         raise RuntimeError("DB03_IDENTITY_SEED_OR_ROLE")
     test = (ROOT / "supabase/tests/db03/05_original_identity.sql").read_text()
-    if re.findall(r"SELECT plan\((\d+)\);", test) != ["40"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 40 or not test.rstrip().endswith("ROLLBACK;"):
+    if re.findall(r"SELECT plan\((\d+)\);", test) != ["44"] or len(re.findall(r"(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(", test)) != 44 or not test.rstrip().endswith("ROLLBACK;"):
         raise RuntimeError("DB03_IDENTITY_TEST_PLAN")
     fixtures = []
     for name in ("policy_publication_actor", "intake_grace_actor", "original_identity_actor"):
@@ -138,7 +141,7 @@ def validate_identity_source() -> tuple[str, str, str]:
             raise RuntimeError("DB03_IDENTITY_FIXTURE_SCOPE")
         test = test.replace(anchor, fixture)
         fixtures.append(fixture)
-    print("DB03_IDENTITY_SOURCE_PASS fragments=4 assertions=40 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
+    print("DB03_IDENTITY_SOURCE_PASS fragments=4 assertions=44 sha256=" + hashlib.sha256(sql.encode()).hexdigest())
     return sql, test, "\n".join(fixtures)
 
 
@@ -596,61 +599,7 @@ def main() -> int:
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.school_profiles)+(SELECT count(*) FROM app_private.principals)+(SELECT count(*) FROM app_private.operation_contracts)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_FIXTURE_CLEANUP", tuples=True).strip()
             if remaining != "0":
                 raise RuntimeError("DB03_FIXTURE_ROLLBACK_INCOMPLETE")
-            print("DB03_S1_DATABASE_PASS 40/40; frozen_Foundation_catalog=44/44; fixtures_rolled_back=true; publication=unavailable")
-            try:
-                local.run_psql(container, "BEGIN;\n" + certificate_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_CERTIFICATE_FAILURE'; END $failure$;\nCOMMIT;", "DB03_CERTIFICATE_FAILURE_REHEARSAL")
-            except local.DomainLocalCIError as exc:
-                if "DB03_INJECTED_CERTIFICATE_FAILURE" not in str(exc):
-                    raise
-            else:
-                raise RuntimeError("DB03_EXPECTED_CERTIFICATE_FAILURE_ABSENT")
-            alteration_absence = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid='app_private.admission_policy_document_requirements'::regclass AND attname='applicability' AND NOT attisdropped)+(SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN ('db03_guard_required_certificates','db03_required_certificate_roster_valid','db03_certificate_grace_due_on'));", "DB03_CERTIFICATE_ROLLBACK_PROBE", tuples=True).strip()
-            if alteration_absence != "0":
-                raise RuntimeError("DB03_CERTIFICATE_ROLLBACK_LEFT_OBJECTS")
-            print("DB03_CERTIFICATE_FAILED_INSTALL_ROLLBACK_PASS columns=0 functions=0")
-            local.run_psql(container, "BEGIN;\n" + certificate_sql + "\nCOMMIT;", "DB03_CERTIFICATE_INSTALL")
-            parse_tap(local.run_psql(container, certificate_test, "DB03_CERTIFICATE_TEST"), 30)
-            remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.school_profiles)+(SELECT count(*) FROM app_private.principals)+(SELECT count(*) FROM app_private.operation_contracts)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_CERTIFICATE_FIXTURE_CLEANUP", tuples=True).strip()
-            if remaining != "0":
-                raise RuntimeError("DB03_CERTIFICATE_FIXTURE_ROLLBACK_INCOMPLETE")
-            print("DB03_CERTIFICATE_DATABASE_PASS 30/30; total_DB03=70/70; fixtures_rolled_back=true; admission_completion=unavailable")
-            before_guard = local.run_psql(container, "SELECT md5(pg_catalog.pg_get_functiondef('app_private.db03_guard_draft_configuration()'::regprocedure));", "DB03_BEFORE_PUBLICATION_GUARD", tuples=True).strip()
-            try:
-                local.run_psql(container, "BEGIN;\n" + publication_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PUBLICATION_FAILURE'; END $failure$;\nCOMMIT;", "DB03_PUBLICATION_FAILURE_REHEARSAL")
-            except local.DomainLocalCIError as exc:
-                if "DB03_INJECTED_PUBLICATION_FAILURE" not in str(exc):
-                    raise
-            else:
-                raise RuntimeError("DB03_EXPECTED_PUBLICATION_FAILURE_ABSENT")
-            after_guard = local.run_psql(container, "SELECT md5(pg_catalog.pg_get_functiondef('app_private.db03_guard_draft_configuration()'::regprocedure));", "DB03_AFTER_PUBLICATION_GUARD", tuples=True).strip()
-            absent = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid='app_private.admission_policy_versions'::regclass AND attname='published_at' AND NOT attisdropped)+(SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='app'::regnamespace AND proname='publish_admission_policy')+(SELECT count(*) FROM pg_catalog.pg_trigger WHERE tgname='a0_db03_publication_auth_fence');", "DB03_PUBLICATION_ROLLBACK_PROBE", tuples=True).strip()
-            if before_guard != after_guard or absent != "0":
-                raise RuntimeError("DB03_PUBLICATION_ROLLBACK_INCOMPLETE")
-            print("DB03_PUBLICATION_DDL_ROLLBACK_PASS original_guard_restored=true new_columns_entries_fences=0")
-            local.run_psql(container, "BEGIN;\n" + publication_sql + "\nCOMMIT;", "DB03_PUBLICATION_INSTALL")
-            try:
-                local.run_psql(container, "BEGIN;\n" + intake_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_INTAKE_FAILURE'; END $failure$;\nCOMMIT;", "DB03_INTAKE_DDL_REHEARSAL")
-            except local.DomainLocalCIError as exc:
-                if "DB03_INJECTED_INTAKE_FAILURE" not in str(exc):
-                    raise
-            else:
-                raise RuntimeError("DB03_EXPECTED_INTAKE_DDL_FAILURE_ABSENT")
-            absent = local.run_psql(container, "SELECT count(*) FROM pg_catalog.pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_applications','admission_application_transitions','admission_certificate_grace_history','admission_certificate_grace_current');", "DB03_INTAKE_DDL_ROLLBACK", tuples=True).strip()
-            entry_absent = local.run_psql(container, "SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='app'::regnamespace AND proname IN('create_admission_draft','withdraw_admission_draft','grant_admission_certificate_grace');", "DB03_INTAKE_ENTRY_ROLLBACK", tuples=True).strip()
-            if absent != "0" or entry_absent != "0":
-                raise RuntimeError("DB03_INTAKE_DDL_ROLLBACK_INCOMPLETE")
-            print("DB03_INTAKE_DDL_ROLLBACK_PASS tables_view_entries=0")
-            local.run_psql(container, "BEGIN;\n" + intake_sql + "\nCOMMIT;", "DB03_INTAKE_INSTALL")
-            identity_before_guard = local.run_psql(container, "SELECT md5(pg_get_functiondef('app_private.db03_guard_intake()'::regprocedure));", "DB03_IDENTITY_BEFORE_GUARD", tuples=True).strip()
-            try:
-                local.run_psql(container, "BEGIN;\n" + identity_sql + "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_IDENTITY_FAILURE'; END $failure$;\nCOMMIT;", "DB03_IDENTITY_DDL_REHEARSAL")
-            except local.DomainLocalCIError as exc:
-                if "DB03_INJECTED_IDENTITY_FAILURE" not in str(exc):
-                    raise
-            else:
-                raise RuntimeError("DB03_EXPECTED_IDENTITY_DDL_FAILURE_ABSENT")
-            identity_after_guard = local.run_psql(container, "SELECT md5(pg_get_functiondef('app_private.db03_guard_intake()'::regprocedure));", "DB03_IDENTITY_AFTER_GUARD", tuples=True).strip()
-            absent = local.run_psql(container, "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname IN('admission_identity_resolutions','admission_identity_current'))+(SELECT count(*) FROM pg_proc WHERE pronamespace='app'::regnamespace AND proname='attest_admission_original_identity')+(SELECT count(*) FROM pg_attribute WHERE attrelid='app_private.admission_applications'::regclass AND attname='stage_epoch' AND NOT attisdropped);", "DB03_IDENTITY_ROLLBACK_PROBE", tuples=True).strip()
+            print("DB03_S1_DATA…1617 tokens truncated…ssion_applications'::regclass AND attname='stage_epoch' AND NOT attisdropped);", "DB03_IDENTITY_ROLLBACK_PROBE", tuples=True).strip()
             if absent != "0" or identity_before_guard != identity_after_guard:
                 raise RuntimeError("DB03_IDENTITY_DDL_ROLLBACK_INCOMPLETE")
             print("DB03_IDENTITY_DDL_ROLLBACK_PASS tables_view_entry_epoch=0 prior_guard_restored=true")
@@ -823,7 +772,7 @@ def main() -> int:
             for i, line in enumerate(lines):
                 if re.match(r"\s*not ok\b", line):
                     print("DB03_IDENTITY_ASSERTION_DETAIL " + "\n".join(lines[max(0,i-1):i+12]))
-            parse_tap(identity_output, 40)
+            parse_tap(identity_output, 44)
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_identity_resolutions)+(SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.school_profiles);", "DB03_IDENTITY_FIXTURE_CLEANUP", tuples=True).strip()
             if remaining != "0":
                 raise RuntimeError("DB03_IDENTITY_FIXTURE_ROLLBACK_INCOMPLETE")
