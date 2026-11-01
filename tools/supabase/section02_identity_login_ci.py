@@ -56,8 +56,7 @@ def acceptance():
             with c.cursor() as q:
                 if role not in ('schoolos_identity_login', 'authenticated', 'anon', 'service_role'):
                     raise RuntimeError('LOCAL_ROLE_REQUIRED')
-                q.execute('SET ROLE ' + role)
-            c.commit()
+                q.execute('SET LOCAL ROLE ' + role)
         return c
 
     def sql(statement, parameters=()):
@@ -151,11 +150,19 @@ def acceptance():
     check(sql('SELECT count(*) FROM app_private.principal_binding_events WHERE principal_id=%s',(FAMILY,))[0][0] == 2,'binding_history_retained')
     # No alias lookup, throttle manipulation or private mapping reads by clients.
     for role in ('authenticated','anon','service_role'):
+        for signature in ('app_private.identity_resolve_login(uuid,text,text)',
+                          'app_private.identity_login_admit(text[])'):
+            check(sql('SELECT has_function_privilege(%s,%s,\'EXECUTE\')',(role,signature))[0][0] is False,
+                  'no_client_execute_grant_'+role)
+    for role in ('authenticated','anon','service_role'):
         for statement in ("SELECT * FROM app_private.identity_resolve_login('22222222-2222-4222-8222-222222222222','ALIAS','parent.one')",
                           "SELECT app_private.identity_login_admit(ARRAY[repeat('a',64)])",
                           'SELECT * FROM app_private.login_aliases'):
             try:
-                with connection(role) as c,c.cursor() as q: q.execute(statement)
+                with connection(role) as c,c.cursor() as q:
+                    q.execute('SELECT current_user')
+                    check(q.fetchone()[0]==role,'client_role_fixture_'+role)
+                    q.execute(statement)
             except psycopg.errors.InsufficientPrivilege:
                 check(True,'client_privilege_denial_'+role)
             else:
@@ -216,7 +223,7 @@ def main():
         print('SECTION02_IDENTITY_LOGIN_FAIL stage='+stage+' checks='+str(checks)
               +' sqlstate='+str(getattr(error,'sqlstate',None))
               +' constraint='+str(getattr(getattr(error,'diag',None),'constraint_name',None)),file=sys.stderr)
-        if str(error).startswith(('IDENTITY_ACCEPTANCE_FAILED ','IDENTITY_EXPECTED_DENIAL ')):
+        if str(error).startswith('IDENTITY_'):
             print(str(error),file=sys.stderr)
         if stage in ('candidate_install','failed_install_rollback'):
             # This stage executes static source only, never secret parameters.
