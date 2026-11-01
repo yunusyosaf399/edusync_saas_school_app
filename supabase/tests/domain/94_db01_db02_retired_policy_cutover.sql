@@ -260,13 +260,23 @@ SELECT is((SELECT count(*) FROM app_private.roll_allocations
  'b1000000-0000-4000-8000-000000000001'::uuid,
  'b1600000-0000-4000-8000-000000000010'::uuid)),
  2::bigint,'old and new Student keep exactly one canonical Roll each');
-SELECT is((SELECT count(*) FROM app_private.command_receipts
- WHERE operation_id=(SELECT id FROM app_private.operation_contracts
-                     WHERE code='student.roll_policy.change')),
- 0::bigint,'private I05 transition does not fabricate I06 receipt');
-SELECT is((SELECT count(*) FROM app_private.outbox_events
- WHERE event_type='student.roll_policy_changed'),
- 0::bigint,'private I05 transition does not fabricate unimplemented event');
+-- G02 composition includes I06 evidence: the same private I05 transition
+-- now atomically records successful evidence for the exact new revision.
+-- Assert canonical receipt + audit and linked policy event, not just counts.
+SELECT is((SELECT count(*) FROM app_private.command_receipts r
+ JOIN app_private.audit_events a ON a.command_receipt_id=r.id
+ WHERE r.operation_id=(SELECT id FROM app_private.operation_contracts
+                       WHERE code='student.roll_policy.change')
+   AND r.result_ref=:'cut_id'::uuid
+   AND r.result_kind='D1_STUDENT_ROLL_POLICY'
+   AND r.state='SUCCEEDED'),
+ 1::bigint,'one successful I06 policy receipt and audit link for replaced revision');
+SELECT is((SELECT count(*) FROM app_private.outbox_events e
+ JOIN app_private.command_receipts r ON r.id=e.command_receipt_id
+ WHERE e.event_type='student.roll_policy_changed'
+   AND e.aggregate_ref=:'cut_id'::uuid
+   AND r.result_ref=:'cut_id'::uuid),
+ 1::bigint,'one I06 outbox event correlated to exact replacement receipt');
 SELECT is((SELECT enabled FROM app_private.operation_contracts
  WHERE code='student.roll.correct'),false,
  'DB01 correction operation stays inactive outside test-specific activation');
