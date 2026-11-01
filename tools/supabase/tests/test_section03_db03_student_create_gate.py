@@ -4,7 +4,6 @@ This test is intentionally local-source only: DB03 proposal files remain on
 separate, unmerged owner branches, never implicitly installed by this gate.
 """
 import json
-import re
 import unittest
 from pathlib import Path
 
@@ -52,7 +51,7 @@ class StudentCreateHandoffReadinessGate(unittest.TestCase):
 
     def test_production_student_create_remains_inactive_in_d1_fixture(self):
         source = D1_DENIAL.read_text(encoding="utf-8")
-        self.assertEqual(re.findall(r"(?mi)^\\s*SELECT\\s+plan\\((\\d+)\\);", source), ["38"])
+        self.assertIn("SELECT plan(38);", source)
         self.assertIn("WHERE code='student.create'),false", source)
         self.assertIn("student.create remains explicitly disabled at runtime", source)
         self.assertIn("student.create permission cannot issue a protected command", source)
