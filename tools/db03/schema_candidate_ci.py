@@ -827,7 +827,7 @@ def main() -> int:
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_identity_resolutions)+(SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.school_profiles);", "DB03_IDENTITY_FIXTURE_CLEANUP", tuples=True).strip()
             if remaining != "0":
                 raise RuntimeError("DB03_IDENTITY_FIXTURE_ROLLBACK_INCOMPLETE")
-            print("DB03_IDENTITY_DATABASE_PASS 40/40; total_DB03=200/200; Foundation=220/220; fixtures_rolled_back=true")
+            print("DB03_IDENTITY_DATABASE_PASS 44/44; total_DB03=204/204; Foundation=220/220; fixtures_rolled_back=true")
             try:
                 person_output = local.run_psql(container, person_test, "DB03_PERSON_TEST")
             except local.DomainLocalCIError:
@@ -841,7 +841,7 @@ def main() -> int:
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_person_checks)+(SELECT count(*) FROM app_private.admission_person_creations)+(SELECT count(*) FROM app_private.people)+(SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_PERSON_FIXTURE_CLEANUP", tuples=True).strip()
             if remaining != "0":
                 raise RuntimeError("DB03_PERSON_FIXTURE_ROLLBACK_INCOMPLETE")
-            print("DB03_PERSON_DATABASE_PASS 50/50; total_DB03=250/250; Foundation=220/220; fixtures_rolled_back=true")
+            print("DB03_PERSON_DATABASE_PASS 50/50; total_DB03=254/254; Foundation=220/220; fixtures_rolled_back=true")
             try:
                 principal_output = local.run_psql(container, principal_test, "DB03_PRINCIPAL_TEST")
             except local.DomainLocalCIError:
@@ -855,7 +855,7 @@ def main() -> int:
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.people)+(SELECT count(*) FROM app_private.roles)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_PRINCIPAL_FIXTURE_CLEANUP", tuples=True).strip()
             if remaining != "0":
                 raise RuntimeError("DB03_PRINCIPAL_FIXTURE_ROLLBACK_INCOMPLETE")
-            print("DB03_PRINCIPAL_DATABASE_PASS 27/27; total_DB03=277/277; Foundation=220/220; fixtures_rolled_back=true")
+            print("DB03_PRINCIPAL_DATABASE_PASS 27/27; total_DB03=281/281; Foundation=220/220; fixtures_rolled_back=true")
             try:
                 document_output = local.run_psql(container, document_test, "DB03_DOCUMENT_TEST")
             except local.DomainLocalCIError:
@@ -869,7 +869,7 @@ def main() -> int:
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_document_intakes)+(SELECT count(*) FROM app_private.admission_document_forwards)+(SELECT count(*) FROM app_private.principals)+(SELECT count(*) FROM app_private.command_receipts);", "DB03_DOCUMENT_FIXTURE_CLEANUP", tuples=True).strip()
             if remaining != "0":
                 raise RuntimeError("DB03_DOCUMENT_FIXTURE_ROLLBACK_INCOMPLETE")
-            print("DB03_DOCUMENT_DATABASE_PASS 28/28; total_DB03=305/305; Foundation=220/220; fixtures_rolled_back=true")
+            print("DB03_DOCUMENT_DATABASE_PASS 28/28; total_DB03=309/309; Foundation=220/220; fixtures_rolled_back=true")
             try:
                 finance_output = local.run_psql(container, finance_boundary_test, "DB03_FINANCE_BOUNDARY_TEST")
             except local.DomainLocalCIError:
@@ -883,7 +883,7 @@ def main() -> int:
             remaining = local.run_psql(container, "SELECT (SELECT count(*) FROM app_private.admission_applications)+(SELECT count(*) FROM app_private.command_receipts)+(SELECT count(*) FROM app_private.principals);", "DB03_FINANCE_BOUNDARY_CLEANUP", tuples=True).strip()
             if remaining != "0":
                 raise RuntimeError("DB03_FINANCE_BOUNDARY_FIXTURE_ROLLBACK_INCOMPLETE")
-            print("DB03_FINANCE_BOUNDARY_DATABASE_PASS 20/20; total_DB03=325/325; Foundation=220/220; positive_Finance_clearance=unimplemented")
+            print("DB03_FINANCE_BOUNDARY_DATABASE_PASS 20/20; total_DB03=329/329; Foundation=220/220; positive_Finance_clearance=unimplemented")
             applicant_output = local.run_psql(container, applicant_slip_test, "DB03_APPLICANT_SLIP_TEST")
             lines = applicant_output.splitlines()
             for i, line in enumerate(lines):
