@@ -60,6 +60,8 @@ password; SET ROLE from postgres is not substituted for worker identity.
 Both functions require the school's single ACTIVE Foundation SYSTEM principal
 with the fixed `identity-reconciliation` purpose; no worker-selected actor is
 accepted. Missing/disabled reconciliation identity fails closed.
+Both functions reject non-READ-COMMITTED transactions. A pooled old snapshot
+must never let login reuse a principal/binding state from before revocation.
 
 This is a preauthentication read/rate-meter boundary. It deliberately has no
 client-provided actor, cannot assert that a human is authenticated, and does not

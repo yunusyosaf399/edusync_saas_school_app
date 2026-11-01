@@ -103,6 +103,13 @@ def acceptance():
     check(sql("SELECT count(*) FROM app_private.identity_resolve_login(%s,'ALIAS','parent.one')",(SCHOOL,))[0][0] == 0,
           'postgres_cannot_impersonate_worker_session')
     check(not store.admit(['a'*64]),'missing_rate_policy_denies')
+    for isolation in ('REPEATABLE READ','SERIALIZABLE'):
+        with connection('schoolos_identity_login') as c,c.cursor() as q:
+            q.execute('SET TRANSACTION ISOLATION LEVEL '+isolation)
+            q.execute("SELECT count(*) FROM app_private.identity_resolve_login(%s,'ALIAS','parent.one')",(SCHOOL,))
+            check(q.fetchone()[0]==0,'unsupported_isolation_lookup_'+isolation.replace(' ','_'))
+            q.execute('SELECT app_private.identity_login_admit(%s::text[])',(['a'*64],))
+            check(q.fetchone()[0] is False,'unsupported_isolation_meter_'+isolation.replace(' ','_'))
     sql('INSERT INTO app_private.identity_login_limits(max_attempts,window_seconds) VALUES(100,3600)')
     check(sign(' PARENT.ONE ').principal_id == FAMILY,'real_alias_password_auth')
     check(sign('IDENTITY-FAMILY@EXAMPLE.INVALID').principal_id == FAMILY,'real_email_password_auth')

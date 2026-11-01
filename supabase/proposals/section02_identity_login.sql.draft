@@ -57,6 +57,7 @@ AS $body$
  LEFT JOIN app_private.login_aliases a ON p_kind='ALIAS' AND a.principal_id=p.id
    AND a.normalized_alias=p_identifier AND a.state='ACTIVE'
  WHERE session_user='schoolos_identity_login'
+   AND current_setting('transaction_isolation')='read committed'
    AND (SELECT count(*) FROM app_private.principals worker
         WHERE worker.kind='SYSTEM' AND worker.state='ACTIVE'
           AND worker.system_purpose='identity-reconciliation')=1
@@ -76,7 +77,9 @@ AS $body$
 DECLARE config app_private.identity_login_limits%ROWTYPE; k text; n integer;
  bucket bigint; now_at timestamptz:=clock_timestamp(); allowed boolean:=true;
 BEGIN
- IF session_user<>'schoolos_identity_login' OR p_keys IS NULL OR cardinality(p_keys) NOT BETWEEN 1 AND 3
+ IF session_user<>'schoolos_identity_login'
+   OR current_setting('transaction_isolation')<>'read committed'
+   OR p_keys IS NULL OR cardinality(p_keys) NOT BETWEEN 1 AND 3
    OR EXISTS(SELECT 1 FROM unnest(p_keys) supplied(key_value)
              WHERE supplied.key_value IS NULL OR supplied.key_value !~ '^[0-9a-f]{64}$')
  THEN RETURN false; END IF;
