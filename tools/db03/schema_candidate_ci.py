@@ -540,6 +540,28 @@ def validate_forward_readiness() -> tuple[str, str]:
     return sql,test
 
 
+
+def validate_principal_review_preflight() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/27_01_principal_review_preflight.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/27_principal_review_preflight.sql').read_text()
+    names = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if names != ['db03_principal_review_preflight']:
+        raise RuntimeError('DB03_P27_PRIVATE_FUNCTION_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|CREATE ROLE|ALTER ROLE|GRANT|CREATE OR REPLACE FUNCTION)\b', outside):
+        raise RuntimeError('DB03_P27_MUTATION_OR_ACTIVATION')
+    for value in ('SECURITY INVOKER', 'db03_principal_final_source_snapshot',
+                  'db03_forward_details_current', "'can_issue_final_decision',false",
+                  "'can_create_student',false", "'single_use_handoff_available',false"):
+        if value not in sql:
+            raise RuntimeError('DB03_P27_FAIL_CLOSED_SOURCE_'+value)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['18'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 18 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P27_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_PREFLIGHT_SOURCE_PASS assertions=18 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -572,6 +594,7 @@ def main() -> int:
     stage_outcome_sql, stage_outcome_test = validate_assessment_stage_outcome_source()
     fee_disposition_sql, fee_disposition_test = validate_fee_disposition()
     forward_readiness_sql, forward_readiness_test = validate_forward_readiness()
+    principal_preflight_sql, principal_preflight_test = validate_principal_review_preflight()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1215,6 +1238,25 @@ def main() -> int:
             output=local.run_psql(container,forward_readiness_test,'DB03_FORWARD_READINESS_TEST')
             parse_tap(output,12)
             print('DB03_FORWARD_READINESS_DATABASE_PASS 12/12; Principal_decision_unavailable=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_preflight_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PRINCIPAL_PREFLIGHT_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_PRINCIPAL_PREFLIGHT_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_PRINCIPAL_PREFLIGHT_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_PRINCIPAL_PREFLIGHT_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_principal_review_preflight';",
+                'DB03_PRINCIPAL_PREFLIGHT_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_PRINCIPAL_PREFLIGHT_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_preflight_sql+'\nCOMMIT;',
+                           'DB03_PRINCIPAL_PREFLIGHT_INSTALL')
+            output=local.run_psql(container,principal_preflight_test,'DB03_PRINCIPAL_PREFLIGHT_TEST')
+            parse_tap(output,18)
+            print('DB03_PRINCIPAL_PREFLIGHT_DATABASE_PASS 18/18; final_approval_unavailable=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
