@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "as_of_utc_date": "2026-11-01",
+  "scope": "source_only_cross_owner_readiness",
+  "state": "BLOCKED",
+  "release_approved": false,
+  "student_create_enabled": false,
+  "owner_integration_pr": 168,
+  "owner_integration_sha": "695c883904770e4fc5c7e31e185eb177afefd043",
+  "db03_latest_forward_pr": 203,
+  "db03_latest_forward_sha": "fabaaeb871874107db28346ef4db688eb34e837e",
+  "db03_forward_ci_run": 41293808863,
+  "db03_forward_ci_result": "passed_inactive_draft_only",
+  "db03_can_finalize": false,
+  "fee_dispositions": [
+    "SKIPPED",
+    "MARKED_PAID",
+    "UNPAID"
+  ],
+  "fee_is_finance_clearance": false,
+  "principal_final_approval_available": false,
+  "gates": [
+    {
+      "id": "SC-01",
+      "status": "BLOCKED",
+      "requirement": "Final Admissions policy, document/assessment outcomes and verified canonical Person binding",
+      "evidence": "DB03 #199 source and assessment #194 are inactive candidates; #203 only validates Forward readiness"
+    },
+    {
+      "id": "SC-02",
+      "status": "BLOCKED",
+      "requirement": "Principal final APPROVE/RETURN/REJECT plus durable unique READY/CONSUMED/INVALIDATED handoff",
+      "evidence": "Principal snapshot #191 explicitly can_finalize=false; #203 explicitly has no Principal decision"
+    },
+    {
+      "id": "SC-03",
+      "status": "BLOCKED",
+      "requirement": "Current receipt-backed admission-fee declaration and independent configured Finance reconciliation",
+      "evidence": "DB03 #202/#203 stage SKIPPED/MARKED_PAID/UNPAID; not a settlement or D1 final clearance source"
+    },
+    {
+      "id": "SC-04",
+      "status": "BLOCKED",
+      "requirement": "Atomic authorized Student, admission number, first Enrollment, Roll and original-file lineage",
+      "evidence": "DB01/DB02 G02 #168 allocator regression passes separately; cross-owner atomic creation is missing"
+    },
+    {
+      "id": "SC-05",
+      "status": "BLOCKED",
+      "requirement": "Authenticated enabled student.create P0 command with exact-key replay and evidence",
+      "evidence": "D1 #65 explicitly asserts student.create operation and permission disabled; no successful protected create RPC"
+    },
+    {
+      "id": "SC-06",
+      "status": "BLOCKED",
+      "requirement": "Interoperable two-backend Principal/Admissions/Student/School policy and authority races",
+      "evidence": "DB03 forwarding and D1 allocator races exist separately; there is no final cross-boundary race acceptance"
+    },
+    {
+      "id": "SC-07",
+      "status": "BLOCKED",
+      "requirement": "Independent complete integration/security review and disposable runtime positive/negative final handoff",
+      "evidence": "No DB03-produced Principal-approved handoff has been successfully consumed by D1 in one transaction"
+    }
+  ],
+  "merge_to_main_authorized": false,
+  "hosted_activation_authorized": false
+}
