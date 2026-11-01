@@ -2,10 +2,10 @@
 from __future__ import annotations
 import json
 
-from destination_command_ci import CAMPUS, OTHER, YEAR
+from destination_command_ci import CAMPUS, OTHER, YEAR, OFFERING
 
 
-def run_fee_disposition(root, worker, api, claims):
+def run_fee_disposition(root, worker, api, record_destination, claims):
     import psycopg
 
     def record(app, version, disposition, reason, key):
@@ -38,6 +38,13 @@ def run_fee_disposition(root, worker, api, claims):
     if second['revision']!=2 or second['disposition']!='SKIPPED' or second['application_version']!=3:
         raise RuntimeError('DB03_FEE_REVISION_RESULT')
     denied(lambda:record(app,2,'MARKED_PAID','Stale','fee-stale'),'draft changed or forwarded')
+    with root() as conn:
+        if conn.execute('SELECT app_private.db03_forward_details_current(%s)',(app,)).fetchone()[0]:
+            raise RuntimeError('DB03_FORWARD_WITHOUT_DESTINATION')
+    record_destination(app,3,OFFERING,'Grade 1 destination','fee-grade')
+    with root() as conn:
+        if not conn.execute('SELECT app_private.db03_forward_details_current(%s)',(app,)).fetchone()[0]:
+            raise RuntimeError('DB03_FORWARD_DETAILS_NOT_CURRENT')
     other=api('SELECT application_id FROM app.create_admission_draft(%s,%s,%s)',
               (OTHER,YEAR,'fee-app-other'))
     denied(lambda:record(other,1,'UNPAID','Other Campus','fee-other'),'administrator scope denied')
@@ -58,4 +65,4 @@ def run_fee_disposition(root, worker, api, claims):
         conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() "
                      "WHERE id=md5('admission.fee.disposition:grant')::uuid")
     denied(lambda:record(app,1,'UNPAID','Fee due','fee-one'),'administrator scope denied')
-    print('DB03_FEE_DISPOSITION_REAL_AUTH_PASS revisions=2 replay=true wrong_campus_denied=true revoked=true no_payment=true')
+    print('DB03_FEE_DISPOSITION_REAL_AUTH_PASS revisions=2 replay=true wrong_campus_denied=true revoked=true no_payment=true forward_details=true')
