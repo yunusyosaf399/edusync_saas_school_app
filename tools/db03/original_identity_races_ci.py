@@ -39,16 +39,12 @@ def run_identity_races(local, fresh_database, fixture):
         else:
             raise RuntimeError('DB03_IDENTITY_EXPECTED_DENIAL_ABSENT')
 
-    fresh_database()
-    local.run_psql('supabase_db_' + local.EXPECTED_PROJECT_ID,
-                   'BEGIN;\n' + fixture + "\nUPDATE app_private.operation_contracts SET enabled=true WHERE code IN('admission.draft.create','admission.identity.attest');\nCOMMIT;",
-                   'DB03_IDENTITY_RACE_FIXTURE')
     for case in ('same_key', 'competing_attestations', 'person_edit_first', 'attest_first_person_edit', 'revocation_first', 'principal_assignment_revoke_first', 'principal_role_retire_first'):
-        if case.startswith('principal_'):
-            fresh_database()
-            local.run_psql('supabase_db_' + local.EXPECTED_PROJECT_ID,
-                           'BEGIN;\n' + fixture + "\nUPDATE app_private.operation_contracts SET enabled=true WHERE code IN('admission.draft.create','admission.identity.attest');\nCOMMIT;",
-                           'DB03_IDENTITY_RACE_FIXTURE')
+        # Each race starts without an earlier open application for this Person.
+        fresh_database()
+        local.run_psql('supabase_db_' + local.EXPECTED_PROJECT_ID,
+                       'BEGIN;\n' + fixture + "\nUPDATE app_private.operation_contracts SET enabled=true WHERE code IN('admission.draft.create','admission.identity.attest');\nCOMMIT;",
+                       'DB03_IDENTITY_RACE_FIXTURE')
         a, b, control = connect(), connect(), connect()
         pool = ThreadPoolExecutor(max_workers=1)
         try:
