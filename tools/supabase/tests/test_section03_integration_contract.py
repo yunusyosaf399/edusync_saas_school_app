@@ -69,7 +69,7 @@ class Section03CrossDomainContractTests(unittest.TestCase):
         ):
             with self.subTest(case=case):
                 self.assertIn(case, source)
-        self.assertIn("one retained roll allocation, no replay duplicate", source)
+        self.assertIn("one retained roll allocation with exact first number, no replay duplicate", source)
         self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
 
     def test_family_portal_checks_current_child_entitlement(self):
