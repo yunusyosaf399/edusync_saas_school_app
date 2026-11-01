@@ -31,10 +31,13 @@ class DB01DB02IntegrationPreviewTests(unittest.TestCase):
         self.assertIn("93_db02_atomic_roll_allocator_pools.sql",filenames)
         self.assertEqual(dict(DOMAIN_TESTS)["92_db01_roll_correct_p1_apply.sql"],117)
         self.assertEqual(dict(DOMAIN_TESTS)["93_db02_atomic_roll_allocator_pools.sql"],29)
+        self.assertEqual(dict(DOMAIN_TESTS)["94_db01_db02_retired_policy_cutover.sql"],23)
+        self.assertIn("94_db02_direct_evidence_replay.sql",filenames)
         for name,plan in DOMAIN_TESTS:
             self.assertGreater(plan,0,name)
             self.assertTrue((ROOT/"supabase/tests/domain"/name).is_file(),name)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),4292)
+        self.assertEqual(len(DOMAIN_TESTS),113)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS),4315)
 
     def test_both_workstreams_appear_in_full_disposable_runner(self):
         driver=(ROOT/"tools/supabase/domain_local_ci.py").read_text()

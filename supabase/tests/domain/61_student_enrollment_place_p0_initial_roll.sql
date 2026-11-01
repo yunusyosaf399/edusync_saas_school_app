@@ -125,8 +125,9 @@ SELECT is((SELECT count(*) FROM app_private.student_status_transitions
  WHERE student_id='b1000000-0000-4000-8000-000000000001'),1::bigint,
  'INITIAL placement does not append an invented status change');
 SELECT is((SELECT count(*) FROM app_private.roll_allocations
- WHERE student_id='b1000000-0000-4000-8000-000000000001'),1::bigint,
- 'one retained roll allocation, no replay duplicate');
+ WHERE student_id='b1000000-0000-4000-8000-000000000001'
+   AND numeric_value=12001),1::bigint,
+ 'one retained roll allocation with exact first number, no replay duplicate');
 SELECT is((SELECT enrollment_id FROM app_private.roll_allocations
  WHERE id=:'placed_roll_allocation_id'::uuid),:'placed_enrollment_id'::uuid,
  'roll allocation references exactly the new protected Enrollment');
