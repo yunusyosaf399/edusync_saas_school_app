@@ -16,12 +16,12 @@ class SuiteRegistryTests(unittest.TestCase):
             '-- disposable suite\nBEGIN;\nSELECT plan('+str(count)+');\n'
             '\\ir fixtures/command_actor.sql\nSELECT * FROM finish();\nROLLBACK;\n')
 
-    def test_current_registry_preserves_all_112_full_filenames_and_4292_assertions(self):
+    def test_current_registry_preserves_all_113_full_filenames_and_4315_assertions(self):
         business.validate_test_registry(business.ROOT, business.DOMAIN_TESTS)
-        self.assertEqual(len(business.DOMAIN_TESTS), 112)
-        self.assertEqual(sum(count for _, count in business.DOMAIN_TESTS), 4292)
+        self.assertEqual(len(business.DOMAIN_TESTS), 113)
+        self.assertEqual(sum(count for _, count in business.DOMAIN_TESTS), 4315)
         names = {name for name, _ in business.DOMAIN_TESTS}
-        for number in (82, 83, 84, 85, 86, 89, 90, 91, 92):
+        for number in (82, 83, 84, 85, 86, 89, 90, 91, 92, 94):
             for owner in ('db01', 'db02'):
                 self.assertEqual(sum(n.startswith(str(number)+'_'+owner+'_') for n in names), 1)
 
