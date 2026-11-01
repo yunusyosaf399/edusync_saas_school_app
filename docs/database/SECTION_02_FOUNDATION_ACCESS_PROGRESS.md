@@ -33,9 +33,9 @@ original one-child revocation/receipt assertions. Whole-suite rollback remains.
 | Task | Current evidence / remaining acceptance |
 |---|---|
 | DB-012 Frozen Foundation | Nine migrations and nine frozen suites retained. Source/config guard passes locally. Exact-head runtime evidence is recorded in the PR. |
-| DB-013 Identity / username-email login | Auth-to-principal binding and token cutoff exist. Private login_aliases table exists; secure public-facing login orchestration, rate limiting and recovery are not implemented by this increment. OPEN. |
+| DB-013 Identity / username-email login | Server-only login service, private worker resolver and committed rate counters implemented as an inactive candidate; 24 unit tests PASS. Dedicated real Auth/PostgreSQL CI pending. See the [login boundary](../security/10_school_login_boundary.md). HTTP hosting and release activation remain OPEN. |
 | DB-014 Staff/shared-family credentials | Existing principal states, unique bindings, binding events and token cutoff support the model. Protected create/suspend/revoke/recover orchestration and Auth failure recovery remain OPEN; fixture updates are not lifecycle acceptance. |
-| DB-015 Authorized multiple children | Existing D1 implementation reused; suite 28 adds explicit two-child, cross-campus and independent-revocation coverage. Runtime acceptance is required before reporting this increment passed. D1 migration release remains separate. |
+| DB-015 Authorized multiple children | PR #198 merged at 3b13992. Suite 28 passed 79/79, full D1 business 3270/3270 and Foundation 220/220 on tested head 30f1218. D1 migration release remains separate. |
 | DB-016 Planned-role/action catalog | Current master specification role catalog and D1 97 permissions exist. Later module action catalogs/default role mappings need domain-specific registration and acceptance; no blanket role grants added. OPEN across planned modules. |
 | DB-017 Typed scopes | Existing Foundation/D1 ALL/CAMPUS/CLASS/SECTION/SUBJECT/OWN/ASSIGNED contracts reused; academic year derives from typed offering ancestry. Later consumer acceptance stays OPEN. |
 | DB-018 Teaching assignment authority | Existing class/subject teacher tests and resolvers reused. Attendance and marks consumers need exact effective-assignment tests when implemented. OPEN across those consumers. |
@@ -84,8 +84,8 @@ D1 static source guard PASS (243 fragments, 34 relations, 97 permissions,
 322 scope alternatives). These are source/tool checks, not PostgreSQL runtime.
 The PR must record exact-head Foundation and D1 runtime status separately.
 
-Next Section 02 implementation is the protected school-local username/email
-login boundary and credential lifecycle commands (DB-013/014), with generic
+Current Section 02 implementation adds the protected school-local username/email
+login boundary (DB-013). Credential lifecycle commands (DB-014) remain next, with generic
 failure, isolated individual/FAMILY credentials, live binding/token fencing,
 idempotent provisioning/recovery and audit. Existing alias constraints are the
 starting point, not permission to expose alias-to-email lookup. Independent
