@@ -132,8 +132,8 @@ def acceptance():
     check(store.resolve(SCHOOL,'ALIAS','parent.one') is None,'disabled_worker_purpose_denies')
     check(not store.admit(['d'*64]),'disabled_worker_purpose_blocks_meter')
     sql("UPDATE app_private.principals SET state='ACTIVE' WHERE id=%s",(SYSTEM,))
-    sql("UPDATE app_private.school_profiles SET state='SUSPENDED' WHERE id=%s",(SCHOOL,))
-    denied(lambda: sign(),'suspended_school')
+    sql("UPDATE app_private.school_profiles SET state='INACTIVE' WHERE id=%s",(SCHOOL,))
+    denied(lambda: sign(),'inactive_school')
     sql("UPDATE app_private.school_profiles SET state='ACTIVE' WHERE id=%s",(SCHOOL,))
 
     class SuspendDuringAuth:
@@ -214,7 +214,10 @@ def main():
         # The fixture contains transient passwords/keys. Never dump locals,
         # HTTP errors, SQL parameters, driver connection details or traceback.
         print('SECTION02_IDENTITY_LOGIN_FAIL stage='+stage+' checks='+str(checks)
-              +' sqlstate='+str(getattr(error,'sqlstate',None)),file=sys.stderr)
+              +' sqlstate='+str(getattr(error,'sqlstate',None))
+              +' constraint='+str(getattr(getattr(error,'diag',None),'constraint_name',None)),file=sys.stderr)
+        if str(error).startswith(('IDENTITY_ACCEPTANCE_FAILED ','IDENTITY_EXPECTED_DENIAL ')):
+            print(str(error),file=sys.stderr)
         if stage in ('candidate_install','failed_install_rollback'):
             # This stage executes static source only, never secret parameters.
             print(str(error)[-2000:],file=sys.stderr)
