@@ -72,7 +72,8 @@ login/lifecycle functionality or all-domain consumer acceptance.
    upgrade, authorization/release gates. These new tests do not activate it.
 
 Affected paths: suite 28, its expected count in `domain_business_ci.py`, and
-cumulative expected totals in `test_domain_acceptance_ci.py`. No role, SQL
+cumulative expected totals in `test_domain_acceptance_ci.py` and
+`test_domain_db01_prerequisite_ci.py`. No role, SQL
 function, migration or catalog semantics changed. Other chats touching those
 test registries must preserve this increment when composing their branches.
 

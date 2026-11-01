@@ -36,7 +36,7 @@ class DB01PrerequisiteTests(unittest.TestCase):
         import sys
         sys.path.insert(0, str(ROOT / "tools/supabase"))
         from domain_business_ci import DOMAIN_TESTS
-        self.assertEqual(sum(n for _, n in DOMAIN_TESTS[:74]), 3124)
+        self.assertEqual(sum(n for _, n in DOMAIN_TESTS[:74]), 3136)
         for filename, count in DOMAIN_TESTS[74:76]:
             sql = (ROOT / "supabase/tests/domain" / filename).read_text()
             self.assertIn("SELECT plan(" + str(count) + ");", sql)
