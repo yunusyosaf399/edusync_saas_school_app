@@ -57,6 +57,9 @@ service_role and arbitrary SET ROLE/JWT-claim impersonation receive no entry.
 The service worker is not granted executor membership or table access. The
 PostgreSQL test authenticates as the real worker LOGIN with a synthetic in-memory
 password; SET ROLE from postgres is not substituted for worker identity.
+Both functions require the school's single ACTIVE Foundation SYSTEM principal
+with the fixed `identity-reconciliation` purpose; no worker-selected actor is
+accepted. Missing/disabled reconciliation identity fails closed.
 
 This is a preauthentication read/rate-meter boundary. It deliberately has no
 client-provided actor, cannot assert that a human is authenticated, and does not

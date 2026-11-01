@@ -6,7 +6,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_login_executor REVOKE EXECUTE ON FUNC
 GRANT USAGE ON SCHEMA app_private TO schoolos_login_executor;
 GRANT SELECT(id,state) ON app_private.school_profiles TO schoolos_login_executor;
 GRANT SELECT(id,state) ON app_private.people TO schoolos_login_executor;
-GRANT SELECT(id,kind,person_id,state,row_version) ON app_private.principals TO schoolos_login_executor;
+GRANT SELECT(id,kind,person_id,system_purpose,state,row_version) ON app_private.principals TO schoolos_login_executor;
 GRANT SELECT(principal_id,auth_user_id,binding_version,tokens_valid_from)
  ON app_private.principal_auth_bindings TO schoolos_login_executor;
 GRANT SELECT(principal_id,normalized_alias,state,row_version)
@@ -57,6 +57,9 @@ AS $body$
  LEFT JOIN app_private.login_aliases a ON p_kind='ALIAS' AND a.principal_id=p.id
    AND a.normalized_alias=p_identifier AND a.state='ACTIVE'
  WHERE session_user='schoolos_identity_login'
+   AND (SELECT count(*) FROM app_private.principals worker
+        WHERE worker.kind='SYSTEM' AND worker.state='ACTIVE'
+          AND worker.system_purpose='identity-reconciliation')=1
    AND p.state='ACTIVE' AND p.kind IN ('INDIVIDUAL','FAMILY')
    AND (p.kind='FAMILY' OR person.state='ACTIVE')
    AND EXISTS(SELECT 1 FROM app_private.school_profiles s WHERE s.id=p_school AND s.state='ACTIVE')
@@ -75,6 +78,9 @@ DECLARE config app_private.identity_login_limits%ROWTYPE; k text; n integer;
 BEGIN
  IF session_user<>'schoolos_identity_login' OR p_keys IS NULL OR cardinality(p_keys) NOT BETWEEN 1 AND 3
    OR EXISTS(SELECT 1 FROM unnest(p_keys) k WHERE k IS NULL OR k !~ '^[0-9a-f]{64}$')
+ THEN RETURN false; END IF;
+ IF (SELECT count(*) FROM app_private.principals worker WHERE worker.kind='SYSTEM'
+     AND worker.state='ACTIVE' AND worker.system_purpose='identity-reconciliation')<>1
  THEN RETURN false; END IF;
  SELECT * INTO config FROM app_private.identity_login_limits WHERE singleton;
  IF NOT FOUND THEN RETURN false; END IF;
