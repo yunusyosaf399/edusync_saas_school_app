@@ -1,0 +1,115 @@
+-- Inactive Section 02 DB-013 candidate; disposable CI only, not a migration.
+-- Trusted deployment role installs. No credentials, policy seed or client grant.
+CREATE ROLE schoolos_login_executor NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+GRANT schoolos_login_executor TO postgres;
+ALTER DEFAULT PRIVILEGES FOR ROLE schoolos_login_executor REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+GRANT USAGE ON SCHEMA app_private TO schoolos_login_executor;
+GRANT SELECT(id,state) ON app_private.school_profiles TO schoolos_login_executor;
+GRANT SELECT(id,state) ON app_private.people TO schoolos_login_executor;
+GRANT SELECT(id,kind,person_id,system_purpose,state,row_version) ON app_private.principals TO schoolos_login_executor;
+GRANT SELECT(principal_id,auth_user_id,binding_version,tokens_valid_from)
+ ON app_private.principal_auth_bindings TO schoolos_login_executor;
+GRANT SELECT(principal_id,normalized_alias,state,row_version)
+ ON app_private.login_aliases TO schoolos_login_executor;
+SET ROLE schoolos_schema_owner;
+CREATE POLICY section02_login_school ON app_private.school_profiles FOR SELECT TO schoolos_login_executor USING(true);
+CREATE POLICY section02_login_person ON app_private.people FOR SELECT TO schoolos_login_executor USING(true);
+CREATE POLICY section02_login_principal ON app_private.principals FOR SELECT TO schoolos_login_executor USING(true);
+CREATE POLICY section02_login_binding ON app_private.principal_auth_bindings FOR SELECT TO schoolos_login_executor USING(true);
+CREATE POLICY section02_login_alias ON app_private.login_aliases FOR SELECT TO schoolos_login_executor USING(true);
+CREATE TABLE app_private.identity_login_limits (
+ singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
+ max_attempts integer NOT NULL CHECK(max_attempts BETWEEN 1 AND 10000),
+ window_seconds integer NOT NULL CHECK(window_seconds BETWEEN 1 AND 3600)
+);
+CREATE TABLE app_private.identity_login_attempts (
+ key_digest text COLLATE "C" PRIMARY KEY CHECK(key_digest ~ '^[0-9a-f]{64}$'),
+ window_start bigint NOT NULL,
+ attempts integer NOT NULL CHECK(attempts BETWEEN 1 AND 10001),
+ expires_at timestamptz NOT NULL
+);
+CREATE INDEX identity_login_attempts_expiry ON app_private.identity_login_attempts(expires_at);
+ALTER TABLE app_private.identity_login_limits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.identity_login_limits FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_private.identity_login_attempts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.identity_login_attempts FORCE ROW LEVEL SECURITY;
+CREATE POLICY section02_login_limits_owner ON app_private.identity_login_limits TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY section02_login_attempts_owner ON app_private.identity_login_attempts TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY section02_login_limits_read ON app_private.identity_login_limits FOR SELECT TO schoolos_login_executor USING(true);
+CREATE POLICY section02_login_attempts_worker ON app_private.identity_login_attempts TO schoolos_login_executor USING(true) WITH CHECK(true);
+REVOKE ALL ON app_private.identity_login_limits,app_private.identity_login_attempts FROM PUBLIC,anon,authenticated,service_role;
+GRANT SELECT ON app_private.identity_login_limits TO schoolos_login_executor;
+GRANT SELECT,INSERT,UPDATE,DELETE ON app_private.identity_login_attempts TO schoolos_login_executor;
+GRANT CREATE ON SCHEMA app_private TO schoolos_login_executor;
+RESET ROLE;
+SET ROLE schoolos_login_executor;
+CREATE FUNCTION app_private.identity_resolve_login(p_school uuid,p_kind text,p_identifier text)
+RETURNS TABLE(principal_id uuid,auth_user_id uuid,principal_kind text,person_id uuid,
+ principal_version bigint,binding_version bigint,tokens_valid_from bigint,alias_version bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$
+ WITH candidates AS (
+ SELECT p.id,b.auth_user_id,p.kind,p.person_id,p.row_version,b.binding_version,
+ extract(epoch FROM b.tokens_valid_from)::bigint AS cutoff,a.row_version AS alias_version
+ FROM app_private.principals p
+ JOIN app_private.principal_auth_bindings b ON b.principal_id=p.id
+ LEFT JOIN app_private.people person ON person.id=p.person_id
+ LEFT JOIN app_private.login_aliases a ON p_kind='ALIAS' AND a.principal_id=p.id
+   AND a.normalized_alias=p_identifier AND a.state='ACTIVE'
+ WHERE session_user='schoolos_identity_login'
+   AND current_setting('transaction_isolation')='read committed'
+   AND (SELECT count(*) FROM app_private.principals worker
+        WHERE worker.kind='SYSTEM' AND worker.state='ACTIVE'
+          AND worker.system_purpose='identity-reconciliation')=1
+   AND p.state='ACTIVE' AND p.kind IN ('INDIVIDUAL','FAMILY')
+   AND (p.kind='FAMILY' OR person.state='ACTIVE')
+   AND EXISTS(SELECT 1 FROM app_private.school_profiles s WHERE s.id=p_school AND s.state='ACTIVE')
+   AND b.auth_user_id IS NOT NULL
+   AND ((p_kind='ALIAS' AND p_identifier ~ '^[a-z][a-z0-9._-]{2,31}$' AND a.principal_id IS NOT NULL)
+     OR (p_kind='SUBJECT' AND b.auth_user_id::text=p_identifier)))
+ SELECT * FROM candidates WHERE (SELECT count(*) FROM candidates)=1
+$body$;
+REVOKE ALL ON FUNCTION app_private.identity_resolve_login(uuid,text,text) FROM PUBLIC,anon,authenticated,service_role;
+
+CREATE FUNCTION app_private.identity_login_admit(p_keys text[]) RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$
+DECLARE config app_private.identity_login_limits%ROWTYPE; k text; n integer;
+ bucket bigint; now_at timestamptz:=clock_timestamp(); allowed boolean:=true;
+BEGIN
+ IF session_user<>'schoolos_identity_login'
+   OR current_setting('transaction_isolation')<>'read committed'
+   OR p_keys IS NULL OR cardinality(p_keys) NOT BETWEEN 1 AND 3
+   OR EXISTS(SELECT 1 FROM unnest(p_keys) supplied(key_value)
+             WHERE supplied.key_value IS NULL OR supplied.key_value !~ '^[0-9a-f]{64}$')
+ THEN RETURN false; END IF;
+ IF (SELECT count(*) FROM app_private.principals worker WHERE worker.kind='SYSTEM'
+     AND worker.state='ACTIVE' AND worker.system_purpose='identity-reconciliation')<>1
+ THEN RETURN false; END IF;
+ SELECT * INTO config FROM app_private.identity_login_limits WHERE singleton;
+ IF NOT FOUND THEN RETURN false; END IF;
+ bucket:=floor(extract(epoch FROM now_at)/config.window_seconds)::bigint;
+ -- Sorted conflict locks prevent two-key admission deadlocks across instances.
+ FOR k IN SELECT DISTINCT x FROM unnest(p_keys) x ORDER BY x LOOP
+   INSERT INTO app_private.identity_login_attempts AS prior(key_digest,window_start,attempts,expires_at)
+   VALUES(k,bucket,1,to_timestamp((bucket+1)*config.window_seconds))
+   ON CONFLICT(key_digest) DO UPDATE SET window_start=EXCLUDED.window_start,
+     attempts=CASE WHEN prior.window_start=EXCLUDED.window_start
+       THEN least(prior.attempts+1,config.max_attempts+1) ELSE 1 END,
+     expires_at=EXCLUDED.expires_at
+   RETURNING attempts INTO n;
+   allowed:=allowed AND n<=config.max_attempts;
+ END LOOP;
+ -- Bounded maintenance; expired buckets are not permanent identity history.
+ DELETE FROM app_private.identity_login_attempts WHERE key_digest IN
+   (SELECT key_digest FROM app_private.identity_login_attempts WHERE expires_at<now_at
+    ORDER BY expires_at,key_digest LIMIT 100 FOR UPDATE SKIP LOCKED);
+ RETURN allowed;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.identity_login_admit(text[]) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.identity_resolve_login(uuid,text,text),
+ app_private.identity_login_admit(text[]) TO schoolos_identity_login;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_login_executor;
+RESET ROLE;
