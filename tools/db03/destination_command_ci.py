@@ -133,7 +133,7 @@ def run_destination_command(local, container, fixture):
     run_concession_command(root,worker,api,record,claims,
         (Path(__file__).resolve().parents[2] / 'supabase/tests/db03/fixtures/concession_command_actor.sql').read_text())
     from fee_disposition_ci import run_fee_disposition
-    run_fee_disposition(root,worker,api,claims)
+    run_fee_disposition(root,worker,api,record,claims)
     with root() as conn:
         conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() "
                      "WHERE id=md5('admission.destination.record:grant')::uuid")
