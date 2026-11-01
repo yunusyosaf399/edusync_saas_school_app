@@ -67,7 +67,10 @@ class PaymentEvidenceService:
                     ).fetchone()[0] is not True:
                         raise Denied('Bank slip authorization denied')
             self.objects.put_once(key, slip)
-            if hashlib.sha256(self.objects.read(key, 1_048_577)).digest() != digest:
+            stored = self.objects.read(key, 1_048_577)
+            if (len(stored) != len(slip)
+                or hashlib.sha256(stored).digest() != digest
+                or measure_certificate(stored)[0] != mime):
                 raise Denied('Stored bank slip changed')
             with self.connect() as conn:
                 with conn.transaction():
