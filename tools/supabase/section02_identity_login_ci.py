@@ -278,6 +278,10 @@ def _main():
               +' error_class='+type(error).__name__
               +' sqlstate='+str(getattr(error,'sqlstate',None))
               +' constraint='+str(getattr(getattr(error,'diag',None),'constraint_name',None)),file=sys.stderr)
+        if isinstance(error, __import__('psycopg').errors.InsufficientPrivilege):
+            # PostgreSQL's fixed privilege object name is safe; do not print
+            # statements, parameters, driver detail, context or credentials.
+            print('SECTION02_PRIVILEGE_OBJECT '+str(error.diag.message_primary),file=sys.stderr)
         if str(error).startswith('IDENTITY_'):
             print(str(error),file=sys.stderr)
         if stage in ('candidate_install','failed_install_rollback','credential_candidate_install','credential_failed_install_rollback'):
