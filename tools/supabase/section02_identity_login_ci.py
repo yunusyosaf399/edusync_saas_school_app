@@ -178,6 +178,8 @@ def acceptance():
     family_version=sql('SELECT row_version FROM app_private.principals WHERE id=%s',(FAMILY,))[0][0]
     check(sql("SELECT has_table_privilege('schoolos_identity_executor','auth.users','SELECT')")[0][0] is False,
           'identity_executor_no_managed_auth_read')
+    check(sql("SELECT has_schema_privilege('schoolos_identity_executor','auth','USAGE')")[0][0] is False,
+          'identity_executor_no_managed_auth_schema')
     check(sql("SELECT has_function_privilege('anon','app.section02_suspend_credential(uuid,bigint,text,text)','EXECUTE')")[0][0] is False,
           'anonymous_cannot_suspend')
     check(sql("SELECT has_function_privilege('authenticated','app_private.section02_suspension_evidence(uuid,uuid,uuid,bigint,text,text,bytea,uuid)','EXECUTE')")[0][0] is False,
