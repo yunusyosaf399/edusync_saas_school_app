@@ -176,9 +176,18 @@ def acceptance():
         except psycopg.Error: check(True,label)
         else: raise RuntimeError('IDENTITY_EXPECTED_COMMAND_DENIAL '+label)
     family_version=sql('SELECT row_version FROM app_private.principals WHERE id=%s',(FAMILY,))[0][0]
+    check(sql("SELECT has_table_privilege('schoolos_identity_executor','auth.users','SELECT')")[0][0] is False,
+          'identity_executor_no_managed_auth_read')
+    check(sql("SELECT has_function_privilege('anon','app.section02_suspend_credential(uuid,bigint,text,text)','EXECUTE')")[0][0] is False,
+          'anonymous_cannot_suspend')
+    check(sql("SELECT has_function_privilege('authenticated','app_private.section02_suspension_evidence(uuid,uuid,uuid,bigint,text,text,bytea,uuid)','EXECUTE')")[0][0] is False,
+          'client_cannot_write_evidence')
     rejected(lambda:suspend(users[0],expected=family_version,key='family-attempt'),'family_cannot_suspend')
     rejected(lambda:suspend(users[1],target=STAFF,expected=1,key='self-attempt'),'self_cannot_suspend')
     rejected(lambda:suspend(users[1],expected=family_version-1,key='stale-attempt'),'stale_target_denied')
+    sql("UPDATE app_private.permissions SET state='DISABLED' WHERE id=%s",(perm,))
+    rejected(lambda:suspend(users[1],expected=family_version,key='disabled-grant'),'disabled_permission_denied')
+    sql("UPDATE app_private.permissions SET state='ENABLED' WHERE id=%s",(perm,))
     receipt=suspend(users[1],expected=family_version)
     check(receipt==suspend(users[1],expected=family_version),'suspend_idempotent_replay')
     check(sql("SELECT state FROM app_private.principals WHERE id=%s",(FAMILY,))[0][0]=='SUSPENDED','protected_suspension_live')
