@@ -5,12 +5,14 @@ on:
       - '.github/workflows/section02-identity.yml'
       - 'services/school_identity/**'
       - 'supabase/proposals/section02_identity_login.sql.draft'
+      - 'supabase/proposals/section02_credential_suspend.sql.draft'
       - 'tools/supabase/section02_identity_login_ci.py'
   pull_request:
     paths:
       - '.github/workflows/section02-identity.yml'
       - 'services/school_identity/**'
       - 'supabase/proposals/section02_identity_login.sql.draft'
+      - 'supabase/proposals/section02_credential_suspend.sql.draft'
       - 'tools/supabase/section02_identity_login_ci.py'
   workflow_dispatch:
 jobs:
