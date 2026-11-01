@@ -72,6 +72,42 @@ class Section03CrossDomainContractTests(unittest.TestCase):
         self.assertIn("one retained roll allocation, no replay duplicate", source)
         self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
 
+    def test_family_portal_checks_current_child_entitlement(self):
+        sources = {
+            "28_family_portal_student_roster_profile_disclosure.sql": (
+                "app.d1_read_student_roster(",
+                "app.d1_read_student_profile(",
+                "family.child_access.change",
+                "REVOKE",
+            ),
+            "29_family_portal_emergency_contact_current_checked_read.sql": (
+                "app.d1_read_student_emergency_contacts(",
+                "app.d1_read_student_emergency_contact_history(",
+                "family.child_access.change",
+                "REVOKE",
+            ),
+            "31_family_portal_two_family_child_access_isolation.sql": (
+                "app.d1_read_family_summary_for_student(",
+                "app.d1_read_family_relationship_history(",
+                "family.child_access.change",
+                "REVOKE",
+            ),
+        }
+        for name, requirements in sources.items():
+            with self.subTest(suite=name):
+                source = sql_test(name)
+                for requirement in requirements:
+                    self.assertIn(requirement, source)
+                self.assertIn("SET ROLE authenticated;", source)
+                self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+
+    def test_student_create_remains_fail_closed_pending_admissions(self):
+        source = sql_test("65_remaining_student_commands_fail_closed.sql")
+        self.assertIn("student.create", source)
+        self.assertIn("none of four unimplemented operation contracts has been activated", source)
+        self.assertIn("fail-closed probes created no Student core rows", source)
+        self.assertTrue(source.rstrip().endswith("ROLLBACK;"))
+
     def test_exact_g02_suite_registry_is_not_silently_redefined(self):
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         suites = manifest["business_suites"]
