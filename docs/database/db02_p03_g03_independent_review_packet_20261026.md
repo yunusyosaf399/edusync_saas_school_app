@@ -1,3 +1,5 @@
+> **Policy update, 26 October 2026:** The mandatory non-author mechanism in this historical packet is superseded for DB02 P03/G03 by [ADR-006](../decisions/ADR-006-db02-solo-maintainer-review.md). Use the [solo-maintainer technical review](db02_solo_maintainer_technical_review_20261026.md) and its owner-acceptance record. Source links/evidence below are retained; they are not independent approval.
+
 # DB02 P03/G03 independent SQL/security review packet
 
 Prepared 26 October 2026. **Status: READY FOR REVIEW; reviewer not identified; decision pending.** This packet is authored preparation, not a non-author review or approval. It updates the obsolete DIRECT/SUBMIT-only scope in issue #131 to the final composed implementation.
