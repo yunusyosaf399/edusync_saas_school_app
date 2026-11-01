@@ -509,7 +509,8 @@ def validate_fee_disposition() -> tuple[str, str]:
     if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z_]+)', sql) != ['admission_fee_dispositions']:
         raise RuntimeError('DB03_FEE_DISPOSITION_TABLE_SCOPE')
     if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != [
-            'db03_fee_disposition_guard','db03_fee_disposition_admin','db03_record_admission_fee_disposition']:
+            'db03_fee_disposition_guard','db03_fee_disposition_advance',
+            'db03_fee_disposition_admin','db03_record_admission_fee_disposition']:
         raise RuntimeError('DB03_FEE_DISPOSITION_FUNCTION_SCOPE')
     outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
     if re.search(r'(?mi)^\s*(INSERT INTO|CREATE ROLE|ALTER ROLE)\b', outside):
