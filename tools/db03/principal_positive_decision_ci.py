@@ -214,15 +214,16 @@ def run_positive_principal_decisions(local, container, root, worker, api,
                 'WHERE application_id IN(%s,%s)',
                 (returned,rejected)).fetchone()[0]==2,
                 'one immutable decision per genuine Forward')
-            for table,column in [('command_receipts','command_kind'),
-                                 ('audit_events','event_type'),
-                                 ('outbox_events','event_type')]:
+            for table,column,reference in [
+                    ('command_receipts','command_kind','result_ref'),
+                    ('audit_events','event_type','target_ref'),
+                    ('outbox_events','event_type','aggregate_ref')]:
                 check(conn.execute(
                     'SELECT count(*) FROM app_private.'+table+
-                    ' WHERE '+column+"='admission.final.decide' AND "
-                    "(result_ref IN(%s,%s) OR %s)",
-                    (returned,rejected,True)).fetchone()[0]>=2,
-                    'matching final '+table+' evidence')
+                    ' WHERE '+column+"='admission.final.decide' AND "+
+                    reference+' IN(%s,%s)',
+                    (returned,rejected)).fetchone()[0]==2,
+                    'exact two final '+table+' evidence rows')
             check(conn.execute(
                 "SELECT count(*) FROM app_private.admission_principal_decisions d "
                 "JOIN app_private.command_receipts c ON c.id=d.command_receipt_id "
@@ -237,4 +238,4 @@ def run_positive_principal_decisions(local, container, root, worker, api,
                 'positive testing does not grant user final permission')
         print(f'DB03_P35B_POSITIVE_DECISIONS_PASS checks={checks} '
               'measured_pdf=true RETURN=true REJECT=true exact_replay=true '
-              'client_final_rpc_disabled=true student_created=false')
+              'client_final_rpc_disabled=true no_Student_command_invoked=true')
