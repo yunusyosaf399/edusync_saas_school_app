@@ -78,6 +78,7 @@ RESET ROLE;
 -- The existing functions retain their typed privileges/owners/entrypoint API;
 -- the same workflow role replaces only their internal lifecycle checks.
 SET ROLE schoolos_workflow_executor;
+GRANT EXECUTE ON FUNCTION app_private.db03_document_snapshot(uuid) TO schoolos_schema_owner;
 CREATE OR REPLACE FUNCTION app_private.db03_document_is_forwarded(p_app uuid) RETURNS boolean
 LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
  SELECT app_private.db03_principal_forward_live(p_app,NULL)
