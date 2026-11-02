@@ -639,6 +639,32 @@ def validate_principal_final_authority() -> tuple[str, str]:
     return sql,test
 
 
+
+def validate_principal_lifecycle_invariants() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/31_01_principal_lifecycle_invariants.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/31_principal_lifecycle_invariants.sql').read_text()
+    names = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if names != ['db03_principal_terminal_history_guard',
+                 'db03_principal_lifecycle_projection']:
+        raise RuntimeError('DB03_P31_PRIVATE_FUNCTION_SCOPE')
+    if 'db03_principal_one_decision_per_forward' not in sql or 'UNIQUE(application_id,forward_id)' not in sql:
+        raise RuntimeError('DB03_P31_UNIQUE_FORWARD_DECISION_MISSING')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|CREATE ROLE|ALTER ROLE|GRANT)\b', outside):
+        raise RuntimeError('DB03_P31_MUTATION_OR_GRANT')
+    for term in ('BEFORE INSERT OR UPDATE OR DELETE',
+                 "d.decision='REJECT'", "d.forward_id=NEW.forward_id",
+                 'RETURNED_FOR_CORRECTION', 'db03_document_is_forwarded',
+                 'SECURITY INVOKER'):
+        if term not in sql:
+            raise RuntimeError('DB03_P31_TERMINAL_SOURCE_'+term)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['22'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 22 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P31_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_LIFECYCLE_SOURCE_PASS assertions=22 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -675,6 +701,7 @@ def main() -> int:
     principal_contract_sql, principal_contract_test = validate_principal_final_decision_contract()
     principal_history_sql, principal_history_test = validate_principal_decision_history()
     principal_authority_sql, principal_authority_test = validate_principal_final_authority()
+    principal_lifecycle_sql, principal_lifecycle_test = validate_principal_lifecycle_invariants()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1394,6 +1421,25 @@ def main() -> int:
             output=local.run_psql(container,principal_authority_test,'DB03_FINAL_AUTHORITY_TEST')
             parse_tap(output,24)
             print('DB03_PRINCIPAL_FINAL_AUTHORITY_DATABASE_PASS 24/24; permission_seeded=false')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_lifecycle_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PRINCIPAL_LIFECYCLE_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_PRINCIPAL_LIFECYCLE_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_PRINCIPAL_LIFECYCLE_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_PRINCIPAL_LIFECYCLE_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_principal_terminal_history_guard','db03_principal_lifecycle_projection');",
+                'DB03_PRINCIPAL_LIFECYCLE_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_PRINCIPAL_LIFECYCLE_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_lifecycle_sql+'\nCOMMIT;',
+                           'DB03_PRINCIPAL_LIFECYCLE_INSTALL')
+            output=local.run_psql(container,principal_lifecycle_test,'DB03_PRINCIPAL_LIFECYCLE_TEST')
+            parse_tap(output,22)
+            print('DB03_PRINCIPAL_LIFECYCLE_DATABASE_PASS 22/22; no_writer_or_Student_effect=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
