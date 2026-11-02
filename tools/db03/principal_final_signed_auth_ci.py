@@ -156,8 +156,8 @@ def run_principal_final_signed_auth(local, container, root, verified_claims):
             "'app.decide_admission_principal(uuid,bigint,uuid,text,text,text)',"
             "'EXECUTE')").fetchone()[0],
             'client final-decision activation remains forbidden')
-    if checks != 11:
-        raise RuntimeError(f'DB03_P35A_CHECK_COUNT expected=11 actual={checks}')
-    print('DB03_P35A_SIGNED_AUTH_RACE_PASS checks=11 '
+    if checks != 13:
+        raise RuntimeError(f'DB03_P35A_CHECK_COUNT expected=13 actual={checks}')
+    print('DB03_P35A_SIGNED_AUTH_RACE_PASS checks=13 '
           'real_GoTrue_login=true observed_pg_lock=true '
           'revocation_after_wait_denies=true no_final_effect=true')
