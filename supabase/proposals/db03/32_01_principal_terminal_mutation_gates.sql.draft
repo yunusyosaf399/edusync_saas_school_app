@@ -72,17 +72,18 @@ DO $guard$ DECLARE t text; BEGIN
   EXECUTE format('CREATE TRIGGER ac_db03_terminal_%I BEFORE INSERT ON app_private.%I FOR EACH ROW EXECUTE FUNCTION app_private.db03_principal_rejected_write_guard()',t,t);
  END LOOP;
 END $guard$;
+GRANT CREATE ON SCHEMA app,app_private TO schoolos_workflow_executor;
 RESET ROLE;
 
 -- The existing functions retain their typed privileges/owners/entrypoint API;
 -- the same workflow role replaces only their internal lifecycle checks.
 SET ROLE schoolos_workflow_executor;
 CREATE OR REPLACE FUNCTION app_private.db03_document_is_forwarded(p_app uuid) RETURNS boolean
-LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
  SELECT app_private.db03_principal_forward_live(p_app,NULL)
 $body$;
 CREATE OR REPLACE FUNCTION app_private.db03_document_target_open(p_app uuid,p_expected bigint) RETURNS boolean
-LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
  SELECT EXISTS(SELECT 1 FROM app_private.admission_applications a
  JOIN app_private.school_profiles s ON s.id=a.school_id JOIN app.campuses c ON c.id=a.campus_id
  JOIN app.academic_years y ON y.id=a.academic_year_id
@@ -171,3 +172,4 @@ BEGIN
 END $body$;
 
 RESET ROLE;
+REVOKE CREATE ON SCHEMA app,app_private FROM schoolos_workflow_executor;
