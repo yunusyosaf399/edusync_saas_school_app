@@ -730,6 +730,31 @@ def validate_principal_return_reject_command() -> tuple[str, str]:
     return sql,test
 
 
+
+def validate_principal_auth_acceptance() -> str:
+    test = (ROOT / 'supabase/tests/db03/34_principal_final_auth_acceptance.sql').read_text()
+    names = ['policy_publication_actor','intake_grace_actor','principal_final_actor']
+    fixture = (ROOT / 'supabase/tests/db03/fixtures/principal_final_actor.sql').read_text()
+    for name in names:
+        anchor = '\\ir fixtures/' + name + '.sql'
+        if test.count(anchor) != 1:
+            raise RuntimeError('DB03_P34_FIXTURE_SCOPE_'+name)
+        source = (ROOT / ('supabase/tests/db03/fixtures/' + name + '.sql')).read_text()
+        test = test.replace(anchor, source)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['19'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 19 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P34_TEST_TRANSACTION_OR_COUNT')
+    for part in ("admission.final.decide", "md5('admission.final.decide:p34-operation')",
+                 'real Auth', 'revoke_principal', 'campus_scope',
+                 'expired_jwt', 'wrong_subject', 'ROLLBACK TO SAVEPOINT'):
+        if part not in test and part not in fixture:
+            raise RuntimeError('DB03_P34_AUTH_COVERAGE_'+part)
+    if 'GRANT EXECUTE' in fixture or 'app.decide_admission_principal' in fixture:
+        raise RuntimeError('DB03_P34_NO_USER_ACTIVATION')
+    print('DB03_PRINCIPAL_AUTH_SOURCE_PASS assertions=19 fixture_only=true sha256='+hashlib.sha256(test.encode()).hexdigest())
+    return test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -769,6 +794,7 @@ def main() -> int:
     principal_lifecycle_sql, principal_lifecycle_test = validate_principal_lifecycle_invariants()
     principal_terminal_sql, principal_terminal_test = validate_principal_terminal_mutation_gates()
     principal_command_sql, principal_command_test = validate_principal_return_reject_command()
+    principal_auth_test = validate_principal_auth_acceptance()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1545,6 +1571,9 @@ def main() -> int:
             output=local.run_psql(container,principal_command_test,'DB03_FINAL_COMMAND_TEST')
             parse_tap(output,30)
             print('DB03_PRINCIPAL_RETURN_REJECT_DATABASE_PASS 30/30; client_operation_disabled=true')
+            output=local.run_psql(container,principal_auth_test,'DB03_PRINCIPAL_AUTH_LIVE_TEST')
+            parse_tap(output,19)
+            print('DB03_PRINCIPAL_AUTH_DATABASE_PASS 19/19; client_final_permission_disabled=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
