@@ -745,7 +745,7 @@ def validate_principal_auth_acceptance() -> str:
             r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 19 or not test.rstrip().endswith('ROLLBACK;'):
         raise RuntimeError('DB03_P34_TEST_TRANSACTION_OR_COUNT')
     for part in ("admission.final.decide", "md5('admission.final.decide:p34-operation')",
-                 'real-Auth', 'revoke_principal', 'campus_scope',
+                 'real Auth', 'revoke_principal', 'campus_scope',
                  'expired_jwt', 'wrong_subject', 'ROLLBACK TO SAVEPOINT'):
         if part not in test and part not in fixture:
             raise RuntimeError('DB03_P34_AUTH_COVERAGE_'+part)
