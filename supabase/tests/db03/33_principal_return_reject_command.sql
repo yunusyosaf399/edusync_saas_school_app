@@ -92,8 +92,8 @@ SELECT throws_ok($query$
  SELECT app.decide_admission_principal(
  '77777777-7777-4777-8777-777777777777',1,
  '55555555-5555-4555-8555-555555555555','REJECT','reason','key')
- $query$,'P0001','DB03 final Principal authentication expired',
- 'unsigned current session cannot submit validly shaped REJECT');
+ $query$,'P0001','DB03 Principal application unavailable',
+ 'unknown application cannot submit validly shaped REJECT');
 SELECT is((SELECT count(*) FROM app_private.admission_principal_decisions),0::bigint,
  'no Principal decision created by installing source');
 SELECT * FROM finish();
