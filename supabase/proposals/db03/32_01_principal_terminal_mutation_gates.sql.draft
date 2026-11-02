@@ -68,7 +68,7 @@ CREATE TRIGGER ac_db03_terminal_application_update
  BEFORE UPDATE ON app_private.admission_applications
  FOR EACH ROW EXECUTE FUNCTION app_private.db03_principal_rejected_write_guard();
 DO $guard$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['admission_application_transitions','admission_certificate_grace_history','admission_document_intakes','admission_document_links','admission_document_forwards','admission_document_reviews','admission_document_clearances','admission_identity_resolutions','admission_destination_intents','admission_fee_dispositions','admission_assessments'] LOOP
+ FOREACH t IN ARRAY ARRAY['admission_application_transitions','admission_certificate_grace_history','admission_document_intakes','admission_document_links','admission_document_forwards','admission_document_reviews','admission_document_clearances','admission_identity_resolutions','admission_destination_intents','admission_fee_dispositions','admission_assessments','admission_stage_outcomes','admission_document_upload_intents','admission_person_checks','admission_person_creations'] LOOP
   EXECUTE format('CREATE TRIGGER ac_db03_terminal_%I BEFORE INSERT ON app_private.%I FOR EACH ROW EXECUTE FUNCTION app_private.db03_principal_rejected_write_guard()',t,t);
  END LOOP;
 END $guard$;
