@@ -613,6 +613,32 @@ def validate_principal_decision_history() -> tuple[str, str]:
     return sql,test
 
 
+
+def validate_principal_final_authority() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/30_01_principal_final_authority.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/30_principal_final_authority.sql').read_text()
+    names = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if names != ['db03_principal_final_authority', 'db03_principal_final_actor']:
+        raise RuntimeError('DB03_P30_PRIVATE_FUNCTION_SCOPE')
+    policies = re.findall(r'(?m)^CREATE POLICY ([a-z0-9_]+)', sql)
+    if policies != ['db03_principal_final_operation_read']:
+        raise RuntimeError('DB03_P30_OPERATION_RLS_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|CREATE ROLE|ALTER ROLE|CREATE OR REPLACE FUNCTION)\b', outside):
+        raise RuntimeError('DB03_P30_MUTATION_OR_ACTIVATION')
+    for value in ("admission.final.decide", "r.code='PRINCIPAL'",
+                  'principal_auth_bindings', 'assignment_permission_scopes',
+                  "request.jwt.claims", 'db03_principal_final_authority',
+                  'schoolos_workflow_executor'):
+        if value not in sql:
+            raise RuntimeError('DB03_P30_DISTINCT_PRINCIPAL_AUTHORITY_'+value)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['24'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 24 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P30_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_FINAL_AUTHORITY_SOURCE_PASS assertions=24 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -648,6 +674,7 @@ def main() -> int:
     principal_preflight_sql, principal_preflight_test = validate_principal_review_preflight()
     principal_contract_sql, principal_contract_test = validate_principal_final_decision_contract()
     principal_history_sql, principal_history_test = validate_principal_decision_history()
+    principal_authority_sql, principal_authority_test = validate_principal_final_authority()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1348,6 +1375,25 @@ def main() -> int:
             output=local.run_psql(container,principal_history_test,'DB03_PRINCIPAL_HISTORY_TEST')
             parse_tap(output,20)
             print('DB03_PRINCIPAL_HISTORY_DATABASE_PASS 20/20; no_writer_or_accepted_decision=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_authority_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_FINAL_AUTHORITY_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_FINAL_AUTHORITY_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_FINAL_AUTHORITY_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_FINAL_AUTHORITY_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_principal_final_authority','db03_principal_final_actor');",
+                'DB03_FINAL_AUTHORITY_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_FINAL_AUTHORITY_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_authority_sql+'\nCOMMIT;',
+                           'DB03_FINAL_AUTHORITY_INSTALL')
+            output=local.run_psql(container,principal_authority_test,'DB03_FINAL_AUTHORITY_TEST')
+            parse_tap(output,24)
+            print('DB03_PRINCIPAL_FINAL_AUTHORITY_DATABASE_PASS 24/24; permission_seeded=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
