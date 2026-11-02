@@ -142,3 +142,7 @@ def run_destination_command(local, container, fixture):
     denied(lambda:record(app,1,OFFERING,'Intended Grade 1','destination-one'),
            'administrator scope denied')
     print(f'DB03_DESTINATION_REAL_AUTH_PASS checks={checks} applicant_grade_only=true')
+    # P35A reuses the *signed* local GoTrue login verified at the top of this
+    # disposable runner. Keep the final-decision RPC ungranted to clients.
+    from principal_final_signed_auth_ci import run_principal_final_signed_auth
+    run_principal_final_signed_auth(local, container, root, claims)
