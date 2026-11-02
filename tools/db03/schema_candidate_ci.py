@@ -730,6 +730,33 @@ def validate_principal_return_reject_command() -> tuple[str, str]:
     return sql,test
 
 
+
+def validate_principal_final_auth_linked() -> tuple[str, int]:
+    test = (ROOT / 'supabase/tests/db03/34_principal_final_auth_linked.sql').read_text()
+    fixtures = ['policy_publication_actor', 'intake_grace_actor']
+    for name in fixtures:
+        anchor = r'\ir fixtures/' + name + '.sql'
+        if test.count(anchor) != 1:
+            raise RuntimeError('DB03_P34_AUTH_LINKED_FIXTURE_SCOPE')
+        fixture = (ROOT / 'supabase/tests/db03/fixtures' / (name + '.sql')).read_text()
+        test = test.replace(anchor, fixture)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['17'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 17 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P34_AUTH_LINKED_TRANSACTION_OR_PLAN')
+    for needle in ("foundation-rbac-001@example.invalid",
+                   "admission.final.decide", "db03_principal_final_authority",
+                   "SAVEPOINT p34_retired", "SAVEPOINT p34_assignment",
+                   "SAVEPOINT p34_grant", "SAVEPOINT p34_scope",
+                   "SAVEPOINT p34_disabled", "SAVEPOINT p34_future_binding",
+                   "NOT has_function_privilege('authenticated'",
+                   "command_kind='admission.final.decide'"):
+        if needle not in test:
+            raise RuntimeError('DB03_P34_AUTH_LINKED_INCOMPLETE_'+needle)
+    print('DB03_PRINCIPAL_FINAL_AUTH_LINKED_SOURCE_PASS assertions=17 sha256='+
+          hashlib.sha256(test.encode()).hexdigest())
+    return test, 17
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -769,6 +796,7 @@ def main() -> int:
     principal_lifecycle_sql, principal_lifecycle_test = validate_principal_lifecycle_invariants()
     principal_terminal_sql, principal_terminal_test = validate_principal_terminal_mutation_gates()
     principal_command_sql, principal_command_test = validate_principal_return_reject_command()
+    principal_auth_linked_test, principal_auth_linked_count = validate_principal_final_auth_linked()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1545,6 +1573,10 @@ def main() -> int:
             output=local.run_psql(container,principal_command_test,'DB03_FINAL_COMMAND_TEST')
             parse_tap(output,30)
             print('DB03_PRINCIPAL_RETURN_REJECT_DATABASE_PASS 30/30; client_operation_disabled=true')
+            output=local.run_psql(container,principal_auth_linked_test,
+                                  'DB03_FINAL_AUTH_LINKED_TEST')
+            parse_tap(output,principal_auth_linked_count)
+            print('DB03_PRINCIPAL_FINAL_AUTH_LINKED_DATABASE_PASS 17/17; app_client_disabled=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
