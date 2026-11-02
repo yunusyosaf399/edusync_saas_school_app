@@ -80,6 +80,20 @@ VALUES(md5('p35b:principal-final-scope')::uuid,
  md5('admission.final.decide:p35a-contract')::uuid,
  'ALL','DIRECT',clock_timestamp(),
  '11111111-1111-4111-8111-111111111111');
+-- Publication is separately scoped to the original Principal assignment.
+-- Reappointed Principal must receive a *new* School ALL scope; never reuse
+-- the prior assignment or clear its revocation.
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+VALUES(md5('p35b:publisher-scope')::uuid,
+ md5('p35b:principal-reappointment')::uuid,
+ 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+ 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+ 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+ '12121212-1212-4212-8212-121212121212',
+ 'ALL','DIRECT',clock_timestamp(),
+ '11111111-1111-4111-8111-111111111111');
 INSERT INTO app_private.role_permission_grants(
  id,role_id,role_family_only,permission_id,permission_family_safe,valid_from,created_by)
 SELECT md5(p.code||':p35b-regrant')::uuid,
