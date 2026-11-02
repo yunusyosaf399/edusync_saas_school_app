@@ -665,6 +665,39 @@ def validate_principal_lifecycle_invariants() -> tuple[str, str]:
     return sql,test
 
 
+
+def validate_principal_terminal_mutation_gates() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/32_01_principal_terminal_mutation_gates.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/32_principal_terminal_mutation_gates.sql').read_text()
+    created = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if created != ['db03_principal_not_rejected','db03_principal_forward_live',
+                   'db03_principal_resubmission_ready','db03_principal_lifecycle_status',
+                   'db03_principal_rejected_write_guard']:
+        raise RuntimeError('DB03_P32_PRIVATE_FUNCTION_SCOPE')
+    overrides = re.findall(r'(?m)^CREATE OR REPLACE FUNCTION ([a-z_]+\.[a-z0-9_]+)\(', sql)
+    if overrides != ['app_private.db03_document_is_forwarded',
+                     'app_private.db03_document_target_open',
+                     'app.forward_admission_to_principal',
+                     'app.read_admission_document_queue',
+                     'app.list_admission_principal_queue']:
+        raise RuntimeError('DB03_P32_EXISTING_COMMAND_OVERRIDE_SCOPE')
+    if len(re.findall(r"'admission_[a-z0-9_]+'", sql.split('FOREACH t IN ARRAY ARRAY[')[1].split('] LOOP')[0])) != 15:
+        raise RuntimeError('DB03_P32_TERMINAL_TABLE_SCOPE')
+    if 'INSERT INTO app_private.admission_principal_decisions' in sql or re.search(
+            r'(?mi)^\s*(CREATE TABLE|CREATE ROLE|ALTER ROLE|ALTER TABLE)\b', sql):
+        raise RuntimeError('DB03_P32_NO_FINAL_WRITER_OR_ACTIVATION')
+    for needle in ('db03_principal_not_rejected', 'DB03 Principal RETURN requires an amended application',
+                   'RETURNED_FOR_CORRECTION', 'db03_principal_forward_live(a.id,f.id)',
+                   "db03_principal_rejected_write_guard", 'REVOKE CREATE ON SCHEMA app,app_private'):
+        if needle not in sql:
+            raise RuntimeError('DB03_P32_INCOMPLETE_LIFECYCLE_'+needle)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['28'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 28 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P32_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_TERMINAL_MUTATION_GATES_SOURCE_PASS assertions=28 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -702,6 +735,7 @@ def main() -> int:
     principal_history_sql, principal_history_test = validate_principal_decision_history()
     principal_authority_sql, principal_authority_test = validate_principal_final_authority()
     principal_lifecycle_sql, principal_lifecycle_test = validate_principal_lifecycle_invariants()
+    principal_terminal_sql, principal_terminal_test = validate_principal_terminal_mutation_gates()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1440,6 +1474,25 @@ def main() -> int:
             output=local.run_psql(container,principal_lifecycle_test,'DB03_PRINCIPAL_LIFECYCLE_TEST')
             parse_tap(output,22)
             print('DB03_PRINCIPAL_LIFECYCLE_DATABASE_PASS 22/22; no_writer_or_Student_effect=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_terminal_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_TERMINAL_MUTATION_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_TERMINAL_MUTATION_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_TERMINAL_MUTATION_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_TERMINAL_MUTATION_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_principal_not_rejected','db03_principal_forward_live','db03_principal_resubmission_ready','db03_principal_lifecycle_status','db03_principal_rejected_write_guard');",
+                'DB03_TERMINAL_MUTATION_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_TERMINAL_MUTATION_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_terminal_sql+'\nCOMMIT;',
+                           'DB03_TERMINAL_MUTATION_INSTALL')
+            output=local.run_psql(container,principal_terminal_test,'DB03_TERMINAL_MUTATION_TEST')
+            parse_tap(output,28)
+            print('DB03_TERMINAL_MUTATION_GATES_DATABASE_PASS 28/28; positive_final_decision_unavailable=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)

@@ -1,0 +1,178 @@
+-- P32 inactive terminal admission safeguard; no positive Principal decision writer.
+-- Integrates P29/P31 decision lineage into the existing command gates.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_principal_not_rejected(p_application uuid)
+RETURNS boolean LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT p_application IS NOT NULL AND NOT EXISTS(
+  SELECT 1 FROM app_private.admission_principal_decisions d
+  WHERE d.application_id=p_application AND d.decision='REJECT')
+$body$;
+CREATE FUNCTION app_private.db03_principal_forward_live(p_application uuid,p_forward uuid DEFAULT NULL)
+RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE f app_private.admission_document_forwards%ROWTYPE;
+BEGIN
+ IF NOT app_private.db03_principal_not_rejected(p_application) THEN RETURN false; END IF;
+ SELECT * INTO f FROM app_private.admission_document_forwards
+ WHERE application_id=p_application ORDER BY revision DESC LIMIT 1;
+ RETURN COALESCE(f.id IS NOT NULL
+  AND (p_forward IS NULL OR f.id=p_forward)
+  AND f.snapshot_hash=app_private.db03_document_snapshot(p_application)
+  AND NOT EXISTS(SELECT 1 FROM app_private.admission_principal_decisions d
+      WHERE d.application_id=p_application AND d.forward_id=f.id),false);
+END $body$;
+CREATE FUNCTION app_private.db03_principal_resubmission_ready(p_application uuid)
+RETURNS boolean LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ last_return app_private.admission_principal_decisions%ROWTYPE;
+BEGIN
+ IF NOT app_private.db03_principal_not_rejected(p_application) THEN RETURN false; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF a.id IS NULL OR a.state<>'DRAFT' THEN RETURN false; END IF;
+ SELECT * INTO last_return FROM app_private.admission_principal_decisions
+ WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ RETURN COALESCE(last_return.id IS NULL
+   OR last_return.decision<>'RETURN'
+   OR a.row_version>last_return.application_version,false);
+END $body$;
+CREATE FUNCTION app_private.db03_principal_lifecycle_status(p_application uuid)
+RETURNS text LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT app_private.db03_principal_lifecycle_projection(p_application)
+$body$;
+CREATE FUNCTION app_private.db03_principal_rejected_write_guard()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE application uuid;
+BEGIN
+ application:=CASE WHEN TG_TABLE_NAME='admission_applications' THEN (to_jsonb(NEW)->>'id')::uuid
+  ELSE (to_jsonb(NEW)->>'application_id')::uuid END;
+ IF application IS NULL OR NOT app_private.db03_principal_not_rejected(application) THEN
+  RAISE EXCEPTION 'DB03 terminal Principal REJECT prohibits application mutation';
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION
+ app_private.db03_principal_not_rejected(uuid),
+ app_private.db03_principal_forward_live(uuid,uuid),
+ app_private.db03_principal_resubmission_ready(uuid),
+ app_private.db03_principal_lifecycle_status(uuid),
+ app_private.db03_principal_rejected_write_guard()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_identity_executor,
+ schoolos_evidence_writer;
+GRANT EXECUTE ON FUNCTION
+ app_private.db03_principal_not_rejected(uuid),
+ app_private.db03_principal_forward_live(uuid,uuid),
+ app_private.db03_principal_resubmission_ready(uuid),
+ app_private.db03_principal_lifecycle_status(uuid)
+ TO schoolos_workflow_executor;
+CREATE TRIGGER ac_db03_terminal_application_update
+ BEFORE UPDATE ON app_private.admission_applications
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_principal_rejected_write_guard();
+DO $guard$ DECLARE t text; BEGIN
+ FOREACH t IN ARRAY ARRAY['admission_application_transitions','admission_certificate_grace_history','admission_document_intakes','admission_document_links','admission_document_forwards','admission_document_reviews','admission_document_clearances','admission_identity_resolutions','admission_destination_intents','admission_fee_dispositions','admission_assessments','admission_stage_outcomes','admission_document_upload_intents','admission_person_checks','admission_person_creations'] LOOP
+  EXECUTE format('CREATE TRIGGER ac_db03_terminal_%I BEFORE INSERT ON app_private.%I FOR EACH ROW EXECUTE FUNCTION app_private.db03_principal_rejected_write_guard()',t,t);
+ END LOOP;
+END $guard$;
+GRANT CREATE ON SCHEMA app,app_private TO schoolos_workflow_executor;
+RESET ROLE;
+
+-- The existing functions retain their typed privileges/owners/entrypoint API;
+-- the same workflow role replaces only their internal lifecycle checks.
+SET ROLE schoolos_workflow_executor;
+GRANT EXECUTE ON FUNCTION app_private.db03_document_snapshot(uuid),
+ app_private.db03_document_due(uuid,text),app_private.db03_document_is_forwarded(uuid)
+ TO schoolos_schema_owner;
+CREATE OR REPLACE FUNCTION app_private.db03_document_is_forwarded(p_app uuid) RETURNS boolean
+LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT app_private.db03_principal_forward_live(p_app,NULL)
+$body$;
+CREATE OR REPLACE FUNCTION app_private.db03_document_target_open(p_app uuid,p_expected bigint) RETURNS boolean
+LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT EXISTS(SELECT 1 FROM app_private.admission_applications a
+ JOIN app_private.school_profiles s ON s.id=a.school_id JOIN app.campuses c ON c.id=a.campus_id
+ JOIN app.academic_years y ON y.id=a.academic_year_id
+ WHERE a.id=p_app AND a.state='DRAFT' AND a.row_version=p_expected
+ AND s.state IN('SETUP','ACTIVE') AND c.state='ACTIVE' AND y.state IN('PLANNED','ACTIVE'))
+ AND app_private.db03_principal_not_rejected(p_app)
+$body$;
+CREATE OR REPLACE FUNCTION app.forward_admission_to_principal(p_application_id uuid,p_expected_version bigint,p_idempotency_key text)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ctx record; i uuid;
+ prev app_private.admission_document_forwards%ROWTYPE;
+ v_hash bytea; snapshot bytea; result jsonb; receipt uuid; source uuid; version bigint;
+BEGIN
+ IF p_expected_version IS NULL OR p_expected_version<1 THEN RAISE EXCEPTION 'DB03 document forwarding invalid'; END IF;
+ a:=app_private.db03_document_lock(p_application_id,'admission.document.forward',p_idempotency_key);
+ SELECT * INTO ctx FROM app_private.db03_document_actor_context('admission.document.forward',a.campus_id);
+ v_hash:=sha256(convert_to(replace(jsonb_build_array('admission.document.forward',a.id::text,p_expected_version::text)::text,', ',','),'UTF8'));
+ result:=app_private.db03_document_receipt('admission.document.forward',a.campus_id,p_idempotency_key,v_hash,p_expected_version);
+ IF result IS NOT NULL THEN RETURN result; END IF;
+ IF NOT app_private.db03_document_target_open(a.id,p_expected_version) OR app_private.db03_document_is_forwarded(a.id) THEN
+  RAISE EXCEPTION 'DB03 document draft stale, closed or already forwarded'; END IF;
+ IF NOT app_private.db03_forward_details_current(a.id) THEN
+  RAISE EXCEPTION 'DB03 required application details or fee disposition missing'; END IF;
+ IF NOT app_private.db03_principal_resubmission_ready(a.id) THEN
+  RAISE EXCEPTION 'DB03 Principal RETURN requires an amended application before re-Forward'; END IF;
+ snapshot:=app_private.db03_document_snapshot(a.id);
+ IF snapshot IS NULL THEN RAISE EXCEPTION 'DB03 required documents missing or unavailable'; END IF;
+ SELECT id INTO i FROM app_private.admission_document_intakes WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ SELECT * INTO prev FROM app_private.admission_document_forwards WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ receipt:=gen_random_uuid();
+ UPDATE app_private.admission_applications SET stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version INTO version;
+ INSERT INTO app_private.admission_document_forwards(application_id,intake_id,revision,supersedes_id,snapshot_hash,
+  application_version,command_receipt_id,occurred_at,created_by)
+ VALUES(a.id,i,COALESCE(prev.revision,0)+1,prev.id,snapshot,version,receipt,clock_timestamp(),ctx.actor_id) RETURNING id INTO source;
+ RETURN app_private.db03_document_receipt('admission.document.forward',a.campus_id,p_idempotency_key,v_hash,p_expected_version,receipt,source);
+END $body$;
+
+
+CREATE OR REPLACE FUNCTION app.read_admission_document_queue(p_application_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ready bytea; details boolean; status text;
+BEGIN
+ a:=app_private.db03_document_lock(p_application_id,'admission.document.view','read');
+ ready:=app_private.db03_document_snapshot(a.id);
+ details:=app_private.db03_forward_details_current(a.id);
+ status:=CASE WHEN app_private.db03_principal_lifecycle_status(a.id)='REJECTED' THEN 'REJECTED'
+ WHEN a.state='WITHDRAWN' THEN 'WITHDRAWN'
+ WHEN app_private.db03_principal_lifecycle_status(a.id)='RETURNED_FOR_CORRECTION'
+  AND NOT app_private.db03_principal_resubmission_ready(a.id) THEN 'RETURNED_FOR_CORRECTION'
+ WHEN app_private.db03_documents_cleared(a.id) THEN 'DOCUMENTS_APPROVED'
+ WHEN app_private.db03_document_is_forwarded(a.id) AND details THEN 'AWAITING_PRINCIPAL_REVIEW'
+ WHEN ready IS NULL THEN 'PENDING_DOCUMENTS'
+ WHEN NOT details THEN 'PENDING_DETAILS'
+ ELSE 'READY_TO_FORWARD' END;
+ RETURN jsonb_build_object('application_id',a.id,'application_version',a.row_version,
+  'status',status,'can_forward',status='READY_TO_FORWARD' AND
+     app_private.db03_principal_resubmission_ready(a.id));
+END $body$;
+
+
+CREATE OR REPLACE FUNCTION app.list_admission_principal_queue(p_campus_id uuid,p_after_time timestamptz DEFAULT NULL,
+ p_after_id uuid DEFAULT NULL,p_limit integer DEFAULT 50)
+RETURNS TABLE(application_id uuid,application_version bigint,forward_id uuid,forwarded_at timestamptz)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE school uuid;
+BEGIN
+ IF p_campus_id IS NULL OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 100
+  OR (p_after_time IS NULL)<>(p_after_id IS NULL) OR (p_after_time IS NOT NULL AND NOT isfinite(p_after_time)) THEN
+  RAISE EXCEPTION 'DB03 document queue page invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ PERFORM app_private.db03_document_actor_context('admission.document.view',p_campus_id);
+ SELECT c.school_id INTO school FROM app.campuses c WHERE c.id=p_campus_id;
+ IF school IS NULL THEN RAISE EXCEPTION 'DB03 document Campus unavailable'; END IF;
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school FOR UPDATE;
+ PERFORM app_private.db03_document_actor_context('admission.document.view',p_campus_id);
+ RETURN QUERY SELECT a.id,a.row_version,f.id,f.occurred_at
+ FROM app_private.admission_document_forwards f JOIN app_private.admission_applications a ON a.id=f.application_id
+ WHERE a.campus_id=p_campus_id AND a.state='DRAFT'
+ AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_forwards n WHERE n.application_id=a.id AND n.revision>f.revision)
+ AND f.snapshot_hash=app_private.db03_document_snapshot(a.id)
+ AND app_private.db03_principal_forward_live(a.id,f.id)
+ AND NOT app_private.db03_documents_cleared(a.id)
+ AND app_private.db03_forward_details_current(a.id)
+ AND (p_after_time IS NULL OR (f.occurred_at,f.id)>(p_after_time,p_after_id))
+ ORDER BY f.occurred_at,f.id LIMIT p_limit;
+END $body$;
+
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app,app_private FROM schoolos_workflow_executor;
