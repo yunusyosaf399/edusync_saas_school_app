@@ -1,0 +1,53 @@
+-- P27 inactive Principal-review input preflight. NOT a Principal decision, APPROVE,
+-- RETURN, REJECT, handoff or Student creation command. Never public-executable.
+-- This read-only view combines current *sources* from #191 and #203 but
+-- deliberately cannot grant finalization: the cross-owner atomic D1 handoff
+-- and authenticated Principal command do not yet exist.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_principal_review_preflight(p_application uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ a app_private.admission_applications%ROWTYPE;
+ previous jsonb;
+ forwarded app_private.admission_document_forwards%ROWTYPE;
+ details_current boolean:=false;
+ identity_current boolean:=false;
+ documents_current boolean:=false;
+BEGIN
+ IF p_application IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=p_application;
+ IF a.id IS NULL OR a.state<>'DRAFT' THEN RETURN NULL; END IF;
+ previous:=app_private.db03_principal_final_source_snapshot(a.id);
+ IF previous IS NULL THEN RETURN NULL; END IF;
+ -- Observing a forwarded record is not equivalent to checking its latest
+ -- document hash and review authority; no final approval is inferred.
+ SELECT * INTO forwarded FROM app_private.admission_document_forwards
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ details_current:=COALESCE(app_private.db03_forward_details_current(a.id),false);
+ identity_current:=COALESCE((previous->>'identity_current')::boolean,false);
+ documents_current:=COALESCE((previous->>'documents_current')::boolean,false);
+ RETURN jsonb_build_object(
+  'application_id',a.id,'application_version',a.row_version,
+  'stage_epoch',a.stage_epoch,
+  'identity_source_current',identity_current,
+  'document_source_current',documents_current,
+  'destination_and_fee_sources_current',details_current,
+  'forward_record_present',forwarded.id IS NOT NULL,
+  'forward_record_id',forwarded.id,
+  'review_inputs_observed',
+     (identity_current AND documents_current AND details_current
+      AND forwarded.id IS NOT NULL),
+  'principal_final_decision_recorded',false,
+  'single_use_handoff_available',false,
+  'student_create_enabled',false,
+  'can_issue_final_decision',false,
+  'can_create_student',false,
+  'status','CROSS_DOMAIN_HANDOFF_PENDING');
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_principal_review_preflight(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_file_login,schoolos_platform_executor,schoolos_identity_executor,
+ schoolos_evidence_writer;
+RESET ROLE;

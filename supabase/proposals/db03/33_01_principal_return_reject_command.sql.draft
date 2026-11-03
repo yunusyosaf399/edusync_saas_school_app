@@ -1,0 +1,211 @@
+-- P33: protected Principal RETURN/REJECT command candidate only.
+-- No admission.final.decide operation/permission seed, no public EXECUTE grant.
+-- APPROVE intentionally invalid until atomic DB03/D1 Student creation.
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db03_final_decision_history_read
+ ON app_private.admission_principal_decisions FOR SELECT
+ TO schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_final_decision_history_insert
+ ON app_private.admission_principal_decisions FOR INSERT
+ TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_principal_decisions
+ TO schoolos_workflow_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_principal_decisions TO schoolos_workflow_executor;
+CREATE POLICY db03_final_receipt_evidence
+ ON app_private.command_receipts FOR ALL TO schoolos_evidence_writer
+ USING(command_kind='admission.final.decide')
+ WITH CHECK(command_kind='admission.final.decide');
+CREATE POLICY db03_final_audit_evidence
+ ON app_private.audit_events FOR ALL TO schoolos_evidence_writer
+ USING(event_type='admission.final.decide' AND target_kind='ADMISSION_APPLICATION')
+ WITH CHECK(event_type='admission.final.decide' AND target_kind='ADMISSION_APPLICATION');
+CREATE POLICY db03_final_outbox_evidence
+ ON app_private.outbox_events FOR ALL TO schoolos_evidence_writer
+ USING(event_type='admission.final.decide' AND aggregate_kind='ADMISSION_APPLICATION')
+ WITH CHECK(event_type='admission.final.decide' AND aggregate_kind='ADMISSION_APPLICATION');
+RESET ROLE;
+-- This is server-private access only; there is no client/role seed for final.decide.
+GRANT EXECUTE ON FUNCTION app_private.db03_principal_final_actor(uuid)
+ TO schoolos_evidence_writer;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.db03_principal_final_receipt(
+ p_campus uuid,p_key text,p_hash bytea,p_expected bigint,
+ p_receipt uuid DEFAULT NULL,p_source uuid DEFAULT NULL)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; rec app_private.command_receipts%ROWTYPE;
+ h app_private.admission_principal_decisions%ROWTYPE;
+ a app_private.admission_applications%ROWTYPE;
+ body jsonb; correlation uuid;
+BEGIN
+ IF p_campus IS NULL OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 200
+  OR p_hash IS NULL OR octet_length(p_hash)<>32
+  OR p_expected IS NULL OR p_expected<1 THEN
+  RAISE EXCEPTION 'DB03 Principal final receipt intent invalid';
+ END IF;
+ SELECT * INTO ctx FROM app_private.db03_principal_final_actor(p_campus);
+ SELECT * INTO rec FROM app_private.command_receipts
+ WHERE principal_id=ctx.actor_id AND operation_id=ctx.operation_id
+ AND idempotency_key=p_key;
+ IF FOUND THEN
+  IF rec.canonical_payload_hash IS DISTINCT FROM p_hash
+   OR rec.canonicalization_version<>1
+   OR rec.expected_target_version IS DISTINCT FROM p_expected THEN
+   RAISE EXCEPTION 'DB03 Principal final idempotency conflict';
+  END IF;
+  p_source:=(rec.result_summary->>'source_id')::uuid;
+ ELSIF p_receipt IS NULL THEN RETURN NULL;
+ END IF;
+ SELECT * INTO h FROM app_private.admission_principal_decisions WHERE id=p_source;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=h.application_id;
+ IF h.id IS NULL OR a.id IS NULL OR a.campus_id IS DISTINCT FROM p_campus
+  OR h.created_by IS DISTINCT FROM ctx.actor_id
+  OR h.command_receipt_id IS DISTINCT FROM COALESCE(rec.id,p_receipt)
+  OR h.application_version IS DISTINCT FROM p_expected
+  OR h.decision NOT IN('RETURN','REJECT') OR a.row_version<h.application_version THEN
+  RAISE EXCEPTION 'DB03 Principal final immutable source proof invalid';
+ END IF;
+ body:=jsonb_build_object('application_id',a.id,'application_version',h.application_version,
+  'source_id',h.id,'forward_id',h.forward_id,'decision',h.decision,
+  'revision',h.revision);
+ IF rec.id IS NULL THEN
+  IF a.state<>'DRAFT' OR a.row_version<>h.application_version
+   OR a.stage_epoch<>h.stage_epoch THEN
+   RAISE EXCEPTION 'DB03 Principal final source no longer current';
+  END IF;
+  correlation:=gen_random_uuid();
+  INSERT INTO app_private.command_receipts(
+   id,principal_id,operation_id,command_kind,idempotency_key,
+   canonical_payload_hash,canonicalization_version,expected_target_version,
+   state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES(p_receipt,ctx.actor_id,ctx.operation_id,'admission.final.decide',p_key,
+   p_hash,1,p_expected,'SUCCEEDED','ADMISSION_PRINCIPAL_DECISION',a.id,body,
+   clock_timestamp(),ctx.actor_id);
+  INSERT INTO app_private.audit_events(
+   actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,
+   target_kind,target_ref,campus_id,command_receipt_id,source_kind,
+   correlation_id,occurred_at,details,created_by)
+  VALUES(ctx.actor_id,'INDIVIDUAL','SUCCEEDED',
+   jsonb_build_object('operation','admission.final.decide'),h.application_version,
+   'admission.final.decide','ADMISSION_APPLICATION',a.id,p_campus,p_receipt,
+   'API',correlation,h.occurred_at,body,ctx.actor_id);
+  INSERT INTO app_private.outbox_events(
+   event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,
+   event_ordinal,correlation_id,occurred_at,payload,created_by)
+  VALUES('admission.final.decide','ADMISSION_APPLICATION',a.id,h.application_version,
+   p_receipt,1,correlation,h.occurred_at,body,ctx.actor_id);
+  SELECT * INTO rec FROM app_private.command_receipts WHERE id=p_receipt;
+ END IF;
+ IF rec.command_kind<>'admission.final.decide' OR rec.state<>'SUCCEEDED'
+  OR rec.result_kind IS DISTINCT FROM 'ADMISSION_PRINCIPAL_DECISION'
+  OR rec.result_ref IS DISTINCT FROM a.id
+  OR rec.result_summary IS DISTINCT FROM body OR rec.request_id IS NOT NULL
+  OR rec.created_by IS DISTINCT FROM ctx.actor_id
+  OR (SELECT count(*) FROM app_private.audit_events e
+   WHERE e.command_receipt_id=rec.id AND e.event_type='admission.final.decide'
+   AND e.actor_id=ctx.actor_id AND e.actor_kind='INDIVIDUAL'
+   AND e.outcome='SUCCEEDED' AND e.target_ref=a.id
+   AND e.target_kind='ADMISSION_APPLICATION' AND e.target_version=h.application_version
+   AND e.campus_id=p_campus AND e.source_kind='API'
+   AND e.authority_evidence=jsonb_build_object('operation','admission.final.decide')
+   AND e.details=body AND e.occurred_at=h.occurred_at AND e.created_by=ctx.actor_id)<>1
+  OR (SELECT count(*) FROM app_private.outbox_events e
+   WHERE e.command_receipt_id=rec.id AND e.event_type='admission.final.decide'
+   AND e.aggregate_ref=a.id AND e.aggregate_kind='ADMISSION_APPLICATION'
+   AND e.aggregate_version=h.application_version AND e.schema_version=1
+   AND e.event_ordinal=1 AND e.payload=body AND e.occurred_at=h.occurred_at
+   AND e.created_by=ctx.actor_id AND e.causation_event_id IS NULL
+   AND EXISTS(SELECT 1 FROM app_private.audit_events ae
+    WHERE ae.command_receipt_id=rec.id AND ae.correlation_id=e.correlation_id))<>1 THEN
+  RAISE EXCEPTION 'DB03 Principal final evidence integrity invalid';
+ END IF;
+ RETURN body;
+END $body$;
+REVOKE ALL ON FUNCTION
+ app_private.db03_principal_final_receipt(uuid,text,bytea,bigint,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_identity_executor;
+GRANT EXECUTE ON FUNCTION
+ app_private.db03_principal_final_receipt(uuid,text,bytea,bigint,uuid,uuid)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.decide_admission_principal(
+ p_application uuid,p_expected_version bigint,p_forward uuid,
+ p_decision text,p_reason_private text,p_idempotency_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ ctx record; checked record; last_record app_private.admission_principal_decisions%ROWTYPE;
+ canonical bytea; result jsonb; receipt uuid; source uuid; moment timestamptz;
+BEGIN
+ IF p_application IS NULL OR p_forward IS NULL OR p_expected_version IS NULL
+  OR p_expected_version<1 OR p_decision IS NULL
+  OR p_decision NOT IN('RETURN','REJECT')
+  OR p_reason_private IS NULL
+  OR length(btrim(p_reason_private)) NOT BETWEEN 1 AND 1000
+  OR p_reason_private ~ '[[:cntrl:]]'
+  OR p_idempotency_key IS NULL
+  OR length(p_idempotency_key) NOT BETWEEN 1 AND 200 THEN
+  RAISE EXCEPTION 'DB03 Principal final decision intent invalid';
+ END IF;
+ -- Shared Foundation fence first, then idempotency key, then parents, then
+ -- application row. No lock upgrades after taking application row lock.
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF a.id IS NULL THEN RAISE EXCEPTION 'DB03 Principal application unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db03_principal_final_actor(a.campus_id);
+ canonical:=sha256(convert_to(replace(jsonb_build_array(
+  'admission.final.decide',p_application::text,p_expected_version::text,
+  p_forward::text,p_decision,
+  encode(sha256(convert_to(p_reason_private,'UTF8')),'hex'))::text,', ',','),'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(
+  ctx.actor_id::text||':'||ctx.operation_id::text||':'||p_idempotency_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=a.school_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 Principal School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=a.campus_id AND school_id=a.school_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 Principal Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=a.academic_year_id
+  AND school_id=a.school_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 Principal academic year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+ WHERE id=p_application FOR UPDATE;
+ SELECT * INTO checked FROM app_private.db03_principal_final_actor(a.campus_id);
+ IF checked.actor_id IS DISTINCT FROM ctx.actor_id
+  OR checked.operation_id IS DISTINCT FROM ctx.operation_id
+  OR checked.authority_hash IS DISTINCT FROM ctx.authority_hash THEN
+  RAISE EXCEPTION 'DB03 Principal final authority changed after locks';
+ END IF;
+ -- Historical exact-key retries can reproduce the original receipt only if
+ -- the same Principal remains currently authorized. Replay precedes current
+ -- source checks, so successful RETURN/REJECT retries are not new effects.
+ result:=app_private.db03_principal_final_receipt(
+  a.campus_id,p_idempotency_key,canonical,p_expected_version);
+ IF result IS NOT NULL THEN RETURN result; END IF;
+ IF a.state<>'DRAFT' OR a.row_version<>p_expected_version
+  OR NOT app_private.db03_principal_forward_live(a.id,p_forward) THEN
+  RAISE EXCEPTION 'DB03 Principal final Forward stale or already decided';
+ END IF;
+ SELECT * INTO last_record FROM app_private.admission_principal_decisions
+ WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ receipt:=gen_random_uuid(); moment:=clock_timestamp();
+ INSERT INTO app_private.admission_principal_decisions(
+  application_id,forward_id,revision,supersedes_id,decision,reason_private,
+  application_version,stage_epoch,command_receipt_id,occurred_at,created_by)
+ VALUES(a.id,p_forward,COALESCE(last_record.revision,0)+1,last_record.id,
+  p_decision,p_reason_private,a.row_version,a.stage_epoch,receipt,moment,ctx.actor_id)
+ RETURNING id INTO source;
+ RETURN app_private.db03_principal_final_receipt(
+  a.campus_id,p_idempotency_key,canonical,p_expected_version,receipt,source);
+END $body$;
+REVOKE ALL ON FUNCTION app.decide_admission_principal(uuid,bigint,uuid,text,text,text)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_identity_executor,
+ schoolos_evidence_writer;
+-- No GRANT TO authenticated: activation awaits real Auth, race and replay acceptance.
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
