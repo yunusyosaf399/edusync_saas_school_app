@@ -1,0 +1,111 @@
+-- Inactive composition: required document snapshot plus current destination and
+-- explicit administrative fee disposition. No Principal decision or Student effect.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_forward_details_current(p_application uuid) RETURNS boolean
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ d app_private.admission_destination_intents%ROWTYPE;
+ fee app_private.admission_fee_dispositions%ROWTYPE;
+BEGIN
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF a.id IS NULL OR a.state<>'DRAFT' THEN RETURN false; END IF;
+ SELECT * INTO d FROM app_private.admission_destination_intents
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ SELECT * INTO fee FROM app_private.admission_fee_dispositions
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ RETURN COALESCE(d.id IS NOT NULL AND d.school_id=a.school_id AND d.campus_id=a.campus_id
+  AND d.academic_year_id=a.academic_year_id AND d.application_version<=a.row_version
+  AND EXISTS(SELECT 1 FROM app_private.class_offerings o WHERE o.id=d.class_offering_id
+   AND o.school_id=a.school_id AND o.campus_id=a.campus_id
+   AND o.academic_year_id=a.academic_year_id AND o.state='OPEN')
+  AND EXISTS(SELECT 1 FROM app_private.command_receipts r WHERE r.result_ref=d.id
+   AND r.result_kind='ADMISSION_DESTINATION' AND r.command_kind='admission.destination.record'
+   AND r.state='SUCCEEDED' AND r.principal_id=d.created_by)
+  AND fee.id IS NOT NULL AND fee.application_version<=a.row_version
+  AND fee.disposition IN('SKIPPED','MARKED_PAID','UNPAID')
+  AND EXISTS(SELECT 1 FROM app_private.command_receipts r WHERE r.id=fee.command_receipt_id
+   AND r.result_ref=fee.id AND r.result_kind='ADMISSION_FEE_DISPOSITION'
+   AND r.command_kind='admission.fee.disposition' AND r.state='SUCCEEDED'
+   AND r.principal_id=fee.created_by AND r.result_summary->>'disposition'=fee.disposition),false);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_forward_details_current(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,schoolos_platform_executor,
+ schoolos_evidence_writer,schoolos_identity_executor;
+GRANT EXECUTE ON FUNCTION app_private.db03_forward_details_current(uuid) TO schoolos_workflow_executor;
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE OR REPLACE FUNCTION app.forward_admission_to_principal(p_application_id uuid,p_expected_version bigint,p_idempotency_key text)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ctx record; i uuid;
+ prev app_private.admission_document_forwards%ROWTYPE;
+ v_hash bytea; snapshot bytea; result jsonb; receipt uuid; source uuid; version bigint;
+BEGIN
+ IF p_expected_version IS NULL OR p_expected_version<1 THEN RAISE EXCEPTION 'DB03 document forwarding invalid'; END IF;
+ a:=app_private.db03_document_lock(p_application_id,'admission.document.forward',p_idempotency_key);
+ SELECT * INTO ctx FROM app_private.db03_document_actor_context('admission.document.forward',a.campus_id);
+ v_hash:=sha256(convert_to(replace(jsonb_build_array('admission.document.forward',a.id::text,p_expected_version::text)::text,', ',','),'UTF8'));
+ result:=app_private.db03_document_receipt('admission.document.forward',a.campus_id,p_idempotency_key,v_hash,p_expected_version);
+ IF result IS NOT NULL THEN RETURN result; END IF;
+ IF NOT app_private.db03_document_target_open(a.id,p_expected_version) OR app_private.db03_document_is_forwarded(a.id) THEN
+  RAISE EXCEPTION 'DB03 document draft stale, closed or already forwarded'; END IF;
+ IF NOT app_private.db03_forward_details_current(a.id) THEN
+  RAISE EXCEPTION 'DB03 required application details or fee disposition missing'; END IF;
+ snapshot:=app_private.db03_document_snapshot(a.id);
+ IF snapshot IS NULL THEN RAISE EXCEPTION 'DB03 required documents missing or unavailable'; END IF;
+ SELECT id INTO i FROM app_private.admission_document_intakes WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ SELECT * INTO prev FROM app_private.admission_document_forwards WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ receipt:=gen_random_uuid();
+ UPDATE app_private.admission_applications SET stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version INTO version;
+ INSERT INTO app_private.admission_document_forwards(application_id,intake_id,revision,supersedes_id,snapshot_hash,
+  application_version,command_receipt_id,occurred_at,created_by)
+ VALUES(a.id,i,COALESCE(prev.revision,0)+1,prev.id,snapshot,version,receipt,clock_timestamp(),ctx.actor_id) RETURNING id INTO source;
+ RETURN app_private.db03_document_receipt('admission.document.forward',a.campus_id,p_idempotency_key,v_hash,p_expected_version,receipt,source);
+END $body$;
+
+CREATE OR REPLACE FUNCTION app.read_admission_document_queue(p_application_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ready bytea; details boolean; status text;
+BEGIN
+ a:=app_private.db03_document_lock(p_application_id,'admission.document.view','read');
+ ready:=app_private.db03_document_snapshot(a.id);
+ details:=app_private.db03_forward_details_current(a.id);
+ status:=CASE WHEN a.state='REJECTED' THEN 'REJECTED'
+ WHEN a.state='WITHDRAWN' THEN 'WITHDRAWN'
+ WHEN app_private.db03_documents_cleared(a.id) THEN 'DOCUMENTS_APPROVED'
+ WHEN app_private.db03_document_is_forwarded(a.id) AND details THEN 'AWAITING_PRINCIPAL_REVIEW'
+ WHEN ready IS NULL THEN 'PENDING_DOCUMENTS'
+ WHEN NOT details THEN 'PENDING_DETAILS'
+ ELSE 'READY_TO_FORWARD' END;
+ RETURN jsonb_build_object('application_id',a.id,'application_version',a.row_version,
+  'status',status,'can_forward',status='READY_TO_FORWARD');
+END $body$;
+
+CREATE OR REPLACE FUNCTION app.list_admission_principal_queue(p_campus_id uuid,p_after_time timestamptz DEFAULT NULL,
+ p_after_id uuid DEFAULT NULL,p_limit integer DEFAULT 50)
+RETURNS TABLE(application_id uuid,application_version bigint,forward_id uuid,forwarded_at timestamptz)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE school uuid;
+BEGIN
+ IF p_campus_id IS NULL OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 100
+  OR (p_after_time IS NULL)<>(p_after_id IS NULL) OR (p_after_time IS NOT NULL AND NOT isfinite(p_after_time)) THEN
+  RAISE EXCEPTION 'DB03 document queue page invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ PERFORM app_private.db03_document_actor_context('admission.document.view',p_campus_id);
+ SELECT c.school_id INTO school FROM app.campuses c WHERE c.id=p_campus_id;
+ IF school IS NULL THEN RAISE EXCEPTION 'DB03 document Campus unavailable'; END IF;
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school FOR UPDATE;
+ PERFORM app_private.db03_document_actor_context('admission.document.view',p_campus_id);
+ RETURN QUERY SELECT a.id,a.row_version,f.id,f.occurred_at
+ FROM app_private.admission_document_forwards f JOIN app_private.admission_applications a ON a.id=f.application_id
+ WHERE a.campus_id=p_campus_id AND a.state='DRAFT'
+ AND NOT EXISTS(SELECT 1 FROM app_private.admission_document_forwards n WHERE n.application_id=a.id AND n.revision>f.revision)
+ AND f.snapshot_hash=app_private.db03_document_snapshot(a.id)
+ AND NOT app_private.db03_documents_cleared(a.id)
+ AND app_private.db03_forward_details_current(a.id)
+ AND (p_after_time IS NULL OR (f.occurred_at,f.id)>(p_after_time,p_after_id))
+ ORDER BY f.occurred_at,f.id LIMIT p_limit;
+END $body$;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;
