@@ -146,3 +146,9 @@ def run_destination_command(local, container, fixture):
     # disposable runner. Keep the final-decision RPC ungranted to clients.
     from principal_final_signed_auth_ci import run_principal_final_signed_auth
     run_principal_final_signed_auth(local, container, root, claims)
+    # P35B: positive server-only decisions with genuinely measured private PDF.
+    # This runs after P35A's revocation check and repairs only disposable
+    # fixtures before the integration scenario.
+    from principal_positive_decision_ci import run_positive_principal_decisions
+    run_positive_principal_decisions(local, container, root, worker, api,
+                                     record, claims, token)
