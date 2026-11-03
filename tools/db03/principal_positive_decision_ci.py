@@ -31,7 +31,16 @@ def run_positive_principal_decisions(local, container, root, worker, api,
 
     fixture=(Path(__file__).resolve().parents[2] /
         'supabase/tests/db03/fixtures/principal_positive_document_actor.sql').read_text()
-    if 'GRANT EXECUTE' in fixture or 'CREATE FUNCTION' in fixture:
+    # A single server-only terminal-state check is required by the private
+    # upload worker. Reject all other EXECUTE grants, especially client roles.
+    import re
+    permitted = ('GRANT EXECUTE ON FUNCTION '
+                 'app_private.db03_principal_not_rejected(uuid)'
+                 ' TO schoolos_file_login;')
+    sanitized = fixture.replace(permitted, '')
+    if (fixture.count(permitted) != 1 or
+            re.search(r'\\bGRANT\\s+EXECUTE\\b|\\bCREATE\\s+FUNCTION\\b',
+                      sanitized, flags=re.IGNORECASE)):
         raise RuntimeError('DB03_P35B_UNSAFE_DISPOSABLE_FIXTURE')
     local.run_psql(container,'BEGIN;\n'+fixture+'\nCOMMIT;',
                    'DB03_P35B_POSITIVE_DOCUMENT_FIXTURE')
