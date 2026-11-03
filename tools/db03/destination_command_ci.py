@@ -133,7 +133,7 @@ def run_destination_command(local, container, fixture):
     run_concession_command(root,worker,api,record,claims,
         (Path(__file__).resolve().parents[2] / 'supabase/tests/db03/fixtures/concession_command_actor.sql').read_text())
     from fee_disposition_ci import run_fee_disposition
-    run_fee_disposition(root,worker,api,claims)
+    run_fee_disposition(root,worker,api,record,claims)
     with root() as conn:
         conn.execute("UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() "
                      "WHERE id=md5('admission.destination.record:grant')::uuid")
@@ -142,3 +142,13 @@ def run_destination_command(local, container, fixture):
     denied(lambda:record(app,1,OFFERING,'Intended Grade 1','destination-one'),
            'administrator scope denied')
     print(f'DB03_DESTINATION_REAL_AUTH_PASS checks={checks} applicant_grade_only=true')
+    # P35A reuses the *signed* local GoTrue login verified at the top of this
+    # disposable runner. Keep the final-decision RPC ungranted to clients.
+    from principal_final_signed_auth_ci import run_principal_final_signed_auth
+    run_principal_final_signed_auth(local, container, root, claims)
+    # P35B: positive server-only decisions with genuinely measured private PDF.
+    # This runs after P35A's revocation check and repairs only disposable
+    # fixtures before the integration scenario.
+    from principal_positive_decision_ci import run_positive_principal_decisions
+    run_positive_principal_decisions(local, container, root, worker, api,
+                                     record, claims, token)

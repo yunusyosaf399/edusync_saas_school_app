@@ -522,6 +522,239 @@ def validate_fee_disposition() -> tuple[str, str]:
     return sql,test
 
 
+def validate_forward_readiness() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/26_01_admission_forward_readiness.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/26_admission_forward_readiness.sql').read_text()
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)', sql) != ['db03_forward_details_current']:
+        raise RuntimeError('DB03_FORWARD_HELPER_SCOPE')
+    if re.findall(r'(?m)^CREATE OR REPLACE FUNCTION app\.([a-z0-9_]+)', sql) != [
+            'forward_admission_to_principal','read_admission_document_queue','list_admission_principal_queue']:
+        raise RuntimeError('DB03_FORWARD_COMMAND_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|CREATE TABLE|CREATE ROLE|ALTER ROLE)\b', outside):
+        raise RuntimeError('DB03_FORWARD_NO_NEW_SOURCE')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['12'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 12 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_FORWARD_TEST_PLAN')
+    print('DB03_FORWARD_READINESS_SOURCE_PASS assertions=12 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
+
+def validate_principal_review_preflight() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/27_01_principal_review_preflight.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/27_principal_review_preflight.sql').read_text()
+    names = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if names != ['db03_principal_review_preflight']:
+        raise RuntimeError('DB03_P27_PRIVATE_FUNCTION_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|CREATE ROLE|ALTER ROLE|GRANT|CREATE OR REPLACE FUNCTION)\b', outside):
+        raise RuntimeError('DB03_P27_MUTATION_OR_ACTIVATION')
+    for value in ('SECURITY INVOKER', 'db03_principal_final_source_snapshot',
+                  'db03_forward_details_current', "'can_issue_final_decision',false",
+                  "'can_create_student',false", "'single_use_handoff_available',false"):
+        if value not in sql:
+            raise RuntimeError('DB03_P27_FAIL_CLOSED_SOURCE_'+value)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['18'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 18 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P27_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_PREFLIGHT_SOURCE_PASS assertions=18 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
+
+def validate_principal_final_decision_contract() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/28_01_principal_final_decision_contract.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/28_principal_final_decision_contract.sql').read_text()
+    names = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if names != ['db03_principal_final_decision_contract']:
+        raise RuntimeError('DB03_P28_PRIVATE_FUNCTION_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|CREATE ROLE|ALTER ROLE|GRANT|CREATE OR REPLACE FUNCTION)\b', outside):
+        raise RuntimeError('DB03_P28_MUTATION_OR_ACTIVATION')
+    for value in ('SECURITY INVOKER', 'db03_principal_review_preflight',
+                  "'APPROVE','RETURN','REJECT'", "'can_apply',false",
+                  "'can_create_student',false",
+                  "'atomic_student_handoff_available',false"):
+        if value not in sql:
+            raise RuntimeError('DB03_P28_FAIL_CLOSED_SOURCE_'+value)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['20'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 20 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P28_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_DECISION_CONTRACT_SOURCE_PASS assertions=20 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
+
+def validate_principal_decision_history() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/29_01_principal_decision_history.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/29_principal_decision_history.sql').read_text()
+    if re.findall(r'(?m)^CREATE TABLE app_private\.([a-z0-9_]+)', sql) != [
+            'admission_principal_decisions']:
+        raise RuntimeError('DB03_P29_PRIVATE_TABLE_SCOPE')
+    if re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql) != [
+            'db03_guard_principal_decision_history']:
+        raise RuntimeError('DB03_P29_PRIVATE_GUARD_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE ROLE|ALTER ROLE|CREATE OR REPLACE FUNCTION)\b', outside):
+        raise RuntimeError('DB03_P29_MUTATION_OR_ACTIVATION')
+    for value in ('FORCE ROW LEVEL SECURITY', "'RETURN','REJECT'",
+                  'DB03 Principal decision history requires protected operation',
+                  'db03_document_snapshot', 'BEFORE TRUNCATE',
+                  'schoolos_workflow_executor'):
+        if value not in sql:
+            raise RuntimeError('DB03_P29_HISTORY_GUARD_'+value)
+    if re.search(r'(?mi)^\s*GRANT\s+(INSERT|UPDATE|DELETE)\s+ON\s+app_private\.admission_principal_decisions', sql):
+        raise RuntimeError('DB03_P29_NO_WRITER_GRANT')
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['20'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 20 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P29_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_HISTORY_SOURCE_PASS assertions=20 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
+
+def validate_principal_final_authority() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/30_01_principal_final_authority.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/30_principal_final_authority.sql').read_text()
+    names = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if names != ['db03_principal_final_authority', 'db03_principal_final_actor']:
+        raise RuntimeError('DB03_P30_PRIVATE_FUNCTION_SCOPE')
+    policies = re.findall(r'(?m)^CREATE POLICY ([a-z0-9_]+)', sql)
+    if policies != ['db03_principal_final_operation_read']:
+        raise RuntimeError('DB03_P30_OPERATION_RLS_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|CREATE ROLE|ALTER ROLE|CREATE OR REPLACE FUNCTION)\b', outside):
+        raise RuntimeError('DB03_P30_MUTATION_OR_ACTIVATION')
+    for value in ("admission.final.decide", "r.code='PRINCIPAL'",
+                  'principal_auth_bindings', 'assignment_permission_scopes',
+                  "request.jwt.claims", 'db03_principal_final_authority',
+                  'schoolos_workflow_executor'):
+        if value not in sql:
+            raise RuntimeError('DB03_P30_DISTINCT_PRINCIPAL_AUTHORITY_'+value)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['24'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 24 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P30_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_FINAL_AUTHORITY_SOURCE_PASS assertions=24 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
+
+def validate_principal_lifecycle_invariants() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/31_01_principal_lifecycle_invariants.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/31_principal_lifecycle_invariants.sql').read_text()
+    names = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if names != ['db03_principal_terminal_history_guard',
+                 'db03_principal_lifecycle_projection']:
+        raise RuntimeError('DB03_P31_PRIVATE_FUNCTION_SCOPE')
+    if 'db03_principal_one_decision_per_forward' not in sql or 'UNIQUE(application_id,forward_id)' not in sql:
+        raise RuntimeError('DB03_P31_UNIQUE_FORWARD_DECISION_MISSING')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|CREATE ROLE|ALTER ROLE|GRANT)\b', outside):
+        raise RuntimeError('DB03_P31_MUTATION_OR_GRANT')
+    for term in ('BEFORE INSERT OR UPDATE OR DELETE',
+                 "d.decision='REJECT'", "d.forward_id=NEW.forward_id",
+                 'RETURNED_FOR_CORRECTION', 'db03_document_is_forwarded',
+                 'SECURITY INVOKER'):
+        if term not in sql:
+            raise RuntimeError('DB03_P31_TERMINAL_SOURCE_'+term)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['22'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 22 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P31_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_LIFECYCLE_SOURCE_PASS assertions=22 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
+
+def validate_principal_terminal_mutation_gates() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/32_01_principal_terminal_mutation_gates.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/32_principal_terminal_mutation_gates.sql').read_text()
+    created = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if created != ['db03_principal_not_rejected','db03_principal_forward_live',
+                   'db03_principal_resubmission_ready','db03_principal_lifecycle_status',
+                   'db03_principal_rejected_write_guard']:
+        raise RuntimeError('DB03_P32_PRIVATE_FUNCTION_SCOPE')
+    overrides = re.findall(r'(?m)^CREATE OR REPLACE FUNCTION ([a-z_]+\.[a-z0-9_]+)\(', sql)
+    if overrides != ['app_private.db03_document_is_forwarded',
+                     'app_private.db03_document_target_open',
+                     'app.forward_admission_to_principal',
+                     'app.read_admission_document_queue',
+                     'app.list_admission_principal_queue']:
+        raise RuntimeError('DB03_P32_EXISTING_COMMAND_OVERRIDE_SCOPE')
+    if len(re.findall(r"'admission_[a-z0-9_]+'", sql.split('FOREACH t IN ARRAY ARRAY[')[1].split('] LOOP')[0])) != 15:
+        raise RuntimeError('DB03_P32_TERMINAL_TABLE_SCOPE')
+    if 'INSERT INTO app_private.admission_principal_decisions' in sql or re.search(
+            r'(?mi)^\s*(CREATE TABLE|CREATE ROLE|ALTER ROLE|ALTER TABLE)\b', sql):
+        raise RuntimeError('DB03_P32_NO_FINAL_WRITER_OR_ACTIVATION')
+    for needle in ('db03_principal_not_rejected', 'DB03 Principal RETURN requires an amended application',
+                   'RETURNED_FOR_CORRECTION', 'db03_principal_forward_live(a.id,f.id)',
+                   "db03_principal_rejected_write_guard", 'REVOKE CREATE ON SCHEMA app,app_private'):
+        if needle not in sql:
+            raise RuntimeError('DB03_P32_INCOMPLETE_LIFECYCLE_'+needle)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['31'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 31 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P32_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_TERMINAL_MUTATION_GATES_SOURCE_PASS assertions=31 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
+
+def validate_principal_return_reject_command() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/33_01_principal_return_reject_command.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/33_principal_return_reject_command.sql').read_text()
+    private_names = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    public_names = re.findall(r'(?m)^CREATE FUNCTION app\.([a-z0-9_]+)\(', sql)
+    if private_names != ['db03_principal_final_receipt'] or public_names != ['decide_admission_principal']:
+        raise RuntimeError('DB03_P33_PROTECTED_SOURCE_SCOPE')
+    if re.findall(r'(?m)^CREATE POLICY ([a-z0-9_]+)', sql) != [
+            'db03_final_decision_history_read', 'db03_final_decision_history_insert',
+            'db03_final_receipt_evidence', 'db03_final_audit_evidence',
+            'db03_final_outbox_evidence']:
+        raise RuntimeError('DB03_P33_EVIDENCE_RLS_SCOPE')
+    if re.search(r'(?mi)^\s*(CREATE TABLE|CREATE ROLE|ALTER ROLE|ALTER TABLE|CREATE OR REPLACE FUNCTION)\b', sql):
+        raise RuntimeError('DB03_P33_NO_UNCONTROLLED_SCHEMA_CHANGE')
+    if re.search(r'(?mi)^\s*GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+app\.decide_admission_principal', sql):
+        raise RuntimeError('DB03_P33_PUBLIC_CLIENT_ACTIVATION')
+    for term in ("p_decision NOT IN('RETURN','REJECT')",
+                 'db03_principal_final_actor', 'checked.authority_hash IS DISTINCT FROM ctx.authority_hash',
+                 'db03_principal_forward_live(a.id,p_forward)', 'pg_advisory_xact_lock',
+                 'FOR UPDATE', 'command_receipts', 'audit_events', 'outbox_events',
+                 'DB03 Principal final idempotency conflict',
+                 'admission.final.decide', 'REVOKE ALL ON FUNCTION app.decide_admission_principal'):
+        if term not in sql:
+            raise RuntimeError('DB03_P33_SAFETY_CONTRACT_'+term)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['30'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 30 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P33_TEST_TRANSACTION_OR_COUNT')
+    print('DB03_PRINCIPAL_RETURN_REJECT_SOURCE_PASS assertions=30 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
+
+def validate_principal_auth_acceptance() -> str:
+    test = (ROOT / 'supabase/tests/db03/34_principal_final_auth_acceptance.sql').read_text()
+    names = ['policy_publication_actor','intake_grace_actor','principal_final_actor']
+    fixture = (ROOT / 'supabase/tests/db03/fixtures/principal_final_actor.sql').read_text()
+    for name in names:
+        anchor = '\\ir fixtures/' + name + '.sql'
+        if test.count(anchor) != 1:
+            raise RuntimeError('DB03_P34_FIXTURE_SCOPE_'+name)
+        source = (ROOT / ('supabase/tests/db03/fixtures/' + name + '.sql')).read_text()
+        test = test.replace(anchor, source)
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['19'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 19 or not test.rstrip().endswith('ROLLBACK;'):
+        raise RuntimeError('DB03_P34_TEST_TRANSACTION_OR_COUNT')
+    for part in ("admission.final.decide", "md5('admission.final.decide:p34-operation')",
+                 'real Auth', 'revoke_principal', 'campus_scope',
+                 'expired_jwt', 'wrong_subject', 'ROLLBACK TO SAVEPOINT'):
+        if part not in test and part not in fixture:
+            raise RuntimeError('DB03_P34_AUTH_COVERAGE_'+part)
+    if 'GRANT EXECUTE' in fixture or 'app.decide_admission_principal' in fixture:
+        raise RuntimeError('DB03_P34_NO_USER_ACTIVATION')
+    print('DB03_PRINCIPAL_AUTH_SOURCE_PASS assertions=19 fixture_only=true sha256='+hashlib.sha256(test.encode()).hexdigest())
+    return test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -553,6 +786,15 @@ def main() -> int:
     assessment_command_sql, assessment_command_test = validate_assessment_command()
     stage_outcome_sql, stage_outcome_test = validate_assessment_stage_outcome_source()
     fee_disposition_sql, fee_disposition_test = validate_fee_disposition()
+    forward_readiness_sql, forward_readiness_test = validate_forward_readiness()
+    principal_preflight_sql, principal_preflight_test = validate_principal_review_preflight()
+    principal_contract_sql, principal_contract_test = validate_principal_final_decision_contract()
+    principal_history_sql, principal_history_test = validate_principal_decision_history()
+    principal_authority_sql, principal_authority_test = validate_principal_final_authority()
+    principal_lifecycle_sql, principal_lifecycle_test = validate_principal_lifecycle_invariants()
+    principal_terminal_sql, principal_terminal_test = validate_principal_terminal_mutation_gates()
+    principal_command_sql, principal_command_test = validate_principal_return_reject_command()
+    principal_auth_test = validate_principal_auth_acceptance()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1177,6 +1419,161 @@ def main() -> int:
             output=local.run_psql(container,fee_disposition_test,'DB03_FEE_DISPOSITION_TEST')
             parse_tap(output,12)
             print('DB03_FEE_DISPOSITION_DATABASE_PASS 12/12; no_payment_or_clearance=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+forward_readiness_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_FORWARD_READINESS_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_FORWARD_READINESS_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_FORWARD_READINESS_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_FORWARD_READINESS_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_forward_details_current';",
+                'DB03_FORWARD_READINESS_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_FORWARD_READINESS_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+forward_readiness_sql+'\nCOMMIT;',
+                           'DB03_FORWARD_READINESS_INSTALL')
+            output=local.run_psql(container,forward_readiness_test,'DB03_FORWARD_READINESS_TEST')
+            parse_tap(output,12)
+            print('DB03_FORWARD_READINESS_DATABASE_PASS 12/12; Principal_decision_unavailable=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_preflight_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PRINCIPAL_PREFLIGHT_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_PRINCIPAL_PREFLIGHT_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_PRINCIPAL_PREFLIGHT_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_PRINCIPAL_PREFLIGHT_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_principal_review_preflight';",
+                'DB03_PRINCIPAL_PREFLIGHT_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_PRINCIPAL_PREFLIGHT_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_preflight_sql+'\nCOMMIT;',
+                           'DB03_PRINCIPAL_PREFLIGHT_INSTALL')
+            output=local.run_psql(container,principal_preflight_test,'DB03_PRINCIPAL_PREFLIGHT_TEST')
+            parse_tap(output,18)
+            print('DB03_PRINCIPAL_PREFLIGHT_DATABASE_PASS 18/18; final_approval_unavailable=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_contract_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PRINCIPAL_DECISION_CONTRACT_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_PRINCIPAL_DECISION_CONTRACT_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_PRINCIPAL_DECISION_CONTRACT_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_PRINCIPAL_DECISION_CONTRACT_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_principal_final_decision_contract';",
+                'DB03_PRINCIPAL_DECISION_CONTRACT_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_PRINCIPAL_DECISION_CONTRACT_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_contract_sql+'\nCOMMIT;',
+                           'DB03_PRINCIPAL_DECISION_CONTRACT_INSTALL')
+            output=local.run_psql(container,principal_contract_test,'DB03_PRINCIPAL_DECISION_CONTRACT_TEST')
+            parse_tap(output,20)
+            print('DB03_PRINCIPAL_DECISION_CONTRACT_DATABASE_PASS 20/20; no_final_approval=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_history_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PRINCIPAL_HISTORY_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_PRINCIPAL_HISTORY_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_PRINCIPAL_HISTORY_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_PRINCIPAL_HISTORY_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='admission_principal_decisions';",
+                'DB03_PRINCIPAL_HISTORY_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_PRINCIPAL_HISTORY_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_history_sql+'\nCOMMIT;',
+                           'DB03_PRINCIPAL_HISTORY_INSTALL')
+            output=local.run_psql(container,principal_history_test,'DB03_PRINCIPAL_HISTORY_TEST')
+            parse_tap(output,20)
+            print('DB03_PRINCIPAL_HISTORY_DATABASE_PASS 20/20; no_writer_or_accepted_decision=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_authority_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_FINAL_AUTHORITY_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_FINAL_AUTHORITY_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_FINAL_AUTHORITY_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_FINAL_AUTHORITY_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_principal_final_authority','db03_principal_final_actor');",
+                'DB03_FINAL_AUTHORITY_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_FINAL_AUTHORITY_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_authority_sql+'\nCOMMIT;',
+                           'DB03_FINAL_AUTHORITY_INSTALL')
+            output=local.run_psql(container,principal_authority_test,'DB03_FINAL_AUTHORITY_TEST')
+            parse_tap(output,24)
+            print('DB03_PRINCIPAL_FINAL_AUTHORITY_DATABASE_PASS 24/24; permission_seeded=false')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_lifecycle_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_PRINCIPAL_LIFECYCLE_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_PRINCIPAL_LIFECYCLE_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_PRINCIPAL_LIFECYCLE_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_PRINCIPAL_LIFECYCLE_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_principal_terminal_history_guard','db03_principal_lifecycle_projection');",
+                'DB03_PRINCIPAL_LIFECYCLE_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_PRINCIPAL_LIFECYCLE_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_lifecycle_sql+'\nCOMMIT;',
+                           'DB03_PRINCIPAL_LIFECYCLE_INSTALL')
+            output=local.run_psql(container,principal_lifecycle_test,'DB03_PRINCIPAL_LIFECYCLE_TEST')
+            parse_tap(output,22)
+            print('DB03_PRINCIPAL_LIFECYCLE_DATABASE_PASS 22/22; no_writer_or_Student_effect=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_terminal_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_TERMINAL_MUTATION_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_TERMINAL_MUTATION_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_TERMINAL_MUTATION_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_TERMINAL_MUTATION_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname IN('db03_principal_not_rejected','db03_principal_forward_live','db03_principal_resubmission_ready','db03_principal_lifecycle_status','db03_principal_rejected_write_guard');",
+                'DB03_TERMINAL_MUTATION_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_TERMINAL_MUTATION_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_terminal_sql+'\nCOMMIT;',
+                           'DB03_TERMINAL_MUTATION_INSTALL')
+            output=local.run_psql(container,principal_terminal_test,'DB03_TERMINAL_MUTATION_TEST')
+            parse_tap(output,31)
+            print('DB03_TERMINAL_MUTATION_GATES_DATABASE_PASS 31/31; positive_final_decision_unavailable=true')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_command_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_FINAL_COMMAND_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_FINAL_COMMAND_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_FINAL_COMMAND_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_FINAL_COMMAND_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app'::regnamespace AND proname='decide_admission_principal';",
+                'DB03_FINAL_COMMAND_ABSENT',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_FINAL_COMMAND_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_command_sql+'\nCOMMIT;',
+                           'DB03_FINAL_COMMAND_INSTALL')
+            output=local.run_psql(container,principal_command_test,'DB03_FINAL_COMMAND_TEST')
+            parse_tap(output,30)
+            print('DB03_PRINCIPAL_RETURN_REJECT_DATABASE_PASS 30/30; client_operation_disabled=true')
+            output=local.run_psql(container,principal_auth_test,'DB03_PRINCIPAL_AUTH_LIVE_TEST')
+            parse_tap(output,19)
+            print('DB03_PRINCIPAL_AUTH_DATABASE_PASS 19/19; client_final_permission_disabled=true')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
