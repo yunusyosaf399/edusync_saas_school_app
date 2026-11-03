@@ -80,6 +80,39 @@ VALUES(md5('p35b:principal-final-scope')::uuid,
  md5('admission.final.decide:p35a-contract')::uuid,
  'ALL','DIRECT',clock_timestamp(),
  '11111111-1111-4111-8111-111111111111');
+-- P35A revoked the original Principal appointment, including intake ALL scopes.
+-- Rebind the existing active intake grants to the fresh synthetic appointment.
+-- Never un-revoke the historical assignment or grant extra client privileges.
+DO $p35b_intake$
+BEGIN
+ IF (SELECT count(*) FROM app_private.role_permission_grants g
+     JOIN app_private.permissions p ON p.id=g.permission_id
+     WHERE g.role_id='dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+       AND p.code IN ('admission.draft.create','admission.draft.withdraw',
+                      'admission.certificate.grace')
+       AND g.revoked_at IS NULL) <> 3 THEN
+   RAISE EXCEPTION 'DB03_P35B_INTAKE_GRANTS_NOT_ACTIVE';
+ END IF;
+END $p35b_intake$;
+INSERT INTO app_private.assignment_permission_scopes(
+ id,assignment_id,grant_id,role_id,permission_id,scope_contract_id,
+ scope_kind,resolver_key,valid_from,created_by)
+SELECT md5(p.code||':p35b-intake-rescope')::uuid,
+ md5('p35b:principal-reappointment')::uuid,g.id,
+ 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',p.id,c.id,
+ 'ALL','DIRECT',clock_timestamp(),
+ '11111111-1111-4111-8111-111111111111'
+FROM app_private.permissions p
+JOIN app_private.role_permission_grants g
+ ON g.permission_id=p.id
+ AND g.role_id='dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+ AND g.revoked_at IS NULL
+JOIN app_private.permission_scope_contracts c
+ ON c.permission_id=p.id AND c.scope_kind='ALL'
+ AND c.resolver_key='DIRECT' AND c.enabled
+WHERE p.code IN ('admission.draft.create','admission.draft.withdraw',
+                 'admission.certificate.grace');
+
 -- Publication is separately scoped to the original Principal assignment.
 -- Reappointed Principal must receive a *new* School ALL scope; never reuse
 -- the prior assignment or clear its revocation.
