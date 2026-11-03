@@ -149,9 +149,11 @@ JOIN app_private.permission_scope_contracts c
 WHERE p.code IN('admission.destination.record','admission.fee.disposition');
 UPDATE app_private.operation_contracts SET enabled=true
  WHERE code IN('admission.policy.publish','admission.final.decide');
--- Mirror the prerequisite P32 file-worker permission fix while this
--- stacked PR still runs against its pre-fix parent snapshot.
--- Server-only, limited to the terminal REJECT predicate.
-GRANT EXECUTE ON FUNCTION app_private.db03_principal_not_rejected(uuid)
- TO schoolos_file_login;
+-- Mirror the prerequisite P32 grants for the SECURITY DEFINER owner of
+-- the private document upload worker. Do not grant either function to clients
+-- or directly to schoolos_file_login.
+GRANT EXECUTE ON FUNCTION
+ app_private.db03_principal_not_rejected(uuid),
+ app_private.db03_principal_forward_live(uuid,uuid)
+ TO schoolos_platform_executor;
 RESET ROLE;
