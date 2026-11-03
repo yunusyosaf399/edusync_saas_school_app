@@ -1,0 +1,82 @@
+-- P29: inert, immutable Principal RETURN/REJECT decision-history SOURCE only.
+-- No final-decision operation, public entry, client grants or accepted effects.
+-- APPROVE is not recorded here: it requires atomic DB03-D1 Student creation.
+-- Existing admission_applications remains DRAFT/WITHDRAWN in this increment.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.admission_principal_decisions (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id),
+ forward_id uuid NOT NULL,
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid,
+ decision text NOT NULL CHECK(decision IN('RETURN','REJECT')),
+ reason_private text NOT NULL CHECK(length(btrim(reason_private)) BETWEEN 1 AND 1000
+   AND reason_private !~ '[[:cntrl:]]'),
+ application_version bigint NOT NULL CHECK(application_version>0),
+ stage_epoch bigint NOT NULL CHECK(stage_epoch>=0),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id)
+   DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ UNIQUE(application_id,revision),
+ UNIQUE(id,application_id),
+ FOREIGN KEY(forward_id,application_id)
+   REFERENCES app_private.admission_document_forwards(id,application_id),
+ FOREIGN KEY(supersedes_id,application_id)
+   REFERENCES app_private.admission_principal_decisions(id,application_id),
+ CHECK((revision=1)=(supersedes_id IS NULL))
+);
+CREATE INDEX db03_principal_decision_history_app
+ ON app_private.admission_principal_decisions(application_id,revision DESC);
+CREATE FUNCTION app_private.db03_guard_principal_decision_history() RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ prior app_private.admission_principal_decisions%ROWTYPE;
+ latest app_private.admission_document_forwards%ROWTYPE;
+BEGIN
+ IF TG_OP<>'INSERT' THEN
+  RAISE EXCEPTION 'DB03 Principal decision history is immutable';
+ END IF;
+ IF current_user<>'schoolos_workflow_executor' THEN
+  RAISE EXCEPTION 'DB03 Principal decision history requires protected operation';
+ END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=NEW.application_id FOR UPDATE;
+ IF NOT FOUND OR a.state<>'DRAFT'
+  OR a.row_version<>NEW.application_version
+  OR a.stage_epoch<>NEW.stage_epoch THEN
+  RAISE EXCEPTION 'DB03 Principal decision source stale';
+ END IF;
+ SELECT * INTO latest FROM app_private.admission_document_forwards
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ IF latest.id IS NULL OR latest.id<>NEW.forward_id
+  OR latest.snapshot_hash IS DISTINCT FROM app_private.db03_document_snapshot(a.id) THEN
+  RAISE EXCEPTION 'DB03 Principal decision forward source stale';
+ END IF;
+ SELECT * INTO prior FROM app_private.admission_principal_decisions
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ IF (prior.id IS NULL AND (NEW.revision<>1 OR NEW.supersedes_id IS NOT NULL))
+   OR (prior.id IS NOT NULL AND
+       (NEW.revision<>prior.revision+1 OR NEW.supersedes_id IS DISTINCT FROM prior.id)) THEN
+  RAISE EXCEPTION 'DB03 Principal decision linear history invalid';
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_guard_principal_decision_history()
+ FROM PUBLIC,anon,authenticated,service_role;
+ALTER TABLE app_private.admission_principal_decisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_principal_decisions FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_principal_decisions
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_platform_executor,schoolos_identity_executor,schoolos_file_login,
+ schoolos_evidence_writer;
+CREATE POLICY db03_principal_decision_history_owner
+ ON app_private.admission_principal_decisions
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER aa_db03_principal_decision_history
+ BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_principal_decisions
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_guard_principal_decision_history();
+CREATE TRIGGER db03_principal_decision_history_no_truncate
+ BEFORE TRUNCATE ON app_private.admission_principal_decisions
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_guard_principal_decision_history();
+RESET ROLE;
