@@ -691,10 +691,10 @@ def validate_principal_terminal_mutation_gates() -> tuple[str, str]:
                    "db03_principal_rejected_write_guard", 'REVOKE CREATE ON SCHEMA app,app_private'):
         if needle not in sql:
             raise RuntimeError('DB03_P32_INCOMPLETE_LIFECYCLE_'+needle)
-    if re.findall(r'SELECT plan\((\d+)\);', test) != ['28'] or len(re.findall(
-            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 28 or not test.rstrip().endswith('ROLLBACK;'):
+    if re.findall(r'SELECT plan\((\d+)\);', test) != ['31'] or len(re.findall(
+            r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(', test)) != 31 or not test.rstrip().endswith('ROLLBACK;'):
         raise RuntimeError('DB03_P32_TEST_TRANSACTION_OR_COUNT')
-    print('DB03_TERMINAL_MUTATION_GATES_SOURCE_PASS assertions=28 sha256='+hashlib.sha256(sql.encode()).hexdigest())
+    print('DB03_TERMINAL_MUTATION_GATES_SOURCE_PASS assertions=31 sha256='+hashlib.sha256(sql.encode()).hexdigest())
     return sql,test
 
 
