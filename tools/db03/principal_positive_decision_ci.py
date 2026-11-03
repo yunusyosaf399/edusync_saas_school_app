@@ -36,7 +36,7 @@ def run_positive_principal_decisions(local, container, root, worker, api,
     import re
     permitted = ('GRANT EXECUTE ON FUNCTION '
                  'app_private.db03_principal_not_rejected(uuid)'
-                 ' TO schoolos_file_login;')
+                 '\n TO schoolos_file_login;')
     sanitized = fixture.replace(permitted, '')
     if (fixture.count(permitted) != 1 or
             re.search(r'\\bGRANT\\s+EXECUTE\\b|\\bCREATE\\s+FUNCTION\\b',
