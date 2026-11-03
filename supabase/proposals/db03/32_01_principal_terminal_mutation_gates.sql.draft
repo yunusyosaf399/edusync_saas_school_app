@@ -64,6 +64,11 @@ GRANT EXECUTE ON FUNCTION
  app_private.db03_principal_resubmission_ready(uuid),
  app_private.db03_principal_lifecycle_status(uuid)
  TO schoolos_workflow_executor;
+-- The private file-upload service executes document_target_open as
+-- schoolos_file_login; it needs only this terminal-state predicate.
+-- No client-facing roles or final-decision operations are granted.
+GRANT EXECUTE ON FUNCTION app_private.db03_principal_not_rejected(uuid)
+ TO schoolos_file_login;
 CREATE TRIGGER ac_db03_terminal_application_update
  BEFORE UPDATE ON app_private.admission_applications
  FOR EACH ROW EXECUTE FUNCTION app_private.db03_principal_rejected_write_guard();
