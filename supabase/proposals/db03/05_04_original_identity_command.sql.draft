@@ -42,7 +42,12 @@ BEGIN
    OR NOT EXISTS(SELECT 1 FROM app.academic_years WHERE id=a.academic_year_id AND school_id=a.school_id AND state IN('PLANNED','ACTIVE')) THEN
    RAISE EXCEPTION 'DB03 identity destination not open'; END IF;
   SELECT * INTO prior FROM app_private.admission_identity_resolutions h WHERE h.application_id=a.id ORDER BY h.revision DESC LIMIT 1;
-  UPDATE app_private.admission_applications SET person_id=p_person_id,stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version,stage_epoch INTO v_version,v_epoch;
+  BEGIN
+   UPDATE app_private.admission_applications SET person_id=p_person_id,stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version,stage_epoch INTO v_version,v_epoch;
+  EXCEPTION WHEN unique_violation THEN
+   -- Do not disclose the other application ID, Campus, Year or owner.
+   RAISE EXCEPTION 'DB03 identity binding unavailable';
+  END;
   v_history:=pg_catalog.gen_random_uuid(); v_receipt:=pg_catalog.gen_random_uuid();
   INSERT INTO app_private.admission_identity_resolutions(id,application_id,revision,supersedes_id,person_id,person_version,method,
    original_reference_private,reason_private,application_version,stage_epoch,command_receipt_id,occurred_at,created_by)
