@@ -64,11 +64,14 @@ GRANT EXECUTE ON FUNCTION
  app_private.db03_principal_resubmission_ready(uuid),
  app_private.db03_principal_lifecycle_status(uuid)
  TO schoolos_workflow_executor;
--- The private file-upload service executes document_target_open as
--- schoolos_file_login; it needs only this terminal-state predicate.
--- No client-facing roles or final-decision operations are granted.
-GRANT EXECUTE ON FUNCTION app_private.db03_principal_not_rejected(uuid)
- TO schoolos_file_login;
+-- File-upload entrypoints are SECURITY DEFINER owned by
+-- schoolos_platform_executor. Their SECURITY INVOKER document helpers must
+-- check both terminal state and current Forward under that effective role.
+-- The file login itself and all client roles receive no new function grants.
+GRANT EXECUTE ON FUNCTION
+ app_private.db03_principal_not_rejected(uuid),
+ app_private.db03_principal_forward_live(uuid,uuid)
+ TO schoolos_platform_executor;
 CREATE TRIGGER ac_db03_terminal_application_update
  BEFORE UPDATE ON app_private.admission_applications
  FOR EACH ROW EXECUTE FUNCTION app_private.db03_principal_rejected_write_guard();
