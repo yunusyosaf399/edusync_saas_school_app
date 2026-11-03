@@ -1550,8 +1550,8 @@ def main() -> int:
             local.run_psql(container,'BEGIN;\n'+principal_terminal_sql+'\nCOMMIT;',
                            'DB03_TERMINAL_MUTATION_INSTALL')
             output=local.run_psql(container,principal_terminal_test,'DB03_TERMINAL_MUTATION_TEST')
-            parse_tap(output,28)
-            print('DB03_TERMINAL_MUTATION_GATES_DATABASE_PASS 28/28; positive_final_decision_unavailable=true')
+            parse_tap(output,31)
+            print('DB03_TERMINAL_MUTATION_GATES_DATABASE_PASS 31/31; positive_final_decision_unavailable=true')
             try:
                 local.run_psql(container,'BEGIN;\n'+principal_command_sql+
                     "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_FINAL_COMMAND_FAILURE'; END $failure$;\nCOMMIT;",
