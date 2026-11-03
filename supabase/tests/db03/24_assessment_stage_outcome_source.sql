@@ -1,0 +1,18 @@
+BEGIN;
+CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
+SET LOCAL search_path=extensions,pg_catalog,public;
+SELECT plan(12);
+SELECT ok(to_regclass('app_private.admission_stage_outcomes') IS NOT NULL,'typed stage outcome source exists');
+SELECT ok((SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid='app_private.admission_stage_outcomes'::regclass),'forced RLS');
+SELECT ok((SELECT count(*)=5 FROM pg_constraint WHERE conrelid='app_private.admission_stage_outcomes'::regclass AND contype='f'),'assessment, app, policy, receipt and actor references');
+SELECT ok((SELECT count(*)>=3 FROM pg_constraint WHERE conrelid='app_private.admission_stage_outcomes'::regclass AND contype='u'),'unique history and receipt');
+SELECT ok(NOT has_table_privilege('anon','app_private.admission_stage_outcomes','SELECT'),'anon cannot inspect');
+SELECT ok(NOT has_table_privilege('authenticated','app_private.admission_stage_outcomes','SELECT'),'client cannot inspect');
+SELECT ok(NOT has_table_privilege('service_role','app_private.admission_stage_outcomes','INSERT'),'service role cannot write');
+SELECT ok(NOT has_table_privilege('schoolos_file_login','app_private.admission_stage_outcomes','INSERT'),'worker cannot write directly');
+SELECT ok(NOT has_table_privilege('schoolos_workflow_executor','app_private.admission_stage_outcomes','INSERT'),'workflow executor cannot write directly');
+SELECT ok(NOT has_function_privilege('authenticated','app_private.db03_stage_outcome_source_guard()','EXECUTE'),'guard private');
+SELECT ok((SELECT count(*)=2 FROM pg_trigger WHERE tgrelid='app_private.admission_stage_outcomes'::regclass AND NOT tgisinternal),'immutable history guards');
+SELECT ok(to_regclass('app_private.admission_stage_exceptions') IS NULL,'no fabricated administration skip');
+SELECT * FROM finish();
+ROLLBACK;
