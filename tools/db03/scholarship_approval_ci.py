@@ -81,6 +81,9 @@ def run_scholarship_approval(root, worker, api, destination, concession, admin_c
     denied(lambda:submit(c['concession_id'],'wrong-app-version',expected=2),'source stale or unproven')
     q=submit(c['concession_id'],'submit-one')
     check(q['state']=='PENDING' and not q['finance_approved'],'pending workflow')
+    with root() as conn:
+        check(conn.execute('SELECT app_private.db03_pre_admission_approved_concession(%s)',
+                           (q['request_id'],)).fetchone()[0] is None,'pending terms cannot be consumed')
     check(submit(c['concession_id'],'submit-one')==q,'exact submit retry')
     denied(lambda:submit(c['concession_id'],'submit-one',who=admin),'submission replay conflict')
     denied(lambda:submit(c['concession_id'],'submit-other'),'already submitted')
@@ -109,6 +112,13 @@ def run_scholarship_approval(root, worker, api, destination, concession, admin_c
     result=review(q,'review-one')
     check(result['state']=='APPROVED' and result['finance_approved']
           and not result['charge_adjusted'] and not result['clearance_issued'],'approve terms only')
+    with root() as conn:
+        eligible=conn.execute('SELECT app_private.db03_pre_admission_approved_concession(%s)',
+                              (q['request_id'],)).fetchone()[0]
+        check(eligible is not None and eligible['concession_id']==c['concession_id']
+              and eligible['approved_terms']['percent_hundredths']==c['percent_hundredths']
+              and eligible['approved_terms']['category_ids']==[uid('concession:TUITION')]
+              and eligible['source_receipt_id'] is not None,'approved exact source read')
     check(review(q,'review-one')==result,'exact review retry')
     denied(lambda:review(q,'review-one',decision='REJECT'),'review replay conflict')
     denied(lambda:review(q,'second-decision',decision='REJECT'),'source or workflow changed')
@@ -116,7 +126,15 @@ def run_scholarship_approval(root, worker, api, destination, concession, admin_c
     rejected_q=submit(rejected_c['concession_id'],'submit-reject')
     rejected=review(rejected_q,'review-reject',decision='REJECT')
     check(rejected['state']=='REJECTED' and not rejected['finance_approved'],'explicit rejection')
+    with root() as conn:
+        check(conn.execute('SELECT app_private.db03_pre_admission_approved_concession(%s)',
+                           (rejected_q['request_id'],)).fetchone()[0] is None,'rejected terms cannot be consumed')
     check(review(rejected_q,'review-reject',decision='REJECT')==rejected,'rejection replay')
+    concession(app,dest,c['concession_id'],[uid('concession:TUITION')],
+               'approved-source-superseded',percent=2500)
+    with root() as conn:
+        check(conn.execute('SELECT app_private.db03_pre_admission_approved_concession(%s)',
+                           (q['request_id'],)).fetchone()[0] is None,'superseded approval cannot be consumed')
     # A newer concession or destination invalidates eligibility of the old source.
     stale_app,stale_dest,stale_c=make('scholarship-stale-concession')
     stale_q=submit(stale_c['concession_id'],'submit-stale')
