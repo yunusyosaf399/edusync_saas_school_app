@@ -149,4 +149,9 @@ JOIN app_private.permission_scope_contracts c
 WHERE p.code IN('admission.destination.record','admission.fee.disposition');
 UPDATE app_private.operation_contracts SET enabled=true
  WHERE code IN('admission.policy.publish','admission.final.decide');
+-- Mirror the prerequisite P32 file-worker permission fix while this
+-- stacked PR still runs against its pre-fix parent snapshot.
+-- Server-only, limited to the terminal REJECT predicate.
+GRANT EXECUTE ON FUNCTION app_private.db03_principal_not_rejected(uuid)
+ TO schoolos_file_login;
 RESET ROLE;
