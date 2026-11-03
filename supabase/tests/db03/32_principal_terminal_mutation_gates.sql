@@ -1,7 +1,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(28);
+SELECT plan(31);
 SELECT ok(to_regprocedure('app_private.db03_principal_not_rejected(uuid)') IS NOT NULL,
  'private terminal decision fence exists');
 SELECT ok(to_regprocedure('app_private.db03_principal_forward_live(uuid,uuid)') IS NOT NULL,
@@ -45,6 +45,12 @@ SELECT ok(NOT has_function_privilege('schoolos_file_login','app_private.db03_pri
  'file worker denied Principal lifecycle');
 SELECT ok(has_function_privilege('schoolos_workflow_executor','app_private.db03_principal_forward_live(uuid,uuid)','EXECUTE'),
  'existing workflow may check private current Forward status');
+SELECT ok(has_function_privilege('schoolos_platform_executor','app_private.db03_principal_not_rejected(uuid)','EXECUTE'),
+ 'SECURITY DEFINER file worker owner may test terminal REJECT');
+SELECT ok(has_function_privilege('schoolos_platform_executor','app_private.db03_principal_forward_live(uuid,uuid)','EXECUTE'),
+ 'SECURITY DEFINER file worker owner may test current Forward');
+SELECT ok(NOT has_function_privilege('schoolos_file_login','app_private.db03_principal_not_rejected(uuid)','EXECUTE'),
+ 'direct file login cannot invoke terminal predicate');
 SELECT ok(NOT has_table_privilege('schoolos_workflow_executor','app_private.admission_principal_decisions','INSERT'),
  'still no Principal final decision writer grant');
 SELECT is(app_private.db03_principal_not_rejected(NULL),false,
