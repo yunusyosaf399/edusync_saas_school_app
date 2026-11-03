@@ -148,7 +148,8 @@ JOIN app_private.permission_scope_contracts c
  ON c.permission_id=p.id AND c.scope_kind='CAMPUS' AND c.resolver_key='DIRECT'
 WHERE p.code IN('admission.destination.record','admission.fee.disposition');
 UPDATE app_private.operation_contracts SET enabled=true
- WHERE code IN('admission.policy.publish','admission.final.decide');
+ WHERE code IN('admission.policy.publish','admission.final.decide',
+               'admission.draft.withdraw');
 -- Mirror the prerequisite P32 grants for the SECURITY DEFINER owner of
 -- the private document upload worker. Do not grant either function to clients
 -- or directly to schoolos_file_login.
