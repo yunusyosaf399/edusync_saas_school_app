@@ -1,0 +1,57 @@
+-- Inactive Principal final-review source composition. Read-only, no admission decision.
+-- The Finance gate remains deny-only; finalization and D1 Student creation are unavailable.
+SET ROLE schoolos_workflow_executor;
+GRANT EXECUTE ON FUNCTION app_private.db03_documents_cleared(uuid) TO schoolos_schema_owner;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_principal_final_source_snapshot(p_application uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ identity app_private.admission_identity_resolutions%ROWTYPE;
+ clearance app_private.admission_document_clearances%ROWTYPE;
+ identity_ok boolean:=false; documents_ok boolean:=false;
+BEGIN
+ IF p_application IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF a.id IS NULL OR a.state<>'DRAFT'
+  OR NOT EXISTS(SELECT 1 FROM app_private.school_profiles s
+   WHERE s.id=a.school_id AND s.state IN('ACTIVE','SETUP'))
+  OR NOT EXISTS(SELECT 1 FROM app.campuses c
+   WHERE c.id=a.campus_id AND c.school_id=a.school_id AND c.state='ACTIVE')
+  OR NOT EXISTS(SELECT 1 FROM app.academic_years y
+   WHERE y.id=a.academic_year_id AND y.school_id=a.school_id AND y.state IN('PLANNED','ACTIVE'))
+ THEN RETURN NULL; END IF;
+ SELECT * INTO identity FROM app_private.admission_identity_resolutions
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ identity_ok:=COALESCE(identity.id IS NOT NULL AND a.person_id=identity.person_id
+  AND EXISTS(SELECT 1 FROM app_private.people p WHERE p.id=identity.person_id
+   AND p.state='ACTIVE' AND p.row_version=identity.person_version)
+  AND EXISTS(SELECT 1 FROM app_private.command_receipts r
+   WHERE r.id=identity.command_receipt_id AND r.state='SUCCEEDED'
+    AND r.command_kind='admission.identity.attest' AND r.result_ref=a.id
+    AND r.principal_id=identity.created_by),false);
+ documents_ok:=COALESCE(app_private.db03_documents_cleared(a.id),false);
+ IF documents_ok THEN
+  SELECT * INTO clearance FROM app_private.admission_document_clearances
+   WHERE application_id=a.id ORDER BY application_version DESC LIMIT 1;
+  documents_ok:=clearance.id IS NOT NULL AND EXISTS(SELECT 1 FROM app_private.command_receipts r
+   WHERE r.id=clearance.command_receipt_id AND r.state='SUCCEEDED'
+    AND r.command_kind='admission.document.approve' AND r.result_ref=a.id
+    AND r.result_summary->>'source_id'=clearance.id::text
+    AND r.principal_id=clearance.created_by);
+ END IF;
+ RETURN jsonb_build_object('application_id',a.id,'application_version',a.row_version,
+  'stage_epoch',a.stage_epoch,'school_id',a.school_id,'campus_id',a.campus_id,
+  'academic_year_id',a.academic_year_id,'identity_current',identity_ok,
+  'identity_resolution_id',CASE WHEN identity_ok THEN identity.id ELSE NULL END,
+  'person_id',CASE WHEN identity_ok THEN identity.person_id ELSE NULL END,
+  'documents_current',documents_ok,
+  'document_clearance_id',CASE WHEN documents_ok THEN clearance.id ELSE NULL END,
+  'finance_clearance_current',false,'principal_final_approval_recorded',false,
+  'can_finalize',false);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_principal_final_source_snapshot(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,schoolos_workflow_executor,
+ schoolos_platform_executor,schoolos_identity_executor,schoolos_evidence_writer;
+RESET ROLE;

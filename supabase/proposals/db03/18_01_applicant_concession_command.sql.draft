@@ -1,0 +1,187 @@
+-- Applicant category concession: inactive worker command. The permission and operation are test-only.
+-- A retained request awaits independent Finance approval; no charge is reduced.
+GRANT EXECUTE ON FUNCTION app_private.current_principal_id(),
+ app_private.has_complete_grant(text,text,uuid) TO schoolos_schema_owner;
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_concession_admin(p_actor uuid,p_campus uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT EXISTS(SELECT 1 FROM app_private.principal_role_assignments ra
+  JOIN app_private.roles r ON r.id=ra.role_id
+  JOIN app_private.assignment_permission_scopes sc ON sc.assignment_id=ra.id AND sc.role_id=ra.role_id
+  JOIN app_private.role_permission_grants g ON g.id=sc.grant_id
+   AND g.role_id=ra.role_id AND g.permission_id=sc.permission_id
+  JOIN app_private.permission_scope_contracts pc ON pc.id=sc.scope_contract_id
+   AND pc.permission_id=sc.permission_id AND pc.scope_kind=sc.scope_kind
+   AND pc.resolver_key=sc.resolver_key
+  JOIN app_private.permissions pe ON pe.id=sc.permission_id
+  WHERE ra.principal_id=p_actor AND ra.principal_kind='INDIVIDUAL'
+   AND ra.context_kind='INDIVIDUAL' AND r.code='ADMINISTRATOR'
+   AND r.state='ACTIVE' AND NOT r.family_only
+   AND pe.code='admission.concession.record' AND pe.state='ENABLED' AND NOT pe.family_safe
+   AND pc.enabled AND sc.resolver_key='DIRECT'
+   AND ((sc.scope_kind='ALL' AND sc.campus_id IS NULL)
+     OR (sc.scope_kind='CAMPUS' AND sc.campus_id=p_campus))
+   AND ra.valid_from<=clock_timestamp()
+   AND (ra.valid_until IS NULL OR clock_timestamp()<ra.valid_until)
+   AND (ra.revoked_at IS NULL OR clock_timestamp()<ra.revoked_at)
+   AND g.valid_from<=clock_timestamp()
+   AND (g.valid_until IS NULL OR clock_timestamp()<g.valid_until)
+   AND (g.revoked_at IS NULL OR clock_timestamp()<g.revoked_at)
+   AND sc.valid_from<=clock_timestamp()
+   AND (sc.valid_until IS NULL OR clock_timestamp()<sc.valid_until)
+   AND (sc.revoked_at IS NULL OR clock_timestamp()<sc.revoked_at));
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_concession_admin(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_record_applicant_concession(
+ p_application uuid,p_expected bigint,p_destination uuid,p_previous uuid,
+ p_percent integer,p_from date,p_through date,p_categories uuid[],p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ d app_private.admission_destination_intents%ROWTYPE;
+ prior app_private.admission_category_concessions%ROWTYPE;
+ dest app_private.admission_category_concessions%ROWTYPE;
+ categories uuid[]; stored_categories uuid[];
+ replay app_private.command_receipts%ROWTYPE;
+ actor uuid; operation uuid; school uuid; campus uuid; year_id uuid;
+ claims jsonb; expires text; v_hash bytea; receipt uuid; correlation uuid; result jsonb;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR current_setting('transaction_isolation')<>'read committed'
+  OR p_application IS NULL OR p_expected IS NULL OR p_expected<1 OR p_destination IS NULL OR p_percent IS NULL OR p_percent NOT BETWEEN 1 AND 10000
+  OR p_from IS NULL OR p_through IS NULL OR NOT isfinite(p_from) OR NOT isfinite(p_through)
+  OR p_through<p_from OR p_categories IS NULL OR cardinality(p_categories)=0
+  OR array_ndims(p_categories)<>1 OR array_position(p_categories,NULL) IS NOT NULL
+  OR p_reason IS NULL OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB03 concession command invalid'; END IF;
+ SELECT array_agg(c ORDER BY c) INTO categories FROM unnest(p_categories) c;
+ IF cardinality(categories)<>(SELECT count(DISTINCT c) FROM unnest(categories) c) THEN
+  RAISE EXCEPTION 'DB03 concession command duplicate categories'; END IF;
+ claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
+ expires:=claims->>'exp';
+ IF expires IS NULL OR expires !~ '^[0-9]{1,12}$'
+  OR to_timestamp(expires::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 concession command authentication expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ IF actor IS NULL OR NOT EXISTS(SELECT 1 FROM app_private.principals
+  WHERE id=actor AND kind='INDIVIDUAL' AND state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB03 concession command staff authentication required'; END IF;
+ SELECT school_id,campus_id,academic_year_id INTO school,campus,year_id
+  FROM app_private.admission_applications WHERE id=p_application;
+ IF school IS NULL THEN RAISE EXCEPTION 'DB03 concession command application unavailable'; END IF;
+ SELECT o.id INTO operation FROM app_private.operation_contracts o
+  JOIN app_private.permissions p ON p.id=o.request_permission_id
+  WHERE o.code='admission.concession.record' AND o.contract_version=1
+   AND o.handler_key=o.code AND o.payload_schema_version=1
+   AND o.enabled AND NOT o.requires_approval
+   AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF operation IS NULL THEN RAISE EXCEPTION 'DB03 concession command operation disabled'; END IF;
+ IF NOT app_private.has_complete_grant('admission.concession.record','CAMPUS',campus)
+  OR NOT app_private.db03_concession_admin(actor,campus) THEN
+  RAISE EXCEPTION 'DB03 concession command administrator scope denied'; END IF;
+ v_hash:=sha256(convert_to(jsonb_build_array('db03-concession-v1',
+  p_application,p_expected,p_destination,p_previous,p_percent,p_from,p_through,categories,encode(sha256(convert_to(p_reason,'UTF8')),'hex'))::text,'UTF8'));
+ PERFORM pg_advisory_xact_lock(71002,hashtext(actor::text||':'||operation::text||':'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=school AND state IN('SETUP','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 concession command School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=campus AND school_id=school AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 concession command Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=year_id AND school_id=school
+  AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 concession command Year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application FOR UPDATE;
+ SELECT * INTO d FROM app_private.admission_destination_intents WHERE id=p_destination;
+ IF a.id IS NULL OR a.school_id<>school OR a.campus_id<>campus OR a.academic_year_id<>year_id
+  OR app_private.current_principal_id() IS DISTINCT FROM actor
+  OR NOT app_private.has_complete_grant('admission.concession.record','CAMPUS',campus)
+  OR NOT app_private.db03_concession_admin(actor,campus)
+  OR to_timestamp(expires::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 concession command authority or target changed'; END IF;
+ SELECT * INTO replay FROM app_private.command_receipts WHERE principal_id=actor
+  AND operation_id=operation AND idempotency_key='concession:'||p_key;
+ IF replay.id IS NOT NULL THEN
+  SELECT * INTO dest FROM app_private.admission_category_concessions WHERE id=replay.result_ref;
+  SELECT array_agg(category_id ORDER BY category_id) INTO stored_categories
+   FROM app_private.admission_concession_categories WHERE concession_id=dest.id;
+  IF replay.state<>'SUCCEEDED' OR replay.command_kind<>'admission.concession.record'
+   OR replay.result_kind<>'APPLICANT_CONCESSION' OR replay.canonical_payload_hash IS DISTINCT FROM v_hash
+   OR replay.expected_target_version IS DISTINCT FROM p_expected
+   OR dest.id IS NULL OR dest.application_id<>p_application OR dest.destination_id<>p_destination
+   OR dest.supersedes_id IS DISTINCT FROM p_previous OR dest.percent_hundredths<>p_percent
+   OR dest.valid_from<>p_from OR dest.valid_through<>p_through
+   OR stored_categories IS DISTINCT FROM categories
+   OR dest.application_version<>p_expected OR dest.created_by<>actor OR dest.reason_private<>p_reason
+   OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=replay.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=replay.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 concession command replay conflict'; END IF;
+  RETURN replay.result_summary;
+ END IF;
+ IF a.state<>'DRAFT' OR a.row_version<>p_expected OR d.id IS NULL
+  OR d.application_id<>a.id OR d.application_version<>p_expected
+  OR d.school_id<>school OR d.campus_id<>campus OR d.academic_year_id<>year_id
+  OR d.id IS DISTINCT FROM (SELECT id FROM app_private.admission_destination_intents
+   WHERE application_id=a.id ORDER BY revision DESC LIMIT 1)
+  OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards WHERE application_id=a.id) THEN
+  RAISE EXCEPTION 'DB03 concession command context changed or forwarded'; END IF;
+ PERFORM 1 FROM app_private.class_offerings WHERE id=d.class_offering_id
+  AND state='OPEN' AND school_id=school AND campus_id=campus AND academic_year_id=year_id FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 concession command offering unavailable'; END IF;
+ SELECT * INTO prior FROM app_private.admission_category_concessions
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+ IF prior.id IS DISTINCT FROM p_previous THEN
+  RAISE EXCEPTION 'DB03 concession command stale revision'; END IF;
+ PERFORM 1 FROM app_private.finance_fee_categories
+  WHERE school_id=school AND id=ANY(categories) ORDER BY id FOR SHARE;
+ IF (SELECT count(*) FROM app_private.finance_fee_categories
+     WHERE school_id=school AND id=ANY(categories))<>cardinality(categories) THEN
+  RAISE EXCEPTION 'DB03 concession command category unavailable'; END IF;
+ -- Recheck natural expiry after all target locks (including category locks).
+ IF app_private.current_principal_id() IS DISTINCT FROM actor
+  OR NOT app_private.has_complete_grant('admission.concession.record','CAMPUS',campus)
+  OR NOT app_private.db03_concession_admin(actor,campus)
+  OR to_timestamp(expires::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 concession command authority or target changed'; END IF;
+ -- This worker command owns the transaction's concession constraint timing.
+ SET CONSTRAINTS app_private.db03_concession_selected_category DEFERRED;
+ INSERT INTO app_private.admission_category_concessions(application_id,school_id,campus_id,
+  academic_year_id,application_version,destination_id,revision,supersedes_id,percent_hundredths,
+  valid_from,valid_through,reason_private,created_by)
+ VALUES(a.id,school,campus,year_id,p_expected,d.id,coalesce(prior.revision,0)+1,
+  prior.id,p_percent,p_from,p_through,p_reason,actor) RETURNING * INTO dest;
+ INSERT INTO app_private.admission_concession_categories(concession_id,school_id,category_id)
+  SELECT dest.id,school,c FROM unnest(categories) c;
+ -- Drain the deferred invoker check while still under the protected owner.
+ -- Never grant the login SELECT merely to satisfy a deferred commit trigger.
+ SET CONSTRAINTS app_private.db03_concession_selected_category IMMEDIATE;
+ SET CONSTRAINTS app_private.db03_concession_selected_category DEFERRED;
+ result:=jsonb_build_object('concession_id',dest.id,'application_id',a.id,
+  'application_version',p_expected,'revision',dest.revision,'destination_id',d.id,
+  'percent_hundredths',p_percent,'category_ids',to_jsonb(categories),
+  'valid_from',p_from,'valid_through',p_through,'finance_approved',false,
+  'source_kind','APPLICANT_CATEGORY_CONCESSION_REQUEST');
+ receipt:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,
+  canonical_payload_hash,canonicalization_version,expected_target_version,state,
+  result_kind,result_ref,result_summary,completed_at,created_by)
+ VALUES(receipt,actor,operation,'admission.concession.record','concession:'||p_key,
+  v_hash,1,p_expected,'SUCCEEDED','APPLICANT_CONCESSION',dest.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,
+  event_type,target_kind,target_ref,campus_id,command_receipt_id,source_kind,correlation_id,
+  occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation','admission.concession.record'),
+  dest.revision,'admission.concession.record','APPLICANT_CONCESSION',dest.id,campus,
+  receipt,'WORKER',correlation,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,
+  command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES('admission.concession.record','APPLICANT_CONCESSION',dest.id,dest.revision,
+  receipt,1,correlation,clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_record_applicant_concession(uuid,bigint,uuid,uuid,integer,date,date,uuid[],text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_record_applicant_concession(uuid,bigint,uuid,uuid,integer,date,date,uuid[],text,text)
+ TO schoolos_file_login;
+RESET ROLE;
