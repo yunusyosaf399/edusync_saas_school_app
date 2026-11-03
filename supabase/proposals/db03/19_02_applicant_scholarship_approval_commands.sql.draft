@@ -1,0 +1,177 @@
+-- Inactive server-only Foundation workflow submission and independent Finance decision.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_submit_concession_approval(
+ p_concession uuid,p_expected bigint,p_policy uuid,p_reviewer uuid,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c app_private.admission_category_concessions%ROWTYPE;
+ policy app_private.approval_policy_versions%ROWTYPE; template app_private.approval_step_templates%ROWTYPE;
+ replay app_private.command_receipts%ROWTYPE; ctx record; source uuid; request uuid; step uuid;
+ version bigint; v_hash bytea; result jsonb; terms jsonb;
+BEGIN
+ IF p_concession IS NULL OR p_expected IS NULL OR p_expected<1 OR p_policy IS NULL OR p_reviewer IS NULL
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 150 THEN
+  RAISE EXCEPTION 'DB03 scholarship submission invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO c FROM app_private.admission_category_concessions WHERE id=p_concession;
+ IF c.id IS NULL THEN RAISE EXCEPTION 'DB03 scholarship source unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db03_concession_approval_actor('SUBMIT',c.campus_id,NULL);
+ IF c.created_by<>ctx.actor_id OR NOT app_private.db03_concession_admin(ctx.actor_id,c.campus_id) THEN
+  RAISE EXCEPTION 'DB03 scholarship original administrator required'; END IF;
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':submit:'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=c.school_id AND state IN('ACTIVE','SETUP') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 scholarship School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=c.campus_id AND school_id=c.school_id AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 scholarship Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=c.academic_year_id AND school_id=c.school_id
+  AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 scholarship Year unavailable'; END IF;
+ PERFORM 1 FROM app_private.admission_applications WHERE id=c.application_id FOR UPDATE;
+ PERFORM 1 FROM app_private.class_offerings WHERE id=(SELECT class_offering_id
+  FROM app_private.admission_destination_intents WHERE id=c.destination_id) FOR SHARE;
+ SELECT * INTO policy FROM app_private.approval_policy_versions WHERE id=p_policy FOR SHARE;
+ SELECT * INTO template FROM app_private.approval_step_templates WHERE policy_id=p_policy AND step_number=1;
+ PERFORM app_private.db03_concession_approval_actor('SUBMIT',c.campus_id,NULL);
+ v_hash:=sha256(convert_to(jsonb_build_array('applicant-scholarship-submit-v1',p_concession,p_expected,
+  p_policy,p_reviewer)::text,'UTF8'));
+ SELECT * INTO replay FROM app_private.command_receipts WHERE principal_id=ctx.actor_id
+  AND operation_id=ctx.operation_id AND idempotency_key='admission.concession.submit:'||p_key;
+ IF replay.id IS NOT NULL THEN
+  IF replay.canonical_payload_hash IS DISTINCT FROM v_hash OR replay.state<>'SUCCEEDED'
+   OR replay.command_kind<>'admission.concession.submit' OR replay.result_kind<>'APPLICANT_CONCESSION_APPROVAL'
+   OR replay.expected_target_version IS DISTINCT FROM p_expected
+   OR NOT EXISTS(SELECT 1 FROM app_private.admission_concession_approval_bindings b
+    JOIN app_private.approval_requests q ON q.id=b.request_id
+    WHERE b.request_id=replay.result_ref AND b.concession_id=c.id AND q.policy_id=p_policy
+     AND q.requester_id=ctx.actor_id)
+   OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=replay.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=replay.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 scholarship submission replay conflict'; END IF;
+  RETURN replay.result_summary;
+ END IF;
+ source:=app_private.db03_concession_record_receipt(c.id);
+ IF c.application_version<>p_expected OR NOT app_private.db03_concession_approval_current(c.id)
+  OR source IS NULL THEN RAISE EXCEPTION 'DB03 scholarship source stale or unproven'; END IF;
+ IF EXISTS(SELECT 1 FROM app_private.admission_concession_approval_bindings WHERE concession_id=c.id) THEN
+  RAISE EXCEPTION 'DB03 scholarship already submitted'; END IF;
+ IF policy.id IS NULL OR policy.operation_id<>ctx.operation_id OR policy.state<>'ACTIVE'
+  OR (policy.campus_id IS NOT NULL AND policy.campus_id<>c.campus_id)
+  OR policy.effective_from IS NULL OR policy.effective_from>clock_timestamp()
+  OR (policy.effective_until IS NOT NULL AND policy.effective_until<=clock_timestamp())
+  OR template.id IS NULL OR template.required_reviews<>1 OR template.selection_resolver_key<>'DIRECT_ROLE'
+  OR EXISTS(SELECT 1 FROM app_private.approval_step_templates WHERE policy_id=p_policy AND id<>template.id)
+  OR p_reviewer=ctx.actor_id
+  OR NOT app_private.db03_concession_approval_grant(p_reviewer,c.campus_id,'REVIEW',template.reviewer_role_id)
+  THEN RAISE EXCEPTION 'DB03 scholarship independent Finance policy unavailable'; END IF;
+ terms:=app_private.db03_concession_approval_terms(c.id);
+ request:=gen_random_uuid(); step:=gen_random_uuid();
+ INSERT INTO app_private.approval_requests(id,operation_id,payload_schema_version,policy_id,requester_id,
+  campus_id,target_ref,expected_target_version,reason,old_snapshot,requested_payload,created_by)
+ VALUES(request,ctx.operation_id,1,policy.id,ctx.actor_id,c.campus_id,c.id,c.revision,c.reason_private,
+  jsonb_build_object('source_receipt_id',source,'finance_approved',false),terms,ctx.actor_id);
+ INSERT INTO app_private.admission_concession_approval_bindings(request_id,concession_id,school_id,source_receipt_id,created_by)
+ VALUES(request,c.id,c.school_id,source,ctx.actor_id);
+ UPDATE app_private.approval_requests SET state='SUBMITTED',submitted_at=statement_timestamp() WHERE id=request;
+ INSERT INTO app_private.approval_request_steps(id,request_id,policy_id,template_id,step_number,required_reviews,created_by)
+ VALUES(step,request,policy.id,template.id,1,1,ctx.actor_id);
+ INSERT INTO app_private.approval_step_reviewers(step_id,reviewer_id,assignment_reason,created_by)
+ VALUES(step,p_reviewer,'DB03_APPLICANT_CONCESSION_FINANCE',ctx.actor_id);
+ UPDATE app_private.approval_requests SET state='PENDING' WHERE id=request RETURNING row_version INTO version;
+ UPDATE app_private.approval_request_steps SET state='OPEN',opened_at=statement_timestamp() WHERE id=step;
+ result:=jsonb_build_object('request_id',request,'concession_id',c.id,'request_version',version,
+  'state','PENDING','finance_approved',false,'clearance_issued',false,'charge_adjusted',false);
+ PERFORM app_private.db03_concession_approval_evidence(ctx.actor_id,ctx.operation_id,'admission.concession.submit',
+  p_key,v_hash,p_expected,request,c.campus_id,result);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_submit_concession_approval(uuid,bigint,uuid,uuid,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_submit_concession_approval(uuid,bigint,uuid,uuid,text) TO schoolos_file_login;
+
+CREATE FUNCTION app_private.db03_review_concession_approval(
+ p_request uuid,p_expected bigint,p_decision text,p_note text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE c app_private.admission_category_concessions%ROWTYPE;
+ b app_private.admission_concession_approval_bindings%ROWTYPE; q app_private.approval_requests%ROWTYPE;
+ policy app_private.approval_policy_versions%ROWTYPE; template app_private.approval_step_templates%ROWTYPE;
+ step app_private.approval_request_steps%ROWTYPE; reviewer app_private.approval_step_reviewers%ROWTYPE;
+ replay app_private.command_receipts%ROWTYPE; ctx record; v_hash bytea; version bigint; result jsonb;
+BEGIN
+ IF p_request IS NULL OR p_expected IS NULL OR p_expected<1 OR p_decision IS NULL
+  OR p_decision NOT IN('APPROVE','REJECT') OR p_note IS NULL OR length(btrim(p_note)) NOT BETWEEN 1 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 150 THEN
+  RAISE EXCEPTION 'DB03 scholarship review invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO b FROM app_private.admission_concession_approval_bindings WHERE request_id=p_request;
+ SELECT * INTO c FROM app_private.admission_category_concessions WHERE id=b.concession_id;
+ IF c.id IS NULL THEN RAISE EXCEPTION 'DB03 scholarship request unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db03_concession_approval_actor('REVIEW',c.campus_id,NULL);
+ IF ctx.actor_id=c.created_by THEN RAISE EXCEPTION 'DB03 scholarship independent Finance reviewer required'; END IF;
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':review:'||p_key));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=c.school_id AND state IN('ACTIVE','SETUP') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 scholarship School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=c.campus_id AND school_id=c.school_id AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 scholarship Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years WHERE id=c.academic_year_id AND school_id=c.school_id
+  AND state IN('PLANNED','ACTIVE') FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 scholarship Year unavailable'; END IF;
+ PERFORM 1 FROM app_private.admission_applications WHERE id=c.application_id FOR UPDATE;
+ PERFORM 1 FROM app_private.class_offerings WHERE id=(SELECT class_offering_id
+  FROM app_private.admission_destination_intents WHERE id=c.destination_id) FOR SHARE;
+ SELECT * INTO policy FROM app_private.approval_policy_versions WHERE id=
+  (SELECT policy_id FROM app_private.approval_requests WHERE id=p_request) FOR SHARE;
+ SELECT * INTO q FROM app_private.approval_requests WHERE id=p_request FOR UPDATE;
+ SELECT * INTO step FROM app_private.approval_request_steps WHERE request_id=p_request FOR UPDATE;
+ SELECT * INTO template FROM app_private.approval_step_templates WHERE id=step.template_id;
+ SELECT * INTO reviewer FROM app_private.approval_step_reviewers WHERE step_id=step.id
+  AND reviewer_id=ctx.actor_id AND withdrawn_at IS NULL FOR UPDATE;
+ PERFORM app_private.db03_concession_approval_actor('REVIEW',c.campus_id,template.reviewer_role_id);
+ v_hash:=sha256(convert_to(jsonb_build_array('applicant-scholarship-review-v1',p_request,p_expected,
+  p_decision,encode(sha256(convert_to(p_note,'UTF8')),'hex'))::text,'UTF8'));
+ SELECT * INTO replay FROM app_private.command_receipts WHERE principal_id=ctx.actor_id
+  AND operation_id=ctx.operation_id AND idempotency_key='admission.concession.review:'||p_key;
+ IF replay.id IS NOT NULL THEN
+  IF replay.canonical_payload_hash IS DISTINCT FROM v_hash OR replay.state<>'SUCCEEDED'
+   OR replay.command_kind<>'admission.concession.review' OR replay.result_kind<>'APPLICANT_CONCESSION_APPROVAL'
+   OR replay.result_ref IS DISTINCT FROM p_request OR replay.expected_target_version IS DISTINCT FROM p_expected
+   OR NOT EXISTS(SELECT 1 FROM app_private.approval_reviews WHERE reviewer_assignment_id=reviewer.id
+     AND decision=p_decision AND reason=p_note AND expected_request_version=p_expected)
+   OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=replay.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=replay.id)<>1 THEN
+   RAISE EXCEPTION 'DB03 scholarship review replay conflict'; END IF;
+  RETURN replay.result_summary;
+ END IF;
+ IF NOT app_private.db03_concession_approval_current(c.id)
+  OR app_private.db03_concession_record_receipt(c.id) IS DISTINCT FROM b.source_receipt_id
+  OR q.id IS NULL OR q.state<>'PENDING' OR q.row_version<>p_expected
+  OR q.operation_id<>ctx.operation_id OR q.target_ref<>c.id OR q.expected_target_version<>c.revision
+  OR q.requester_id<>c.created_by OR q.campus_id<>c.campus_id OR q.reason<>c.reason_private
+  OR q.requested_payload IS DISTINCT FROM app_private.db03_concession_approval_terms(c.id)
+  OR step.id IS NULL OR step.state<>'OPEN' OR step.step_number<>1 OR step.required_reviews<>1
+  OR EXISTS(SELECT 1 FROM app_private.approval_request_steps WHERE request_id=p_request AND id<>step.id)
+  OR template.id IS NULL OR template.policy_id<>q.policy_id OR template.required_reviews<>1
+  OR template.selection_resolver_key<>'DIRECT_ROLE'
+  OR EXISTS(SELECT 1 FROM app_private.approval_step_templates WHERE policy_id=q.policy_id AND id<>template.id)
+  OR reviewer.id IS NULL OR reviewer.assignment_reason<>'DB03_APPLICANT_CONCESSION_FINANCE'
+  OR policy.id IS NULL OR policy.operation_id<>ctx.operation_id OR policy.state<>'ACTIVE'
+  OR (policy.campus_id IS NOT NULL AND policy.campus_id<>c.campus_id)
+  OR policy.effective_from IS NULL OR policy.effective_from>clock_timestamp()
+  OR (policy.effective_until IS NOT NULL AND clock_timestamp()>=policy.effective_until)
+  THEN RAISE EXCEPTION 'DB03 scholarship review source or workflow changed'; END IF;
+ INSERT INTO app_private.approval_reviews(reviewer_assignment_id,step_id,reviewer_id,decision,reason,
+  expected_request_version,created_by)
+ VALUES(reviewer.id,step.id,ctx.actor_id,p_decision,p_note,p_expected,ctx.actor_id);
+ UPDATE app_private.approval_request_steps SET state=CASE WHEN p_decision='APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+  closed_at=statement_timestamp() WHERE id=step.id;
+ UPDATE app_private.approval_requests SET state=CASE WHEN p_decision='APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END
+  WHERE id=q.id RETURNING row_version INTO version;
+ result:=jsonb_build_object('request_id',q.id,'concession_id',c.id,'request_version',version,
+  'state',CASE WHEN p_decision='APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END,
+  'finance_approved',p_decision='APPROVE','clearance_issued',false,'charge_adjusted',false);
+ PERFORM app_private.db03_concession_approval_evidence(ctx.actor_id,ctx.operation_id,'admission.concession.review',
+  p_key,v_hash,p_expected,q.id,c.campus_id,result);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_review_concession_approval(uuid,bigint,text,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_review_concession_approval(uuid,bigint,text,text,text) TO schoolos_file_login;
+RESET ROLE;
