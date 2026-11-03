@@ -1,7 +1,8 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(40);
+SELECT plan(44);
+SELECT ok((SELECT indisunique FROM pg_index WHERE indexrelid='app_private.db03_one_open_application_per_person'::regclass),'one open verified Person application across Campus and Year');
 SELECT ok((SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid='app_private.admission_identity_resolutions'::regclass),'identity history forces RLS');
 SELECT ok(NOT has_table_privilege('authenticated','app_private.admission_identity_resolutions','SELECT,INSERT,UPDATE,DELETE'),'no raw client inspection access');
 SELECT ok(NOT has_function_privilege('anon','app.attest_admission_original_identity(uuid,bigint,uuid,bigint,text,text,text)','EXECUTE') AND NOT has_function_privilege('service_role','app.attest_admission_original_identity(uuid,bigint,uuid,bigint,text,text,text)','EXECUTE'),'anon/service role cannot attest');
@@ -31,6 +32,8 @@ SET ROLE authenticated;
 SELECT throws_ok(format($q$SELECT * FROM app.attest_admission_original_identity(%L,1,'61616161-6161-4161-8161-616161616161',1,' ','Reason','blank')$q$,:'a_application_id'),'P0001'::char(5),'DB03 original identity typed attestation invalid'::text,'blank original reference denied');
 SELECT throws_ok(format($q$SELECT * FROM app.attest_admission_original_identity(%L,1,'61616161-6161-4161-8161-616161616161',9,'Original seen','Reason','stale-person')$q$,:'a_application_id'),'P0001'::char(5),'DB03 identity Person unavailable or stale'::text,'stale Person version denied');
 SELECT * FROM app.attest_admission_original_identity(:'a_application_id',1,'61616161-6161-4161-8161-616161616161',1,'Paper register private reference','Original birth document inspected against canonical record','attest-1') \gset first_
+SELECT * FROM app.create_admission_draft('91919191-9191-4191-8191-919191919191','93939393-9393-4393-8393-939393939393','second-same-person') \gset duplicate_
+SELECT throws_ok(format($q$SELECT * FROM app.attest_admission_original_identity(%L,1,'61616161-6161-4161-8161-616161616161',1,'Original seen','Second open application','duplicate-bind')$q$,:'duplicate_application_id'),'P0001'::char(5),'DB03 identity binding unavailable'::text,'second draft cannot bind same Person while first remains open');
 SELECT * FROM app.attest_admission_original_identity(:'a_application_id',1,'61616161-6161-4161-8161-616161616161',1,'Paper register private reference','Original birth document inspected against canonical record','attest-1') \gset retry_
 SELECT is(:'retry_resolution_id'::uuid,:'first_resolution_id'::uuid,'same-key retry returns original attestation');
 SELECT throws_ok(format($q$SELECT * FROM app.attest_admission_original_identity(%L,1,'61616161-6161-4161-8161-616161616161',1,'Different original reference','Original birth document inspected against canonical record','attest-1')$q$,:'a_application_id'),'P0001'::char(5),'DB03 identity idempotency conflict'::text,'changed private evidence conflicts');
@@ -82,6 +85,11 @@ RESET ROLE;
 SELECT ok((SELECT state='WITHDRAWN' AND person_id='61616161-6161-4161-8161-616161616161' FROM app_private.admission_applications WHERE id=:'a_application_id'),'withdrawal retains previously bound Person');
 SELECT is((SELECT status FROM app_private.admission_identity_current),'WITHDRAWN'::text,'retained inspection does not reopen withdrawn draft');
 SELECT is(:'withdrawn_retry_resolution_id'::uuid,:'first_resolution_id'::uuid,'withdrawn historical retry retains its original result');
+SET ROLE authenticated;
+SELECT * FROM app.attest_admission_original_identity(:'duplicate_application_id',1,'61616161-6161-4161-8161-616161616161',2,'Original rechecked','Fresh application after withdrawal','bind-after-withdraw') \gset replacement_
+RESET ROLE;
+SELECT ok((SELECT person_id='61616161-6161-4161-8161-616161616161' FROM app_private.admission_applications WHERE id=:'duplicate_application_id'),'withdrawn application frees the same Person for a later draft');
+SELECT is(:'replacement_application_id'::uuid,:'duplicate_application_id'::uuid,'new authorized attestation binds only the replacement application');
 UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp() WHERE permission_id=md5('admission.identity.attest:permission')::uuid;
 SET ROLE authenticated;
 SELECT throws_ok(format($q$SELECT * FROM app.attest_admission_original_identity(%L,1,'61616161-6161-4161-8161-616161616161',1,'Paper register private reference','Original birth document inspected against canonical record','attest-1')$q$,:'a_application_id'),'P0001'::char(5),'DB03 identity School ALL authority denied'::text,'revoked verifier cannot replay');
