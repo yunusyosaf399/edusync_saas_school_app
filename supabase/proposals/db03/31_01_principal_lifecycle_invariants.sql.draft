@@ -1,0 +1,70 @@
+-- P31: inactive integrity guard plus private lifecycle read projection.
+-- No RETURN/REJECT writer, no final approval, no Student.create.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.admission_principal_decisions
+ ADD CONSTRAINT db03_principal_one_decision_per_forward
+ UNIQUE(application_id,forward_id);
+CREATE FUNCTION app_private.db03_principal_terminal_history_guard()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF TG_OP<>'INSERT' THEN
+  RAISE EXCEPTION 'DB03 Principal decision history cannot be changed';
+ END IF;
+ -- The P29 insert trigger separately checks the parent/application/Forward
+ -- versions. This additional guard prevents terminal REJECT replacement.
+ IF EXISTS(SELECT 1 FROM app_private.admission_principal_decisions d
+  WHERE d.application_id=NEW.application_id AND d.decision='REJECT') THEN
+  RAISE EXCEPTION 'DB03 rejected application is terminal';
+ END IF;
+ IF EXISTS(SELECT 1 FROM app_private.admission_principal_decisions d
+  WHERE d.application_id=NEW.application_id AND d.forward_id=NEW.forward_id) THEN
+  RAISE EXCEPTION 'DB03 final decision already exists for Forward';
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_principal_terminal_history_guard()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_platform_executor,schoolos_file_login,schoolos_identity_executor,
+ schoolos_evidence_writer;
+CREATE TRIGGER ab_db03_principal_terminal_history
+ BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_principal_decisions
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_principal_terminal_history_guard();
+CREATE FUNCTION app_private.db03_principal_lifecycle_projection(p_application uuid)
+RETURNS text LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ a app_private.admission_applications%ROWTYPE;
+ last_decision app_private.admission_principal_decisions%ROWTYPE;
+ chosen_forward app_private.admission_document_forwards%ROWTYPE;
+ later_forward app_private.admission_document_forwards%ROWTYPE;
+BEGIN
+ IF p_application IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF a.id IS NULL THEN RETURN NULL; END IF;
+ -- REJECT is terminal even if older application source still reads DRAFT.
+ IF EXISTS(SELECT 1 FROM app_private.admission_principal_decisions d
+  WHERE d.application_id=a.id AND d.decision='REJECT') THEN
+  RETURN 'REJECTED';
+ END IF;
+ IF a.state='WITHDRAWN' THEN RETURN 'WITHDRAWN'; END IF;
+ SELECT * INTO last_decision FROM app_private.admission_principal_decisions
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ IF last_decision.id IS NOT NULL AND last_decision.decision='RETURN' THEN
+  SELECT * INTO chosen_forward FROM app_private.admission_document_forwards
+   WHERE id=last_decision.forward_id;
+  SELECT * INTO later_forward FROM app_private.admission_document_forwards
+   WHERE application_id=a.id AND revision>chosen_forward.revision
+   ORDER BY revision DESC LIMIT 1;
+  IF later_forward.id IS NULL THEN RETURN 'RETURNED_FOR_CORRECTION'; END IF;
+ END IF;
+ IF app_private.db03_document_is_forwarded(a.id) THEN
+  RETURN 'FORWARDED_FOR_REVIEW';
+ END IF;
+ RETURN 'DRAFT';
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_principal_lifecycle_projection(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_platform_executor,schoolos_file_login,schoolos_identity_executor,
+ schoolos_evidence_writer;
+RESET ROLE;
