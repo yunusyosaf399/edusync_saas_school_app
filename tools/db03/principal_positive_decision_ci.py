@@ -31,8 +31,8 @@ def run_positive_principal_decisions(local, container, root, worker, api,
 
     fixture=(Path(__file__).resolve().parents[2] /
         'supabase/tests/db03/fixtures/principal_positive_document_actor.sql').read_text()
-    # A single server-only terminal-state check is required by the private
-    # upload worker. Reject all other EXECUTE grants, especially client roles.
+    # The SECURITY DEFINER platform owner needs two private document checks.
+    # Reject any additional EXECUTE grants, especially grants to clients.
     import re
     permitted = ('GRANT EXECUTE ON FUNCTION\n'
                  ' app_private.db03_principal_not_rejected(uuid),\n'
@@ -103,6 +103,18 @@ def run_positive_principal_decisions(local, container, root, worker, api,
     check(verified.subject==claims.subject,
           'signed GoTrue subject verified by independent Auth endpoint')
     with root() as conn:
+        check(conn.execute("SELECT has_function_privilege("
+            "'schoolos_platform_executor',"
+            "'app_private.db03_principal_not_rejected(uuid)','EXECUTE')"
+            ).fetchone()[0], 'platform worker can check terminal REJECT')
+        check(conn.execute("SELECT has_function_privilege("
+            "'schoolos_platform_executor',"
+            "'app_private.db03_principal_forward_live(uuid,uuid)','EXECUTE')"
+            ).fetchone()[0], 'platform worker can check current Forward')
+        check(not conn.execute("SELECT has_function_privilege("
+            "'schoolos_file_login',"
+            "'app_private.db03_principal_not_rejected(uuid)','EXECUTE')"
+            ).fetchone()[0], 'direct file login has no terminal grant')
         state=conn.execute(
             'SELECT state FROM app_private.admission_policy_versions WHERE id=%s',
             (POLICY,)).fetchone()[0]
