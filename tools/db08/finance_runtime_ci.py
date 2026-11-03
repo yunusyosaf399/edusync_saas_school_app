@@ -9,7 +9,7 @@ from uuid import UUID
 
 SCHOOL = '08000000-0000-4000-8000-000000000002'
 CAMPUS = '08000000-0000-4000-8000-000000000003'
-YEAR = '08000000-0000-4000-8000-000000000004'
+YEAR = '08000000-0000-4000-8000-000000000048'
 PERSON = '08000000-0000-4000-8000-000000000006'
 FEE_SCOPE = '08000000-0000-4000-8000-000000000017'
 REVIEW_SCOPE = '08000000-0000-4000-8000-000000000032'
@@ -56,6 +56,26 @@ def run_finance_runtime(local_status):
     password = None
     claims = SupabaseAuthenticator(url, admin_key, allow_local_test=True)(token)
 
+    # Auth/HTTP fee-change tests must use a valid *future* fee period.
+    # All fixtures live only in the disposable PostgreSQL stack.
+    with connect() as root:
+        future_year = root.execute(
+            "SELECT extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer + 1"
+        ).fetchone()[0]
+        root.execute('SET ROLE schoolos_schema_owner')
+        root.execute(
+            """INSERT INTO app.academic_years
+                (id, school_id, code, label, starts_on, ends_on, state, created_by)
+               VALUES (%s::uuid, %s::uuid, %s, %s,
+                       make_date(%s,1,1), make_date(%s,12,31), 'ACTIVE', %s::uuid)""",
+            (YEAR, SCHOOL, str(future_year), 'DB08 real Auth future fee year',
+             future_year, future_year, '08000000-0000-4000-8000-000000000001')
+        )
+        root.execute('RESET ROLE')
+
+    def future_date(month_day):
+        return f'{future_year}-{month_day}'
+
     def check(condition, label):
         if not condition:
             raise RuntimeError('DB08_RUNTIME_CHECK ' + label)
@@ -64,11 +84,11 @@ def run_finance_runtime(local_status):
         return {'p_campus': CAMPUS, 'p_year': YEAR, 'p_category_code': 'TUITION',
                 'p_category_label': 'Tuition', 'p_rule_key': rule, 'p_frequency': 'MONTHLY',
                 'p_minor_unit_scale': 2, 'p_gross_minor': 15000,
-                'p_valid_from': '2026-01-01', 'p_valid_through': '2026-12-31',
+                'p_valid_from': future_date('01-01'), 'p_valid_through': future_date('12-31'),
                 'p_reason': 'Initial school fee', 'p_key': key}
 
     def assess(rule, revision, key, start, end):
-        return (rule, PERSON, revision, start, end, '2026-05-05', key)
+        return (rule, PERSON, revision, start, end, future_date('05-05'), key)
 
     def actor(conn, identity=None):
         identity = claims if identity is None else identity
@@ -110,8 +130,8 @@ def run_finance_runtime(local_status):
                                 (fee['resource_id'],)).fetchone()[0]
     charge_key = '08000000-0000-4000-8000-000000000201'
     charge_payload = {'p_rule': fee['resource_id'], 'p_person': PERSON, 'p_revision': revision,
-                      'p_period_start': '2026-02-01', 'p_period_end': '2026-02-28',
-                      'p_due_on': '2026-03-05', 'p_key': charge_key}
+                      'p_period_start': future_date('02-01'), 'p_period_end': future_date('02-28'),
+                      'p_due_on': future_date('03-05'), 'p_key': charge_key}
     charge = http('POST', '/rest/v1/rpc/assess_finance_fee', charge_payload,
                   admin_key, token, profile='app')
     check(UUID(charge['resource_id']) and charge['campus_id'] == CAMPUS,
@@ -148,12 +168,12 @@ def run_finance_runtime(local_status):
         first_charge = a.execute(ASSESS_SQL,
                                  assess(fee['resource_id'], revision,
                                         '08000000-0000-4000-8000-000000000202',
-                                        '2026-04-01', '2026-04-30')).fetchone()[0]
+                                        future_date('04-01'), future_date('04-30'))).fetchone()[0]
         actor(b)
         future = pool.submit(lambda: b.execute(ASSESS_SQL,
                                                 assess(fee['resource_id'], revision,
                                                        '08000000-0000-4000-8000-000000000203',
-                                                       '2026-04-15', '2026-05-14')).fetchone()[0])
+                                                       future_date('04-15'), future_date('05-14'))).fetchone()[0])
         witness(control, a, b)
         a.execute('COMMIT')
         denied(future, 'overlapping fee period')
@@ -200,7 +220,7 @@ def run_finance_runtime(local_status):
     def change_payload(previous, amount, effective, key):
         return {'p_rule': fee['resource_id'], 'p_previous_revision': previous,
                 'p_gross_minor': amount, 'p_valid_from': effective,
-                'p_valid_through': '2026-12-31', 'p_policy': CHANGE_POLICY,
+                'p_valid_through': future_date('12-31'), 'p_policy': CHANGE_POLICY,
                 'p_reviewer': REVIEWER, 'p_reason': 'Reviewed future tuition price', 'p_key': key}
 
     def review_payload(request, decision, key):
@@ -209,11 +229,11 @@ def run_finance_runtime(local_status):
                 'p_note': 'Independent financial review', 'p_key': key}
 
     pending = http('POST', '/rest/v1/rpc/request_finance_fee_change',
-                   change_payload(revision, 17500, '2026-11-01', 'real-f3-request'),
+                   change_payload(revision, 17500, future_date('11-01'), 'real-f3-request'),
                    admin_key, token, profile='app')
     check(pending['state'] == 'PENDING', 'real Auth price request pending')
     check(http('POST', '/rest/v1/rpc/request_finance_fee_change',
-               change_payload(revision, 17500, '2026-11-01', 'real-f3-request'),
+               change_payload(revision, 17500, future_date('11-01'), 'real-f3-request'),
                admin_key, token, profile='app') == pending, 'real request replay')
     with connect() as root:
         check(root.execute('SELECT count(*) FROM app_private.finance_fee_rule_revisions WHERE rule_id=%s',
@@ -234,13 +254,13 @@ def run_finance_runtime(local_status):
                            (first_charge['resource_id'],)).fetchone()[0] == 15000,
               'existing charge retains original price')
     november = {'p_rule': fee['resource_id'], 'p_person': PERSON, 'p_revision': new_revision,
-                'p_period_start': '2026-11-01', 'p_period_end': '2026-11-30',
-                'p_due_on': '2026-12-05', 'p_key': '08000000-0000-4000-8000-000000000204'}
+                'p_period_start': future_date('11-01'), 'p_period_end': future_date('11-30'),
+                'p_due_on': future_date('12-05'), 'p_key': '08000000-0000-4000-8000-000000000204'}
     check(UUID(http('POST', '/rest/v1/rpc/assess_finance_fee', november,
                     admin_key, token, profile='app')['resource_id']),
           'new effective price assessed through real Auth')
     rejected = http('POST', '/rest/v1/rpc/request_finance_fee_change',
-                    change_payload(new_revision, 18500, '2026-12-15', 'real-f3-reject'),
+                    change_payload(new_revision, 18500, future_date('12-15'), 'real-f3-reject'),
                     admin_key, token, profile='app')
     decision = http('POST', '/rest/v1/rpc/review_finance_fee_change',
                     review_payload(rejected, 'REJECT', 'real-f3-reject-review'),
@@ -265,16 +285,16 @@ def run_finance_runtime(local_status):
     def chain_payload(previous, amount, effective, key):
         return {'p_rule': chain_fee['resource_id'], 'p_previous_revision': previous,
                 'p_gross_minor': amount, 'p_valid_from': effective,
-                'p_valid_through': '2026-12-31', 'p_policy': CHAIN_POLICY,
+                'p_valid_through': future_date('12-31'), 'p_policy': CHAIN_POLICY,
                 'p_reviewers': [REVIEWER, SECOND_REVIEWER],
                 'p_reason': 'Two independent financial reviews', 'p_key': key}
 
     chain_request = http('POST', '/rest/v1/rpc/request_finance_fee_change',
-                         chain_payload(chain_revision, 17500, '2026-11-01', 'real-f4-request'),
+                         chain_payload(chain_revision, 17500, future_date('11-01'), 'real-f4-request'),
                          admin_key, token, profile='app')
     check(chain_request['state'] == 'PENDING', 'real Auth chain request pending')
     check(http('POST', '/rest/v1/rpc/request_finance_fee_change',
-               chain_payload(chain_revision, 17500, '2026-11-01', 'real-f4-request'),
+               chain_payload(chain_revision, 17500, future_date('11-01'), 'real-f4-request'),
                admin_key, token, profile='app') == chain_request, 'real chain request replay')
     intermediate = http('POST', '/rest/v1/rpc/review_finance_fee_change',
                         review_payload(chain_request, 'APPROVE', 'real-f4-first'),
@@ -301,7 +321,7 @@ def run_finance_runtime(local_status):
         chain_next = root.execute('SELECT id::text FROM app_private.finance_fee_rule_revisions WHERE rule_id=%s AND revision=2 AND gross_amount_minor=17500',
                                   (chain_fee['resource_id'],)).fetchone()[0]
     chain_rejected = http('POST', '/rest/v1/rpc/request_finance_fee_change',
-                          chain_payload(chain_next, 18500, '2026-12-15', 'real-f4-reject'),
+                          chain_payload(chain_next, 18500, future_date('12-15'), 'real-f4-reject'),
                           admin_key, token, profile='app')
     first_rejected = http('POST', '/rest/v1/rpc/review_finance_fee_change',
                           review_payload(chain_rejected, 'APPROVE', 'real-f4-reject-first'),
@@ -314,7 +334,7 @@ def run_finance_runtime(local_status):
     print('DB08_F4_REAL_AUTH_PASS ordered_reviews=true first_pending=true final_publication=true replays=true second_rejection=true', flush=True)
 
     chain_race = http('POST', '/rest/v1/rpc/request_finance_fee_change',
-                      chain_payload(chain_next, 19000, '2026-12-20', 'real-f4-race'),
+                      chain_payload(chain_next, 19000, future_date('12-20'), 'real-f4-race'),
                       admin_key, token, profile='app')
     chain_race_first = http('POST', '/rest/v1/rpc/review_finance_fee_change',
                             review_payload(chain_race, 'APPROVE', 'real-f4-race-first'),
@@ -350,7 +370,7 @@ def run_finance_runtime(local_status):
     print('DB08_F4_REVIEW_RACE_PASS second_reviewer_revocation_first observed_block=true pending_retained=true', flush=True)
 
     race_request = http('POST', '/rest/v1/rpc/request_finance_fee_change',
-                        change_payload(new_revision, 19000, '2026-12-20', 'real-f3-race'),
+                        change_payload(new_revision, 19000, future_date('12-20'), 'real-f3-race'),
                         admin_key, token, profile='app')
     a, b, control = connect(), connect(), connect()
     pool = ThreadPoolExecutor(max_workers=1)
