@@ -77,3 +77,51 @@ jobs:
         run: python tools/supabase/foundation_local_ci.py
       - name: Real Auth/login scope and revocation checks
         run: python tools/supabase/section02_identity_login_ci.py
+
+  composed-db03:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 5dd07728684736b42c1fa7ee4b7f7b62f843c37f
+          path: .ci/current-main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: Candidate private-document test dependencies
+        run: python -m pip install -r services/admission_documents/requirements.txt
+      - name: DB03 full SQL and real-Auth acceptance against current-main D1
+        run: python tools/integration/pr102_current_main_ci.py db03 --current-main-root .ci/current-main
+
+  composed-db08:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 5dd07728684736b42c1fa7ee4b7f7b62f843c37f
+          path: .ci/current-main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: Candidate private-payment service dependencies
+        run: python -m pip install -r tools/db08/requirements.txt
+      - name: DB08 F1-F13 full SQL and real-Auth acceptance against current-main D1
+        run: python tools/integration/pr102_current_main_ci.py db08 --current-main-root .ci/current-main
