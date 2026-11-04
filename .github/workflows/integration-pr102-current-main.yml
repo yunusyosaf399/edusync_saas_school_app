@@ -86,6 +86,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/checkout@v4
         with:
           ref: 5dd07728684736b42c1fa7ee4b7f7b62f843c37f
@@ -110,6 +111,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/checkout@v4
         with:
           ref: 5dd07728684736b42c1fa7ee4b7f7b62f843c37f
