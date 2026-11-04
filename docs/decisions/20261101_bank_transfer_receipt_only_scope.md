@@ -1,0 +1,13 @@
+# Owner decision — 2026-11-01: bank-transfer receipt-only verification
+
+Status: CONFIRMED scope; documentation-only, not deployed.
+
+Parents pay directly to the school's bank account outside EduSync. A currently authorized family account uploads a PDF, JPEG or PNG bank-transfer slip for its linked enrolled Student. Original evidence is kept privately within that school's object-storage boundary (a private school Supabase Storage bucket when Supabase is the selected provider). PostgreSQL retains immutable file metadata, submission amount/date/bank/reference, review decision, and audit history. Existing server-controlled provider-neutral storage, permissions and school/campus scoping apply.
+
+Uploading is only a PENDING claim, not an actual settled payment. An independently authorized campus-scoped school administrator reviews the original slip and confirms the deposit against bank records, then APPROVES, REJECTS or REQUESTS_CORRECTION with reason. Duplicate references/evidence must not create duplicate official payments. The protected F9/F10 review and official payment commands, followed by F11 allocation and F12 statement logic, retain their existing boundaries. A receipt upload alone never marks fees paid or clears Admissions.
+
+**Out of scope now:** payment gateways, cards, purchases, checkout, wallet/cash parent intake, bank APIs, automatic settlement verification, bespoke cryptographic receipt verification or additional application-level receipt encryption. Standard HTTPS, authentication, private object access, file integrity checks, RLS, audit and server authorization remain necessary; do not remove existing SHA-256 byte-integrity checks.
+
+**Existing work:** Draft PR #102 already contains inactive DB08 F8 family submission, F9 independent review, F10 official payment, F11 allocation, F12 statement and F13 clearance candidates with disposable test evidence. Do not duplicate or overwrite them. DB03 S11–S14 separately address staff-recorded pre-Student applicant evidence; these are not parent-to-enrolled-Student uploads. Older descriptions of bank/wallet initial methods are superseded for the current parent upload path; latent schema support does not enable wallet payments.
+
+**Release gates:** Private provider bucket/IAM and school isolation, deployment-owned permissions and entitlements, original-byte access authorization, file retention/orphan reconciliation, concurrency/revocation and negative tests, upgrade/restore and release approval must be verified before live use. No production migration, Flutter UI, merge or hosted activation is authorized by this decision. Continue database-first work without modifying other active branches.
