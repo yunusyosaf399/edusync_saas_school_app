@@ -354,6 +354,83 @@ def run_positive_principal_decisions(local, container, root, worker, api,
               'exactly_one_winner=true loser_denied=true '
               'one_receipt_audit_outbox=true student_create_disabled=true')
 
+
+        # P35D: simulate the evidence writer failing *after* the immutable
+        # Principal decision and command receipt would have been inserted.
+        # The disposable DB adds a NOT VALID check so existing history is
+        # untouched; every new final audit insert is rejected. Dropping this
+        # constraint in finally restores the exact test database behavior.
+        fault_app,fault_version,fault_forward=prepared('audit-fault')
+        fault_key='p35d-audit-fault-retry'
+        with root() as conn:
+            conn.execute(
+                "ALTER TABLE app_private.audit_events "
+                "ADD CONSTRAINT db03_p35d_block_final_audit "
+                "CHECK (event_type <> 'admission.final.decide') NOT VALID")
+        try:
+            denied(
+                lambda: principal_decide(
+                    fault_app,fault_version,fault_forward,'RETURN',
+                    'Please correct the uploaded document',fault_key),
+                'db03_p35d_block_final_audit',
+                'audit failure after decision insert must abort entire transaction')
+        finally:
+            with root() as conn:
+                conn.execute(
+                    'ALTER TABLE app_private.audit_events '
+                    'DROP CONSTRAINT IF EXISTS db03_p35d_block_final_audit')
+        with root() as conn:
+            check(conn.execute(
+                'SELECT count(*) FROM app_private.admission_principal_decisions '
+                'WHERE application_id=%s',(fault_app,)).fetchone()[0]==0,
+                'failed evidence write leaves no Principal decision')
+            for table,column,reference in [
+                    ('command_receipts','command_kind','result_ref'),
+                    ('audit_events','event_type','target_ref'),
+                    ('outbox_events','event_type','aggregate_ref')]:
+                check(conn.execute(
+                    'SELECT count(*) FROM app_private.'+table+
+                    ' WHERE '+column+"='admission.final.decide' AND "+
+                    reference+'=%s',(fault_app,)).fetchone()[0]==0,
+                    'failed evidence write leaves no '+table+' row')
+            check(conn.execute(
+                "SELECT app_private.db03_principal_forward_live(%s,%s)",
+                (fault_app,fault_forward)).fetchone()[0],
+                'failed evidence write leaves the original Forward retryable')
+        retried=principal_decide(
+            fault_app,fault_version,fault_forward,'RETURN',
+            'Please correct the uploaded document',fault_key)
+        check(retried['decision']=='RETURN',
+              'exact same retry succeeds after evidence store is restored')
+        check(principal_decide(
+            fault_app,fault_version,fault_forward,'RETURN',
+            'Please correct the uploaded document',fault_key)==retried,
+              'same-key replay after recovered evidence is idempotent')
+        with root() as conn:
+            check(conn.execute(
+                'SELECT count(*) FROM app_private.admission_principal_decisions '
+                'WHERE application_id=%s',(fault_app,)).fetchone()[0]==1,
+                'one final source committed after recovery')
+            for table,column,reference in [
+                    ('command_receipts','command_kind','result_ref'),
+                    ('audit_events','event_type','target_ref'),
+                    ('outbox_events','event_type','aggregate_ref')]:
+                check(conn.execute(
+                    'SELECT count(*) FROM app_private.'+table+
+                    ' WHERE '+column+"='admission.final.decide' AND "+
+                    reference+'=%s',(fault_app,)).fetchone()[0]==1,
+                    'recovery stores exactly one '+table+' row')
+            check(conn.execute(
+                "SELECT NOT has_function_privilege('authenticated',"
+                "'app.decide_admission_principal(uuid,bigint,uuid,text,text,text)',"
+                "'EXECUTE')").fetchone()[0],
+                'atomic rollback acceptance grants no new client permission')
+        print('DB03_P35D_EVIDENCE_FAILURE_ATOMIC_PASS '
+              'injected_late_audit_failure=true '
+              'decision_receipt_audit_outbox_rolled_back=true '
+              'same_key_retry=true exact_one_recovery=true '
+              'client_final_rpc_disabled=true')
+
         print(f'DB03_P35B_POSITIVE_DECISIONS_PASS checks={checks} '
               'measured_pdf=true RETURN=true REJECT=true exact_replay=true '
               'client_final_rpc_disabled=true no_Student_command_invoked=true')
