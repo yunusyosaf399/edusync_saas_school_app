@@ -36,6 +36,9 @@ def run_payment_runtime(local_status, root: Path):
     with connection() as conn:
         conn.execute('BEGIN')
         try:
+            # Unlike future fee-config tests, a bank slip must belong to a
+            # student already enrolled on the actual School-local payment day.
+            conn.execute("SELECT set_config('schoolos_test.db08_payment_runtime','on',true)")
             for name in ('fixture_commands.sql', 'fixture_change.sql',
                          'fixture_selection.sql', 'fixture_bank_slip.sql',
                          'fixture_bank_review.sql', 'fixture_bank_receipt.sql',
@@ -81,6 +84,10 @@ def run_payment_runtime(local_status, root: Path):
         except BaseException:
             conn.execute('ROLLBACK')
             raise
+        school_today = conn.execute(
+            "SELECT (clock_timestamp() AT TIME ZONE timezone)::date "
+            "FROM app_private.school_profiles WHERE id=%s::uuid", (school,)
+        ).fetchone()[0]
         subject = conn.execute("SELECT auth_user_id::text FROM app_private.principal_auth_bindings "
             "WHERE id='08000000-0000-4000-8000-000000000202'").fetchone()[0]
         staff_subject = conn.execute("SELECT auth_user_id::text FROM app_private.principal_auth_bindings "
@@ -161,7 +168,7 @@ def run_payment_runtime(local_status, root: Path):
         png = BytesIO()
         Image.new('RGB', (12, 12), (12, 45, 78)).save(png, format='PNG')
         payload = dict(token=token, student_id=student, amount=Decimal('99.34'),
-            paid_on=date.today(), bank='Bank A', reference='F8-TRANSFER',
+            paid_on=school_today, bank='Bank A', reference='F8-TRANSFER',
             slip=png.getvalue(), idempotency_key='f8-real-auth-1')
         first = service.submit(**payload)
         if first['state'] != 'PENDING' or first['duplicate_suspected'] is not False:
