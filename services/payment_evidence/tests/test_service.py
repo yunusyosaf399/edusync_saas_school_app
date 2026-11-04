@@ -144,6 +144,30 @@ class PaymentEvidenceTests(unittest.TestCase):
         self.assertEqual(len([sql for sql, _ in self.conn.calls if 'db08_submit_bank_slip' in sql]), before)
 
 
+    def test_short_archived_bank_slip_never_creates_pending_payment(self):
+        class ShortReadObjects(FakeObjects):
+            def read(self, key, maximum):
+                return super().read(key, maximum)[:-1]
+
+        self.service.objects = ShortReadObjects()
+        with self.assertRaisesRegex(Denied, 'Stored bank slip changed'):
+            self.service.submit(**self.request)
+        self.assertFalse(any('db08_submit_bank_slip' in sql
+                             for sql, _ in self.conn.calls))
+
+    def test_mutated_archived_bank_slip_never_creates_pending_payment(self):
+        class MutatedReadObjects(FakeObjects):
+            def read(self, key, maximum):
+                stored = super().read(key, maximum)
+                return stored[:-1] + bytes([stored[-1] ^ 1])
+
+        self.service.objects = MutatedReadObjects()
+        with self.assertRaisesRegex(Denied, 'Stored bank slip changed'):
+            self.service.submit(**self.request)
+        self.assertFalse(any('db08_submit_bank_slip' in sql
+                             for sql, _ in self.conn.calls))
+
+
 class FakeReviewConnection(FakeConnection):
     def __init__(self, details):
         super().__init__()
