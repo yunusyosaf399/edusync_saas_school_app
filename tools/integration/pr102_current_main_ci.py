@@ -51,6 +51,9 @@ def main() -> int:
             current_d1.run(["supabase", "start"], cwd=root, timeout=900)
         current_d1._start_disposable_stack = start_current_main_disposable_stack
     filename = CASES[options.case]
+    # runpy does not put the script's directory on sys.path, unlike direct
+    # python execution. Candidate DB03 imports its peer race modules there.
+    sys.path.insert(0, str(filename.parent))
     module = runpy.run_path(str(filename), run_name="pr102_current_main_test")
     entry = module["main"]
     if entry.__globals__.get("DEPENDENCY_SHA") != (
