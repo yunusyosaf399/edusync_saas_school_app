@@ -22,21 +22,21 @@ SELECT ok((SELECT relrowsecurity AND relforcerowsecurity FROM pg_class
 \ir fixture_discount.sql
 SET ROLE authenticated;
 SELECT * FROM jsonb_to_record(app.configure_finance_fee(
- '08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000004',
- 'TUITION','Tuition','F6_CLASS','MONTHLY',2,9999,'2026-01-01','2026-12-31',
+ '08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000048',
+ 'TUITION','Tuition','F6_CLASS','MONTHLY',2,9999,make_date(extract(year FROM current_date)::integer+1,1,1),make_date(extract(year FROM current_date)::integer+1,12,31),
  'Initial tuition','f6-class')) AS x(source_id uuid,resource_id uuid,campus_id uuid) \gset f6_class_
 SELECT * FROM jsonb_to_record(app.configure_finance_fee(
- '08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000004',
- 'TUITION','Tuition','F6_STUDENT','MONTHLY',2,15000,'2026-01-01','2026-12-31',
+ '08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000048',
+ 'TUITION','Tuition','F6_STUDENT','MONTHLY',2,15000,make_date(extract(year FROM current_date)::integer+1,1,1),make_date(extract(year FROM current_date)::integer+1,12,31),
  'Initial Student full price','f6-student')) AS x(source_id uuid,resource_id uuid,campus_id uuid) \gset f6_student_
 SELECT app.bind_finance_fee(:'f6_class_resource_id'::uuid,
- '08000000-0000-4000-8000-000000000055',NULL,'2026-11-01','2026-12-31','f6-bind-class');
+ '08000000-0000-4000-8000-000000000055',NULL,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),'f6-bind-class');
 SELECT app.bind_finance_fee(:'f6_student_resource_id'::uuid,
  '08000000-0000-4000-8000-000000000055','08000000-0000-4000-8000-000000000059',
- '2026-11-01','2026-12-31','f6-bind-student');
+ make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),'f6-bind-student');
 SELECT * FROM jsonb_to_record(app.request_finance_discount(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
- 'MONTHLY_TUITION','PERCENT',10,'2026-11-01','2026-12-31',NULL,
+ 'MONTHLY_TUITION','PERCENT',10,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),NULL,
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'Ten percent recurring tuition','f6-ten-percent')) AS x(request_id uuid,state text,request_version bigint) \gset monthly_
 RESET ROLE;
@@ -45,37 +45,37 @@ SELECT is((SELECT count(*) FROM app_private.finance_discount_adjustments),0::big
  'pending discount cannot alter any charge');
 SELECT throws_ok($sql$SELECT app.request_finance_discount(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
- 'MONTHLY_TUITION','PERCENT',11,'2026-11-01','2026-12-31',NULL,
+ 'MONTHLY_TUITION','PERCENT',11,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),NULL,
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'Ten percent recurring tuition','f6-ten-percent')$sql$,'P0001'::char(5),NULL::text,
  'same request key cannot change percentage');
 SELECT throws_ok($sql$SELECT app.request_finance_discount(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
- 'MONTHLY_TUITION','PERCENT',10.001,'2026-11-01','2026-12-31',NULL,
+ 'MONTHLY_TUITION','PERCENT',10.001,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),NULL,
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'Invalid precision','f6-invalid')$sql$,'P0001'::char(5),NULL::text,
  'percentage precision beyond two decimals denied');
 SELECT throws_ok($sql$SELECT app.request_finance_discount(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
- 'MONTHLY_TUITION','FIXED',9.999,'2026-11-01','2026-12-31',NULL,
+ 'MONTHLY_TUITION','FIXED',9.999,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),NULL,
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'Invalid precision','f6-invalid-fixed')$sql$,'P0001'::char(5),NULL::text,
  'fixed money beyond two decimals denied');
 SELECT is((app.request_finance_discount(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
- 'MONTHLY_TUITION','PERCENT',10,'2026-11-01','2026-12-31',NULL,
+ 'MONTHLY_TUITION','PERCENT',10,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),NULL,
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'Ten percent recurring tuition','f6-ten-percent')->>'request_id')::uuid,
  :'monthly_request_id'::uuid,'exact request replay');
 SELECT throws_ok($sql$SELECT app.request_finance_discount(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
- 'MONTHLY_TUITION','FIXED',5.00,'2026-11-01','2026-12-31',NULL,
+ 'MONTHLY_TUITION','FIXED',5.00,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),NULL,
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'Overlapping request','f6-overlap')$sql$,'P0001'::char(5),NULL::text,
  'second overlapping recurring discount denied');
 SELECT throws_ok($sql$SELECT app.request_finance_discount(
  '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000003',
- 'MONTHLY_TUITION','FIXED',5.00,'2026-11-01','2026-12-31',NULL,
+ 'MONTHLY_TUITION','FIXED',5.00,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),NULL,
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000007',
  'Self reviewer','f6-self')$sql$,'P0001'::char(5),NULL::text,
  'requester cannot choose themselves as reviewer');
@@ -121,7 +121,7 @@ SELECT set_config('request.jwt.claims',jsonb_build_object(
 SET ROLE authenticated;
 SELECT app.assess_discounted_finance_fee(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000055',
- 'TUITION','MONTHLY','2026-11-01','2026-11-30','2026-12-05',
+ 'TUITION','MONTHLY',make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,11,30),make_date(extract(year FROM current_date)::integer+1,12,5),
  '08000000-0000-4000-8000-000000000092') AS monthly_assessed \gset
 RESET ROLE;
 SELECT is((:'monthly_assessed'::jsonb->'discount'->>'discount_minor')::numeric,1000::numeric,
@@ -133,13 +133,13 @@ SELECT is((SELECT gross_amount_minor FROM app_private.finance_fee_obligations
  'gross charge remains unchanged');
 SELECT is((app.assess_discounted_finance_fee(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000055',
- 'TUITION','MONTHLY','2026-11-01','2026-11-30','2026-12-05',
+ 'TUITION','MONTHLY',make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,11,30),make_date(extract(year FROM current_date)::integer+1,12,5),
  '08000000-0000-4000-8000-000000000092')->'discount'->>'net_minor')::numeric,
  8999::numeric,'assessment and discount exact replay');
 SET ROLE authenticated;
 SELECT * FROM jsonb_to_record(app.assess_discounted_finance_fee(
  '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000055',
- 'TUITION','MONTHLY','2026-11-01','2026-11-30','2026-12-05',
+ 'TUITION','MONTHLY',make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,11,30),make_date(extract(year FROM current_date)::integer+1,12,5),
  '08000000-0000-4000-8000-000000000093')->'charge')
  AS x(source_id uuid,resource_id uuid,campus_id uuid) \gset specific_
 SELECT * FROM jsonb_to_record(app.request_finance_discount(
@@ -234,20 +234,20 @@ SELECT is((SELECT count(*) FROM app_private.finance_discount_adjustments),2::big
 -- tuition's percentage and a one-time unselected books charge stay separate.
 SET ROLE authenticated;
 SELECT * FROM jsonb_to_record(app.configure_finance_fee(
- '08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000004',
- 'TRANSPORT','Transport','F6_TRANSPORT','MONTHLY',2,20000,'2026-01-01','2026-12-31',
+ '08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000048',
+ 'TRANSPORT','Transport','F6_TRANSPORT','MONTHLY',2,20000,make_date(extract(year FROM current_date)::integer+1,1,1),make_date(extract(year FROM current_date)::integer+1,12,31),
  'Transport full fee','f6-transport')) AS x(source_id uuid,resource_id uuid,campus_id uuid) \gset transport_
 SELECT app.bind_finance_fee(:'transport_resource_id'::uuid,
- '08000000-0000-4000-8000-000000000055',NULL,'2026-11-01','2026-12-31','f6-bind-transport');
+ '08000000-0000-4000-8000-000000000055',NULL,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),'f6-bind-transport');
 SELECT * FROM jsonb_to_record(app.configure_finance_fee(
- '08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000004',
- 'BOOKS','Books','F6_BOOKS','ONE_TIME',2,3000,'2026-01-01','2026-12-31',
+ '08000000-0000-4000-8000-000000000003','08000000-0000-4000-8000-000000000048',
+ 'BOOKS','Books','F6_BOOKS','ONE_TIME',2,3000,make_date(extract(year FROM current_date)::integer+1,1,1),make_date(extract(year FROM current_date)::integer+1,12,31),
  'Books full fee','f6-books')) AS x(source_id uuid,resource_id uuid,campus_id uuid) \gset books_
 SELECT app.bind_finance_fee(:'books_resource_id'::uuid,
- '08000000-0000-4000-8000-000000000055',NULL,'2026-11-01','2026-12-31','f6-bind-books');
+ '08000000-0000-4000-8000-000000000055',NULL,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),'f6-bind-books');
 SELECT * FROM jsonb_to_record(app.request_finance_category_discount(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
- 'TRANSPORT','PERCENT',50,'2026-11-01','2026-12-31',
+ 'TRANSPORT','PERCENT',50,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'Selected transport only','f6-transport-half')) AS x(request_id uuid,state text,request_version bigint) \gset transport_discount_
 RESET ROLE;
@@ -258,7 +258,7 @@ SELECT is((SELECT c.code FROM app_private.finance_discount_intents i
  'transport category bound to School typed catalog');
 SELECT throws_ok($sql$SELECT app.request_finance_category_discount(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000003',
- 'TUITION','PERCENT',50,'2026-11-01','2026-12-31',
+ 'TUITION','PERCENT',50,make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,12,31),
  '08000000-0000-4000-8000-000000000090','08000000-0000-4000-8000-000000000021',
  'Overlapping tuition','f6-overlap-category')$sql$,'P0001'::char(5),NULL::text,
  'named tuition cannot stack with existing recurring tuition');
@@ -285,11 +285,11 @@ SELECT set_config('request.jwt.claims',jsonb_build_object(
 SET ROLE authenticated;
 SELECT app.assess_discounted_finance_fee(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000055',
- 'TRANSPORT','MONTHLY','2026-11-01','2026-11-30','2026-12-05',
+ 'TRANSPORT','MONTHLY',make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,11,30),make_date(extract(year FROM current_date)::integer+1,12,5),
  '08000000-0000-4000-8000-000000000094') AS transport_assessed \gset
 SELECT app.assess_discounted_finance_fee(
  '08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000055',
- 'BOOKS','ONE_TIME','2026-11-01','2026-11-30','2026-12-05',
+ 'BOOKS','ONE_TIME',make_date(extract(year FROM current_date)::integer+1,11,1),make_date(extract(year FROM current_date)::integer+1,11,30),make_date(extract(year FROM current_date)::integer+1,12,5),
  '08000000-0000-4000-8000-000000000095') AS books_assessed \gset
 RESET ROLE;
 SELECT is((:'transport_assessed'::jsonb->'discount'->>'net_minor')::numeric,10000::numeric,
