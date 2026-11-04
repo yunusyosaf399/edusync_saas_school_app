@@ -1,0 +1,9 @@
+# DB03 S15 — typed applicant grade destination (inactive candidate)
+
+The application now has a proposed, retained destination source tied to a real D1 Class Offering. That offering identifies the School, Campus, Academic Year and Academic Class (for example Grade 1). The application remains an unresolved DRAFT; this source does not create a Student, enroll anyone, or issue a fee.
+
+`supabase/proposals/db03/15_01_admission_destination_source.sql.draft` adds append-only destination revisions. The application FK retains its exact School/Campus/year; the D1 offering FK is typed. Its guard locks the application and offering, checks that both have matching context and that the offering is OPEN, and requires an exact predecessor for a later revision. The current head is derived from the highest retained revision. A later class closure or application change must be rechecked at handoff; a stored intention is not an enrollment guarantee.
+
+There is no application writer or production permission seed in S15. Schema-owner writes in rollback-only acceptance fixtures prove the relation and guards. A later administrator command must supply scoped authority, version and idempotency, receipt/audit/outbox, and current D1 catalog locks before it can expose destination selection in the app. This prevents an arbitrary client UUID or a textual grade label from becoming a Finance source.
+
+The DB03 disposable runner composes the D1 draft after existing Admissions acceptance and races, rehearses a failed installation, then checks grade resolution, wrong-Campus rejection, revision lineage, immutability, RLS and no Finance obligation. This is the prerequisite for automatic grade fee matching and an applicant-specific scholarship source. It does **not** carry a pre-Student discount into DB08 F6, calculate a charge, or lift the deny-only Finance/READY gate.

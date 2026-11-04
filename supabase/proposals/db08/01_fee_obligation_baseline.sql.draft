@@ -1,0 +1,155 @@
+-- DB08 F1: inactive Finance-owned storage baseline; disposable CI only.
+-- No business RPC, automatic assessment, payment, waiver or clearance issuance.
+SET ROLE schoolos_schema_owner;
+
+CREATE TABLE app_private.finance_currency_units (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ currency_code text NOT NULL CHECK(currency_code ~ '^[A-Z]{3}$'),
+ minor_unit_scale integer NOT NULL CHECK(minor_unit_scale BETWEEN 0 AND 6),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(school_id,currency_code), UNIQUE(id,school_id)
+);
+CREATE TABLE app_private.finance_fee_categories (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ code text NOT NULL CHECK(code ~ '^[A-Z][A-Z0-9_]{0,63}$'),
+ label text NOT NULL CHECK(length(btrim(label)) BETWEEN 1 AND 200),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(school_id,code), UNIQUE(id,school_id)
+);
+CREATE TABLE app_private.finance_fee_rules (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ campus_id uuid NOT NULL REFERENCES app.campuses(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ academic_year_id uuid NOT NULL,
+ category_id uuid NOT NULL,
+ currency_unit_id uuid NOT NULL,
+ frequency text NOT NULL CHECK(frequency IN('MONTHLY','QUARTERLY','HALF_YEARLY','ANNUAL','ONE_TIME','CUSTOM')),
+ rule_key text NOT NULL CHECK(rule_key ~ '^[A-Z][A-Z0-9_]{0,63}$'),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(academic_year_id,school_id) REFERENCES app.academic_years(id,school_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(category_id,school_id) REFERENCES app_private.finance_fee_categories(id,school_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(currency_unit_id,school_id) REFERENCES app_private.finance_currency_units(id,school_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(school_id,rule_key), UNIQUE(id,frequency), UNIQUE(id,school_id,campus_id,academic_year_id)
+);
+CREATE TABLE app_private.finance_fee_rule_revisions (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ rule_id uuid NOT NULL REFERENCES app_private.finance_fee_rules(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ revision bigint NOT NULL CHECK(revision>0),
+ previous_revision bigint,
+ previous_id uuid,
+ gross_amount_minor numeric NOT NULL CHECK(gross_amount_minor>=0 AND gross_amount_minor<1000000000000000000000000 AND gross_amount_minor=trunc(gross_amount_minor)),
+ frequency text NOT NULL CHECK(frequency IN('MONTHLY','QUARTERLY','HALF_YEARLY','ANNUAL','ONE_TIME','CUSTOM')),
+ valid_from date NOT NULL CHECK(isfinite(valid_from)),
+ valid_through date NOT NULL CHECK(isfinite(valid_through) AND valid_through>=valid_from),
+ reason text NOT NULL CHECK(length(btrim(reason)) BETWEEN 1 AND 1000),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CHECK((revision=1 AND previous_revision IS NULL AND previous_id IS NULL)
+    OR (revision>1 AND previous_revision IS NOT NULL AND previous_revision=revision-1 AND previous_id IS NOT NULL)),
+ FOREIGN KEY(rule_id,frequency) REFERENCES app_private.finance_fee_rules(id,frequency) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(rule_id,revision), UNIQUE(previous_id),
+ UNIQUE(id,rule_id,revision), UNIQUE(id,rule_id,gross_amount_minor,frequency),
+ FOREIGN KEY(previous_id,rule_id,previous_revision) REFERENCES app_private.finance_fee_rule_revisions(id,rule_id,revision) ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE TABLE app_private.finance_fee_obligations (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ academic_year_id uuid NOT NULL,
+ person_id uuid NOT NULL REFERENCES app_private.people(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ rule_id uuid NOT NULL,
+ rule_revision_id uuid NOT NULL,
+ gross_amount_minor numeric NOT NULL CHECK(gross_amount_minor>=0 AND gross_amount_minor<1000000000000000000000000 AND gross_amount_minor=trunc(gross_amount_minor)),
+ frequency text NOT NULL,
+ period_start date NOT NULL CHECK(isfinite(period_start)),
+ period_end date NOT NULL CHECK(isfinite(period_end) AND period_end>=period_start),
+ due_on date NOT NULL CHECK(isfinite(due_on)),
+ assessment_key uuid NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(rule_id,school_id,campus_id,academic_year_id) REFERENCES app_private.finance_fee_rules(id,school_id,campus_id,academic_year_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(rule_revision_id,rule_id,gross_amount_minor,frequency) REFERENCES app_private.finance_fee_rule_revisions(id,rule_id,gross_amount_minor,frequency) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(school_id,assessment_key), UNIQUE(rule_id,person_id,period_start,period_end)
+);
+CREATE UNIQUE INDEX db08_one_time_once ON app_private.finance_fee_obligations(rule_id,person_id) WHERE frequency='ONE_TIME';
+CREATE INDEX db08_obligation_person ON app_private.finance_fee_obligations(person_id,academic_year_id,due_on,id);
+CREATE INDEX db08_obligation_campus ON app_private.finance_fee_obligations(campus_id,academic_year_id,due_on,id);
+CREATE INDEX db08_obligation_revision ON app_private.finance_fee_obligations(rule_revision_id);
+CREATE INDEX db08_rule_campus ON app_private.finance_fee_rules(campus_id,academic_year_id,category_id);
+CREATE INDEX db08_rule_category ON app_private.finance_fee_rules(category_id);
+CREATE INDEX db08_rule_currency ON app_private.finance_fee_rules(currency_unit_id);
+
+CREATE FUNCTION app_private.db08_retain_financial_source() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ RAISE EXCEPTION 'DB08 financial source is immutable; use a separately authorized revision or correction';
+END $body$;
+CREATE FUNCTION app_private.db08_validate_financial_context() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE starts date; ends date; parent_school uuid;
+BEGIN
+ IF TG_TABLE_NAME='finance_fee_rules' THEN
+  SELECT school_id INTO parent_school FROM app.campuses WHERE id=NEW.campus_id;
+  IF parent_school IS DISTINCT FROM NEW.school_id THEN RAISE EXCEPTION 'DB08 campus must belong to the same School'; END IF;
+ ELSIF TG_TABLE_NAME='finance_fee_rule_revisions' THEN
+  SELECT y.starts_on,y.ends_on INTO starts,ends FROM app_private.finance_fee_rules r
+   JOIN app.academic_years y ON y.id=r.academic_year_id WHERE r.id=NEW.rule_id;
+  IF starts IS NULL OR NEW.valid_from<starts OR NEW.valid_through>ends THEN
+   RAISE EXCEPTION 'DB08 fee validity must fit its AcademicYear'; END IF;
+ ELSIF TG_TABLE_NAME='finance_fee_obligations' THEN
+  SELECT valid_from,valid_through INTO starts,ends FROM app_private.finance_fee_rule_revisions WHERE id=NEW.rule_revision_id;
+  IF starts IS NULL OR NEW.period_start<starts OR NEW.period_end>ends THEN
+   RAISE EXCEPTION 'DB08 assessment period must fit its retained rule revision'; END IF;
+ ELSE RAISE EXCEPTION 'DB08 context trigger target denied';
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_retain_financial_source(),app_private.db08_validate_financial_context()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer,schoolos_file_login,schoolos_event_login;
+
+ALTER TABLE app_private.finance_currency_units ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_currency_units FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_schema_owner_only ON app_private.finance_currency_units FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+REVOKE ALL ON TABLE app_private.finance_currency_units FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer,schoolos_file_login,schoolos_event_login;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_currency_units
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+
+ALTER TABLE app_private.finance_fee_categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_fee_categories FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_schema_owner_only ON app_private.finance_fee_categories FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+REVOKE ALL ON TABLE app_private.finance_fee_categories FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer,schoolos_file_login,schoolos_event_login;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_fee_categories
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+
+ALTER TABLE app_private.finance_fee_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_fee_rules FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_schema_owner_only ON app_private.finance_fee_rules FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+REVOKE ALL ON TABLE app_private.finance_fee_rules FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer,schoolos_file_login,schoolos_event_login;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_fee_rules
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+
+ALTER TABLE app_private.finance_fee_rule_revisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_fee_rule_revisions FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_schema_owner_only ON app_private.finance_fee_rule_revisions FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+REVOKE ALL ON TABLE app_private.finance_fee_rule_revisions FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer,schoolos_file_login,schoolos_event_login;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_fee_rule_revisions
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+
+ALTER TABLE app_private.finance_fee_obligations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_fee_obligations FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_schema_owner_only ON app_private.finance_fee_obligations FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+REVOKE ALL ON TABLE app_private.finance_fee_obligations FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer,schoolos_file_login,schoolos_event_login;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_fee_obligations
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+CREATE TRIGGER db08_context BEFORE INSERT ON app_private.finance_fee_rules
+ FOR EACH ROW EXECUTE FUNCTION app_private.db08_validate_financial_context();
+CREATE TRIGGER db08_context BEFORE INSERT ON app_private.finance_fee_rule_revisions
+ FOR EACH ROW EXECUTE FUNCTION app_private.db08_validate_financial_context();
+CREATE TRIGGER db08_context BEFORE INSERT ON app_private.finance_fee_obligations
+ FOR EACH ROW EXECUTE FUNCTION app_private.db08_validate_financial_context();
+RESET ROLE;

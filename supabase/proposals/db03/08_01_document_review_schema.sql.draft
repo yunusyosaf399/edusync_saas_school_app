@@ -1,0 +1,111 @@
+-- S8: confirmed private byte access, independent principal review and
+-- document-only clearance. No application submission or Student effects.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.admission_document_links ADD UNIQUE(id,file_object_id);
+CREATE TABLE app_private.admission_document_accesses (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id),
+ forward_id uuid NOT NULL,
+ link_id uuid NOT NULL,
+ document_kind text NOT NULL,
+ file_object_id uuid NOT NULL,
+ file_version bigint NOT NULL CHECK(file_version>0),
+ authority_hash bytea NOT NULL CHECK(octet_length(authority_hash)=32),
+ application_version bigint NOT NULL CHECK(application_version>0),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ FOREIGN KEY(forward_id,application_id) REFERENCES app_private.admission_document_forwards(id,application_id),
+ FOREIGN KEY(link_id,application_id,document_kind) REFERENCES app_private.admission_document_links(id,application_id,document_kind),
+ FOREIGN KEY(link_id,file_object_id) REFERENCES app_private.admission_document_links(id,file_object_id),
+ UNIQUE(id,application_id,forward_id,link_id,file_version,created_by)
+);
+CREATE INDEX db03_document_access_principal ON app_private.admission_document_accesses(created_by,link_id,occurred_at);
+CREATE TABLE app_private.admission_document_reviews (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id),
+ forward_id uuid NOT NULL,
+ link_id uuid NOT NULL,
+ access_id uuid NOT NULL UNIQUE,
+ file_version bigint NOT NULL CHECK(file_version>0),
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid UNIQUE,
+ decision text NOT NULL CHECK(decision IN('VERIFIED','REJECTED')),
+ reason_private text NOT NULL CHECK(length(btrim(reason_private)) BETWEEN 1 AND 1000),
+ authority_hash bytea NOT NULL CHECK(octet_length(authority_hash)=32),
+ application_version bigint NOT NULL CHECK(application_version>1),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ FOREIGN KEY(access_id,application_id,forward_id,link_id,file_version,created_by)
+ REFERENCES app_private.admission_document_accesses(id,application_id,forward_id,link_id,file_version,created_by),
+ UNIQUE(forward_id,link_id,revision), UNIQUE(id,forward_id,link_id),
+ FOREIGN KEY(supersedes_id,forward_id,link_id) REFERENCES app_private.admission_document_reviews(id,forward_id,link_id),
+ CHECK((revision=1)=(supersedes_id IS NULL))
+);
+CREATE INDEX db03_document_rejected_link ON app_private.admission_document_reviews(link_id) WHERE decision='REJECTED';
+CREATE TABLE app_private.admission_document_clearances (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id),
+ forward_id uuid NOT NULL,
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid UNIQUE,
+ review_snapshot_hash bytea NOT NULL CHECK(octet_length(review_snapshot_hash)=32),
+ authority_hash bytea NOT NULL CHECK(octet_length(authority_hash)=32),
+ reason_private text NOT NULL CHECK(length(btrim(reason_private)) BETWEEN 1 AND 1000),
+ application_version bigint NOT NULL CHECK(application_version>1),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ FOREIGN KEY(forward_id,application_id) REFERENCES app_private.admission_document_forwards(id,application_id),
+ UNIQUE(forward_id,revision), UNIQUE(id,forward_id),
+ FOREIGN KEY(supersedes_id,forward_id) REFERENCES app_private.admission_document_clearances(id,forward_id),
+ CHECK((revision=1)=(supersedes_id IS NULL))
+);
+CREATE FUNCTION app_private.db03_document_review_history_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 principal document history is immutable'; END IF;
+ IF (TG_TABLE_NAME='admission_document_accesses' AND current_user<>'schoolos_platform_executor')
+  OR (TG_TABLE_NAME<>'admission_document_accesses' AND current_user<>'schoolos_workflow_executor') THEN
+  RAISE EXCEPTION 'DB03 principal documents require protected commands'; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_document_review_history_guard() FROM PUBLIC,anon,authenticated,service_role;
+ALTER TABLE app_private.admission_document_accesses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_document_accesses FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_document_accesses FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_document_review_owner ON app_private.admission_document_accesses TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_document_review_read ON app_private.admission_document_accesses FOR SELECT TO schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_document_review_insert ON app_private.admission_document_accesses FOR INSERT TO schoolos_platform_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_document_accesses TO schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_document_accesses TO schoolos_platform_executor;
+CREATE TRIGGER aa_db03_document_review_history BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_document_accesses
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_document_review_history_guard();
+CREATE TRIGGER db03_document_review_no_truncate BEFORE TRUNCATE ON app_private.admission_document_accesses
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_document_review_history_guard();
+ALTER TABLE app_private.admission_document_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_document_reviews FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_document_reviews FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_document_review_owner ON app_private.admission_document_reviews TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_document_review_read ON app_private.admission_document_reviews FOR SELECT TO schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_document_review_insert ON app_private.admission_document_reviews FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_document_reviews TO schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_document_reviews TO schoolos_workflow_executor;
+CREATE TRIGGER aa_db03_document_review_history BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_document_reviews
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_document_review_history_guard();
+CREATE TRIGGER db03_document_review_no_truncate BEFORE TRUNCATE ON app_private.admission_document_reviews
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_document_review_history_guard();
+ALTER TABLE app_private.admission_document_clearances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_document_clearances FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_document_clearances FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_document_review_owner ON app_private.admission_document_clearances TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_document_review_read ON app_private.admission_document_clearances FOR SELECT TO schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_document_review_insert ON app_private.admission_document_clearances FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_document_clearances TO schoolos_platform_executor,schoolos_workflow_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_document_clearances TO schoolos_workflow_executor;
+CREATE TRIGGER aa_db03_document_review_history BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_document_clearances
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_document_review_history_guard();
+CREATE TRIGGER db03_document_review_no_truncate BEFORE TRUNCATE ON app_private.admission_document_clearances
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_document_review_history_guard();
+RESET ROLE;

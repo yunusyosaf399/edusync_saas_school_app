@@ -1,0 +1,14 @@
+BEGIN;
+CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
+SET LOCAL search_path=extensions,pg_catalog,public;
+SELECT plan(8);
+SELECT ok(to_regprocedure('app_private.db03_record_initial_assessment(uuid,bigint,uuid,text,text,numeric,numeric,text,text)') IS NOT NULL,'protected assessment command exists');
+SELECT ok((SELECT prosecdef FROM pg_proc WHERE oid='app_private.db03_record_initial_assessment(uuid,bigint,uuid,text,text,numeric,numeric,text,text)'::regprocedure),'owner protected command');
+SELECT ok(has_function_privilege('schoolos_file_login','app_private.db03_record_initial_assessment(uuid,bigint,uuid,text,text,numeric,numeric,text,text)','EXECUTE'),'worker executes command');
+SELECT ok(NOT has_function_privilege('authenticated','app_private.db03_record_initial_assessment(uuid,bigint,uuid,text,text,numeric,numeric,text,text)','EXECUTE'),'client cannot execute command');
+SELECT ok(NOT has_function_privilege('anon','app_private.db03_record_initial_assessment(uuid,bigint,uuid,text,text,numeric,numeric,text,text)','EXECUTE'),'anonymous cannot execute command');
+SELECT ok(NOT has_function_privilege('service_role','app_private.db03_record_initial_assessment(uuid,bigint,uuid,text,text,numeric,numeric,text,text)','EXECUTE'),'service role cannot execute command');
+SELECT ok(NOT has_table_privilege('schoolos_file_login','app_private.admission_assessments','INSERT'),'worker cannot bypass command');
+SELECT ok(NOT EXISTS(SELECT 1 FROM app_private.operation_contracts WHERE code='admission.assessment.record'),'no production operation seed');
+SELECT * FROM finish();
+ROLLBACK;

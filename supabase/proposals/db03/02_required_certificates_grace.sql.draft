@@ -1,0 +1,93 @@
+-- DB03 owner requirement, 26 October 2026. Local-only additive candidate.
+-- Birth certificate for all applicants; school-leaving certificate for
+-- transfers. Grace never completes admission or permits enrollment.
+SET ROLE schoolos_schema_owner;
+
+ALTER TABLE app_private.admission_policy_document_requirements
+ ADD COLUMN applicability text NOT NULL DEFAULT 'ALL'
+ CHECK(applicability IN ('ALL','TRANSFER'));
+ALTER TABLE app_private.admission_policy_document_requirements
+ ADD CONSTRAINT db03_birth_certificate_required
+ CHECK(document_kind<>'BIRTH_CERTIFICATE'
+  OR (requirement='REQUIRED' AND applicability='ALL')),
+ ADD CONSTRAINT db03_school_leaving_certificate_required
+ CHECK(document_kind<>'SCHOOL_LEAVING_CERTIFICATE'
+  OR (requirement='REQUIRED' AND applicability='TRANSFER'));
+
+CREATE FUNCTION app_private.db03_guard_required_certificates() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp
+AS $body$
+DECLARE parent_requirement text;
+BEGIN
+ IF TG_TABLE_NAME='admission_policy_stages' THEN
+   IF NEW.stage_kind='DOCUMENT_VERIFICATION' AND NEW.requirement<>'REQUIRED' THEN
+     RAISE EXCEPTION 'DB03 mandatory certificate stage cannot be skipped';
+   END IF;
+ ELSIF TG_TABLE_NAME='admission_policy_document_requirements' THEN
+   IF NEW.document_kind IN ('BIRTH_CERTIFICATE','SCHOOL_LEAVING_CERTIFICATE') THEN
+     SELECT requirement INTO parent_requirement
+      FROM app_private.admission_policy_stages WHERE id=NEW.policy_stage_id;
+     IF parent_requirement IS DISTINCT FROM 'REQUIRED' THEN
+       RAISE EXCEPTION 'DB03 required certificate needs a required document stage';
+     END IF;
+   END IF;
+ ELSE
+   RAISE EXCEPTION 'DB03 certificate trigger target denied';
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_guard_required_certificates()
+ FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER ab_db03_required_certificates BEFORE INSERT OR UPDATE
+ ON app_private.admission_policy_stages FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_guard_required_certificates();
+CREATE TRIGGER ab_db03_required_certificates BEFORE INSERT OR UPDATE
+ ON app_private.admission_policy_document_requirements FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_guard_required_certificates();
+
+-- Publication must call this fixed required-roster gate as part of the full
+-- protected aggregate validation. It does NOT verify application documents.
+CREATE FUNCTION app_private.db03_required_certificate_roster_valid(p_policy uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT EXISTS(
+  SELECT 1 FROM app_private.admission_policy_stages s
+  JOIN app_private.admission_policy_versions p ON p.id=s.policy_version_id
+  WHERE p.id=p_policy AND s.stage_kind='DOCUMENT_VERIFICATION'
+    AND s.requirement='REQUIRED'
+    AND EXISTS(SELECT 1 FROM app_private.admission_policy_document_requirements d
+      WHERE d.policy_stage_id=s.id AND d.document_kind='BIRTH_CERTIFICATE'
+        AND d.requirement='REQUIRED' AND d.applicability='ALL')
+    AND EXISTS(SELECT 1 FROM app_private.admission_policy_document_requirements d
+      WHERE d.policy_stage_id=s.id AND d.document_kind='SCHOOL_LEAVING_CERTIFICATE'
+        AND d.requirement='REQUIRED' AND d.applicability='TRANSFER'))
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_required_certificate_roster_valid(uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+
+-- Pure private date bound; NOT an administrator grant, clock, stored grace
+-- history or authorization API. A later protected application command must
+-- obtain first_granted_on from its immutable first grant and School clock.
+-- Changes/retries may never reset that application-wide original anchor.
+CREATE FUNCTION app_private.db03_certificate_grace_due_on(
+ p_document_kind text,p_first_granted_on date,p_requested_due_on date DEFAULT NULL)
+RETURNS date LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE cap date; selected_due date;
+BEGIN
+ IF p_document_kind IS NULL
+  OR p_document_kind NOT IN ('BIRTH_CERTIFICATE','SCHOOL_LEAVING_CERTIFICATE')
+  OR p_first_granted_on IS NULL OR NOT pg_catalog.isfinite(p_first_granted_on) THEN
+   RAISE EXCEPTION 'DB03 certificate grace source invalid';
+ END IF;
+ cap:=(p_first_granted_on+INTERVAL '2 months')::date;
+ selected_due:=COALESCE(p_requested_due_on,cap);
+ IF NOT pg_catalog.isfinite(selected_due)
+  OR selected_due<p_first_granted_on OR selected_due>cap THEN
+   RAISE EXCEPTION 'DB03 certificate deadline exceeds original two-month window';
+ END IF;
+ RETURN selected_due;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_certificate_grace_due_on(text,date,date)
+ FROM PUBLIC,anon,authenticated,service_role;
+RESET ROLE;

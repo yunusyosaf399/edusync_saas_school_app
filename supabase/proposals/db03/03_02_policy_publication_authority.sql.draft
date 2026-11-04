@@ -1,0 +1,83 @@
+-- Statement-level authorization fence, before row locks. Complements frozen
+-- Foundation's row-level interval fences; no original function is replaced.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_publication_auth_fence() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ PERFORM pg_catalog.pg_advisory_xact_lock(71001,1);
+ RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_publication_auth_fence() FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER a0_db03_publication_auth_fence BEFORE INSERT OR UPDATE OR DELETE ON app_private.principals
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+CREATE TRIGGER a0_db03_publication_auth_fence BEFORE INSERT OR UPDATE OR DELETE ON app_private.principal_auth_bindings
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+CREATE TRIGGER a0_db03_publication_auth_fence BEFORE INSERT OR UPDATE OR DELETE ON app_private.roles
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+CREATE TRIGGER a0_db03_publication_auth_fence BEFORE INSERT OR UPDATE OR DELETE ON app_private.permissions
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+CREATE TRIGGER a0_db03_publication_auth_fence BEFORE INSERT OR UPDATE OR DELETE ON app_private.role_permission_grants
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+CREATE TRIGGER a0_db03_publication_auth_fence BEFORE INSERT OR UPDATE OR DELETE ON app_private.principal_role_assignments
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+CREATE TRIGGER a0_db03_publication_auth_fence BEFORE INSERT OR UPDATE OR DELETE ON app_private.permission_scope_contracts
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+CREATE TRIGGER a0_db03_publication_auth_fence BEFORE INSERT OR UPDATE OR DELETE ON app_private.assignment_permission_scopes
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+CREATE TRIGGER a0_db03_publication_auth_fence BEFORE INSERT OR UPDATE OR DELETE ON app_private.operation_contracts
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+GRANT SELECT(id,code,contract_version,handler_key,request_permission_id,payload_schema_version,requires_approval,enabled)
+ ON app_private.operation_contracts TO schoolos_authz_reader,schoolos_evidence_writer;
+CREATE POLICY db03_publication_operation_read ON app_private.operation_contracts
+ FOR SELECT TO schoolos_authz_reader,schoolos_evidence_writer
+ USING(code='admission.policy.publish' AND contract_version=1);
+RESET ROLE;
+
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.db03_policy_publisher_context()
+RETURNS TABLE(actor_id uuid,operation_id uuid)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; operation uuid; permission uuid; checked_at timestamptz;
+BEGIN
+ IF pg_catalog.current_setting('transaction_isolation')<>'read committed' THEN
+  RAISE EXCEPTION 'DB03 publication requires READ COMMITTED'; END IF;
+ PERFORM pg_catalog.pg_advisory_xact_lock_shared(71001,1);
+ actor:=app_private.current_principal_id();
+ IF actor IS NULL OR NOT EXISTS(SELECT 1 FROM app_private.principals p
+  WHERE p.id=actor AND p.kind='INDIVIDUAL' AND p.state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB03 publication requires current staff Principal'; END IF;
+ SELECT o.id,o.request_permission_id INTO operation,permission
+ FROM app_private.operation_contracts o JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='admission.policy.publish' AND o.contract_version=1
+  AND o.handler_key='admission.policy.publish' AND o.payload_schema_version=1
+  AND o.enabled AND NOT o.requires_approval
+  AND p.code='admission.policy.publish' AND p.state='ENABLED' AND NOT p.family_safe;
+ IF operation IS NULL THEN RAISE EXCEPTION 'DB03 publication operation unavailable'; END IF;
+ checked_at:=pg_catalog.clock_timestamp();
+ IF NOT EXISTS(
+  SELECT 1 FROM app_private.assignment_permission_scopes s
+  JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+  JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+  JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+  JOIN app_private.roles r ON r.id=s.role_id
+  WHERE a.principal_id=actor AND a.principal_kind='INDIVIDUAL'
+   AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+   AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+   AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+   AND c.resolver_key=s.resolver_key AND c.enabled
+   AND s.permission_id=permission AND r.state='ACTIVE'
+   AND s.scope_kind='ALL' AND s.resolver_key='DIRECT' AND s.campus_id IS NULL
+   AND a.valid_from<=checked_at AND (a.valid_until IS NULL OR checked_at<a.valid_until)
+   AND (a.revoked_at IS NULL OR checked_at<a.revoked_at)
+   AND g.valid_from<=checked_at AND (g.valid_until IS NULL OR checked_at<g.valid_until)
+   AND (g.revoked_at IS NULL OR checked_at<g.revoked_at)
+   AND s.valid_from<=checked_at AND (s.valid_until IS NULL OR checked_at<s.valid_until)
+   AND (s.revoked_at IS NULL OR checked_at<s.revoked_at)) THEN
+  RAISE EXCEPTION 'DB03 publication School ALL authority denied'; END IF;
+ RETURN QUERY SELECT actor,operation;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_policy_publisher_context() FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_policy_publisher_context() TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;

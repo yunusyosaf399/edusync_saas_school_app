@@ -1,0 +1,129 @@
+name: PR102 combined current-main security and domain acceptance
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/integration-pr102-current-main.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr102-current-main-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  current-foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: Foundation test harness unit tests
+        run: python -m unittest discover -s tools/supabase/tests -v
+      - name: Frozen Foundation source integrity
+        run: python tools/supabase/foundation_guard.py --require-lf
+      - name: Current-main Foundation disposable database
+        run: python tools/supabase/foundation_local_ci.py
+
+  current-d1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: Exact-head D1 runner/tooling acceptance
+        run: |
+          python -m pip install 'psycopg[binary]==3.2.10' 'cryptography==46.0.4'
+          python -m unittest discover -s tools/supabase/tests -p 'test_domain_*ci.py' -v
+      - name: Exact-head D1 PostgreSQL business and concurrency acceptance
+        run: python tools/supabase/domain_local_ci.py
+
+  current-identity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: Current-main login unit tests
+        run: |
+          python -m pip install 'psycopg[binary]==3.2.10'
+          python -m unittest discover -s services/school_identity/tests -v
+      - name: Frozen Foundation before login integration
+        run: python tools/supabase/foundation_local_ci.py
+      - name: Real Auth/login scope and revocation checks
+        run: python tools/supabase/section02_identity_login_ci.py
+
+  composed-db03:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          ref: 5dd07728684736b42c1fa7ee4b7f7b62f843c37f
+          path: .ci/current-main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: Candidate private-document test dependencies
+        run: python -m pip install -r services/admission_documents/requirements.txt
+      - name: DB03 full SQL and real-Auth acceptance against current-main D1
+        run: python tools/integration/pr102_current_main_ci.py db03 --current-main-root .ci/current-main
+
+  composed-db08:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          ref: 5dd07728684736b42c1fa7ee4b7f7b62f843c37f
+          path: .ci/current-main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.2
+      - name: Candidate private-payment service dependencies
+        run: python -m pip install -r tools/db08/requirements.txt
+      - name: DB08 F1-F13 full SQL and real-Auth acceptance against current-main D1
+        run: python tools/integration/pr102_current_main_ci.py db08 --current-main-root .ci/current-main

@@ -1,0 +1,117 @@
+-- S17 inactive applicant concession source. Requires S15 and DB08 F1 category catalog.
+-- A later protected command and independent Finance approval are required.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.admission_category_concessions (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ application_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ campus_id uuid NOT NULL,
+ academic_year_id uuid NOT NULL,
+ application_version bigint NOT NULL CHECK(application_version>0),
+ destination_id uuid NOT NULL REFERENCES app_private.admission_destination_intents(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid UNIQUE REFERENCES app_private.admission_category_concessions(id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ percent_hundredths integer NOT NULL CHECK(percent_hundredths BETWEEN 1 AND 10000),
+ valid_from date NOT NULL CHECK(isfinite(valid_from)),
+ valid_through date NOT NULL CHECK(isfinite(valid_through) AND valid_through>=valid_from),
+ reason_private text NOT NULL CHECK(length(btrim(reason_private)) BETWEEN 1 AND 1000),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ created_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
+ FOREIGN KEY(application_id,school_id,campus_id,academic_year_id)
+  REFERENCES app_private.admission_applications(id,school_id,campus_id,academic_year_id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(application_id,revision), UNIQUE(id,school_id),
+ CHECK((revision=1)=(supersedes_id IS NULL))
+);
+CREATE INDEX db03_concession_head ON app_private.admission_category_concessions(application_id,revision DESC);
+CREATE TABLE app_private.admission_concession_categories (
+ concession_id uuid NOT NULL,
+ school_id uuid NOT NULL,
+ category_id uuid NOT NULL,
+ PRIMARY KEY(concession_id,category_id),
+ FOREIGN KEY(concession_id,school_id)
+  REFERENCES app_private.admission_category_concessions(id,school_id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(category_id,school_id) REFERENCES app_private.finance_fee_categories(id,school_id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE FUNCTION app_private.db03_concession_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE;
+ d app_private.admission_destination_intents%ROWTYPE;
+ prior app_private.admission_category_concessions%ROWTYPE;
+ head app_private.admission_category_concessions%ROWTYPE;
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 concession is immutable'; END IF;
+ IF current_user<>'schoolos_schema_owner' THEN RAISE EXCEPTION 'DB03 concession writer unavailable'; END IF;
+ IF TG_TABLE_NAME='admission_concession_categories' THEN
+  SELECT * INTO head FROM app_private.admission_category_concessions WHERE id=NEW.concession_id;
+  SELECT * INTO a FROM app_private.admission_applications WHERE id=head.application_id FOR UPDATE;
+  IF head.id IS NULL OR head.school_id<>NEW.school_id OR a.state<>'DRAFT'
+   OR a.row_version<>head.application_version OR EXISTS(
+    SELECT 1 FROM app_private.admission_category_concessions x
+    WHERE x.application_id=head.application_id AND x.revision>head.revision)
+   OR NOT EXISTS(SELECT 1 FROM app_private.finance_fee_categories c
+    WHERE c.id=NEW.category_id AND c.school_id=head.school_id)
+   OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards f WHERE f.application_id=a.id)
+   THEN RAISE EXCEPTION 'DB03 concession category context mismatch'; END IF;
+  RETURN NEW;
+ END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=NEW.application_id FOR UPDATE;
+ SELECT * INTO d FROM app_private.admission_destination_intents WHERE id=NEW.destination_id;
+ SELECT * INTO prior FROM app_private.admission_category_concessions
+  WHERE application_id=NEW.application_id ORDER BY revision DESC LIMIT 1;
+ IF a.id IS NULL OR a.state<>'DRAFT' OR a.row_version<>NEW.application_version
+  OR a.school_id<>NEW.school_id OR a.campus_id<>NEW.campus_id
+  OR a.academic_year_id<>NEW.academic_year_id
+  OR d.id IS NULL OR d.application_id<>a.id OR d.school_id<>a.school_id
+  OR d.campus_id<>a.campus_id OR d.academic_year_id<>a.academic_year_id
+  OR d.application_version<>a.row_version OR d.id IS DISTINCT FROM (
+   SELECT id FROM app_private.admission_destination_intents
+   WHERE application_id=a.id ORDER BY revision DESC LIMIT 1)
+  OR (prior.id IS NULL AND (NEW.revision<>1 OR NEW.supersedes_id IS NOT NULL))
+  OR (prior.id IS NOT NULL AND (NEW.revision<>prior.revision+1 OR NEW.supersedes_id IS DISTINCT FROM prior.id))
+  OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards f WHERE f.application_id=a.id)
+  THEN RAISE EXCEPTION 'DB03 concession context or revision mismatch'; END IF;
+ RETURN NEW;
+END $body$;
+CREATE FUNCTION app_private.db03_concession_nonempty() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF NOT EXISTS(SELECT 1 FROM app_private.admission_concession_categories
+  WHERE concession_id=NEW.id) THEN
+  RAISE EXCEPTION 'DB03 concession requires selected category'; END IF;
+ RETURN NULL;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_concession_guard() FROM PUBLIC,anon,authenticated,service_role;
+REVOKE ALL ON FUNCTION app_private.db03_concession_nonempty() FROM PUBLIC,anon,authenticated,service_role;
+ALTER TABLE app_private.admission_category_concessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_category_concessions FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_concession_categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_concession_categories FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_category_concessions,app_private.admission_concession_categories
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_file_login,schoolos_platform_executor,schoolos_evidence_writer;
+CREATE POLICY db03_concession_owner ON app_private.admission_category_concessions
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_concession_category_owner ON app_private.admission_concession_categories
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE TRIGGER db03_concession_history BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.admission_category_concessions FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_concession_guard();
+CREATE TRIGGER db03_concession_category_history BEFORE INSERT OR UPDATE OR DELETE
+ ON app_private.admission_concession_categories FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_concession_guard();
+CREATE TRIGGER db03_concession_no_truncate BEFORE TRUNCATE
+ ON app_private.admission_category_concessions FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_concession_guard();
+CREATE TRIGGER db03_concession_category_no_truncate BEFORE TRUNCATE
+ ON app_private.admission_concession_categories FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_concession_guard();
+CREATE CONSTRAINT TRIGGER db03_concession_selected_category
+ AFTER INSERT ON app_private.admission_category_concessions
+ DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+ EXECUTE FUNCTION app_private.db03_concession_nonempty();
+RESET ROLE;

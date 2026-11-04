@@ -1,0 +1,9 @@
+# DB08 F10: checked official bank payment (inactive candidate)
+
+F10 follows a parent's F8 pending bank transfer submission and a school staff member's F9 approved review. The same authenticated individual reviewer must hold a separate live `finance.payment.issue` permission for the submission's Campus. The private file worker calls a checked database function; no public client RPC, table DML, or production permission seed is included.
+
+The function locks the School row, rechecks the approved review and matching original proof metadata, denies an already issued submission, review, bank transfer reference or proof hash, and allocates the next positive School-scoped receipt serial. It creates one immutable `finance_official_payments` row with the F7 foreign key links, a command receipt, audit event and outbox event in one transaction. An exact retry returns the same payment and serial. A changed key cannot issue it twice. Rejected, correction-requested and still-pending submissions fail. Revoked staff authority fails even for an exact retry.
+
+The returned data is the canonical receipt source: School, Campus, Student, currency, amount in minor units, method, bank, reference, receipt serial and payment ID. A printable receipt or PDF can render this retained source later. F10 does **not** allocate it to an obligation, change a Student balance, issue an invoice or grant admission Finance clearance.
+
+Disposable acceptance checks injected-install rollback, worker-only execution and forced RLS, then real Auth sessions for family denial, rejected and pending denial, distinct approved transfers with consecutive serials, replay, double-issue denial, retained source/audit/outbox and revoked issuer denial. The candidate remains inactive in the draft PR; production storage, identity provisioning, recovery and release approval remain separate gates.

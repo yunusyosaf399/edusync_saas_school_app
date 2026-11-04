@@ -1,0 +1,80 @@
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db03_document_review_operation ON app_private.operation_contracts FOR SELECT TO schoolos_authz_reader,schoolos_evidence_writer
+ USING(code IN('admission.document.read','admission.document.review','admission.document.approve') AND contract_version=1);
+RESET ROLE;
+GRANT SELECT(row_version) ON app_private.operation_contracts TO schoolos_authz_reader;
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.db03_document_review_authority(p_actor uuid,p_campus uuid,p_code text) RETURNS bytea
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE permission uuid; operation uuid; op_version bigint; result bytea; principal_version bigint; bindings jsonb; checked_at timestamptz;
+BEGIN
+ IF p_code IS NULL OR p_code NOT IN('admission.document.read','admission.document.review','admission.document.approve','file.view') OR p_campus IS NULL THEN RETURN NULL; END IF;
+ checked_at:=clock_timestamp();
+ SELECT row_version INTO principal_version FROM app_private.principals WHERE id=p_actor AND kind='INDIVIDUAL' AND state='ACTIVE';
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ SELECT jsonb_agg(jsonb_build_array(b.id,b.row_version) ORDER BY b.id) INTO bindings FROM app_private.principal_auth_bindings b
+ WHERE b.principal_id=p_actor AND b.principal_kind='INDIVIDUAL' AND b.auth_user_id IS NOT NULL AND b.bound_at<=checked_at AND b.tokens_valid_from<=checked_at;
+ IF bindings IS NULL THEN RETURN NULL; END IF;
+ IF p_code='file.view' THEN
+  SELECT id INTO permission FROM app_private.permissions WHERE code=p_code AND state='ENABLED' AND NOT family_safe;
+ ELSE
+  SELECT o.request_permission_id,o.id,o.row_version INTO permission,operation,op_version FROM app_private.operation_contracts o
+  JOIN app_private.permissions p ON p.id=o.request_permission_id
+  WHERE o.code=p_code AND o.contract_version=1 AND o.handler_key=p_code AND o.payload_schema_version=1 AND o.enabled AND NOT o.requires_approval
+   AND p.code=p_code AND p.state='ENABLED' AND NOT p.family_safe;
+ END IF;
+ IF permission IS NULL THEN RETURN NULL; END IF;
+ SELECT sha256(convert_to(jsonb_build_array(p_actor,principal_version,bindings,operation,op_version,
+  jsonb_agg(jsonb_build_array(a.id,a.row_version,g.id,g.row_version,s.id,s.row_version,c.id,c.row_version,r.id,r.row_version,p.id,p.row_version) ORDER BY s.id))::text,'UTF8')) INTO result
+ FROM app_private.assignment_permission_scopes s
+ JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+ JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+ JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+ JOIN app_private.roles r ON r.id=s.role_id JOIN app_private.permissions p ON p.id=s.permission_id
+ WHERE a.principal_id=p_actor AND a.principal_kind='INDIVIDUAL' AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+ AND g.role_id=s.role_id AND g.permission_id=s.permission_id AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind AND c.resolver_key=s.resolver_key AND c.enabled
+ AND s.permission_id=permission AND r.code='PRINCIPAL' AND r.state='ACTIVE' AND NOT r.family_only AND p.state='ENABLED' AND NOT p.family_safe
+ AND s.resolver_key='DIRECT' AND ((s.scope_kind='ALL' AND s.campus_id IS NULL) OR (s.scope_kind='CAMPUS' AND s.campus_id=p_campus))
+ AND a.valid_from<=checked_at AND (a.valid_until IS NULL OR checked_at<a.valid_until) AND (a.revoked_at IS NULL OR checked_at<a.revoked_at)
+ AND g.valid_from<=checked_at AND (g.valid_until IS NULL OR checked_at<g.valid_until) AND (g.revoked_at IS NULL OR checked_at<g.revoked_at)
+ AND s.valid_from<=checked_at AND (s.valid_until IS NULL OR checked_at<s.valid_until) AND (s.revoked_at IS NULL OR checked_at<s.revoked_at)
+ HAVING count(*)>0;
+ RETURN result;
+END $body$;
+CREATE FUNCTION app_private.db03_document_review_actor(p_code text,p_campus uuid)
+RETURNS TABLE(actor_id uuid,operation_id uuid,authority_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; operation uuid; proof bytea; file_proof bytea;
+BEGIN
+ IF p_code IS NULL OR p_code NOT IN('admission.document.read','admission.document.review','admission.document.approve')
+ OR current_setting('transaction_isolation')<>'read committed' THEN RAISE EXCEPTION 'DB03 principal document operation denied'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ IF COALESCE(current_setting('request.jwt.claims',true)::jsonb->>'exp','') !~ '^[0-9]{1,12}$' THEN
+  RAISE EXCEPTION 'DB03 principal document authentication expired'; END IF;
+ IF to_timestamp((current_setting('request.jwt.claims',true)::jsonb->>'exp')::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 principal document authentication expired'; END IF;
+ actor:=app_private.current_principal_id();
+ proof:=app_private.db03_document_review_authority(actor,p_campus,p_code);
+ IF proof IS NULL THEN RAISE EXCEPTION 'DB03 principal document authority denied'; END IF;
+ IF p_code='admission.document.read' THEN
+  file_proof:=app_private.db03_document_review_authority(actor,p_campus,'file.view');
+  IF file_proof IS NULL THEN RAISE EXCEPTION 'DB03 private file view authority denied'; END IF;
+  proof:=sha256(proof||file_proof);
+ END IF;
+ SELECT id INTO operation FROM app_private.operation_contracts WHERE code=p_code AND contract_version=1;
+ RETURN QUERY SELECT actor,operation,proof;
+END $body$;
+-- A retired login principal can be replaced for the same canonical Person.
+-- Independence follows the Person, not just a login/Principal UUID.
+CREATE FUNCTION app_private.db03_same_document_person(p_one uuid,p_two uuid) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT COALESCE((SELECT a.person_id=b.person_id FROM app_private.principals a CROSS JOIN app_private.principals b
+ WHERE a.id=p_one AND b.id=p_two AND a.kind='INDIVIDUAL' AND b.kind='INDIVIDUAL'),true)
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_same_document_person(uuid,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_same_document_person(uuid,uuid) TO schoolos_workflow_executor;
+REVOKE ALL ON FUNCTION app_private.db03_document_review_authority(uuid,uuid,text),app_private.db03_document_review_actor(text,uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_document_review_authority(uuid,uuid,text),app_private.db03_document_review_actor(text,uuid) TO schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;

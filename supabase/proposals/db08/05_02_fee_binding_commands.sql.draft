@@ -1,0 +1,142 @@
+-- Retained binding receipt uses the existing configured Finance permission.
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db08_f5_binding_audit ON app_private.audit_events FOR ALL TO schoolos_evidence_writer
+ USING(event_type='finance.fee.configure' AND target_kind='FINANCE_FEE_BINDING')
+ WITH CHECK(event_type='finance.fee.configure' AND target_kind='FINANCE_FEE_BINDING');
+CREATE POLICY db08_f5_binding_outbox ON app_private.outbox_events FOR ALL TO schoolos_evidence_writer
+ USING(event_type='finance.fee.configure' AND aggregate_kind='FINANCE_FEE_BINDING')
+ WITH CHECK(event_type='finance.fee.configure' AND aggregate_kind='FINANCE_FEE_BINDING');
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.db08_f5_binding_receipt(
+ p_campus uuid,p_key text,p_hash bytea,p_binding uuid DEFAULT NULL)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; r app_private.command_receipts%ROWTYPE;
+ binding app_private.finance_fee_applicabilities%ROWTYPE;
+ fee app_private.finance_fee_rules%ROWTYPE; result jsonb; correlation uuid; receipt uuid;
+BEGIN
+ IF p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180
+  OR p_hash IS NULL OR octet_length(p_hash)<>32 THEN
+  RAISE EXCEPTION 'DB08 F5 receipt invalid'; END IF;
+ SELECT * INTO ctx FROM app_private.db08_fee_actor('finance.fee.configure',p_campus);
+ SELECT * INTO r FROM app_private.command_receipts
+  WHERE principal_id=ctx.actor_id AND operation_id=ctx.operation_id
+    AND idempotency_key='bind:'||p_key;
+ IF r.id IS NOT NULL THEN
+  IF r.canonical_payload_hash IS DISTINCT FROM p_hash OR r.canonicalization_version<>1
+    OR r.state<>'SUCCEEDED' OR r.command_kind<>'finance.fee.configure'
+    OR r.result_kind<>'FINANCE_FEE_BINDING' OR r.request_id IS NOT NULL
+    OR r.expected_target_version IS NOT NULL THEN
+   RAISE EXCEPTION 'DB08 F5 binding key conflict'; END IF;
+  p_binding:=r.result_ref;
+ ELSIF p_binding IS NULL THEN
+  RETURN NULL;
+ END IF;
+ SELECT * INTO binding FROM app_private.finance_fee_applicabilities WHERE id=p_binding;
+ SELECT * INTO fee FROM app_private.finance_fee_rules WHERE id=binding.rule_id;
+ IF binding.id IS NULL OR fee.id IS NULL OR fee.campus_id<>p_campus
+    OR binding.created_by<>ctx.actor_id THEN
+  RAISE EXCEPTION 'DB08 F5 binding source invalid'; END IF;
+ result:=jsonb_build_object('binding_id',binding.id,'rule_id',fee.id,
+   'class_offering_id',binding.class_offering_id,'student_id',binding.student_id,
+   'valid_from',binding.valid_from,'valid_through',binding.valid_through);
+ IF r.id IS NULL THEN
+  receipt:=gen_random_uuid(); correlation:=gen_random_uuid();
+  INSERT INTO app_private.command_receipts(
+   id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,
+   canonicalization_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES(receipt,ctx.actor_id,ctx.operation_id,'finance.fee.configure','bind:'||p_key,
+   p_hash,1,'SUCCEEDED','FINANCE_FEE_BINDING',binding.id,result,clock_timestamp(),ctx.actor_id);
+  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+   target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+   source_kind,correlation_id,occurred_at,details,created_by)
+  VALUES(ctx.actor_id,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation','finance.fee.configure'),
+   1,'finance.fee.configure','FINANCE_FEE_BINDING',binding.id,p_campus,receipt,
+   'API',correlation,clock_timestamp(),result,ctx.actor_id);
+  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+   aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+  VALUES('finance.fee.configure','FINANCE_FEE_BINDING',binding.id,1,receipt,1,
+   correlation,clock_timestamp(),result,ctx.actor_id);
+ ELSE
+  IF r.result_summary IS DISTINCT FROM result
+   OR (SELECT count(*) FROM app_private.audit_events x WHERE x.command_receipt_id=r.id
+       AND x.target_ref=binding.id AND x.target_kind='FINANCE_FEE_BINDING'
+       AND x.actor_id=ctx.actor_id AND x.details=result)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events x WHERE x.command_receipt_id=r.id
+       AND x.aggregate_ref=binding.id AND x.aggregate_kind='FINANCE_FEE_BINDING'
+       AND x.payload=result)<>1 THEN
+   RAISE EXCEPTION 'DB08 F5 binding receipt evidence invalid'; END IF;
+ END IF;
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_f5_binding_receipt(uuid,text,bytea,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_f5_binding_receipt(uuid,text,bytea,uuid)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;
+
+GRANT CREATE ON SCHEMA app TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.bind_finance_fee(p_rule uuid,p_class_offering uuid,p_student uuid,
+ p_valid_from date,p_valid_through date,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE fee app_private.finance_fee_rules%ROWTYPE; offering record;
+ yr app.academic_years%ROWTYPE; ctx record; v_hash bytea; result jsonb; binding uuid;
+BEGIN
+ IF p_rule IS NULL OR p_class_offering IS NULL OR p_key IS NULL
+  OR length(p_key) NOT BETWEEN 1 AND 180 OR p_valid_from IS NULL OR NOT isfinite(p_valid_from)
+  OR p_valid_through IS NULL OR NOT isfinite(p_valid_through) OR p_valid_through<p_valid_from THEN
+  RAISE EXCEPTION 'DB08 F5 binding invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO fee FROM app_private.finance_fee_rules WHERE id=p_rule;
+ IF fee.id IS NULL THEN RAISE EXCEPTION 'DB08 F5 rule unavailable'; END IF;
+ SELECT * INTO ctx FROM app_private.db08_fee_actor('finance.fee.configure',fee.campus_id);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(ctx.actor_id::text||':'||ctx.operation_id::text||':bind:'||p_key));
+ PERFORM pg_advisory_xact_lock(71003,hashtext(fee.school_id::text));
+ PERFORM app_private.db08_fee_actor('finance.fee.configure',fee.campus_id);
+ v_hash:=sha256(convert_to(jsonb_build_array('finance.fee.bind',p_rule,p_class_offering,
+   p_student,p_valid_from,p_valid_through)::text,'UTF8'));
+ result:=app_private.db08_f5_binding_receipt(fee.campus_id,p_key,v_hash);
+ IF result IS NOT NULL THEN RETURN result; END IF;
+ SELECT id,school_id,campus_id,academic_year_id,state INTO offering
+ FROM app_private.class_offerings WHERE id=p_class_offering;
+ SELECT * INTO yr FROM app.academic_years WHERE id=fee.academic_year_id;
+ IF offering.id IS NULL OR offering.school_id<>fee.school_id
+  OR offering.campus_id<>fee.campus_id OR offering.academic_year_id<>fee.academic_year_id
+  OR offering.state<>'OPEN' OR yr.state<>'ACTIVE'
+  OR p_valid_from<=(clock_timestamp() AT TIME ZONE
+      (SELECT timezone FROM app_private.school_profiles WHERE id=fee.school_id))::date
+  OR p_valid_from<yr.starts_on OR p_valid_through>yr.ends_on
+  OR NOT EXISTS(SELECT 1 FROM app_private.finance_fee_publications x
+      WHERE x.rule_id=fee.id AND x.state='PUBLISHED') THEN
+  RAISE EXCEPTION 'DB08 F5 offering/rule unavailable'; END IF;
+ IF p_student IS NOT NULL AND NOT EXISTS(
+  SELECT 1 FROM app_private.students s JOIN app_private.enrollments e ON e.student_id=s.id
+   JOIN app_private.section_offerings section ON section.id=e.section_offering_id
+  WHERE s.id=p_student AND s.current_status='ACTIVE'
+   AND e.placement_kind='PRIMARY' AND e.placement_state='ACTIVE'
+   AND section.class_offering_id=p_class_offering
+   AND e.effective_from<=p_valid_from AND
+     (e.effective_until IS NULL OR e.effective_until>=p_valid_through)) THEN
+  RAISE EXCEPTION 'DB08 F5 Student placement unavailable'; END IF;
+ IF EXISTS(
+  SELECT 1 FROM app_private.finance_fee_applicabilities x
+   JOIN app_private.finance_fee_rules existing ON existing.id=x.rule_id
+  WHERE x.class_offering_id=p_class_offering AND x.student_id IS NOT DISTINCT FROM p_student
+   AND existing.category_id=fee.category_id AND existing.frequency=fee.frequency
+   AND daterange(x.valid_from,x.valid_through,'[]') &&
+       daterange(p_valid_from,p_valid_through,'[]')) THEN
+  RAISE EXCEPTION 'DB08 F5 overlapping class/Student fee binding'; END IF;
+ INSERT INTO app_private.finance_fee_applicabilities(
+  rule_id,class_offering_id,student_id,valid_from,valid_through,created_by)
+ VALUES(p_rule,p_class_offering,p_student,p_valid_from,p_valid_through,ctx.actor_id)
+ RETURNING id INTO binding;
+ RETURN app_private.db08_f5_binding_receipt(fee.campus_id,p_key,v_hash,binding);
+END $body$;
+REVOKE ALL ON FUNCTION app.bind_finance_fee(uuid,uuid,uuid,date,date,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.bind_finance_fee(uuid,uuid,uuid,date,date,text) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app FROM schoolos_workflow_executor;

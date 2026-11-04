@@ -1,0 +1,9 @@
+# DB08 F11: official payment allocation (inactive candidate)
+
+F11 lets a current Campus-scoped Finance staff member assign part or all of an F10 official bank payment to a selected F5 Student fee obligation. It accepts a positive two-decimal amount, retaining immutable payment/obligation/Student/School/Campus/amount rows, command receipt, audit and outbox. A payment can be split across obligations and an obligation can be paid from multiple official payments; each payment/obligation pair is unique. An exact retry returns the same allocation.
+
+The checked command and row trigger verify that the selected Student, School, Campus and currency match, the total allocated from a payment never exceeds its official amount, and total allocation to a charge never exceeds its gross less the retained F6 discount. A separate trigger refuses a later discount that would reduce the net charge below already allocated money. The payment and obligation rows are locked in a fixed order, and the existing School mutation fence serializes discount application with allocation. The returned remaining amounts are a snapshot after that allocation; the immutable rows remain the source for later balance reads.
+
+F11 creates no invoice, refund, credit carry-forward or Finance clearance, and it does not finalize Admissions. A payment remainder remains unallocated until a later eligible charge. There is no client RPC or direct table write. This is an inactive proposal in a draft PR with synthetic grants only; production IAM, storage, recovery and activation remain separate.
+
+Disposable acceptance checks F11 installation rollback, forced RLS and worker-only entry, then real Auth family and wrong-Student denial, partial allocation followed by zero net balance, remaining payment amount, exact replay, both over-allocation limits and revoked staff denial.

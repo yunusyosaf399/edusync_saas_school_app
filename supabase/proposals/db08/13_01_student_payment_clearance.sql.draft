@@ -1,0 +1,248 @@
+-- F13: explicit, payment-backed Student clearance events. This does not
+-- clear a pre-Student Admissions application or create an admission waiver.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_student_clearance_events (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+ campus_id uuid NOT NULL REFERENCES app.campuses(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+ academic_year_id uuid NOT NULL REFERENCES app.academic_years(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+ student_id uuid NOT NULL REFERENCES app_private.students(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+ revision bigint NOT NULL CHECK(revision>0),
+ action text NOT NULL CHECK(action IN('ISSUE','REVOKE')),
+ supersedes_id uuid UNIQUE REFERENCES app_private.finance_student_clearance_events(id)
+  ON DELETE RESTRICT ON UPDATE RESTRICT,
+ source_digest bytea NOT NULL CHECK(octet_length(source_digest)=32),
+ net_minor numeric NOT NULL CHECK(net_minor>0 AND net_minor=trunc(net_minor)),
+ allocated_minor numeric NOT NULL CHECK(allocated_minor=net_minor),
+ reason text NOT NULL CHECK(length(btrim(reason)) BETWEEN 1 AND 1000),
+ actor_id uuid NOT NULL REFERENCES app_private.principals(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+ occurred_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ UNIQUE(school_id,campus_id,academic_year_id,student_id,revision)
+);
+CREATE INDEX db08_clearance_student_head ON app_private.finance_student_clearance_events
+ (school_id,student_id,academic_year_id,campus_id,revision DESC);
+ALTER TABLE app_private.finance_student_clearance_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_student_clearance_events FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_f13_owner ON app_private.finance_student_clearance_events
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+REVOKE ALL ON app_private.finance_student_clearance_events
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,schoolos_workflow_executor;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE
+ ON app_private.finance_student_clearance_events
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+
+CREATE FUNCTION app_private.db08_clearance_snapshot(p_school uuid,p_campus uuid,
+ p_year uuid,p_student uuid)
+RETURNS jsonb LANGUAGE sql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+ WITH lines AS (
+  SELECT o.id,coalesce(a.net_minor,o.gross_amount_minor) AS net,
+   coalesce((SELECT sum(z.amount_minor) FROM app_private.finance_payment_allocations z
+     WHERE z.obligation_id=o.id),0) AS allocated,
+   a.request_id AS discount_request,
+   (SELECT coalesce(jsonb_agg(jsonb_build_array(z.id,z.payment_id,z.amount_minor)
+      ORDER BY z.id),'[]'::jsonb)
+    FROM app_private.finance_payment_allocations z WHERE z.obligation_id=o.id) AS allocations
+  FROM app_private.finance_fee_obligations o
+  JOIN app_private.finance_fee_assessment_selections s ON s.obligation_id=o.id
+  LEFT JOIN app_private.finance_discount_adjustments a ON a.obligation_id=o.id
+  WHERE o.school_id=p_school AND o.campus_id=p_campus
+   AND o.academic_year_id=p_year AND s.student_id=p_student
+ ), totals AS (
+  SELECT count(*) AS charge_count,coalesce(sum(net),0) AS net,
+   coalesce(sum(allocated),0) AS allocated,
+   sha256(convert_to(coalesce(jsonb_agg(jsonb_build_array(id,net,allocated,
+     discount_request,allocations) ORDER BY id),'[]'::jsonb)::text,'UTF8')) AS digest
+  FROM lines
+ )
+ SELECT jsonb_build_object('charge_count',charge_count,'net_minor',net,
+  'allocated_minor',allocated,'digest',encode(digest,'hex')) FROM totals;
+$body$;
+REVOKE ALL ON FUNCTION app_private.db08_clearance_snapshot(uuid,uuid,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login;
+
+CREATE FUNCTION app_private.db08_student_clearance(p_school uuid,p_student uuid,
+ p_action text,p_reason text,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; operation uuid; permission uuid; checked_at timestamptz;
+ claims jsonb; school_day date; campus uuid; yr uuid; matches bigint;
+ command_code text;
+ prior app_private.finance_student_clearance_events%ROWTYPE;
+ event app_private.finance_student_clearance_events%ROWTYPE;
+ receipt app_private.command_receipts%ROWTYPE;
+ snapshot jsonb; v_hash bytea; result jsonb; receipt_id uuid; correlation uuid;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR current_setting('transaction_isolation')<>'read committed'
+  OR p_school IS NULL OR p_student IS NULL OR p_action IS NULL
+  OR p_action NOT IN('ISSUE','REVOKE') OR p_reason IS NULL
+  OR length(btrim(p_reason)) NOT BETWEEN 1 AND 1000
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB08 clearance input denied'; END IF;
+ command_code:=CASE WHEN p_action='ISSUE' THEN 'finance.clearance.issue'
+  ELSE 'finance.clearance.revoke' END;
+ claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
+ IF claims->>'exp' IS NULL OR claims->>'exp' !~ '^[0-9]{1,12}$'
+  OR to_timestamp((claims->>'exp')::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB08 clearance authentication expired'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ PERFORM pg_advisory_xact_lock(71003,hashtext(p_school::text));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=p_school AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB08 clearance School unavailable'; END IF;
+ PERFORM 1 FROM app_private.students WHERE id=p_student AND current_status='ACTIVE' FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB08 clearance Student unavailable'; END IF;
+ actor:=app_private.current_principal_id();
+ SELECT (clock_timestamp() AT TIME ZONE timezone)::date INTO school_day
+  FROM app_private.school_profiles WHERE id=p_school;
+ SELECT count(*),(array_agg(c.campus_id))[1],(array_agg(c.academic_year_id))[1]
+  INTO matches,campus,yr
+  FROM app_private.enrollments e
+  JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+  JOIN app_private.class_offerings c ON c.id=s.class_offering_id
+  JOIN app.academic_years y ON y.id=c.academic_year_id
+  WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+   AND e.placement_state='ACTIVE' AND e.effective_from<=school_day
+   AND (e.effective_until IS NULL OR school_day<e.effective_until)
+   AND c.school_id=p_school AND c.campus_id=s.campus_id
+   AND y.school_id=p_school AND y.state='ACTIVE'
+   AND y.starts_on<=school_day AND school_day<=y.ends_on;
+ IF actor IS NULL OR matches<>1 OR NOT EXISTS(SELECT 1 FROM app_private.principals
+   WHERE id=actor AND kind='INDIVIDUAL' AND state='ACTIVE')
+  OR NOT EXISTS(SELECT 1 FROM app.campuses
+   WHERE id=campus AND school_id=p_school AND state='ACTIVE') THEN
+  RAISE EXCEPTION 'DB08 clearance placement denied'; END IF;
+ SELECT o.id,o.request_permission_id INTO operation,permission
+ FROM app_private.operation_contracts o JOIN app_private.permissions p
+  ON p.id=o.request_permission_id
+ WHERE o.code=command_code
+  AND o.contract_version=1 AND o.handler_key=o.code AND o.payload_schema_version=1
+  AND o.enabled AND NOT o.requires_approval AND p.code=o.code
+  AND p.state='ENABLED' AND NOT p.family_safe;
+ checked_at:=clock_timestamp();
+ IF operation IS NULL OR NOT EXISTS(
+  SELECT 1 FROM app_private.assignment_permission_scopes s
+  JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+  JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+  JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+  JOIN app_private.roles r ON r.id=s.role_id
+  WHERE a.principal_id=actor AND a.principal_kind='INDIVIDUAL'
+   AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+   AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+   AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+   AND c.resolver_key=s.resolver_key AND c.enabled
+   AND s.permission_id=permission AND s.scope_kind='CAMPUS'
+   AND s.resolver_key='DIRECT' AND s.campus_id=campus
+   AND r.state='ACTIVE' AND NOT r.family_only
+   AND a.valid_from<=checked_at AND (a.valid_until IS NULL OR checked_at<a.valid_until)
+   AND (a.revoked_at IS NULL OR checked_at<a.revoked_at)
+   AND g.valid_from<=checked_at AND (g.valid_until IS NULL OR checked_at<g.valid_until)
+   AND (g.revoked_at IS NULL OR checked_at<g.revoked_at)
+   AND s.valid_from<=checked_at AND (s.valid_until IS NULL OR checked_at<s.valid_until)
+   AND (s.revoked_at IS NULL OR checked_at<s.revoked_at)) THEN
+  RAISE EXCEPTION 'DB08 clearance authority denied'; END IF;
+ snapshot:=app_private.db08_clearance_snapshot(p_school,campus,yr,p_student);
+ SELECT * INTO prior FROM app_private.finance_student_clearance_events
+  WHERE school_id=p_school AND campus_id=campus AND academic_year_id=yr
+   AND student_id=p_student ORDER BY revision DESC LIMIT 1 FOR UPDATE;
+ v_hash:=sha256(convert_to(jsonb_build_array('student-clearance-v1',p_school,
+  p_student,campus,yr,p_action,btrim(p_reason))::text,'UTF8'));
+ SELECT * INTO receipt FROM app_private.command_receipts
+  WHERE principal_id=actor AND operation_id=operation
+   AND idempotency_key='student-clearance:'||p_action||':'||p_key;
+ IF receipt.id IS NOT NULL THEN
+  SELECT * INTO event FROM app_private.finance_student_clearance_events WHERE id=receipt.result_ref;
+  IF receipt.state<>'SUCCEEDED' OR receipt.command_kind<>command_code
+   OR receipt.result_kind<>'FINANCE_STUDENT_CLEARANCE'
+   OR receipt.canonical_payload_hash<>v_hash OR event.id IS NULL
+   OR event.school_id<>p_school OR event.student_id<>p_student
+   OR event.campus_id<>campus OR event.academic_year_id<>yr OR event.actor_id<>actor
+   OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=receipt.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=receipt.id)<>1 THEN
+   RAISE EXCEPTION 'DB08 clearance replay conflict'; END IF;
+  RETURN receipt.result_summary;
+ END IF;
+ IF (p_action='ISSUE' AND (prior.action IS NOT DISTINCT FROM 'ISSUE'
+    OR (snapshot->>'charge_count')::bigint<1
+    OR (snapshot->>'net_minor')::numeric<=0
+    OR (snapshot->>'net_minor')::numeric<>(snapshot->>'allocated_minor')::numeric))
+  OR (p_action='REVOKE' AND (prior.id IS NULL OR prior.action<>'ISSUE')) THEN
+  RAISE EXCEPTION 'DB08 clearance state or settled evidence invalid'; END IF;
+ INSERT INTO app_private.finance_student_clearance_events(school_id,campus_id,
+  academic_year_id,student_id,revision,action,supersedes_id,source_digest,
+  net_minor,allocated_minor,reason,actor_id)
+ VALUES(p_school,campus,yr,p_student,coalesce(prior.revision,0)+1,p_action,prior.id,
+  CASE WHEN p_action='ISSUE' THEN decode(snapshot->>'digest','hex') ELSE prior.source_digest END,
+  CASE WHEN p_action='ISSUE' THEN (snapshot->>'net_minor')::numeric ELSE prior.net_minor END,
+  CASE WHEN p_action='ISSUE' THEN (snapshot->>'allocated_minor')::numeric ELSE prior.allocated_minor END,
+  btrim(p_reason),actor)
+ RETURNING * INTO event;
+ result:=jsonb_build_object('clearance_event_id',event.id,'student_id',p_student,
+  'school_id',p_school,'campus_id',campus,'academic_year_id',yr,
+  'revision',event.revision,'state',CASE WHEN p_action='ISSUE' THEN 'ISSUED'
+   ELSE 'REVOKED' END,'source_digest',encode(event.source_digest,'hex'));
+ receipt_id:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,
+  idempotency_key,canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,
+  result_summary,completed_at,created_by)
+ VALUES(receipt_id,actor,operation,command_code,'student-clearance:'||p_action||':'||p_key,
+  v_hash,1,'SUCCEEDED','FINANCE_STUDENT_CLEARANCE',event.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+  target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation',p_action,
+  'source_digest',encode(event.source_digest,'hex')),event.revision,command_code,
+  'FINANCE_STUDENT_CLEARANCE',event.id,campus,receipt_id,'WORKER',
+  correlation,clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+  aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES(command_code,
+  'FINANCE_STUDENT_CLEARANCE',event.id,event.revision,receipt_id,1,
+  correlation,clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_student_clearance(uuid,uuid,text,text,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_student_clearance(uuid,uuid,text,text,text)
+ TO schoolos_file_login;
+CREATE FUNCTION app_private.db08_student_clearance_status(p_school uuid,p_student uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE statement jsonb; school_day date; campus uuid; yr uuid;
+ latest app_private.finance_student_clearance_events%ROWTYPE;
+ snapshot jsonb; valid boolean;
+BEGIN
+ -- F12 checks current Auth, live Family-child or staff Campus grant, and
+ -- holds the School/read fences for the whole caller transaction.
+ statement:=app_private.db08_student_finance_statement(p_school,p_student);
+ SELECT (clock_timestamp() AT TIME ZONE timezone)::date INTO school_day
+  FROM app_private.school_profiles WHERE id=p_school;
+ SELECT c.campus_id,c.academic_year_id INTO campus,yr
+ FROM app_private.enrollments e
+ JOIN app_private.section_offerings s ON s.id=e.section_offering_id
+ JOIN app_private.class_offerings c ON c.id=s.class_offering_id
+ WHERE e.student_id=p_student AND e.placement_kind='PRIMARY'
+  AND e.placement_state='ACTIVE' AND e.effective_from<=school_day
+  AND (e.effective_until IS NULL OR school_day<e.effective_until)
+  AND c.school_id=p_school;
+ SELECT * INTO latest FROM app_private.finance_student_clearance_events
+  WHERE school_id=p_school AND campus_id=campus AND academic_year_id=yr
+   AND student_id=p_student ORDER BY revision DESC LIMIT 1;
+ snapshot:=app_private.db08_clearance_snapshot(p_school,campus,yr,p_student);
+ valid:=latest.id IS NOT NULL AND latest.action='ISSUE'
+  AND latest.source_digest=decode(snapshot->>'digest','hex')
+  AND (snapshot->>'charge_count')::bigint>0
+  AND (snapshot->>'net_minor')::numeric>0
+  AND (snapshot->>'net_minor')::numeric=(snapshot->>'allocated_minor')::numeric;
+ RETURN jsonb_build_object('student_id',p_student,'school_id',p_school,
+  'campus_id',campus,'academic_year_id',yr,'clearance_event_id',latest.id,
+  'revision',latest.revision,'state',CASE WHEN valid THEN 'ACTIVE'
+   WHEN latest.id IS NULL THEN 'NONE'
+   WHEN latest.action='REVOKE' THEN 'REVOKED' ELSE 'STALE' END,
+  'net_minor',(snapshot->>'net_minor')::numeric,
+  'allocated_minor',(snapshot->>'allocated_minor')::numeric);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_student_clearance_status(uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_student_clearance_status(uuid,uuid)
+ TO schoolos_file_login;
+RESET ROLE;

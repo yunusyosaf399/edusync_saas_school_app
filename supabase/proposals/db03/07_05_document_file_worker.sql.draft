@@ -1,0 +1,97 @@
+GRANT USAGE,CREATE ON SCHEMA app_private TO schoolos_platform_executor;
+SET ROLE schoolos_platform_executor;
+CREATE FUNCTION app_private.db03_allocate_document_upload(p_app uuid,p_expected bigint,p_kind text,p_type text,p_size bigint,p_content_hash bytea,
+ p_location text,p_revision bigint,p_snapshot_digest bytea,p_snapshot_until timestamptz,p_expires timestamptz,p_key text) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ctx record; i app_private.admission_document_intakes%ROWTYPE;
+ u app_private.admission_document_upload_intents%ROWTYPE; v_hash bytea; due date; file uuid; identifier uuid; today date;
+BEGIN
+ IF session_user<>'schoolos_file_login' THEN RAISE EXCEPTION 'DB03 purpose-bound file worker required'; END IF;
+ IF p_expected IS NULL OR p_expected<1 OR p_kind IS NULL OR p_kind !~ '^[A-Z][A-Z0-9_]{0,63}$' OR p_type IS NULL OR p_type NOT IN('image/png','image/jpeg','application/pdf')
+  OR p_size IS NULL OR p_size NOT BETWEEN 1 AND 1048576 OR p_content_hash IS NULL OR octet_length(p_content_hash)<>32
+  OR p_revision IS NULL OR p_revision<1 OR p_snapshot_digest IS NULL OR octet_length(p_snapshot_digest)<>32
+  OR p_location IS NULL OR p_location !~ '^[A-Z][A-Z0-9_]{0,63}$' OR p_expires IS NULL OR NOT isfinite(p_expires) THEN
+  RAISE EXCEPTION 'DB03 measured upload intent invalid'; END IF;
+ a:=app_private.db03_document_lock(p_app,'admission.document.upload',p_key);
+ SELECT * INTO ctx FROM app_private.db03_document_actor_context('admission.document.upload',a.campus_id);
+ IF p_snapshot_until IS NULL OR NOT isfinite(p_snapshot_until) OR p_snapshot_until<=clock_timestamp()
+  OR (to_timestamp((current_setting('request.jwt.claims',true)::jsonb->>'exp')::bigint)>clock_timestamp()) IS NOT TRUE THEN
+  RAISE EXCEPTION 'DB03 upload authority expired while waiting'; END IF;
+ IF NOT app_private.has_complete_grant('file.upload','CAMPUS',a.campus_id) THEN RAISE EXCEPTION 'DB03 file upload permission denied'; END IF;
+ PERFORM app_private.db03_document_worker_actor();
+ v_hash:=sha256(convert_to(replace(jsonb_build_array('admission.document.upload',a.id::text,p_expected::text,p_kind,p_type,p_size::text,encode(p_content_hash,'hex'))::text,', ',','),'UTF8'));
+ SELECT * INTO u FROM app_private.admission_document_upload_intents WHERE created_by=ctx.actor_id AND idempotency_key=p_key;
+ IF FOUND THEN
+  IF u.canonical_hash IS DISTINCT FROM v_hash THEN RAISE EXCEPTION 'DB03 document idempotency conflict'; END IF;
+ ELSE
+  IF NOT app_private.db03_document_target_open(a.id,p_expected) OR app_private.db03_document_is_forwarded(a.id) OR p_expires<=clock_timestamp() THEN
+   RAISE EXCEPTION 'DB03 document draft stale, closed or already forwarded'; END IF;
+  SELECT * INTO i FROM app_private.admission_document_intakes WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+  IF p_kind NOT IN('BIRTH_CERTIFICATE','SCHOOL_LEAVING_CERTIFICATE','TRANSCRIPT') OR i.id IS NULL OR NOT EXISTS(SELECT 1 FROM app_private.admission_policy_versions p WHERE p.id=i.policy_version_id AND p.state='PUBLISHED')
+   OR NOT (p_kind='BIRTH_CERTIFICATE' OR (p_kind='SCHOOL_LEAVING_CERTIFICATE' AND i.is_transfer)
+    OR EXISTS(SELECT 1 FROM app_private.admission_policy_document_requirements d JOIN app_private.admission_policy_stages s ON s.id=d.policy_stage_id
+     WHERE s.policy_version_id=i.policy_version_id AND d.document_kind=p_kind AND (d.applicability='ALL' OR (d.applicability='TRANSFER' AND i.is_transfer)))) THEN
+   RAISE EXCEPTION 'DB03 document not in current application roster'; END IF;
+  due:=app_private.db03_document_due(a.id,p_kind);
+  SELECT (clock_timestamp() AT TIME ZONE timezone)::date INTO today FROM app_private.school_profiles WHERE id=a.school_id;
+  IF due IS NOT NULL AND today>due THEN RAISE EXCEPTION 'DB03 document collection deadline expired'; END IF;
+  identifier:=gen_random_uuid(); file:=gen_random_uuid();
+  INSERT INTO app_private.admission_document_upload_intents(id,application_id,intake_id,expected_application_version,document_kind,file_id,
+   storage_location_key,object_key,content_type,byte_size,content_hash,entitlement_revision,entitlement_digest,idempotency_key,canonical_hash,expires_at,created_by)
+  VALUES(identifier,a.id,i.id,p_expected,p_kind,file,p_location,'admissions/'||a.school_id::text||'/'||file::text,p_type,p_size,p_content_hash,p_revision,p_snapshot_digest,p_key,v_hash,p_expires,ctx.actor_id)
+  RETURNING * INTO u;
+ END IF;
+ RETURN jsonb_build_object('intent_id',u.id,'file_id',u.file_id,'school_id',a.school_id,'storage_location_key',u.storage_location_key,
+  'object_key',u.object_key,'expires_at',u.expires_at,'completed',EXISTS(SELECT 1 FROM app_private.admission_document_links WHERE intent_id=u.id));
+END $body$;
+CREATE FUNCTION app_private.db03_finalize_document_upload(p_intent uuid,p_revision bigint,p_snapshot_digest bytea,p_snapshot_until timestamptz) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; ctx record; u app_private.admission_document_upload_intents%ROWTYPE;
+ prior app_private.admission_document_links%ROWTYPE; i uuid; worker uuid; due date; today date; receipt uuid; source uuid;
+ version bigint; file_version bigint; result jsonb; moment timestamptz;
+BEGIN
+ IF session_user<>'schoolos_file_login' THEN RAISE EXCEPTION 'DB03 purpose-bound file worker required'; END IF;
+ IF p_intent IS NULL OR p_revision IS NULL OR p_revision<1 OR p_snapshot_digest IS NULL OR octet_length(p_snapshot_digest)<>32 THEN
+  RAISE EXCEPTION 'DB03 final entitlement evidence invalid'; END IF;
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO u FROM app_private.admission_document_upload_intents WHERE id=p_intent;
+ IF u.id IS NULL THEN RAISE EXCEPTION 'DB03 upload intent unavailable'; END IF;
+ a:=app_private.db03_document_lock(u.application_id,'admission.document.upload',u.idempotency_key);
+ SELECT * INTO ctx FROM app_private.db03_document_actor_context('admission.document.upload',a.campus_id);
+ IF u.created_by<>ctx.actor_id OR NOT app_private.has_complete_grant('file.upload','CAMPUS',a.campus_id) THEN RAISE EXCEPTION 'DB03 file upload permission denied'; END IF;
+ worker:=app_private.db03_document_worker_actor();
+ result:=app_private.db03_document_receipt('admission.document.upload',a.campus_id,u.idempotency_key,u.canonical_hash,u.expected_application_version);
+ IF result IS NOT NULL THEN RETURN result||jsonb_build_object('file_id',u.file_id); END IF;
+ SELECT id INTO i FROM app_private.admission_document_intakes WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ IF p_snapshot_until IS NULL OR NOT isfinite(p_snapshot_until) OR p_snapshot_until<=clock_timestamp()
+  OR (to_timestamp((current_setting('request.jwt.claims',true)::jsonb->>'exp')::bigint)>clock_timestamp()) IS NOT TRUE THEN
+  RAISE EXCEPTION 'DB03 upload authority expired while waiting'; END IF;
+ IF NOT app_private.db03_document_target_open(a.id,u.expected_application_version) OR app_private.db03_document_is_forwarded(a.id)
+  OR i IS DISTINCT FROM u.intake_id OR clock_timestamp()>u.expires_at OR p_revision<u.entitlement_revision THEN
+  RAISE EXCEPTION 'DB03 upload intent stale, expired or superseded'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM app_private.admission_document_intakes x JOIN app_private.admission_policy_versions p ON p.id=x.policy_version_id WHERE x.id=i AND p.state='PUBLISHED') THEN
+  RAISE EXCEPTION 'DB03 document published policy unavailable'; END IF;
+ due:=app_private.db03_document_due(a.id,u.document_kind);
+ SELECT (clock_timestamp() AT TIME ZONE timezone)::date INTO today FROM app_private.school_profiles WHERE id=a.school_id;
+ IF due IS NOT NULL AND today>due THEN RAISE EXCEPTION 'DB03 document collection deadline expired'; END IF;
+ -- Only the entitlement/byte-validating server worker can reach this function.
+ -- Metadata measurements are bound to its sealed intent, never a client flag.
+ INSERT INTO app_private.file_objects(id,uploaded_by_principal_id,campus_id,storage_location_key,purpose_code,object_key,
+  content_type,byte_size,content_hash,classification,created_by)
+ VALUES(u.file_id,ctx.actor_id,a.campus_id,u.storage_location_key,'ADMISSION_DOCUMENT',u.object_key,u.content_type,u.byte_size,u.content_hash,'PRIVATE',worker);
+ moment:=clock_timestamp();
+ UPDATE app_private.file_objects SET state='VALIDATED',validated_at=moment WHERE id=u.file_id;
+ UPDATE app_private.file_objects SET state='AVAILABLE' WHERE id=u.file_id RETURNING row_version INTO file_version;
+ SELECT * INTO prior FROM app_private.admission_document_links WHERE application_id=a.id AND document_kind=u.document_kind ORDER BY revision DESC LIMIT 1;
+ UPDATE app_private.admission_applications SET stage_epoch=stage_epoch+1 WHERE id=a.id RETURNING row_version INTO version;
+ receipt:=gen_random_uuid();
+ INSERT INTO app_private.admission_document_links(application_id,intent_id,file_object_id,document_kind,revision,supersedes_id,file_version,
+  application_version,received_on,school_timezone,final_entitlement_revision,final_entitlement_digest,command_receipt_id,occurred_at,created_by)
+ VALUES(a.id,u.id,u.file_id,u.document_kind,COALESCE(prior.revision,0)+1,prior.id,file_version,version,today,(SELECT timezone FROM app_private.school_profiles WHERE id=a.school_id),p_revision,p_snapshot_digest,receipt,moment,ctx.actor_id) RETURNING id INTO source;
+ result:=app_private.db03_document_receipt('admission.document.upload',a.campus_id,u.idempotency_key,u.canonical_hash,u.expected_application_version,receipt,source);
+ RETURN result||jsonb_build_object('file_id',u.file_id);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_allocate_document_upload(uuid,bigint,text,text,bigint,bytea,text,bigint,bytea,timestamptz,timestamptz,text),app_private.db03_finalize_document_upload(uuid,bigint,bytea,timestamptz) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_allocate_document_upload(uuid,bigint,text,text,bigint,bytea,text,bigint,bytea,timestamptz,timestamptz,text),app_private.db03_finalize_document_upload(uuid,bigint,bytea,timestamptz) TO schoolos_file_login;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_platform_executor;
