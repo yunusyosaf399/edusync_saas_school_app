@@ -16,6 +16,16 @@ def run_selection_runtime(local_status, root):
         try:
             connection.execute((root / 'supabase/tests/db08/fixture_commands.sql').read_text())
             connection.execute((root / 'supabase/tests/db08/fixture_selection.sql').read_text())
+            future_year = connection.execute(
+                "SELECT extract(year FROM starts_on)::integer "
+                "FROM app.academic_years WHERE id=%s::uuid",
+                ('08000000-0000-4000-8000-000000000048',)
+            ).fetchone()[0]
+            initial_start = f'{future_year}-01-01'
+            fee_end = f'{future_year}-12-31'
+            binding_start = f'{future_year}-11-01'
+            charge_end = f'{future_year}-11-30'
+            charge_due = f'{future_year}-12-05'
             subject = connection.execute(
                 "SELECT auth_user_id::text FROM app_private.principal_auth_bindings "
                 "WHERE id='08000000-0000-4000-8000-000000000008'").fetchone()[0]
@@ -44,11 +54,11 @@ def run_selection_runtime(local_status, root):
             def fee(rule, amount, key):
                 return connection.execute(
                     "SELECT app.configure_finance_fee(%s::uuid,%s::uuid,'TUITION','Tuition',"
-                    "%s,'MONTHLY',2,%s::numeric,'2026-01-01'::date,'2026-12-31'::date,"
+                    "%s,'MONTHLY',2,%s::numeric,%s::date,%s::date,"
                     "'Real Auth F5 full price',%s)",
                     ('08000000-0000-4000-8000-000000000003',
-                     '08000000-0000-4000-8000-000000000004',
-                     rule, amount, key)).fetchone()[0]
+                     '08000000-0000-4000-8000-000000000048',
+                     rule, amount, initial_start, fee_end, key)).fetchone()[0]
 
             default = fee('AUTH_F5_CLASS', 10000, 'auth-f5-class-rule')
             specific = fee('AUTH_F5_STUDENT', 15000, 'auth-f5-student-rule')
@@ -58,8 +68,8 @@ def run_selection_runtime(local_status, root):
             def bind(rule, who, key):
                 return connection.execute(
                     "SELECT app.bind_finance_fee(%s::uuid,%s::uuid,%s::uuid,"
-                    "'2026-11-01'::date,'2026-12-31'::date,%s)",
-                    (rule, offering, who, key)).fetchone()[0]
+                    "%s::date,%s::date,%s)",
+                    (rule, offering, who, binding_start, fee_end, key)).fetchone()[0]
 
             class_binding = bind(default['resource_id'], None, 'auth-f5-class-bind')
             student_binding = bind(specific['resource_id'], student, 'auth-f5-student-bind')
@@ -69,9 +79,9 @@ def run_selection_runtime(local_status, root):
             def assess(who, key):
                 return connection.execute(
                     "SELECT app.assess_selected_finance_fee(%s::uuid,%s::uuid,"
-                    "'TUITION','MONTHLY','2026-11-01'::date,'2026-11-30'::date,"
-                    "'2026-12-05'::date,%s::uuid)",
-                    (who, offering, key)).fetchone()[0]
+                    "'TUITION','MONTHLY',%s::date,%s::date,"
+                    "%s::date,%s::uuid)",
+                    (who, offering, binding_start, charge_end, charge_due, key)).fetchone()[0]
 
             one_key = '08000000-0000-4000-8000-000000000071'
             two_key = '08000000-0000-4000-8000-000000000072'

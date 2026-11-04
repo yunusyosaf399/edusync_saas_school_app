@@ -24,6 +24,12 @@ CREATE TABLE app_private.admission_identity_resolutions (
  CHECK((revision=1)=(supersedes_id IS NULL))
 );
 CREATE INDEX db03_identity_person_history ON app_private.admission_identity_resolutions(person_id,application_id);
+-- School-wide identity fence: a verified Person may have only one open
+-- application, irrespective of Campus or Academic Year. NULL Person drafts
+-- require the separately reviewed pre-binding identity reservation contract.
+CREATE UNIQUE INDEX db03_one_open_application_per_person
+ ON app_private.admission_applications(school_id,person_id)
+ WHERE person_id IS NOT NULL AND state NOT IN ('WITHDRAWN','REJECTED','CONSUMED');
 ALTER TABLE app_private.admission_identity_resolutions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_private.admission_identity_resolutions FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON app_private.admission_identity_resolutions FROM PUBLIC,anon,authenticated,service_role;

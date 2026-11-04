@@ -1,0 +1,7 @@
+# DB03 S17 — applicant category concession source (inactive)
+
+An applicant may have an individually selected percentage concession before Student creation. This source retains the exact application and current destination revision, the percentage in hundredths, the effective dates, a reason and a nonempty set of School-owned Finance fee categories. Each correction creates a new revision. The selected set is explicit: choosing TUITION alone does not select TRANSPORT or BOOKS. The fee category itself does not encode recurrence; Finance's published rule supplies the frequency and gross amount later.
+
+The draft tables require DB03 S15's typed destination and DB08 F1's category catalog. A guard checks the current DRAFT application, exact School/Campus/year, current destination and predecessor; a deferred constraint requires at least one category. Forced RLS and revoked privileges leave no client or worker writer. A protected administrator command, independent Finance approval, published grade fee selection, Student handoff and charge adjustment remain subsequent increments. No concession here reduces a charge or implies payment/clearance.
+
+Disposable DB03 CI installs the DB08 F1 baseline only after its earlier D1 and Admissions checks, rehearses failed-install rollback, then tests category selection, cross-applicant denial and immutable history. No hosted migration, seed or UI is activated.

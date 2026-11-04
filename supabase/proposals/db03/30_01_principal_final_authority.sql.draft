@@ -1,0 +1,117 @@
+-- P30: dedicated Principal FINAL decision authorization source (inactive).
+-- No permission, operation, role binding or user grant is seeded or enabled.
+-- No APPROVE/RETURN/REJECT command or Student mutation is created.
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db03_principal_final_operation_read
+ ON app_private.operation_contracts FOR SELECT
+ TO schoolos_authz_reader
+ USING(code='admission.final.decide' AND contract_version=1);
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.db03_principal_final_authority(p_actor uuid,p_campus uuid)
+RETURNS bytea LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ permission uuid; operation uuid; op_version bigint;
+ principal_version bigint; bindings jsonb; result bytea; checked_at timestamptz;
+BEGIN
+ IF p_actor IS NULL OR p_campus IS NULL THEN RETURN NULL; END IF;
+ checked_at:=clock_timestamp();
+ SELECT row_version INTO principal_version
+ FROM app_private.principals
+ WHERE id=p_actor AND kind='INDIVIDUAL' AND state='ACTIVE';
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ SELECT jsonb_agg(jsonb_build_array(b.id,b.row_version) ORDER BY b.id)
+ INTO bindings FROM app_private.principal_auth_bindings b
+ WHERE b.principal_id=p_actor AND b.principal_kind='INDIVIDUAL'
+ AND b.auth_user_id IS NOT NULL AND b.bound_at<=checked_at
+ AND b.tokens_valid_from<=checked_at;
+ IF bindings IS NULL THEN RETURN NULL; END IF;
+ SELECT o.request_permission_id,o.id,o.row_version
+ INTO permission,operation,op_version
+ FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='admission.final.decide'
+ AND o.contract_version=1 AND o.handler_key=o.code
+ AND o.payload_schema_version=1 AND o.enabled AND NOT o.requires_approval
+ AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF permission IS NULL THEN RETURN NULL; END IF;
+ SELECT sha256(convert_to(jsonb_build_array(
+  p_actor,principal_version,bindings,operation,op_version,
+  jsonb_agg(jsonb_build_array(
+   a.id,a.row_version,g.id,g.row_version,s.id,s.row_version,
+   c.id,c.row_version,r.id,r.row_version,p.id,p.row_version)
+   ORDER BY s.id))::text,'UTF8'))
+ INTO result
+ FROM app_private.assignment_permission_scopes s
+ JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+ JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+ JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+ JOIN app_private.roles r ON r.id=s.role_id
+ JOIN app_private.permissions p ON p.id=s.permission_id
+ WHERE a.principal_id=p_actor AND a.principal_kind='INDIVIDUAL'
+ AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+ AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+ AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+ AND c.resolver_key=s.resolver_key AND c.enabled
+ AND s.permission_id=permission AND r.code='PRINCIPAL'
+ AND r.state='ACTIVE' AND NOT r.family_only
+ AND p.state='ENABLED' AND NOT p.family_safe
+ AND s.resolver_key='DIRECT'
+ AND ((s.scope_kind='ALL' AND s.campus_id IS NULL)
+   OR (s.scope_kind='CAMPUS' AND s.campus_id=p_campus))
+ AND a.valid_from<=checked_at
+ AND (a.valid_until IS NULL OR checked_at<a.valid_until)
+ AND (a.revoked_at IS NULL OR checked_at<a.revoked_at)
+ AND g.valid_from<=checked_at
+ AND (g.valid_until IS NULL OR checked_at<g.valid_until)
+ AND (g.revoked_at IS NULL OR checked_at<g.revoked_at)
+ AND s.valid_from<=checked_at
+ AND (s.valid_until IS NULL OR checked_at<s.valid_until)
+ AND (s.revoked_at IS NULL OR checked_at<s.revoked_at)
+ HAVING count(*)>0;
+ RETURN result;
+END $body$;
+CREATE FUNCTION app_private.db03_principal_final_actor(p_campus uuid)
+RETURNS TABLE(actor_id uuid,operation_id uuid,authority_hash bytea)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $body$
+DECLARE actor uuid; op uuid; proof bytea; claims jsonb;
+BEGIN
+ IF p_campus IS NULL
+  OR current_setting('transaction_isolation')<>'read committed' THEN
+  RAISE EXCEPTION 'DB03 final Principal operation denied';
+ END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
+ IF COALESCE(claims->>'exp','') !~ '^[0-9]{1,12}$'
+  OR to_timestamp(COALESCE(NULLIF(claims->>'exp',''),'0')::bigint)
+      <=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 final Principal authentication expired';
+ END IF;
+ actor:=app_private.current_principal_id();
+ proof:=app_private.db03_principal_final_authority(actor,p_campus);
+ IF proof IS NULL THEN
+  RAISE EXCEPTION 'DB03 dedicated Principal final decision authority denied';
+ END IF;
+ SELECT o.id INTO op FROM app_private.operation_contracts o
+ WHERE o.code='admission.final.decide' AND o.contract_version=1
+ AND o.enabled AND o.handler_key=o.code;
+ IF op IS NULL THEN
+  RAISE EXCEPTION 'DB03 dedicated Principal final operation unavailable';
+ END IF;
+ RETURN QUERY SELECT actor,op,proof;
+END $body$;
+REVOKE ALL ON FUNCTION
+ app_private.db03_principal_final_authority(uuid,uuid),
+ app_private.db03_principal_final_actor(uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_file_login,
+ schoolos_platform_executor,schoolos_identity_executor,
+ schoolos_evidence_writer;
+GRANT EXECUTE ON FUNCTION
+ app_private.db03_principal_final_authority(uuid,uuid),
+ app_private.db03_principal_final_actor(uuid)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;

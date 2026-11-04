@@ -1,5 +1,19 @@
 -- D1-backed synthetic active School placements, all transaction-scoped.
+-- The real bank-slip acceptance runs against today's enrolled Student.
+-- F5/F6/F7 database fixtures retain their future academic year by default.
 SET ROLE schoolos_schema_owner;
+-- F5/F6 fee bindings are future-effective; keep School, Class Offering
+-- and academic-year identity consistent inside the rolled-back fixture.
+INSERT INTO app.academic_years
+ (id,school_id,code,label,starts_on,ends_on,state,created_by)
+VALUES
+ ('08000000-0000-4000-8000-000000000048',
+  '08000000-0000-4000-8000-000000000002',
+  (CASE WHEN current_setting('schoolos_test.db08_payment_runtime',true)='on' THEN 'DB08-PAYMENT-CURRENT-'||(extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer)::text ELSE (extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer+1)::text END),
+  'DB08 future F5/F6 fee selection year',
+  make_date(extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer+(CASE WHEN current_setting('schoolos_test.db08_payment_runtime',true)='on' THEN 0 ELSE 1 END),1,1),
+  make_date(extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer+(CASE WHEN current_setting('schoolos_test.db08_payment_runtime',true)='on' THEN 0 ELSE 1 END),12,31),
+  'ACTIVE','08000000-0000-4000-8000-000000000001');
 INSERT INTO app_private.people(id,display_name,created_by)
 VALUES('08000000-0000-4000-8000-000000000052','Second enrolled student',
  '08000000-0000-4000-8000-000000000001');
@@ -11,10 +25,10 @@ INSERT INTO app_private.academic_classes(id,school_id,code,label,display_order,c
 INSERT INTO app_private.class_offerings(id,school_id,class_id,campus_id,academic_year_id,capacity,state,created_by) VALUES
  ('08000000-0000-4000-8000-000000000055','08000000-0000-4000-8000-000000000002',
   '08000000-0000-4000-8000-000000000053','08000000-0000-4000-8000-000000000003',
-  '08000000-0000-4000-8000-000000000004',30,'OPEN','08000000-0000-4000-8000-000000000001'),
+  '08000000-0000-4000-8000-000000000048',30,'OPEN','08000000-0000-4000-8000-000000000001'),
  ('08000000-0000-4000-8000-000000000056','08000000-0000-4000-8000-000000000002',
   '08000000-0000-4000-8000-000000000054','08000000-0000-4000-8000-000000000003',
-  '08000000-0000-4000-8000-000000000004',30,'OPEN','08000000-0000-4000-8000-000000000001');
+  '08000000-0000-4000-8000-000000000048',30,'OPEN','08000000-0000-4000-8000-000000000001');
 INSERT INTO app_private.section_offerings(id,class_offering_id,campus_id,code,label,display_order,capacity,state,created_by) VALUES
  ('08000000-0000-4000-8000-000000000057','08000000-0000-4000-8000-000000000055',
   '08000000-0000-4000-8000-000000000003','A','Grade 5 A',1,30,'OPEN','08000000-0000-4000-8000-000000000001'),
@@ -22,16 +36,16 @@ INSERT INTO app_private.section_offerings(id,class_offering_id,campus_id,code,la
   '08000000-0000-4000-8000-000000000003','A','Grade 6 A',1,30,'OPEN','08000000-0000-4000-8000-000000000001');
 INSERT INTO app_private.students(id,person_id,school_student_id,admission_number,admission_serial,admitted_on,current_status,created_by) VALUES
  ('08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000006',
-  'F5-STUDENT-1','F5-ADM-1',1,'2026-01-01','ACTIVE','08000000-0000-4000-8000-000000000001'),
+  'F5-STUDENT-1','F5-ADM-1',1,make_date(extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer+(CASE WHEN current_setting('schoolos_test.db08_payment_runtime',true)='on' THEN 0 ELSE 1 END),1,1),'ACTIVE','08000000-0000-4000-8000-000000000001'),
  ('08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000052',
-  'F5-STUDENT-2','F5-ADM-2',2,'2026-01-01','ACTIVE','08000000-0000-4000-8000-000000000001');
+  'F5-STUDENT-2','F5-ADM-2',2,make_date(extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer+(CASE WHEN current_setting('schoolos_test.db08_payment_runtime',true)='on' THEN 0 ELSE 1 END),1,1),'ACTIVE','08000000-0000-4000-8000-000000000001');
 INSERT INTO app_private.student_status_transitions(
  student_id,previous_status,new_status,effective_on,sequence_number,reason,created_by) VALUES
- ('08000000-0000-4000-8000-000000000059',NULL,'ACTIVE','2026-01-01',1,'Synthetic initial state','08000000-0000-4000-8000-000000000001'),
- ('08000000-0000-4000-8000-000000000060',NULL,'ACTIVE','2026-01-01',1,'Synthetic initial state','08000000-0000-4000-8000-000000000001');
+ ('08000000-0000-4000-8000-000000000059',NULL,'ACTIVE',make_date(extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer+(CASE WHEN current_setting('schoolos_test.db08_payment_runtime',true)='on' THEN 0 ELSE 1 END),1,1),1,'Synthetic initial state','08000000-0000-4000-8000-000000000001'),
+ ('08000000-0000-4000-8000-000000000060',NULL,'ACTIVE',make_date(extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer+(CASE WHEN current_setting('schoolos_test.db08_payment_runtime',true)='on' THEN 0 ELSE 1 END),1,1),1,'Synthetic initial state','08000000-0000-4000-8000-000000000001');
 INSERT INTO app_private.enrollments(student_id,section_offering_id,placement_kind,entry_kind,placement_state,effective_from,reason,created_by) VALUES
  ('08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000057',
-  'PRIMARY','INITIAL','ACTIVE','2026-01-01','Synthetic grade 5 placement','08000000-0000-4000-8000-000000000001'),
+  'PRIMARY','INITIAL','ACTIVE',make_date(extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer+(CASE WHEN current_setting('schoolos_test.db08_payment_runtime',true)='on' THEN 0 ELSE 1 END),1,1),'Synthetic grade 5 placement','08000000-0000-4000-8000-000000000001'),
  ('08000000-0000-4000-8000-000000000060','08000000-0000-4000-8000-000000000057',
-  'PRIMARY','INITIAL','ACTIVE','2026-01-01','Synthetic grade 5 placement','08000000-0000-4000-8000-000000000001');
+  'PRIMARY','INITIAL','ACTIVE',make_date(extract(year FROM clock_timestamp() AT TIME ZONE 'Asia/Riyadh')::integer+(CASE WHEN current_setting('schoolos_test.db08_payment_runtime',true)='on' THEN 0 ELSE 1 END),1,1),'Synthetic grade 5 placement','08000000-0000-4000-8000-000000000001');
 RESET ROLE;
