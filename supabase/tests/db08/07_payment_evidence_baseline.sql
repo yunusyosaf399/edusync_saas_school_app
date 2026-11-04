@@ -1,4 +1,5 @@
 -- F7 structural baseline with schema-owner fixtures only; not runtime payment authorization.
+-- Paid-on dates must match the future enrollment in fixture_selection.sql.
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 GRANT USAGE ON SCHEMA extensions TO schoolos_schema_owner;
@@ -29,7 +30,7 @@ SELECT throws_ok($q$INSERT INTO app_private.finance_payment_submissions
  VALUES('08000000-0000-4000-8000-000000000104',
  '08000000-0000-4000-8000-000000000002','08000000-0000-4000-8000-000000000003',
  '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000100',
- '08000000-0000-4000-8000-000000000007','BANK_TRANSFER',100.5,'2026-11-01',
+ '08000000-0000-4000-8000-000000000007','BANK_TRANSFER',100.5,make_date(extract(year FROM current_date)::integer+1,11,1),
  'BANK A','REF1','08000000-0000-4000-8000-000000000101',sha256(convert_to('proof-a','UTF8')))$q$,
  '23514'::char(5),NULL::text,'fractional minor unit denied');
 SELECT throws_ok($q$INSERT INTO app_private.finance_payment_submissions
@@ -37,7 +38,7 @@ SELECT throws_ok($q$INSERT INTO app_private.finance_payment_submissions
  paid_on,institution_key,reference_key,evidence_file_id,evidence_sha256)
  VALUES('08000000-0000-4000-8000-000000000002','08000000-0000-4000-8000-000000000003',
  '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000100',
- '08000000-0000-4000-8000-000000000007','BANK_TRANSFER',10000,'2026-11-01',
+ '08000000-0000-4000-8000-000000000007','BANK_TRANSFER',10000,make_date(extract(year FROM current_date)::integer+1,11,1),
  'BANK A','REF1','08000000-0000-4000-8000-000000000101',sha256(convert_to('wrong-hash','UTF8')))$q$,
  'P0001'::char(5),NULL::text,'evidence hash must equal verified private file bytes');
 SELECT lives_ok($q$INSERT INTO app_private.finance_payment_submissions
@@ -46,7 +47,7 @@ SELECT lives_ok($q$INSERT INTO app_private.finance_payment_submissions
  VALUES('08000000-0000-4000-8000-000000000104',
  '08000000-0000-4000-8000-000000000002','08000000-0000-4000-8000-000000000003',
  '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000100',
- '08000000-0000-4000-8000-000000000007','BANK_TRANSFER',10000,'2026-11-01',
+ '08000000-0000-4000-8000-000000000007','BANK_TRANSFER',10000,make_date(extract(year FROM current_date)::integer+1,11,1),
  'BANK A','REF1','08000000-0000-4000-8000-000000000101',sha256(convert_to('proof-a','UTF8')))$q$,
  'verified bank evidence can be submitted as pending');
 RESET ROLE;
@@ -119,7 +120,7 @@ SELECT lives_ok($q$INSERT INTO app_private.finance_payment_submissions
  VALUES('08000000-0000-4000-8000-000000000107',
  '08000000-0000-4000-8000-000000000002','08000000-0000-4000-8000-000000000003',
  '08000000-0000-4000-8000-000000000059','08000000-0000-4000-8000-000000000100',
- '08000000-0000-4000-8000-000000000007','BANK_TRANSFER',10000,'2026-11-01',
+ '08000000-0000-4000-8000-000000000007','BANK_TRANSFER',10000,make_date(extract(year FROM current_date)::integer+1,11,1),
  'BANK A','REF1','08000000-0000-4000-8000-000000000102',sha256(convert_to('proof-b','UTF8')))$q$,
  'same reference can be reported pending duplicate check');
 RESET ROLE;
