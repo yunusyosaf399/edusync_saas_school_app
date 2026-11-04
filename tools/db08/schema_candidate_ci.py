@@ -564,10 +564,15 @@ def main():
             sys.path.insert(0, str(ROOT))
             from tools.db08.finance_runtime_ci import run_finance_runtime
             run_finance_runtime(local_status)
-            # The earlier real Auth actors intentionally commit in their
-            # disposable stack. Reset before F5 so its transaction-scoped
-            # Foundation/D1/Finance fixtures cannot collide with those IDs.
-            run(['supabase', 'db', 'reset', '--local', '--no-seed'], cwd=foundation, timeout=900)
+            # Earlier real Auth actors intentionally commit to a disposable
+            # stack. A CLI db reset can leave its local Auth/GoTrue gateway
+            # unhealthy (repeated HTTP 502 after a container restart). Rebuild
+            # the whole *verified local project* instead, with no persisted
+            # test data, before F5/F6's transaction-scoped fixtures. Never
+            # target a hosted project or change frozen Foundation SQL.
+            run(['supabase', 'stop', '--project-id', local.EXPECTED_PROJECT_ID,
+                 '--no-backup'], cwd=foundation, timeout=300)
+            local._start_disposable_stack()
             url, key = local_status()
             if not wait_for_disposable_auth(url, key):
                 # In the disposable Supabase stack the Auth gateway can remain
