@@ -3,7 +3,9 @@
 Runs only after P33 installed and signed GoTrue Auth in destination CI.
 Not a grant to authenticated users; no production migration.
 """
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+import threading
 import json
 from pathlib import Path
 import tempfile
@@ -258,6 +260,100 @@ def run_positive_principal_decisions(local, container, root, worker, api,
                 "'app.decide_admission_principal(uuid,bigint,uuid,text,text,text)',"
                 "'EXECUTE')").fetchone()[0],
                 'positive testing does not grant user final permission')
+
+        # P35C: two genuine PostgreSQL connections submit conflicting final
+        # outcomes for one real, privately uploaded and Forwarded application.
+        # Hold its application row to demonstrate a real lock wait, rather
+        # than testing two sequential calls and calling that a race.
+        raced,race_version,race_forward=prepared('concurrent')
+        backend_pids={}
+        pids_lock=threading.Lock()
+
+        def competing_final(label,decision):
+            try:
+                with root() as conn:
+                    with conn.transaction():
+                        conn.execute("SELECT set_config('request.jwt.claim.sub',%s,true)",
+                                     (claims.subject,))
+                        conn.execute("SELECT set_config('request.jwt.claims',%s,true)",
+                                     (json.dumps(claims.database_claims()),))
+                        conn.execute('SET LOCAL ROLE schoolos_workflow_executor')
+                        pid=conn.execute('SELECT pg_backend_pid()').fetchone()[0]
+                        with pids_lock:
+                            backend_pids[label]=pid
+                        result=conn.execute(
+                            'SELECT app.decide_admission_principal(%s,%s,%s,%s,%s,%s)',
+                            (raced,race_version,race_forward,decision,
+                             'Independent concurrent Principal decision',
+                             'p35c-'+label)).fetchone()[0]
+                        return ('accepted',result)
+            except psycopg.Error as exc:
+                return ('denied',str(exc))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with root() as blocker:
+                with blocker.transaction():
+                    blocker.execute(
+                        'SELECT id FROM app_private.admission_applications '
+                        'WHERE id=%s FOR UPDATE',(raced,)).fetchone()
+                    futures=[
+                        pool.submit(competing_final,'return','RETURN'),
+                        pool.submit(competing_final,'reject','REJECT'),
+                    ]
+                    observed=False
+                    deadline=time.monotonic()+15
+                    while time.monotonic()<deadline:
+                        with pids_lock:
+                            pids=list(backend_pids.values())
+                        if len(pids)==2:
+                            with root() as observer:
+                                blocked=observer.execute(
+                                    "SELECT count(*) FROM pg_stat_activity "
+                                    "WHERE pid = ANY(%s::integer[]) "
+                                    "AND wait_event_type='Lock'",(pids,)).fetchone()[0]
+                            if blocked and not any(f.done() for f in futures):
+                                observed=True
+                                break
+                        if any(f.done() for f in futures):
+                            break
+                        time.sleep(0.1)
+                    check(observed,
+                          'two PostgreSQL decision backends overlap with a real lock wait')
+                # The held application lock is released only after witnessing
+                # contention, so one command must lose at the shared Forward.
+            outcomes=[future.result(timeout=35) for future in futures]
+        accepted=[value for state,value in outcomes if state=='accepted']
+        denied_values=[value for state,value in outcomes if state=='denied']
+        check(len(accepted)==1 and
+              accepted[0]['decision'] in ('RETURN','REJECT'),
+              'exactly one competing real Principal decision commits')
+        check(len(denied_values)==1 and
+              'stale or already decided' in denied_values[0],
+              'competing stale decision rejected after winning commit')
+        with root() as conn:
+            check(conn.execute(
+                'SELECT count(*) FROM app_private.admission_principal_decisions '
+                'WHERE application_id=%s',(raced,)).fetchone()[0]==1,
+                'shared Forward has exactly one immutable decision')
+            for table,column,reference in [
+                    ('command_receipts','command_kind','result_ref'),
+                    ('audit_events','event_type','target_ref'),
+                    ('outbox_events','event_type','aggregate_ref')]:
+                check(conn.execute(
+                    'SELECT count(*) FROM app_private.'+table+
+                    ' WHERE '+column+"='admission.final.decide' AND "+
+                    reference+'=%s',(raced,)).fetchone()[0]==1,
+                    'shared Forward has only one '+table+' event')
+            check(conn.execute(
+                "SELECT NOT EXISTS(SELECT 1 FROM app_private.audit_events "
+                "WHERE event_type='student.created' AND target_ref=%s)",
+                (raced,)).fetchone()[0],
+                'competing RETURN/REJECT cannot create a Student')
+        print('DB03_P35C_CONCURRENT_DECISIONS_PASS '
+              'observed_pg_lock=true two_sessions=true '
+              'exactly_one_winner=true loser_denied=true '
+              'one_receipt_audit_outbox=true student_create_disabled=true')
+
         print(f'DB03_P35B_POSITIVE_DECISIONS_PASS checks={checks} '
               'measured_pdf=true RETURN=true REJECT=true exact_replay=true '
               'client_final_rpc_disabled=true no_Student_command_invoked=true')
