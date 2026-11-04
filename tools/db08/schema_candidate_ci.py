@@ -8,12 +8,45 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPENDENCY_SHA = '06c2be2412e1699f3fa8f2804969e9808eb16e09'
 TABLES = {'finance_currency_units', 'finance_fee_categories', 'finance_fee_rules',
           'finance_fee_rule_revisions', 'finance_fee_obligations'}
 ASSERTIONS = 73
+
+
+
+def wait_for_disposable_auth(url: str, admin_key: str, *, timeout: float = 45.0) -> bool:
+    """Check the actual local Auth admin endpoint after a disposable DB reset.
+
+    A 502/503/504 is a temporary proxy/backend failure; any other HTTP error
+    remains a hard failure (especially invalid credentials or permissions).
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    deadline = time.monotonic() + timeout
+    while True:
+        request = urllib.request.Request(
+            url + '/auth/v1/admin/users?page=1&per_page=1',
+            headers={'apikey': admin_key, 'Authorization': 'Bearer ' + admin_key},
+        )
+        try:
+            with opener.open(request, timeout=8) as response:
+                if response.status == 200:
+                    return True
+                raise RuntimeError('DB08_F5_AUTH_UNEXPECTED_STATUS')
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (502, 503, 504):
+                raise RuntimeError('DB08_F5_AUTH_NON_TRANSIENT_HTTP_' + str(exc.code)) from exc
+        except (urllib.error.URLError, TimeoutError):
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(2)
+
 
 
 def validate_source():
@@ -536,6 +569,15 @@ def main():
             # Foundation/D1/Finance fixtures cannot collide with those IDs.
             run(['supabase', 'db', 'reset', '--local', '--no-seed'], cwd=foundation, timeout=900)
             url, key = local_status()
+            if not wait_for_disposable_auth(url, key):
+                # In the disposable Supabase stack the Auth gateway can remain
+                # unhealthy after a database reset. Restart only its local
+                # container, never an external or hosted service.
+                run(['docker', 'restart', 'supabase_auth_' + local.EXPECTED_PROJECT_ID],
+                    cwd=foundation, timeout=90)
+                if not wait_for_disposable_auth(url, key, timeout=60):
+                    raise RuntimeError('DB08_F5_AUTH_NOT_READY_AFTER_LOCAL_RESTART')
+            print('DB08_F5_AUTH_READY_AFTER_RESET', flush=True)
             if len(prepare(url, key)) != 5:
                 raise RuntimeError('DB08_F5_AUTH_FIXTURES')
             key = None
