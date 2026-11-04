@@ -38,6 +38,18 @@ def main() -> int:
         cwd=ROOT, capture_output=True,
     ).returncode != 0:
         raise RuntimeError("INTEGRATION_BRANCH_DOES_NOT_CONTAIN_MAIN")
+    # Current main uses a verified project-id plus its own Supabase start()
+    # path, while the historical DB03/DB08 harness calls the retired
+    # _start_disposable_stack() helper. Keep the compatibility adapter local to
+    # this ephemeral process; never modify either pinned candidate runner.
+    sys.path.insert(0, str(root / "tools/supabase"))
+    import domain_local_ci as current_d1
+    if not hasattr(current_d1, "_start_disposable_stack"):
+        if current_d1.local_project_id(root) != current_d1.EXPECTED_PROJECT_ID:
+            raise RuntimeError("INTEGRATION_LOCAL_SUPABASE_PROJECT_ID_CHANGED")
+        def start_current_main_disposable_stack() -> None:
+            current_d1.run(["supabase", "start"], cwd=root, timeout=900)
+        current_d1._start_disposable_stack = start_current_main_disposable_stack
     filename = CASES[options.case]
     module = runpy.run_path(str(filename), run_name="pr102_current_main_test")
     entry = module["main"]
