@@ -1,0 +1,8 @@
+-- DB-01 non-activating physical prerequisite. Neither correction lineage nor
+-- persistent carry-forward provenance can point back to its own Roll row.
+-- The existing history guards still enforce same-parent and temporal facts.
+ALTER TABLE app_private.roll_allocations
+  ADD CONSTRAINT d1_roll_lineage_nonself_ck CHECK (
+    supersedes_id IS DISTINCT FROM id
+    AND origin_allocation_id IS DISTINCT FROM id
+  );

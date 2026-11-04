@@ -3,7 +3,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(67);
+SELECT plan(79);
 \ir fixtures/command_actor.sql
 
 SET ROLE schoolos_schema_owner;
@@ -392,6 +392,96 @@ SELECT is((SELECT count(*) FROM app.d1_read_student_special('64000000-0000-4000-
 SELECT is((SELECT count(*) FROM app.d1_read_student_profile(NULL::uuid)),0::bigint,
  'NULL Student ID cannot enumerate PROFILE');
 RESET ROLE;
+-- Section 02 DB-015 / Section 03 DB-032-034: one shared login, two children
+-- in different campuses. Isolate the case to preserve original receipt checks.
+SAVEPOINT section02_multiple_children;
+SET ROLE schoolos_schema_owner;
+INSERT INTO app_private.family_relationships(
+ id,family_id,student_id,adult_person_id,relationship_kind,display_name,
+ effective_from,reason,created_by)
+VALUES ('96000000-0000-4000-8000-000000000001',
+ '64000000-0000-4000-8000-000000000001','64000000-0000-4000-8000-000000000003',
+ '10000000-0000-4000-8000-000000000003','GUARDIAN','Synthetic sibling guardian',
+ CURRENT_DATE-20,'Independent approved second child basis',
+ '11111111-1111-4111-8111-111111111111');
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roster('64000000-0000-4000-8000-000000000003')),0::bigint,
+ 'DB-015 second child relationship alone does not grant roster access');
+RESET ROLE;
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.auth_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.auth_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings WHERE id='66666666-6666-4666-8666-666666666666'),
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT * FROM app.d1_change_family_child_access(
+ '64000000-0000-4000-8000-000000000003',1,
+ '64000000-0000-4000-8000-000000000001',2,
+ 'ADD',NULL,CURRENT_DATE-5,NULL,'Explicit second child entitlement',
+ 'section02-second-child') \gset sibling_
+SELECT is(:'sibling_action','ADD'::text,'DB-015 second child entitlement uses protected command');
+RESET ROLE;
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.family_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.family_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings WHERE id='64000000-0000-4000-8000-000000000010'),
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roster('64000000-0000-4000-8000-000000000002')),1::bigint,
+ 'DB-015 same family login retains first child in Campus A');
+SELECT is((SELECT section_offering_id FROM app.d1_read_student_roster('64000000-0000-4000-8000-000000000003')),
+ '89000000-0000-4000-8000-000000000008'::uuid,
+ 'DB-015 same family login reads independently entitled second child in Campus B');
+SELECT is((SELECT count(*) FROM app.d1_read_student_profile('64000000-0000-4000-8000-000000000003')),1::bigint,
+ 'DB-015 second child profile uses the separately granted profile permission');
+SELECT is((SELECT count(*) FROM app.d1_read_student_restricted_identity('64000000-0000-4000-8000-000000000003')),0::bigint,
+ 'DB-015 multiple children never elevate restricted identity disclosure');
+RESET ROLE;
+SAVEPOINT section02_suspended_family;
+SET ROLE schoolos_schema_owner;
+UPDATE app_private.principals SET state='SUSPENDED'
+ WHERE id='64000000-0000-4000-8000-000000000005';
+RESET ROLE;
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roster('64000000-0000-4000-8000-000000000002')),0::bigint,
+ 'DB-020 existing JWT loses first child access on principal suspension');
+SELECT is((SELECT count(*) FROM app.d1_read_student_roster('64000000-0000-4000-8000-000000000003')),0::bigint,
+ 'DB-020 existing JWT loses second child access on principal suspension');
+RESET ROLE;
+ROLLBACK TO SAVEPOINT section02_suspended_family;
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.auth_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.auth_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings WHERE id='66666666-6666-4666-8666-666666666666'),
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT * FROM app.d1_change_family_child_access(
+ '64000000-0000-4000-8000-000000000002',2,
+ '64000000-0000-4000-8000-000000000001',3,
+ 'REVOKE',:'first_access_id',CURRENT_DATE,NULL,
+ 'Revoke first child independently of sibling', 'section02-first-child-revoke') \gset sibling_revoke_
+SELECT is(:'sibling_revoke_action','REVOKE'::text,'DB-015 first child revocation uses protected command');
+RESET ROLE;
+SELECT set_config('request.jwt.claim.sub',current_setting('schoolos_test.family_subject'),true);
+SELECT set_config('request.jwt.claims',jsonb_build_object(
+ 'sub',current_setting('schoolos_test.family_subject'),'role','authenticated',
+ 'iat',(SELECT extract(epoch FROM tokens_valid_from)::bigint
+ FROM app_private.principal_auth_bindings WHERE id='64000000-0000-4000-8000-000000000010'),
+ 'is_anonymous',false)::text,true);
+SET ROLE authenticated;
+SELECT is((SELECT count(*) FROM app.d1_read_student_roster('64000000-0000-4000-8000-000000000002')),0::bigint,
+ 'DB-015 first child entitlement revocation removes first child only');
+SELECT is((SELECT count(*) FROM app.d1_read_student_roster('64000000-0000-4000-8000-000000000003')),1::bigint,
+ 'DB-015 first child revocation preserves separately authorized second child');
+SELECT is((SELECT count(*) FROM app.d1_read_student_profile('64000000-0000-4000-8000-000000000003')),1::bigint,
+ 'DB-015 sibling profile remains available with independent entitlement and live grant');
+RESET ROLE;
+SET CONSTRAINTS ALL IMMEDIATE;
+ROLLBACK TO SAVEPOINT section02_multiple_children;
 SAVEPOINT profile_grant_revoked;
 SET ROLE schoolos_schema_owner;
 UPDATE app_private.role_permission_grants SET revoked_at=clock_timestamp()

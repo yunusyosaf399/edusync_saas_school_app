@@ -461,11 +461,11 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
 
     def test_family_student_roster_profile_permission_and_disclosure(self):
         filename="28_family_portal_student_roster_profile_disclosure.sql"
-        self.assertIn((filename,67),[(name,total) for name,total in business.DOMAIN_TESTS])
+        self.assertIn((filename,79),[(name,total) for name,total in business.DOMAIN_TESTS])
         sql=(business.ROOT/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
         self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
         self.assertEqual(sql.count(chr(92)+"ir fixtures/command_actor.sql"),1)
-        self.assertIn("SELECT plan(67);",sql)
+        self.assertIn("SELECT plan(79);",sql)
         self.assertIn("INSERT INTO app_private.enrollments(",sql)
         self.assertIn("INSERT INTO app_private.roll_allocations(",sql)
         for key in ("student.roster.view","student.profile.view","D1_FAMILY_CHILD",
@@ -783,7 +783,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(DOMAIN_TESTS[31],
                          ["32_academic_subject_lifecycle_authorization.sql",54])
         self.assertGreaterEqual(len(DOMAIN_TESTS),32)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:32]),1648)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:32]),1660)
         self.assertIn("SELECT plan(54);",source)
         self.assertEqual(
             len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),54)
@@ -835,7 +835,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(DOMAIN_TESTS[32],
                          ["33_academic_class_offering_lifecycle_authorization.sql",52])
         self.assertGreaterEqual(len(DOMAIN_TESTS),33)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:33]),1700)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:33]),1712)
         self.assertIn("SELECT plan(52);",source)
         self.assertEqual(
             len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),52)
@@ -886,12 +886,12 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
                     encoding="utf-8")
         self.assertEqual(DOMAIN_TESTS[32],
                          ["33_academic_class_offering_lifecycle_authorization.sql",52])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:33]),1700)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:33]),1712)
         # Preserve the accepted 34-suite/1,756 assertion manifest as prefix.
         self.assertEqual(DOMAIN_TESTS[33],
                          ["34_academic_section_offering_lifecycle_authorization.sql",56])
         self.assertGreaterEqual(len(DOMAIN_TESTS),34)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:34]),1756)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:34]),1768)
         self.assertIn("SELECT plan(56);",source)
         self.assertEqual(
             len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),56)
@@ -944,10 +944,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),35)
         self.assertEqual(DOMAIN_TESTS[33],
                          ["34_academic_section_offering_lifecycle_authorization.sql",56])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:34]),1756)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:34]),1768)
         self.assertEqual(DOMAIN_TESTS[34],
                          ["35_academic_section_room_assignment_history_authorization.sql",77])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:35]),1833)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:35]),1845)
         self.assertIn("SELECT plan(77);",source)
         self.assertEqual(
             len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),77)
@@ -1022,10 +1022,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),36)
         self.assertEqual(DOMAIN_TESTS[34],
                          ["35_academic_section_room_assignment_history_authorization.sql",77])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:35]),1833)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:35]),1845)
         self.assertEqual(DOMAIN_TESTS[35],
                          ["36_academic_capacity_change_revision_authorization.sql",85])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:36]),1918)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:36]),1930)
         self.assertIn("SELECT plan(85);",source)
         self.assertEqual(
             len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),85)
@@ -1095,10 +1095,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),37)
         self.assertEqual(DOMAIN_TESTS[35],
                          ["36_academic_capacity_change_revision_authorization.sql",85])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:36]),1918)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:36]),1930)
         self.assertEqual(DOMAIN_TESTS[36],
                          ["37_student_roll_policy_current_checked_read_authorization.sql",35])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:37]),1953)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:37]),1965)
         self.assertIn("SELECT plan(35);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),35)
         self.assertTrue(source.startswith("--"))
@@ -1139,10 +1139,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),38)
         self.assertEqual(DOMAIN_TESTS[36],
             ["37_student_roll_policy_current_checked_read_authorization.sql",35])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:37]),1953)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:37]),1965)
         self.assertEqual(DOMAIN_TESTS[37],
             ["38_student_roll_policy_retained_history_defensive_invariants.sql",40])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:38]),1993)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:38]),2005)
         self.assertIn("SELECT plan(40);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),40)
         self.assertTrue(source.startswith("--"))
@@ -1201,10 +1201,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),39)
         self.assertEqual(DOMAIN_TESTS[37],
             ["38_student_roll_policy_retained_history_defensive_invariants.sql",40])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:38]),1993)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:38]),2005)
         self.assertEqual(DOMAIN_TESTS[38],
             ["39_employee_department_catalog_lifecycle_authorization.sql",57])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:39]),2050)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:39]),2062)
         self.assertIn("SELECT plan(57);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),57)
         self.assertTrue(source.startswith("--"))
@@ -1259,10 +1259,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),40)
         self.assertEqual(DOMAIN_TESTS[38],
             ["39_employee_department_catalog_lifecycle_authorization.sql",57])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:39]),2050)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:39]),2062)
         self.assertEqual(DOMAIN_TESTS[39],
             ["40_employee_designation_catalog_lifecycle_authorization.sql",59])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:40]),2109)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:40]),2121)
         self.assertIn("SELECT plan(59);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),59)
         self.assertTrue(source.startswith("--"))
@@ -1323,10 +1323,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),41)
         self.assertEqual(DOMAIN_TESTS[39],
             ["40_employee_designation_catalog_lifecycle_authorization.sql",59])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:40]),2109)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:40]),2121)
         self.assertEqual(DOMAIN_TESTS[40],
             ["41_employee_job_assignment_p1_direct_lifecycle_authorization.sql",67])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:41]),2176)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:41]),2188)
         self.assertIn("SELECT plan(67);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),67)
         self.assertTrue(source.startswith("--"))
@@ -1400,10 +1400,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),42)
         self.assertEqual(DOMAIN_TESTS[40],
             ["41_employee_job_assignment_p1_direct_lifecycle_authorization.sql",67])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:41]),2176)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:41]),2188)
         self.assertEqual(DOMAIN_TESTS[41],
             ["42_employee_campus_affiliation_p1_direct_lifecycle_authorization.sql",74])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:42]),2250)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:42]),2262)
         self.assertIn("SELECT plan(74);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),74)
         self.assertTrue(source.startswith("--"))
@@ -1479,10 +1479,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),43)
         self.assertEqual(DOMAIN_TESTS[41],
             ["42_employee_campus_affiliation_p1_direct_lifecycle_authorization.sql",74])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:42]),2250)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:42]),2262)
         self.assertEqual(DOMAIN_TESTS[42],
             ["43_employee_profile_p1_direct_photo_authorization.sql",49])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:43]),2299)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:43]),2311)
         self.assertIn("SELECT plan(49);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),49)
         self.assertTrue(source.startswith("--"))
@@ -1561,10 +1561,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),44)
         self.assertEqual(DOMAIN_TESTS[42],
             ["43_employee_profile_p1_direct_photo_authorization.sql",49])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:43]),2299)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:43]),2311)
         self.assertEqual(DOMAIN_TESTS[43],
             ["44_employee_qualification_p1_direct_history_authorization.sql",46])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:44]),2345)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:44]),2357)
         self.assertIn("SELECT plan(46);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),46)
         self.assertTrue(source.startswith("--"))
@@ -1647,10 +1647,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),45)
         self.assertEqual(DOMAIN_TESTS[43],
             ["44_employee_qualification_p1_direct_history_authorization.sql",46])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:44]),2345)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:44]),2357)
         self.assertEqual(DOMAIN_TESTS[44],
             ["45_employee_experience_p1_direct_history_authorization.sql",51])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:45]),2396)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:45]),2408)
         self.assertIn("SELECT plan(51);",sql)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),51)
         self.assertTrue(sql.startswith("--"))
@@ -1741,10 +1741,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),46)
         self.assertEqual(DOMAIN_TESTS[44],
             ["45_employee_experience_p1_direct_history_authorization.sql",51])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:45]),2396)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:45]),2408)
         self.assertEqual(DOMAIN_TESTS[45],
             ["46_teacher_capability_p1_direct_history_authorization.sql",50])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:46]),2446)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:46]),2458)
         self.assertIn("SELECT plan(50);",source)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",source)),50)
         self.assertTrue(source.startswith("--"))
@@ -1825,10 +1825,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),47)
         self.assertEqual(DOMAIN_TESTS[45],
             ["46_teacher_capability_p1_direct_history_authorization.sql",50])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:46]),2446)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:46]),2458)
         self.assertEqual(DOMAIN_TESTS[46],
             ["47_employee_identity_p2_approval_history_authorization.sql",40])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:47]),2486)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:47]),2498)
         self.assertIn("SELECT plan(40);",sql)
         self.assertEqual(len(re.findall(r"SELECT (?:is|ok|throws_ok)\(",sql)),40)
         self.assertTrue(sql.startswith("--"))
@@ -1927,7 +1927,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         from domain_business_ci import DOMAIN_TESTS, ROOT as domain_root
         approved_prefix = [entry for entry in DOMAIN_TESTS[:47]]
         self.assertEqual(len(approved_prefix),47)
-        self.assertEqual(sum(count for _,count in approved_prefix),2486)
+        self.assertEqual(sum(count for _,count in approved_prefix),2498)
         additions=(
             ("48_class_teacher_p0_direct_history_authorization.sql",32,
              ("app.d1_change_class_teacher_assignment",
@@ -1949,7 +1949,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),50)
         self.assertEqual(DOMAIN_TESTS[47:50],
             [[name, count] for name,count,_ in additions])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:50]),2581)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:50]),2593)
         for name,count,markers in additions:
             sql=(domain_root/"supabase/tests/domain"/name).read_text(encoding="utf-8")
             self.assertTrue(sql.startswith("--"))
@@ -2019,7 +2019,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
     def test_batch_51_55_five_workflow_acceptance_suites(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
         self.assertGreaterEqual(len(DOMAIN_TESTS),55)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:50]),2581)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:50]),2593)
         additions=(
             ("51_class_teacher_p2_retroactive_correct_approval.sql",23,
               ("app.d1_submit_class_teacher_assignment_correction",
@@ -2050,7 +2050,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         )
         self.assertEqual(DOMAIN_TESTS[50:55],
             [[name,count] for name,count,_ in additions])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:55]),2696)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:55]),2708)
         # True P2 APPLY exercises the existing schema-owner-owned receipt guard.
         # Its nested SECURITY INVOKER validators need narrowly owned EXECUTE.
         private_acl=(root/"supabase/migrations/"
@@ -2112,7 +2112,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
     def test_batch_56_60_student_protected_operations(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
         self.assertGreaterEqual(len(DOMAIN_TESTS),60)
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:55]),2696)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:55]),2708)
         additions=(
           ("56_student_status_p1_direct_lifecycle.sql",11,
            ("app.d1_change_student_status","student.status.change","'SUSPENDED'")),
@@ -2129,7 +2129,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             "app.d1_apply_student_status_correction","student.status.approve")),
         )
         self.assertEqual(DOMAIN_TESTS[55:60],[[n,c] for n,c,_ in additions])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:60]),2751)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:60]),2763)
 
         # Real Student no-placement Status acceptance exposed a PL/pgSQL
         # uninitialized record exception before ALL scope was evaluated.
@@ -2575,10 +2575,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
     def test_batch_61_student_p0_initial_primary_placement(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
         self.assertGreaterEqual(len(DOMAIN_TESTS),61)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:60]),2751)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:60]),2763)
         self.assertEqual(DOMAIN_TESTS[60],[
             "61_student_enrollment_place_p0_initial_roll.sql",18])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:61]),2769)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:61]),2781)
         sql=(root/"supabase/tests/domain/61_student_enrollment_place_p0_initial_roll.sql").read_text(encoding="utf-8")
         self.assertTrue(sql.startswith("-- D1 suite #61:"))
         self.assertTrue(sql.rstrip().endswith("ROLLBACK;"))
@@ -2664,10 +2664,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
     def test_batch_62_student_enrollment_end_p1_real_source_history(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
         self.assertGreaterEqual(len(DOMAIN_TESTS),62)
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:61]),2769)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:61]),2781)
         self.assertEqual(
             DOMAIN_TESTS[61],["62_student_enrollment_end_p1_direct_history.sql",28])
-        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:62]),2797)
+        self.assertEqual(sum(count for _,count in DOMAIN_TESTS[:62]),2809)
         path=root/"supabase/tests/domain/62_student_enrollment_end_p1_direct_history.sql"
         sql=path.read_text(encoding="utf-8")
         self.assertTrue(sql.startswith("-- D1 suite #62:"))
@@ -2746,10 +2746,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
     def test_batch_63_student_p1_direct_section_move_with_true_source(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
         self.assertGreaterEqual(len(DOMAIN_TESTS),63)
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:62]),2797)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:62]),2809)
         self.assertEqual(DOMAIN_TESTS[62],[
             "63_student_enrollment_move_p1_direct_section_history.sql",34])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:63]),2831)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:63]),2843)
         sql=(root/"supabase/tests/domain/"
             "63_student_enrollment_move_p1_direct_section_history.sql").read_text(
                 encoding="utf-8")
@@ -2795,10 +2795,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
     def test_batch_64_family_primary_context_p0_retain_display_history(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
         self.assertGreaterEqual(len(DOMAIN_TESTS),64)
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:63]),2831)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:63]),2843)
         self.assertEqual(DOMAIN_TESTS[63],[
             "64_family_primary_context_p0_select_correct_end.sql",37])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:64]),2868)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:64]),2880)
         sql=(root/"supabase/tests/domain/"
              "64_family_primary_context_p0_select_correct_end.sql").read_text(
                 encoding="utf-8")
@@ -2874,10 +2874,10 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
     def test_batch_65_remaining_four_student_operations_fail_closed(self):
         from domain_business_ci import DOMAIN_TESTS, ROOT as root
         self.assertGreaterEqual(len(DOMAIN_TESTS),65)
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:64]),2868)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:64]),2880)
         self.assertEqual(DOMAIN_TESTS[64],[
             "65_remaining_student_commands_fail_closed.sql",38])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:65]),2906)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:65]),2918)
         sql=(root/"supabase/tests/domain/"
              "65_remaining_student_commands_fail_closed.sql").read_text(
                  encoding="utf-8")
@@ -2948,7 +2948,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertEqual(registry["existing_accepted_business_assertions"],2906)
         self.assertIs(registry["migration_10_active"],False)
         self.assertGreaterEqual(len(DOMAIN_TESTS),65)
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:65]),2906)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:65]),2918)
         self.assertEqual({e["code"] for e in registry["operations"]},{
             "student.profile.update","student.roll.correct",
             "student.roll_policy.change","student.create"})
@@ -2992,7 +2992,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         self.assertGreaterEqual(len(DOMAIN_TESTS),66)
         self.assertEqual(DOMAIN_TESTS[:65][-1],
                          ["65_remaining_student_commands_fail_closed.sql",38])
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:65]),2906)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:65]),2918)
         self.assertEqual(DOMAIN_TESTS[65],
                          ["66_student_profile_p1_direct_history_authorization.sql",33])
         sql=(root/"supabase/tests/domain/"
@@ -3029,7 +3029,7 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
         # All previous accepted suites, the fail-closed baseline, and the
         # P1 DIRECT candidate are immutable ordered prefixes.
         self.assertGreaterEqual(len(DOMAIN_TESTS),67)
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:66]),2939)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:66]),2951)
         self.assertEqual(DOMAIN_TESTS[66],
                          ["67_student_profile_p1_approval_review_apply.sql",41])
         sql=(root/"supabase/tests/domain/"
@@ -3114,8 +3114,8 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
              ("previous_school='Independent Synthetic Correction'","INVALIDATED","p1-71-stale-apply")),
         ]
         self.assertGreaterEqual(len(DOMAIN_TESTS),71)
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:67]),2980)
-        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:71]),3057)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:67]),2992)
+        self.assertEqual(sum(n for _,n in DOMAIN_TESTS[:71]),3069)
         for offset,(filename,count,evidence) in enumerate(expected,67):
             self.assertEqual(DOMAIN_TESTS[offset],[filename,count])
             sql=(root/"supabase/tests/domain"/filename).read_text(encoding="utf-8")
@@ -3147,9 +3147,9 @@ class DomainAcceptanceToolsTests(unittest.TestCase):
             ("74_student_profile_p1_reviewer_scope_revoked.sql",23,
              ("reviewer exact ALL/DIRECT scope","cannot access protected request","INVALIDATED")),
         ]
-        self.assertEqual(len(DOMAIN_TESTS),74)
-        self.assertEqual(sum(n for _, n in DOMAIN_TESTS[:71]),3057)
-        self.assertEqual(sum(n for _, n in DOMAIN_TESTS),3124)
+        self.assertGreaterEqual(len(DOMAIN_TESTS),74)
+        self.assertEqual(sum(n for _, n in DOMAIN_TESTS[:71]),3069)
+        self.assertEqual(sum(n for _, n in DOMAIN_TESTS[:74]),3136)
         for offset,(filename,count,markers) in enumerate(expected,71):
             self.assertEqual(DOMAIN_TESTS[offset],[filename,count])
             sql=(root/"supabase/tests/domain"/filename).read_text(encoding="utf-8")

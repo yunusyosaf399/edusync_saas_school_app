@@ -1,0 +1,128 @@
+-- DB-01: nonactivating, operation-scoped Foundation approval application guard.
+-- Other operations are untouched. This is not an APPLY RPC, permission grant,
+-- registration, policy switch or hosted migration. Additional live actor/reviewer
+-- authority checks must be performed by a separate protected APPLY command.
+SET ROLE schoolos_student_executor;
+GRANT EXECUTE ON FUNCTION app_private.d1_roll_correct_result_rows_match_exact(uuid,uuid,uuid,uuid,jsonb)
+ TO schoolos_schema_owner;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.d1_roll_correct_application_receipt_guard()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ v_code text; req record; rec record; src uuid; enr uuid; sec uuid; pol uuid;
+ source_start date; enrollment_start date; old_num bigint; new_num bigint;
+ old_origin uuid; base_summary jsonb;
+BEGIN
+ SELECT o.code INTO v_code FROM app_private.operation_contracts o WHERE o.id=NEW.operation_id;
+ IF v_code IS DISTINCT FROM 'student.roll.correct' THEN RETURN NEW; END IF;
+ SELECT q.* INTO req FROM app_private.approval_requests q WHERE q.id=NEW.request_id;
+ SELECT r.* INTO rec FROM app_private.command_receipts r WHERE r.id=NEW.command_receipt_id;
+ IF req.id IS NULL OR rec.id IS NULL OR req.old_snapshot IS NULL OR req.requested_payload IS NULL
+   THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid'; END IF;
+ IF pg_catalog.jsonb_typeof(req.old_snapshot)<>'object'
+    OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.old_snapshot))<>9
+    OR NOT (req.old_snapshot ?& ARRAY[
+       'student_id','source_enrollment_id','source_section_offering_id',
+       'source_enrollment_effective_from','source_roll_allocation_id',
+       'source_roll_effective_from','source_policy_revision_id',
+       'source_old_numeric_value','source_roll_origin_allocation_id'])
+    OR pg_catalog.jsonb_typeof(req.requested_payload)<>'object'
+    OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(req.requested_payload))<>1
+    OR NOT (req.requested_payload ? 'proposed_numeric_value')
+    OR pg_catalog.jsonb_typeof(rec.result_summary)<>'object'
+    OR (SELECT count(*) FROM pg_catalog.jsonb_object_keys(rec.result_summary))<>14
+    OR NOT (rec.result_summary ?& ARRAY['state','request_version'])
+    OR pg_catalog.jsonb_typeof(rec.result_summary->'state') IS DISTINCT FROM 'string'
+    OR pg_catalog.jsonb_typeof(rec.result_summary->'request_version') IS DISTINCT FROM 'string'
+ THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid'; END IF;
+ BEGIN
+   enr:=NULLIF(req.old_snapshot->>'source_enrollment_id','')::uuid;
+   sec:=NULLIF(req.old_snapshot->>'source_section_offering_id','')::uuid;
+   src:=NULLIF(req.old_snapshot->>'source_roll_allocation_id','')::uuid;
+   pol:=NULLIF(req.old_snapshot->>'source_policy_revision_id','')::uuid;
+   old_origin:=NULLIF(req.old_snapshot->>'source_roll_origin_allocation_id','')::uuid;
+   source_start:=NULLIF(req.old_snapshot->>'source_roll_effective_from','')::date;
+   enrollment_start:=NULLIF(req.old_snapshot->>'source_enrollment_effective_from','')::date;
+   old_num:=NULLIF(req.old_snapshot->>'source_old_numeric_value','')::bigint;
+   new_num:=NULLIF(req.requested_payload->>'proposed_numeric_value','')::bigint;
+ EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+   RAISE EXCEPTION 'D1 roll correction application evidence invalid';
+ END;
+ IF req.operation_id IS DISTINCT FROM NEW.operation_id
+    OR req.target_ref IS NULL OR req.target_ref IS DISTINCT FROM
+      NULLIF(req.old_snapshot->>'student_id','')::uuid
+    OR req.state IS DISTINCT FROM 'EXECUTED'
+    OR req.expected_target_version IS NULL OR req.expected_target_version<1
+    OR req.reason IS NULL OR pg_catalog.length(pg_catalog.btrim(req.reason))=0
+    OR src IS NULL OR enr IS NULL OR sec IS NULL OR pol IS NULL
+    OR source_start IS NULL OR enrollment_start IS NULL OR old_num IS NULL OR new_num IS NULL
+    OR old_num=new_num
+    OR rec.operation_id IS DISTINCT FROM NEW.operation_id
+    OR rec.request_id IS DISTINCT FROM NEW.request_id
+    OR rec.command_kind IS DISTINCT FROM 'request.apply'
+    OR rec.state IS DISTINCT FROM 'SUCCEEDED'
+    OR rec.result_kind IS DISTINCT FROM 'D1_STUDENT_ROLL_CORRECT'
+    OR rec.result_ref IS DISTINCT FROM NEW.result_ref
+    OR rec.expected_target_version IS DISTINCT FROM req.expected_target_version
+    OR NEW.applied_target_version IS DISTINCT FROM req.expected_target_version
+    OR rec.result_summary->>'state' IS DISTINCT FROM 'EXECUTED'
+    OR rec.result_summary->>'request_version' IS DISTINCT FROM req.row_version::text
+    OR rec.expected_request_version IS NULL OR rec.expected_request_version<1
+    OR req.created_by IS DISTINCT FROM req.requester_id
+    OR rec.principal_id IS DISTINCT FROM NEW.created_by
+    OR rec.created_by IS DISTINCT FROM NEW.created_by
+ THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid'; END IF;
+
+ base_summary:=rec.result_summary-'request_version'-'state';
+ IF base_summary->>'student_id' IS DISTINCT FROM req.target_ref::text
+    OR base_summary->>'enrollment_id' IS DISTINCT FROM enr::text
+    OR base_summary->>'section_offering_id' IS DISTINCT FROM sec::text
+    OR base_summary->>'source_roll_allocation_id' IS DISTINCT FROM src::text
+    OR base_summary->>'source_policy_revision_id' IS DISTINCT FROM pol::text
+    OR base_summary->>'source_roll_effective_from' IS DISTINCT FROM source_start::text
+    OR base_summary->>'source_enrollment_effective_from' IS DISTINCT FROM enrollment_start::text
+    OR base_summary->>'old_numeric_value' IS DISTINCT FROM old_num::text
+    OR base_summary->>'new_numeric_value' IS DISTINCT FROM new_num::text
+    OR app_private.d1_roll_correct_result_rows_match_exact(
+         req.target_ref,enr,src,NEW.result_ref,base_summary) IS DISTINCT FROM true
+    OR NOT EXISTS (SELECT 1 FROM app_private.roll_allocations dst
+      JOIN app_private.roll_allocations predecessor ON predecessor.id=dst.supersedes_id
+      WHERE dst.id=NEW.result_ref AND dst.correction_reason=req.reason
+        AND predecessor.id=src AND predecessor.origin_allocation_id IS NOT DISTINCT FROM old_origin)
+    OR (SELECT count(*) FROM app_private.command_receipts other
+        WHERE other.operation_id=NEW.operation_id AND other.state='SUCCEEDED'
+          AND other.result_kind='D1_STUDENT_ROLL_CORRECT' AND other.result_ref=NEW.result_ref)<>1
+ THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid'; END IF;
+
+ -- All configured request steps must have one approved committed review from
+ -- an assigned distinct Person. Current grants/policy freshness remain APPLY RPC work.
+ IF NOT EXISTS (SELECT 1 FROM app_private.approval_request_steps st WHERE st.request_id=req.id)
+    OR EXISTS (
+      SELECT 1 FROM app_private.approval_request_steps st
+       WHERE st.request_id=req.id AND (st.state IS DISTINCT FROM 'APPROVED'
+         OR NOT EXISTS (
+           SELECT 1 FROM app_private.approval_reviews rv
+             JOIN app_private.approval_step_reviewers ass
+               ON ass.id=rv.reviewer_assignment_id AND ass.step_id=st.id
+              AND ass.reviewer_id=rv.reviewer_id
+             JOIN app_private.principals requester ON requester.id=req.requester_id
+             JOIN app_private.principals reviewer ON reviewer.id=rv.reviewer_id
+            WHERE rv.step_id=st.id AND rv.decision='APPROVE'
+              AND rv.created_by=rv.reviewer_id
+              AND requester.kind='INDIVIDUAL' AND reviewer.kind='INDIVIDUAL'
+              AND reviewer.person_id IS DISTINCT FROM requester.person_id
+              AND requester.person_id IS NOT NULL AND reviewer.person_id IS NOT NULL
+         )))
+ THEN RAISE EXCEPTION 'D1 roll correction application evidence invalid'; END IF;
+ RETURN NEW;
+EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range OR datetime_field_overflow THEN
+ RAISE EXCEPTION 'D1 roll correction application evidence invalid';
+END $body$;
+REVOKE ALL ON FUNCTION app_private.d1_roll_correct_application_receipt_guard()
+ FROM PUBLIC,anon,authenticated,service_role;
+DROP TRIGGER IF EXISTS d1_roll_correct_application_receipt_guard ON app_private.approval_applications;
+CREATE TRIGGER d1_roll_correct_application_receipt_guard
+ BEFORE INSERT ON app_private.approval_applications
+ FOR EACH ROW EXECUTE FUNCTION app_private.d1_roll_correct_application_receipt_guard();
+RESET ROLE;
