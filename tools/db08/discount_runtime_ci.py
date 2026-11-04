@@ -54,23 +54,32 @@ def run_discount_runtime(local_status, root):
                     connection.execute('RESET ROLE')
 
             campus = '08000000-0000-4000-8000-000000000003'
-            year = '08000000-0000-4000-8000-000000000004'
+            year = '08000000-0000-4000-8000-000000000048'
+            future_year = connection.execute(
+                "SELECT extract(year FROM starts_on)::integer "
+                "FROM app.academic_years WHERE id=%s::uuid", (year,)
+            ).fetchone()[0]
+            initial_start = f'{future_year}-01-01'
+            fee_end = f'{future_year}-12-31'
+            discount_start = f'{future_year}-11-01'
+            assess_end = f'{future_year}-11-30'
+            due_on = f'{future_year}-12-05'
             offering = '08000000-0000-4000-8000-000000000055'
             student = '08000000-0000-4000-8000-000000000060'
             policy = '08000000-0000-4000-8000-000000000090'
             reviewer = '08000000-0000-4000-8000-000000000021'
             rule = call_as(0, "SELECT app.configure_finance_fee(%s::uuid,%s::uuid,"
                            "'TUITION','Tuition','AUTH_F6_CLASS','MONTHLY',2,9999,"
-                           "'2026-01-01'::date,'2026-12-31'::date,'Real Auth full fee','auth-f6-fee')",
-                           (campus, year))
+                           "%s::date,%s::date,'Real Auth full fee','auth-f6-fee')",
+                           (campus, year, initial_start, fee_end))
             call_as(0, "SELECT app.bind_finance_fee(%s::uuid,%s::uuid,NULL,"
-                    "'2026-11-01'::date,'2026-12-31'::date,'auth-f6-bind')",
-                    (rule['resource_id'], offering))
+                    "%s::date,%s::date,'auth-f6-bind')",
+                    (rule['resource_id'], offering, discount_start, fee_end))
             def request():
                 return call_as(0, "SELECT app.request_finance_discount(%s::uuid,%s::uuid,"
-                    "'MONTHLY_TUITION','PERCENT',10,'2026-11-01'::date,'2026-12-31'::date,"
+                    "'MONTHLY_TUITION','PERCENT',10,%s::date,%s::date,"
                     "NULL,%s::uuid,%s::uuid,'Real Auth monthly tuition','auth-f6-request')",
-                    (student, campus, policy, reviewer))
+                    (student, campus, discount_start, fee_end, policy, reviewer))
             pending = request()
             if request() != pending or pending['state'] != 'PENDING':
                 raise RuntimeError('DB08_F6_REAL_AUTH_REQUEST_REPLAY')
@@ -84,8 +93,9 @@ def run_discount_runtime(local_status, root):
             key = '08000000-0000-4000-8000-000000000094'
             def assess():
                 return call_as(0, "SELECT app.assess_discounted_finance_fee(%s::uuid,%s::uuid,"
-                    "'TUITION','MONTHLY','2026-11-01'::date,'2026-11-30'::date,"
-                    "'2026-12-05'::date,%s::uuid)", (student, offering, key))
+                    "'TUITION','MONTHLY',%s::date,%s::date,"
+                    "%s::date,%s::uuid)",
+                    (student, offering, discount_start, assess_end, due_on, key))
             selected = assess()
             if (assess() != selected
                 or selected['discount']['discount_minor'] != 1000
