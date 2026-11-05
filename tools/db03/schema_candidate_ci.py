@@ -755,6 +755,34 @@ def validate_principal_auth_acceptance() -> str:
     return test
 
 
+def validate_principal_approve_input_source() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/36_01_principal_approve_input_source.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/36_principal_approve_input_source.sql').read_text()
+    names = re.findall(r'(?m)^CREATE FUNCTION app_private\\.([a-z0-9_]+)\\(', sql)
+    if names != ['db03_principal_approve_input_source']:
+        raise RuntimeError('DB03_P36_PRIVATE_SOURCE_SCOPE')
+    outside = re.sub(r'\\$([a-z_]*)\\$.*?\\$\\1\\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|ALTER TABLE|CREATE ROLE|ALTER ROLE|GRANT|CREATE OR REPLACE FUNCTION)\\b', outside):
+        raise RuntimeError('DB03_P36_NO_WRITER_OR_ACTIVATION')
+    for term in ('SECURITY INVOKER', 'db03_principal_forward_live',
+                 'db03_principal_final_source_snapshot',
+                 'db03_forward_details_current', 'fee.disposition',
+                 "'unpaid_admission_fee_blocks_approval',false",
+                 "'administrative_marked_paid_is_settlement',false",
+                 "'atomic_student_handoff_available',false",
+                 "'can_approve',false", "'can_create_student',false",
+                 'REVOKE ALL ON FUNCTION'):
+        if term not in sql:
+            raise RuntimeError('DB03_P36_FAIL_CLOSED_'+term)
+    if (re.findall(r'SELECT plan\\((\\d+)\\);',test) != ['18']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\\(',test)) != 18
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P36_TEST_PLAN')
+    print('DB03_PRINCIPAL_APPROVE_INPUT_SOURCE_PASS assertions=18 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -795,6 +823,7 @@ def main() -> int:
     principal_terminal_sql, principal_terminal_test = validate_principal_terminal_mutation_gates()
     principal_command_sql, principal_command_test = validate_principal_return_reject_command()
     principal_auth_test = validate_principal_auth_acceptance()
+    principal_approve_input_sql, principal_approve_input_test = validate_principal_approve_input_source()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1574,6 +1603,27 @@ def main() -> int:
             output=local.run_psql(container,principal_auth_test,'DB03_PRINCIPAL_AUTH_LIVE_TEST')
             parse_tap(output,19)
             print('DB03_PRINCIPAL_AUTH_DATABASE_PASS 19/19; client_final_permission_disabled=true')
+            try:
+                local.run_psql(container,'BEGIN;\\n'+principal_approve_input_sql+
+                    "\\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P36_FAILURE'; END $failure$;\\nCOMMIT;",
+                    'DB03_P36_INJECTED_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P36_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P36_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_principal_approve_input_source';",
+                'DB03_P36_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P36_INSTALL_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\\n'+principal_approve_input_sql+'\\nCOMMIT;',
+                           'DB03_P36_PRIVATE_INPUT_INSTALL')
+            output=local.run_psql(container,principal_approve_input_test,
+                                  'DB03_P36_PRIVATE_INPUT_TEST')
+            parse_tap(output,18)
+            print('DB03_P36_APPROVE_INPUT_DATABASE_PASS 18/18; '
+                  'client_grants=false approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
