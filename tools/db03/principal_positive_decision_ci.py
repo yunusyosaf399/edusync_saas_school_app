@@ -230,8 +230,17 @@ def run_positive_principal_decisions(local, container, root, worker, api,
         SECTION='37373737-3737-4373-8373-373737373731'
         OTHER_SECTION='37373737-3737-4373-8373-373737373732'
         with root() as conn:
-            conn.execute(
-                'INSERT INTO app_private.section_offerings('
+            with conn.transaction():
+                # Keep the actual D1 mutation trigger enabled: fixture rows
+                # must be written with a verified real signed GoTrue subject,
+                # just like the existing D1 owner-run acceptance fixtures.
+                conn.execute("SELECT set_config('request.jwt.claim.sub',%s,true)",
+                             (verified.subject,))
+                conn.execute("SELECT set_config('request.jwt.claims',%s,true)",
+                             (json.dumps(claims.database_claims()),))
+                conn.execute('SET LOCAL ROLE schoolos_schema_owner')
+                conn.execute(
+                    'INSERT INTO app_private.section_offerings('
                 'id,class_offering_id,campus_id,code,label,display_order,'
                 'capacity,state,created_by) VALUES '
                 "(%s,%s,%s,'P37A','P37 Grade 1-A',1,30,'OPEN',%s),"
