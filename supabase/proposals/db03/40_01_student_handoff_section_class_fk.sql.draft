@@ -1,0 +1,16 @@
+-- P40 inactive DB03/D1 handoff Section -> Class Offering lineage.
+-- P37 checks candidate placement; P40 retains that same-class relationship
+-- as a PostgreSQL composite foreign key. It does not verify live capacity,
+-- principal authority, latest application state or roll eligibility.
+-- No writer, grant, approval, or Student creation is enabled.
+SET ROLE schoolos_schema_owner;
+-- D1's Section PK alone cannot be a composite-FK referenced key.
+ALTER TABLE app_private.section_offerings
+ ADD CONSTRAINT db03_handoff_section_class_source_key
+ UNIQUE(id,class_offering_id);
+ALTER TABLE app_private.admission_student_handoffs
+ ADD CONSTRAINT db03_handoff_section_same_class
+ FOREIGN KEY(section_offering_id,class_offering_id)
+ REFERENCES app_private.section_offerings(id,class_offering_id)
+ ON UPDATE RESTRICT ON DELETE RESTRICT;
+RESET ROLE;
