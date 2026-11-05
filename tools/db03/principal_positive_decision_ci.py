@@ -224,6 +224,85 @@ def run_positive_principal_decisions(local, container, root, worker, api,
         check(missing['forward_current'] is False
               and missing['can_approve'] is False,
               'P36 rejects stale expected version even with a real Forward')
+        # P37: CI-only typed Section offerings; no assignment, number, roll,
+        # registration or reservation. Other-campus source already exists in
+        # the disposable destination fixture.
+        SECTION='37373737-3737-4373-8373-373737373731'
+        OTHER_SECTION='37373737-3737-4373-8373-373737373732'
+        with root() as conn:
+            with conn.transaction():
+                # Keep the actual D1 mutation trigger enabled: fixture rows
+                # must be written with a verified real signed GoTrue subject,
+                # just like the existing D1 owner-run acceptance fixtures.
+                conn.execute("SELECT set_config('request.jwt.claim.sub',%s,true)",
+                             (verified.subject,))
+                conn.execute("SELECT set_config('request.jwt.claims',%s,true)",
+                             (json.dumps(claims.database_claims()),))
+                conn.execute('SET LOCAL ROLE schoolos_schema_owner')
+                conn.execute(
+                    'INSERT INTO app_private.section_offerings('
+                'id,class_offering_id,campus_id,code,label,display_order,'
+                'capacity,state,created_by) VALUES '
+                "(%s,%s,%s,'P37A','P37 Grade 1-A',1,30,'OPEN',%s),"
+                "(%s,%s,%s,'P37B','P37 Other Campus',1,30,'OPEN',%s)",
+                (SECTION,OFFERING,CAMPUS,
+                 '11111111-1111-4111-8111-111111111111',
+                 OTHER_SECTION,'15151515-1515-4515-8515-151515151517',
+                 '92929292-9292-4292-8292-929292929292',
+                 '11111111-1111-4111-8111-111111111111'))
+                # D1 enforces an initial immutable capacity revision for
+                # each new Section at transaction commit. Record both in
+                # this same signed-actor fixture transaction; never bypass
+                # the deferred academic integrity trigger.
+                conn.execute(
+                    'INSERT INTO app_private.capacity_revisions('
+                    'id,class_offering_id,section_offering_id,old_capacity,'
+                    'new_capacity,effective_on,reason,created_by) VALUES '
+                    "(%s,NULL,%s,NULL,30,CURRENT_DATE-20,'P37 Grade 1-A initial capacity',%s),"
+                    "(%s,NULL,%s,NULL,30,CURRENT_DATE-20,'P37 other-campus initial capacity',%s)",
+                    ('37373737-3737-4373-8373-373737373741',SECTION,
+                     '11111111-1111-4111-8111-111111111111',
+                     '37373737-3737-4373-8373-373737373742',OTHER_SECTION,
+                     '11111111-1111-4111-8111-111111111111'))
+            section=conn.execute(
+                'SELECT app_private.db03_principal_section_candidate_source(%s,%s,%s,%s)',
+                (returned,ret_version,ret_forward,SECTION)).fetchone()[0]
+            wrong=conn.execute(
+                'SELECT app_private.db03_principal_section_candidate_source(%s,%s,%s,%s)',
+                (returned,ret_version,ret_forward,OTHER_SECTION)).fetchone()[0]
+            stale=conn.execute(
+                'SELECT app_private.db03_principal_section_candidate_source(%s,%s,%s,%s)',
+                (returned,ret_version+1,ret_forward,SECTION)).fetchone()[0]
+            unknown=conn.execute(
+                'SELECT app_private.db03_principal_section_candidate_source(%s,%s,%s,%s)',
+                (returned,ret_version,ret_forward,
+                 '37373737-3737-4373-8373-373737373733')).fetchone()[0]
+        check(section['section_candidate_compatible']
+              and section['section_offering_id']==SECTION
+              and section['class_offering_id']==OFFERING
+              and section['campus_id']==CAMPUS
+              and section['academic_year_id']==YEAR,
+              'P37 verifies live Section belongs to the exact forwarded Grade and Campus')
+        check(not wrong['section_candidate_compatible']
+              and wrong['section_offering_id'] is None,
+              'P37 rejects Section in a different campus and Grade')
+        check(not stale['section_candidate_compatible']
+              and not stale['forward_current'],
+              'P37 rejects version-stale Section candidates')
+        check(not unknown['section_candidate_compatible']
+              and unknown['section_offering_id'] is None,
+              'P37 rejects a nonexistent Section without creating one')
+        check(section['section_capacity_reserved'] is False
+              and section['section_capacity_available_verified'] is False
+              and section['roll_policy_locked'] is False
+              and section['can_approve'] is False
+              and section['can_create_student'] is False,
+              'P37 neither reserves capacity nor authorizes APPROVE or Student create')
+        print('DB03_P37_SECTION_CANDIDATE_REAL_AUTH_PASS '
+              'real_forward=true section_grade_campus_match=true '
+              'cross_campus_denied=true stale_denied=true '
+              'capacity_unreserved=true approve_disabled=true')
+
         result=principal_decide(returned,ret_version,ret_forward,'RETURN',
             'Please correct the original certificate','p35b-decision-return')
         check(result['decision']=='RETURN' and result['forward_id']==str(ret_forward),

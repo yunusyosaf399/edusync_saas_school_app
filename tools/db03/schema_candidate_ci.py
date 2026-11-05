@@ -783,6 +783,35 @@ def validate_principal_approve_input_source() -> tuple[str, str]:
     return sql,test
 
 
+def validate_principal_section_candidate_source() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/37_01_principal_section_candidate_source.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/37_principal_section_candidate_source.sql').read_text()
+    names = re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(', sql)
+    if names != ['db03_principal_section_candidate_source']:
+        raise RuntimeError('DB03_P37_PRIVATE_SOURCE_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|ALTER TABLE|CREATE ROLE|ALTER ROLE|GRANT|CREATE OR REPLACE FUNCTION)\b', outside):
+        raise RuntimeError('DB03_P37_NO_WRITER_OR_ACTIVATION')
+    for term in ('SECURITY INVOKER', 'db03_principal_approve_input_source',
+                 'app_private.section_offerings', 'app_private.class_offerings',
+                 "co_state='OPEN'", "so_state='OPEN'",
+                 'section_candidate_compatible',
+                 "'section_capacity_available_verified',false",
+                 "'roll_policy_locked',false",
+                 "'atomic_student_handoff_available',false",
+                 "'can_approve',false", "'can_create_student',false",
+                 'REVOKE ALL ON FUNCTION'):
+        if term not in sql:
+            raise RuntimeError('DB03_P37_FAIL_CLOSED_'+term)
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['21']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 21
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P37_TEST_PLAN')
+    print('DB03_P37_SECTION_SOURCE_PASS assertions=21 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -824,6 +853,7 @@ def main() -> int:
     principal_command_sql, principal_command_test = validate_principal_return_reject_command()
     principal_auth_test = validate_principal_auth_acceptance()
     principal_approve_input_sql, principal_approve_input_test = validate_principal_approve_input_source()
+    principal_section_sql, principal_section_test = validate_principal_section_candidate_source()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1629,6 +1659,33 @@ def main() -> int:
                 print('DB03_P36_TAP_DIAGNOSTIC\n'+output,flush=True)
                 raise
             print('DB03_P36_APPROVE_INPUT_DATABASE_PASS 18/18; '
+                  'client_grants=false approve=false student_create=false')
+            try:
+                local.run_psql(container,'BEGIN;\n'+principal_section_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P37_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P37_INJECTED_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P37_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P37_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_principal_section_candidate_source';",
+                'DB03_P37_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P37_INSTALL_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+principal_section_sql+'\nCOMMIT;',
+                           'DB03_P37_PRIVATE_INPUT_INSTALL')
+            output=local.run_psql(container,principal_section_test,
+                                  'DB03_P37_PRIVATE_INPUT_TEST')
+            try:
+                parse_tap(output,21)
+            except RuntimeError:
+                # Emit the exact failing pgTAP assertion; do not replace a
+                # measured authorization assertion with a weaker guess.
+                print('DB03_P37_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P37_SECTION_DATABASE_PASS 21/21; '
                   'client_grants=false approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
