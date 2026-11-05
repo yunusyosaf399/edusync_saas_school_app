@@ -1,0 +1,85 @@
+-- P36: private read-only Principal APPROVE input-binding source (inactive).
+-- Not authorization, approval, a READY handoff, Student creation or a grant.
+-- November 1 owner decision: UNPAID is valid to Forward/approve; an
+-- administrative MARKED_PAID does not constitute a Finance payment.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_principal_approve_input_source(
+ p_application uuid,p_expected_version bigint,p_forward uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ a app_private.admission_applications%ROWTYPE;
+ f app_private.admission_document_forwards%ROWTYPE;
+ d app_private.admission_destination_intents%ROWTYPE;
+ fee app_private.admission_fee_dispositions%ROWTYPE;
+ src jsonb;
+ version_current boolean:=false;
+ forward_current boolean:=false;
+ identity_current boolean:=false;
+ documents_current boolean:=false;
+ destination_and_fee_current boolean:=false;
+ sources_observed boolean:=false;
+ state text;
+BEGIN
+ IF p_expected_version IS NULL OR p_expected_version<1
+    OR p_forward IS NULL THEN
+  RAISE EXCEPTION 'DB03 Principal APPROVE input invalid';
+ END IF;
+ IF p_application IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=p_application;
+ IF a.id IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO f FROM app_private.admission_document_forwards
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ SELECT * INTO d FROM app_private.admission_destination_intents
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ SELECT * INTO fee FROM app_private.admission_fee_dispositions
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ version_current:=a.state='DRAFT' AND a.row_version=p_expected_version;
+ forward_current:=COALESCE(version_current AND f.id=p_forward
+   AND f.application_version=a.row_version
+   AND app_private.db03_principal_forward_live(a.id,p_forward),false);
+ src:=app_private.db03_principal_final_source_snapshot(a.id);
+ identity_current:=COALESCE((src->>'identity_current')::boolean,false);
+ documents_current:=COALESCE((src->>'documents_current')::boolean,false);
+ destination_and_fee_current:=COALESCE(
+   app_private.db03_forward_details_current(a.id),false);
+ sources_observed:=forward_current AND identity_current AND documents_current
+   AND destination_and_fee_current;
+ state:=CASE
+   WHEN NOT version_current OR NOT forward_current THEN 'FORWARD_OR_VERSION_STALE'
+   WHEN NOT identity_current THEN 'CANONICAL_PERSON_IDENTITY_REQUIRED'
+   WHEN NOT documents_current THEN 'INDEPENDENT_DOCUMENT_REVIEW_REQUIRED'
+   WHEN NOT destination_and_fee_current THEN 'DESTINATION_OR_FEE_DECLARATION_REQUIRED'
+   ELSE 'ATOMIC_D1_STUDENT_HANDOFF_NOT_IMPLEMENTED' END;
+ RETURN jsonb_build_object(
+  'application_id',a.id,'application_version',a.row_version,
+  'expected_version_matches',version_current,
+  'forward_id',CASE WHEN forward_current THEN f.id ELSE NULL END,
+  'forward_current',forward_current,
+  'identity_resolution_id',CASE WHEN identity_current
+    THEN (src->>'identity_resolution_id')::uuid ELSE NULL END,
+  'person_id',CASE WHEN identity_current
+    THEN (src->>'person_id')::uuid ELSE NULL END,
+  'canonical_identity_current',identity_current,
+  'independent_document_review_current',documents_current,
+  'destination_intent_id',CASE WHEN destination_and_fee_current THEN d.id ELSE NULL END,
+  'class_offering_id',CASE WHEN destination_and_fee_current
+    THEN d.class_offering_id ELSE NULL END,
+  'destination_and_fee_declaration_current',destination_and_fee_current,
+  'fee_disposition',CASE WHEN destination_and_fee_current THEN fee.disposition ELSE NULL END,
+  'fee_disposition_id',CASE WHEN destination_and_fee_current THEN fee.id ELSE NULL END,
+  'administrative_marked_paid_is_settlement',false,
+  'unpaid_admission_fee_blocks_approval',false,
+  'source_inputs_observed',sources_observed,
+  'principal_approve_authorized',false,
+  'atomic_student_handoff_available',false,
+  'can_approve',false,'can_create_student',false,
+  'status',state);
+END $body$;
+REVOKE ALL ON FUNCTION
+ app_private.db03_principal_approve_input_source(uuid,bigint,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_file_login,schoolos_platform_executor,schoolos_identity_executor,
+ schoolos_evidence_writer,schoolos_authz_reader;
+RESET ROLE;

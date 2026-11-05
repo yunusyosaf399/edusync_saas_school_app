@@ -194,7 +194,36 @@ def run_positive_principal_decisions(local, container, root, worker, api,
                     'current actual measured PDF Forward exists '+key)
             return application,expected,forward
 
+        # P36 is internal evidence only: bind actual current Forward, D1
+        # grade destination and UNPAID declaration to a read-only approval
+        # preparation source. Neither an uploaded receipt nor this projection
+        # grants final APPROVE or creates a Student.
         returned,ret_version,ret_forward=prepared('return')
+        with root() as conn:
+            approval=conn.execute(
+                'SELECT app_private.db03_principal_approve_input_source(%s,%s,%s)',
+                (returned,ret_version,ret_forward)).fetchone()[0]
+        check(approval['forward_current'] and approval['expected_version_matches'],
+              'P36 binds exact current real Forward and application version')
+        check(approval['fee_disposition']=='UNPAID'
+              and approval['unpaid_admission_fee_blocks_approval'] is False
+              and approval['administrative_marked_paid_is_settlement'] is False,
+              'P36 honors UNPAID owner choice without inventing settlement')
+        check(approval['class_offering_id']==OFFERING
+              and approval['destination_intent_id'] is not None,
+              'P36 binds current typed D1 Grade and destination revision')
+        check(approval['principal_approve_authorized'] is False
+              and approval['atomic_student_handoff_available'] is False
+              and approval['can_approve'] is False
+              and approval['can_create_student'] is False,
+              'P36 cannot authorize Principal APPROVE or Student creation')
+        with root() as conn:
+            missing=conn.execute(
+                'SELECT app_private.db03_principal_approve_input_source(%s,%s,%s)',
+                (returned,ret_version+1,ret_forward)).fetchone()[0]
+        check(missing['forward_current'] is False
+              and missing['can_approve'] is False,
+              'P36 rejects stale expected version even with a real Forward')
         result=principal_decide(returned,ret_version,ret_forward,'RETURN',
             'Please correct the original certificate','p35b-decision-return')
         check(result['decision']=='RETURN' and result['forward_id']==str(ret_forward),
