@@ -812,6 +812,39 @@ def validate_principal_section_candidate_source() -> tuple[str, str]:
     return sql,test
 
 
+def validate_student_handoff_storage() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/38_01_student_handoff_storage.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/38_student_handoff_storage.sql').read_text()
+    if (re.findall(r'(?m)^CREATE TABLE app_private\.([a-z0-9_]+) \(',sql)
+        != ['admission_student_handoffs']):
+        raise RuntimeError('DB03_P38_HANDOFF_TABLE_SCOPE')
+    if (re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)
+        != ['db03_student_handoff_mutation_unavailable']):
+        raise RuntimeError('DB03_P38_HANDOFF_FUNCTION_SCOPE')
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE |DELETE FROM|GRANT |CREATE OR REPLACE FUNCTION|CREATE POLICY .* TO (?:authenticated|anon|service_role))\b',outside):
+        raise RuntimeError('DB03_P38_HANDOFF_NO_WRITER_OR_ACTIVATION')
+    for term in (
+        'FORCE ROW LEVEL SECURITY', 'UNIQUE', 'FOREIGN KEY(forward_id,application_id)',
+        "state IN('READY','CONSUMED')", 'result_student_id uuid UNIQUE',
+        'consumption_receipt_id uuid UNIQUE', 'SECURITY INVOKER',
+        "RAISE EXCEPTION 'DB03 atomic Student handoff writer unavailable'",
+        'BEFORE INSERT OR UPDATE OR DELETE', 'BEFORE TRUNCATE',
+        'schoolos_student_executor', 'schoolos_workflow_executor',
+        'REVOKE ALL ON app_private.admission_student_handoffs',
+        'REVOKE ALL ON FUNCTION app_private.db03_student_handoff_mutation_unavailable()',
+    ):
+        if term not in sql:
+            raise RuntimeError('DB03_P38_HANDOFF_FAIL_CLOSED_'+term)
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['27']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 27
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P38_HANDOFF_TEST_PLAN')
+    print('DB03_P38_HANDOFF_STORAGE_SOURCE_PASS assertions=27 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -854,6 +887,7 @@ def main() -> int:
     principal_auth_test = validate_principal_auth_acceptance()
     principal_approve_input_sql, principal_approve_input_test = validate_principal_approve_input_source()
     principal_section_sql, principal_section_test = validate_principal_section_candidate_source()
+    handoff_storage_sql, handoff_storage_test = validate_student_handoff_storage()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1687,6 +1721,34 @@ def main() -> int:
                 raise
             print('DB03_P37_SECTION_DATABASE_PASS 21/21; '
                   'client_grants=false approve=false student_create=false')
+            # P38: storage constraint install is allowed only in disposable CI.
+            # The writer/consumer/Principal APPROVE remain denied for ALL roles.
+            try:
+                local.run_psql(container, 'BEGIN;\n'+handoff_storage_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P38_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P38_INJECTED_DDL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P38_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P38_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (SELECT count(*) FROM pg_class WHERE relnamespace='app_private'::regnamespace AND relname='admission_student_handoffs') + "
+                "(SELECT count(*) FROM pg_proc WHERE pronamespace='app_private'::regnamespace AND proname='db03_student_handoff_mutation_unavailable');",
+                'DB03_P38_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P38_INSTALL_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+handoff_storage_sql+'\nCOMMIT;',
+                           'DB03_P38_PRIVATE_STORAGE_INSTALL')
+            output=local.run_psql(container,handoff_storage_test,
+                                  'DB03_P38_PRIVATE_STORAGE_TEST')
+            try:
+                parse_tap(output,27)
+            except RuntimeError:
+                print('DB03_P38_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P38_HANDOFF_STORAGE_DATABASE_PASS 27/27; '
+                  'writer=false consumer=false approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
