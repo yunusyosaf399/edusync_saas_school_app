@@ -876,6 +876,31 @@ def validate_handoff_same_application_fk() -> tuple[str, str]:
     return sql,test
 
 
+def validate_handoff_section_class_fk() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/40_01_student_handoff_section_class_fk.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/40_student_handoff_section_class_fk.sql').read_text()
+    tables = re.findall(r'(?m)^ALTER TABLE app_private\.([a-z0-9_]+)', sql)
+    if tables != ['section_offerings','admission_student_handoffs']:
+        raise RuntimeError('DB03_P40_SECTION_CLASS_TABLE_SCOPE')
+    if re.search(r'(?mi)^\s*(?:GRANT |CREATE FUNCTION|CREATE TABLE|INSERT |UPDATE |DELETE |DROP |CREATE ROLE)',sql):
+        raise RuntimeError('DB03_P40_NO_WRITER_OR_ACTIVATION')
+    for term in ('db03_handoff_section_class_source_key',
+                 'db03_handoff_section_same_class',
+                 'UNIQUE(id,class_offering_id)',
+                 'FOREIGN KEY(section_offering_id,class_offering_id)',
+                 'REFERENCES app_private.section_offerings(id,class_offering_id)',
+                 'ON UPDATE RESTRICT ON DELETE RESTRICT'):
+        if term not in sql:
+            raise RuntimeError('DB03_P40_SECTION_CLASS_FK_MISSING_'+term)
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['15']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 15
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P40_SECTION_CLASS_TEST_PLAN')
+    print('DB03_P40_SECTION_CLASS_FK_SOURCE_PASS assertions=15 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -920,6 +945,7 @@ def main() -> int:
     principal_section_sql, principal_section_test = validate_principal_section_candidate_source()
     handoff_storage_sql, handoff_storage_test = validate_student_handoff_storage()
     handoff_fk_sql, handoff_fk_test = validate_handoff_same_application_fk()
+    section_class_sql, section_class_test = validate_handoff_section_class_fk()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1813,6 +1839,33 @@ def main() -> int:
                 raise
             print('DB03_P39_SAME_APPLICATION_FK_DATABASE_PASS 17/17; '
                   'cross_application_binding_denied=true approve=false student_create=false')
+            # P40: cross-package Section-to-Class lineage, still without a writer.
+            try:
+                local.run_psql(container,'BEGIN;\n'+section_class_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P40_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P40_INJECTED_SECTION_FK_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P40_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P40_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT count(*) FROM pg_constraint WHERE conname IN "
+                "('db03_handoff_section_class_source_key','db03_handoff_section_same_class');",
+                'DB03_P40_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P40_FK_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+section_class_sql+'\nCOMMIT;',
+                           'DB03_P40_PRIVATE_FK_INSTALL')
+            output=local.run_psql(container,section_class_test,
+                                  'DB03_P40_PRIVATE_FK_TEST')
+            try:
+                parse_tap(output,15)
+            except RuntimeError:
+                print('DB03_P40_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P40_SECTION_CLASS_FK_DATABASE_PASS 15/15; '
+                  'wrong_class_section_binding_denied=true approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
