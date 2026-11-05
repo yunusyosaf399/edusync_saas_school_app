@@ -1621,7 +1621,13 @@ def main() -> int:
                            'DB03_P36_PRIVATE_INPUT_INSTALL')
             output=local.run_psql(container,principal_approve_input_test,
                                   'DB03_P36_PRIVATE_INPUT_TEST')
-            parse_tap(output,18)
+            try:
+                parse_tap(output,18)
+            except RuntimeError:
+                # Emit the exact failing pgTAP assertion; do not replace a
+                # measured authorization assertion with a weaker guess.
+                print('DB03_P36_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
             print('DB03_P36_APPROVE_INPUT_DATABASE_PASS 18/18; '
                   'client_grants=false approve=false student_create=false')
             from destination_command_ci import run_destination_command
