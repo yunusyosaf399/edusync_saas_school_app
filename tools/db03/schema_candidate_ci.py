@@ -815,14 +815,14 @@ def validate_principal_section_candidate_source() -> tuple[str, str]:
 def validate_student_handoff_storage() -> tuple[str, str]:
     sql = (ROOT / 'supabase/proposals/db03/38_01_student_handoff_storage.sql.draft').read_text()
     test = (ROOT / 'supabase/tests/db03/38_student_handoff_storage.sql').read_text()
-    if (re.findall(r'(?m)^CREATE TABLE app_private\\.([a-z0-9_]+) \\(',sql)
+    if (re.findall(r'(?m)^CREATE TABLE app_private\.([a-z0-9_]+) \(',sql)
         != ['admission_student_handoffs']):
         raise RuntimeError('DB03_P38_HANDOFF_TABLE_SCOPE')
-    if (re.findall(r'(?m)^CREATE FUNCTION app_private\\.([a-z0-9_]+)\\(',sql)
+    if (re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)
         != ['db03_student_handoff_mutation_unavailable']):
         raise RuntimeError('DB03_P38_HANDOFF_FUNCTION_SCOPE')
-    outside = re.sub(r'\\$([a-z_]*)\\$.*?\\$\\1\\$', '', sql, flags=re.S)
-    if re.search(r'(?mi)^\\s*(INSERT INTO|UPDATE |DELETE FROM|GRANT |CREATE OR REPLACE FUNCTION|CREATE POLICY .* TO (?:authenticated|anon|service_role))\\b',outside):
+    outside = re.sub(r'\$([a-z_]*)\$.*?\$\1\$', '', sql, flags=re.S)
+    if re.search(r'(?mi)^\s*(INSERT INTO|UPDATE |DELETE FROM|GRANT |CREATE OR REPLACE FUNCTION|CREATE POLICY .* TO (?:authenticated|anon|service_role))\b',outside):
         raise RuntimeError('DB03_P38_HANDOFF_NO_WRITER_OR_ACTIVATION')
     for term in (
         'FORCE ROW LEVEL SECURITY', 'UNIQUE', 'FOREIGN KEY(forward_id,application_id)',
@@ -836,8 +836,8 @@ def validate_student_handoff_storage() -> tuple[str, str]:
     ):
         if term not in sql:
             raise RuntimeError('DB03_P38_HANDOFF_FAIL_CLOSED_'+term)
-    if (re.findall(r'SELECT plan\\((\\d+)\\);',test) != ['27']
-        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\\(',test)) != 27
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['27']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 27
         or not test.rstrip().endswith('ROLLBACK;')):
         raise RuntimeError('DB03_P38_HANDOFF_TEST_PLAN')
     print('DB03_P38_HANDOFF_STORAGE_SOURCE_PASS assertions=27 sha256='+
