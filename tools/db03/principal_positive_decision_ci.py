@@ -250,6 +250,20 @@ def run_positive_principal_decisions(local, container, root, worker, api,
                  OTHER_SECTION,'15151515-1515-4515-8515-151515151517',
                  '92929292-9292-4292-8292-929292929292',
                  '11111111-1111-4111-8111-111111111111'))
+                # D1 enforces an initial immutable capacity revision for
+                # each new Section at transaction commit. Record both in
+                # this same signed-actor fixture transaction; never bypass
+                # the deferred academic integrity trigger.
+                conn.execute(
+                    'INSERT INTO app_private.capacity_revisions('
+                    'id,class_offering_id,section_offering_id,old_capacity,'
+                    'new_capacity,effective_on,reason,created_by) VALUES '
+                    "(%s,NULL,%s,NULL,30,CURRENT_DATE-20,'P37 Grade 1-A initial capacity',%s),"
+                    "(%s,NULL,%s,NULL,30,CURRENT_DATE-20,'P37 other-campus initial capacity',%s)",
+                    ('37373737-3737-4373-8373-373737373741',SECTION,
+                     '11111111-1111-4111-8111-111111111111',
+                     '37373737-3737-4373-8373-373737373742',OTHER_SECTION,
+                     '11111111-1111-4111-8111-111111111111'))
             section=conn.execute(
                 'SELECT app_private.db03_principal_section_candidate_source(%s,%s,%s,%s)',
                 (returned,ret_version,ret_forward,SECTION)).fetchone()[0]
