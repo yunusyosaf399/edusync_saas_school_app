@@ -1,0 +1,32 @@
+-- P39 inactive Admissions -> D1 handoff relational lineage hardening.
+-- P38's deny-all handoff writer stays in force. No grant, command, trigger
+-- relaxation, Student insert, payment clearance, or hosted migration.
+-- Referential existence alone is insufficient: every applicant-specific
+-- source must come from this SAME application and the exact Person/Grade.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.admission_identity_resolutions
+ ADD CONSTRAINT db03_handoff_identity_source_key
+ UNIQUE(id,application_id,person_id);
+ALTER TABLE app_private.admission_fee_dispositions
+ ADD CONSTRAINT db03_handoff_fee_source_key
+ UNIQUE(id,application_id);
+ALTER TABLE app_private.admission_destination_intents
+ ADD CONSTRAINT db03_handoff_grade_source_key
+ UNIQUE(id,application_id,class_offering_id);
+-- P38 is empty and all writes are prohibited. No nullable fallback is
+-- introduced for the future approval issuer.
+ALTER TABLE app_private.admission_student_handoffs
+ ADD COLUMN destination_intent_id uuid NOT NULL,
+ ADD CONSTRAINT db03_handoff_identity_same_application
+ FOREIGN KEY(identity_resolution_id,application_id,person_id)
+ REFERENCES app_private.admission_identity_resolutions(id,application_id,person_id)
+ ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ADD CONSTRAINT db03_handoff_fee_same_application
+ FOREIGN KEY(fee_disposition_id,application_id)
+ REFERENCES app_private.admission_fee_dispositions(id,application_id)
+ ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ADD CONSTRAINT db03_handoff_grade_same_application
+ FOREIGN KEY(destination_intent_id,application_id,class_offering_id)
+ REFERENCES app_private.admission_destination_intents(id,application_id,class_offering_id)
+ ON UPDATE RESTRICT ON DELETE RESTRICT;
+RESET ROLE;

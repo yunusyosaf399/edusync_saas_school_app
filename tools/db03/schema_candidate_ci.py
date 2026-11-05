@@ -845,6 +845,37 @@ def validate_student_handoff_storage() -> tuple[str, str]:
     return sql,test
 
 
+def validate_handoff_same_application_fk() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/39_01_student_handoff_same_application_fk.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/39_student_handoff_same_application_fk.sql').read_text()
+    tables = re.findall(r'(?m)^ALTER TABLE app_private\.([a-z0-9_]+)', sql)
+    if tables != ['admission_identity_resolutions','admission_fee_dispositions',
+                  'admission_destination_intents','admission_student_handoffs']:
+        raise RuntimeError('DB03_P39_FK_TABLE_SCOPE')
+    if re.search(r'(?mi)^\s*(?:GRANT |CREATE FUNCTION|CREATE TABLE|INSERT |UPDATE |DELETE |DROP |CREATE ROLE)',sql):
+        raise RuntimeError('DB03_P39_NO_WRITER_OR_ACTIVATION')
+    for term in ('db03_handoff_identity_same_application',
+                 'db03_handoff_fee_same_application',
+                 'db03_handoff_grade_same_application',
+                 'db03_handoff_identity_source_key',
+                 'db03_handoff_fee_source_key',
+                 'db03_handoff_grade_source_key',
+                 'FOREIGN KEY(identity_resolution_id,application_id,person_id)',
+                 'FOREIGN KEY(fee_disposition_id,application_id)',
+                 'FOREIGN KEY(destination_intent_id,application_id,class_offering_id)',
+                 'destination_intent_id uuid NOT NULL',
+                 'ON UPDATE RESTRICT ON DELETE RESTRICT'):
+        if term not in sql:
+            raise RuntimeError('DB03_P39_SAME_APPLICATION_FK_MISSING_'+term)
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['17']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 17
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P39_FK_TEST_PLAN')
+    print('DB03_P39_SAME_APPLICATION_FK_SOURCE_PASS assertions=17 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -888,6 +919,7 @@ def main() -> int:
     principal_approve_input_sql, principal_approve_input_test = validate_principal_approve_input_source()
     principal_section_sql, principal_section_test = validate_principal_section_candidate_source()
     handoff_storage_sql, handoff_storage_test = validate_student_handoff_storage()
+    handoff_fk_sql, handoff_fk_test = validate_handoff_same_application_fk()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1749,6 +1781,38 @@ def main() -> int:
                 raise
             print('DB03_P38_HANDOFF_STORAGE_DATABASE_PASS 27/27; '
                   'writer=false consumer=false approve=false student_create=false')
+            # P39 enforces same-application identity/fee/Grade source binding.
+            # No handoff writer or Student creation becomes available.
+            try:
+                local.run_psql(container,'BEGIN;\n'+handoff_fk_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P39_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P39_INJECTED_FK_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P39_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P39_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (SELECT count(*) FROM pg_constraint WHERE conname IN "
+                "('db03_handoff_identity_source_key','db03_handoff_fee_source_key',"
+                "'db03_handoff_grade_source_key','db03_handoff_identity_same_application',"
+                "'db03_handoff_fee_same_application','db03_handoff_grade_same_application'))+"
+                "(SELECT count(*) FROM pg_attribute WHERE attrelid='app_private.admission_student_handoffs'::regclass "
+                "AND attname='destination_intent_id' AND NOT attisdropped);",
+                'DB03_P39_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P39_FK_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+handoff_fk_sql+'\nCOMMIT;',
+                           'DB03_P39_PRIVATE_FK_INSTALL')
+            output=local.run_psql(container,handoff_fk_test,
+                                  'DB03_P39_PRIVATE_FK_TEST')
+            try:
+                parse_tap(output,17)
+            except RuntimeError:
+                print('DB03_P39_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P39_SAME_APPLICATION_FK_DATABASE_PASS 17/17; '
+                  'cross_application_binding_denied=true approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
