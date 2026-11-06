@@ -996,6 +996,43 @@ def validate_admission_number_renderer() -> tuple[str, str]:
     return sql,test
 
 
+def validate_application_policy_snapshot_storage() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/44_01_application_policy_snapshot_storage.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/44_application_policy_snapshot_storage.sql').read_text()
+    if (re.findall(r'(?m)^CREATE TABLE app_private\.([a-z0-9_]+)',sql)
+        != ['admission_application_policy_snapshots']
+        or re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)
+        != ['db03_policy_snapshot_mutation_unavailable']
+        or 'SECURITY DEFINER' in sql
+        or re.search(r'(?mi)^\s*(?:GRANT |CREATE ROLE|INSERT INTO|CREATE FUNCTION app\.)',sql)):
+        raise RuntimeError('DB03_P44_POLICY_SNAPSHOT_OBJECT_SCOPE')
+    for term in ('db03_policy_snapshot_application_scope_key',
+                 'db03_policy_snapshot_policy_profiles_key',
+                 'FOREIGN KEY(application_id,school_id,academic_year_id)',
+                 'FOREIGN KEY(policy_version_id,school_id,application_numbering_profile_id,',
+                 'FOREIGN KEY(supersedes_id,application_id)',
+                 'published_configuration_hash bytea NOT NULL',
+                 'DEFERRABLE INITIALLY DEFERRED',
+                 'FORCE ROW LEVEL SECURITY',
+                 'db03_policy_snapshot_mutation_disabled',
+                 'db03_policy_snapshot_no_truncate',
+                 'REVOKE ALL ON app_private.admission_application_policy_snapshots'):
+        if term not in sql:
+            raise RuntimeError('DB03_P44_POLICY_SNAPSHOT_MISSING_'+term)
+    # Fail before the lengthy disposable stack for malformed one-line pgTAP
+    # string literals (such as an apostrophe in a test description).
+    for number,statement in enumerate(test.splitlines(),start=1):
+        if statement.startswith('SELECT ') and statement.count("'") % 2:
+            raise RuntimeError('DB03_P44_TEST_UNBALANCED_SQL_QUOTES_LINE_'+str(number))
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['22']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 22
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P44_POLICY_SNAPSHOT_TEST_PLAN')
+    print('DB03_P44_POLICY_SNAPSHOT_SOURCE_PASS assertions=22 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1044,6 +1081,7 @@ def main() -> int:
     number_storage_sql, number_storage_test = validate_admission_number_storage()
     handoff_number_fk_sql, handoff_number_fk_test = validate_handoff_admission_number_fk()
     admission_renderer_sql, admission_renderer_test = validate_admission_number_renderer()
+    policy_snapshot_sql, policy_snapshot_test = validate_application_policy_snapshot_storage()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2055,6 +2093,36 @@ def main() -> int:
                 raise
             print('DB03_P43_PRIVATE_RENDERER_DATABASE_PASS 31/31; '
                   'number_issue=false approve=false student_create=false')
+            # P44: immutable application -> exact published-policy/profile lineage storage.
+            # The writer remains unavailable and the old application projection untouched.
+            try:
+                local.run_psql(container,'BEGIN;\n'+policy_snapshot_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P44_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P44_INJECTED_POLICY_SNAPSHOT_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P44_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P44_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (to_regclass('app_private.admission_application_policy_snapshots') "
+                "IS NOT NULL)::int + (SELECT count(*)::int FROM pg_constraint "
+                "WHERE conname IN ('db03_policy_snapshot_application_scope_key',"
+                "'db03_policy_snapshot_policy_profiles_key'));",
+                'DB03_P44_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P44_POLICY_SNAPSHOT_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+policy_snapshot_sql+'\nCOMMIT;',
+                           'DB03_P44_PRIVATE_SNAPSHOT_INSTALL')
+            output=local.run_psql(container,policy_snapshot_test,
+                                  'DB03_P44_PRIVATE_SNAPSHOT_TEST')
+            try:
+                parse_tap(output,22)
+            except RuntimeError:
+                print('DB03_P44_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P44_POLICY_SNAPSHOT_DATABASE_PASS 22/22; '
+                  'binding_writer=false principal_approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
