@@ -1,0 +1,45 @@
+-- P45 inactive: bind each final Admissions -> D1 handoff to the exact
+-- application policy snapshot and its ADMISSION-number series/profile/year.
+-- Existing P38/P41/P44 deny-all writers stay intact. This enables no command.
+SET ROLE schoolos_schema_owner;
+-- Composite source keys prove lineage across three independently retained
+-- records without relying on mutable latest-policy/profile lookups.
+ALTER TABLE app_private.admission_application_policy_snapshots
+ ADD CONSTRAINT db03_handoff_policy_snapshot_source_key
+ UNIQUE(id,application_id,application_version,stage_epoch,
+        admission_numbering_profile_id,academic_year_id);
+ALTER TABLE app_private.admission_number_allocations
+ ADD CONSTRAINT db03_handoff_policy_allocation_source_key
+ UNIQUE(id,application_id,series_id);
+ALTER TABLE app_private.admission_number_series
+ ADD CONSTRAINT db03_handoff_policy_series_source_key
+ UNIQUE(id,profile_id,academic_year_id);
+-- Handoffs are currently empty and cannot be written by any role: NOT NULL
+-- columns have no legacy rows to backfill and no optional bypass.
+ALTER TABLE app_private.admission_student_handoffs
+ ADD COLUMN policy_snapshot_id uuid NOT NULL,
+ ADD COLUMN admission_number_series_id uuid NOT NULL,
+ ADD COLUMN admission_numbering_profile_id uuid NOT NULL,
+ ADD COLUMN academic_year_id uuid NOT NULL,
+ ADD CONSTRAINT db03_handoff_policy_snapshot_same_application_version
+ FOREIGN KEY(policy_snapshot_id,application_id,application_version,stage_epoch,
+             admission_numbering_profile_id,academic_year_id)
+ REFERENCES app_private.admission_application_policy_snapshots
+            (id,application_id,application_version,stage_epoch,
+             admission_numbering_profile_id,academic_year_id)
+ ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ADD CONSTRAINT db03_handoff_policy_allocation_same_series
+ FOREIGN KEY(admission_number_allocation_id,application_id,admission_number_series_id)
+ REFERENCES app_private.admission_number_allocations(id,application_id,series_id)
+ ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ADD CONSTRAINT db03_handoff_policy_series_exact_profile_year
+ FOREIGN KEY(admission_number_series_id,admission_numbering_profile_id,academic_year_id)
+ REFERENCES app_private.admission_number_series(id,profile_id,academic_year_id)
+ ON UPDATE RESTRICT ON DELETE RESTRICT;
+-- By transitivity:
+-- handoff Application/version/epoch -> selected snapshot -> same School/Year policy,
+-- handoff allocation -> exact series -> profile/year named by that snapshot.
+-- Future writer must additionally verify latest revision, current authority,
+-- policy effective at binding, stage/version freshness, receipts/audit/outbox,
+-- and lock all sources before a one-transaction Principal APPROVE/D1 handoff.
+RESET ROLE;
