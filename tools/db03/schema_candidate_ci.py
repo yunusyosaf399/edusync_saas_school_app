@@ -938,6 +938,34 @@ def validate_admission_number_storage() -> tuple[str, str]:
     return sql,test
 
 
+def validate_handoff_admission_number_fk() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/42_01_student_handoff_number_fk.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/42_student_handoff_number_fk.sql').read_text()
+    if (not sql.rstrip().endswith('RESET ROLE;') or
+        re.search(r'(?mi)^\s*(?:CREATE TABLE|CREATE ROLE|INSERT INTO|GRANT |CREATE FUNCTION|DROP TRIGGER)\b',sql)):
+        raise RuntimeError('DB03_P42_NO_WRITER_OR_ACTIVATION')
+    for term in ('db03_handoff_number_source_key',
+                 'UNIQUE(id,application_id,number_kind,state)',
+                 'ADD COLUMN admission_number_allocation_id uuid NOT NULL',
+                 "admission_number_kind='ADMISSION'",
+                 "admission_number_state='ALLOCATED'",
+                 'db03_handoff_number_one_link',
+                 'db03_handoff_number_same_application',
+                 'FOREIGN KEY(admission_number_allocation_id,application_id,',
+                 'REFERENCES app_private.admission_number_allocations',
+                 'ON UPDATE RESTRICT ON DELETE RESTRICT'):
+        if term not in sql:
+            raise RuntimeError('DB03_P42_MISSING_'+term)
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['20']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 20
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P42_TEST_PLAN')
+    print('DB03_P42_HANDOFF_NUMBER_FK_SOURCE_PASS assertions=20 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -984,6 +1012,7 @@ def main() -> int:
     handoff_fk_sql, handoff_fk_test = validate_handoff_same_application_fk()
     section_class_sql, section_class_test = validate_handoff_section_class_fk()
     number_storage_sql, number_storage_test = validate_admission_number_storage()
+    handoff_number_fk_sql, handoff_number_fk_test = validate_handoff_admission_number_fk()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1933,6 +1962,41 @@ def main() -> int:
                 raise
             print('DB03_P41_NUMBER_STORAGE_DATABASE_PASS 20/20; '
                   'number_allocation_unavailable=true student_create=false')
+            # P42: immutable, same-application ALLOCATED ADMISSION number -> handoff.
+            # No number issuer, Principal approval, or D1 Student write is enabled.
+            try:
+                local.run_psql(container,'BEGIN;\n'+handoff_number_fk_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P42_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P42_INJECTED_NUMBER_HANDOFF_FK_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P42_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P42_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (SELECT count(*) FROM pg_constraint WHERE conname IN "
+                "('db03_handoff_number_source_key','db03_handoff_number_kind_exact',"
+                "'db03_handoff_number_state_exact','db03_handoff_number_one_link',"
+                "'db03_handoff_number_same_application'))+"
+                "(SELECT count(*) FROM pg_attribute WHERE attrelid="
+                "'app_private.admission_student_handoffs'::regclass "
+                "AND attname IN ('admission_number_allocation_id','admission_number_kind',"
+                "'admission_number_state') AND NOT attisdropped);",
+                'DB03_P42_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P42_HANDOFF_NUMBER_FK_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+handoff_number_fk_sql+'\nCOMMIT;',
+                           'DB03_P42_PRIVATE_FK_INSTALL')
+            output=local.run_psql(container,handoff_number_fk_test,
+                                  'DB03_P42_PRIVATE_FK_TEST')
+            try:
+                parse_tap(output,20)
+            except RuntimeError:
+                print('DB03_P42_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P42_HANDOFF_NUMBER_FK_DATABASE_PASS 20/20; '
+                  'cross_application_or_canceled_number_denied=true '
+                  'approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
