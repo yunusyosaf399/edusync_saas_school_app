@@ -1033,6 +1033,41 @@ def validate_application_policy_snapshot_storage() -> tuple[str, str]:
     return sql,test
 
 
+def validate_handoff_policy_number_lineage() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/45_01_student_handoff_policy_number_lineage.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/45_student_handoff_policy_number_lineage.sql').read_text()
+    if (re.search(r'(?mi)^\s*(?:CREATE (?:TABLE|FUNCTION|POLICY|TRIGGER)|GRANT |INSERT INTO|UPDATE |DELETE FROM|DROP )', sql)
+        or 'SECURITY DEFINER' in sql
+        or 'SET ROLE schoolos_schema_owner;' not in sql
+        or 'RESET ROLE;' not in sql):
+        raise RuntimeError('DB03_P45_POLICY_HANDOFF_OBJECT_SCOPE')
+    for term in ('db03_handoff_policy_snapshot_source_key',
+                 'db03_handoff_policy_allocation_source_key',
+                 'db03_handoff_policy_series_source_key',
+                 'db03_handoff_policy_snapshot_same_application_version',
+                 'db03_handoff_policy_allocation_same_series',
+                 'db03_handoff_policy_series_exact_profile_year',
+                 'ADD COLUMN policy_snapshot_id uuid NOT NULL',
+                 'ADD COLUMN admission_number_series_id uuid NOT NULL',
+                 'ADD COLUMN admission_numbering_profile_id uuid NOT NULL',
+                 'ADD COLUMN academic_year_id uuid NOT NULL',
+                 'FOREIGN KEY(policy_snapshot_id,application_id,application_version,stage_epoch,',
+                 'FOREIGN KEY(admission_number_allocation_id,application_id,admission_number_series_id)',
+                 'FOREIGN KEY(admission_number_series_id,admission_numbering_profile_id,academic_year_id)'):
+        if term not in sql:
+            raise RuntimeError('DB03_P45_POLICY_HANDOFF_GUARD_MISSING_'+term)
+    for number, statement in enumerate(test.splitlines(), start=1):
+        if statement.startswith('SELECT ') and statement.count("'") % 2:
+            raise RuntimeError('DB03_P45_TEST_UNBALANCED_SQL_QUOTES_LINE_'+str(number))
+    if (re.findall(r'SELECT plan\((\d+)\);', test) != ['21']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 21
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P45_POLICY_HANDOFF_TEST_PLAN')
+    print('DB03_P45_POLICY_HANDOFF_SOURCE_PASS assertions=21 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1082,6 +1117,7 @@ def main() -> int:
     handoff_number_fk_sql, handoff_number_fk_test = validate_handoff_admission_number_fk()
     admission_renderer_sql, admission_renderer_test = validate_admission_number_renderer()
     policy_snapshot_sql, policy_snapshot_test = validate_application_policy_snapshot_storage()
+    handoff_policy_sql, handoff_policy_test = validate_handoff_policy_number_lineage()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2123,6 +2159,44 @@ def main() -> int:
                 raise
             print('DB03_P44_POLICY_SNAPSHOT_DATABASE_PASS 22/22; '
                   'binding_writer=false principal_approve=false student_create=false')
+            # P45: hard FK chain binds the exact policy snapshot and its
+            # ADMISSION numbering profile/year to the single-use D1 handoff.
+            # All P38/P41/P44 writers remain disabled.
+            try:
+                local.run_psql(container,'BEGIN;\n'+handoff_policy_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P45_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P45_INJECTED_POLICY_HANDOFF_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P45_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P45_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (SELECT count(*) FROM pg_constraint WHERE conname IN "
+                "('db03_handoff_policy_snapshot_source_key',"
+                "'db03_handoff_policy_allocation_source_key',"
+                "'db03_handoff_policy_series_source_key',"
+                "'db03_handoff_policy_snapshot_same_application_version',"
+                "'db03_handoff_policy_allocation_same_series',"
+                "'db03_handoff_policy_series_exact_profile_year'))+"
+                "(SELECT count(*) FROM pg_attribute WHERE "
+                "attrelid='app_private.admission_student_handoffs'::regclass "
+                "AND attname IN ('policy_snapshot_id','admission_number_series_id',"
+                "'admission_numbering_profile_id','academic_year_id') AND NOT attisdropped);",
+                'DB03_P45_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P45_POLICY_HANDOFF_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+handoff_policy_sql+'\nCOMMIT;',
+                           'DB03_P45_POLICY_HANDOFF_INSTALL')
+            output=local.run_psql(container,handoff_policy_test,
+                                  'DB03_P45_POLICY_HANDOFF_TEST')
+            try:
+                parse_tap(output,21)
+            except RuntimeError:
+                print('DB03_P45_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P45_POLICY_HANDOFF_DATABASE_PASS 21/21; '
+                  'policy_binding_writer=false number_issue=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
