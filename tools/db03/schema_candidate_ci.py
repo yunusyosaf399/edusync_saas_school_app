@@ -1068,6 +1068,40 @@ def validate_handoff_policy_number_lineage() -> tuple[str, str]:
     return sql,test
 
 
+def validate_forwarded_policy_binding_source() -> tuple[str,str]:
+    sql=(ROOT / 'supabase/proposals/db03/46_01_forwarded_policy_binding_candidate.sql.draft').read_text()
+    test=(ROOT / 'supabase/tests/db03/46_forwarded_policy_binding_candidate.sql').read_text()
+    if (re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)
+        != ['db03_policy_binding_candidate_source']
+        or 'SECURITY DEFINER' in sql
+        or re.search(r'(?mi)^\s*(?:CREATE TABLE|CREATE POLICY|CREATE TRIGGER|GRANT |INSERT INTO|UPDATE |DELETE FROM|DROP )',sql)):
+        raise RuntimeError('DB03_P46A_POLICY_SOURCE_OBJECT_SCOPE')
+    for term in ('SECURITY INVOKER','SET search_path=pg_catalog,pg_temp',
+                 'db03_principal_forward_live(a.id,p_forward)',
+                 'f.application_version=a.row_version',
+                 'i.policy_version_id',
+                 "pol.state IN('PUBLISHED','RETIRED')",
+                 'pol.effective_from<=f.occurred_at',
+                 'f.occurred_at<pol.effective_until',
+                 'db03_policy_configuration_hash(pol.id)',
+                 "'actor_authorized_to_bind',false",
+                 "'policy_binding_committed',false",
+                 "'can_bind',false",
+                 'REVOKE ALL ON FUNCTION app_private.db03_policy_binding_candidate_source'):
+        if term not in sql:
+            raise RuntimeError('DB03_P46A_POLICY_SOURCE_MISSING_'+term)
+    for number,statement in enumerate(test.splitlines(),start=1):
+        if statement.startswith('SELECT ') and statement.count("'") % 2:
+            raise RuntimeError('DB03_P46A_TEST_UNBALANCED_SQL_QUOTES_LINE_'+str(number))
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['24']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 24
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P46A_POLICY_SOURCE_TEST_PLAN')
+    print('DB03_P46A_POLICY_SOURCE_PASS assertions=24 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1118,6 +1152,7 @@ def main() -> int:
     admission_renderer_sql, admission_renderer_test = validate_admission_number_renderer()
     policy_snapshot_sql, policy_snapshot_test = validate_application_policy_snapshot_storage()
     handoff_policy_sql, handoff_policy_test = validate_handoff_policy_number_lineage()
+    forwarded_policy_sql, forwarded_policy_test = validate_forwarded_policy_binding_source()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2197,6 +2232,35 @@ def main() -> int:
                 raise
             print('DB03_P45_POLICY_HANDOFF_DATABASE_PASS 21/21; '
                   'policy_binding_writer=false number_issue=false student_create=false')
+            # P46A: derive immutable policy candidate ONLY from the latest
+            # exact Forward -> retained Intake, never the newest School policy.
+            # Read-only and unavailable to clients or executors.
+            try:
+                local.run_psql(container,'BEGIN;\n'+forwarded_policy_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P46A_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P46A_INJECTED_POLICY_SOURCE_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P46A_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P46A_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (to_regprocedure('app_private.db03_policy_binding_candidate_source"
+                "(uuid,bigint,uuid)') IS NOT NULL)::int;",
+                'DB03_P46A_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P46A_POLICY_SOURCE_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+forwarded_policy_sql+'\nCOMMIT;',
+                           'DB03_P46A_POLICY_SOURCE_INSTALL')
+            output=local.run_psql(container,forwarded_policy_test,
+                                  'DB03_P46A_POLICY_SOURCE_TEST')
+            try:
+                parse_tap(output,24)
+            except RuntimeError:
+                print('DB03_P46A_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P46A_POLICY_SOURCE_DATABASE_PASS 24/24; '
+                  'binding_writer=false principal_approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)

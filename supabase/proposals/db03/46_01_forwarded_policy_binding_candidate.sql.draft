@@ -1,0 +1,84 @@
+-- DB03 P46A: private read-only identification of the exact policy selected
+-- by the already-forwarded document intake. NO policy writer, no new actor API.
+-- Never choose the newest School policy or trust a caller-selected profile.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_policy_binding_candidate_source(
+ p_application uuid,p_expected_version bigint,p_forward uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ a app_private.admission_applications%ROWTYPE;
+ f app_private.admission_document_forwards%ROWTYPE;
+ i app_private.admission_document_intakes%ROWTYPE;
+ pol app_private.admission_policy_versions%ROWTYPE;
+ application_profile app_private.admission_numbering_profiles%ROWTYPE;
+ admission_profile app_private.admission_numbering_profiles%ROWTYPE;
+ fingerprint bytea;
+ source_current boolean:=false;
+ status text:='FORWARD_OR_VERSION_STALE';
+BEGIN
+ IF p_expected_version IS NULL OR p_expected_version<1 OR p_forward IS NULL THEN
+  RAISE EXCEPTION 'DB03 policy binding candidate typed source invalid';
+ END IF;
+ IF p_application IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF a.id IS NULL THEN RETURN NULL; END IF;
+ IF a.state='DRAFT' AND a.row_version=p_expected_version
+  AND a.stage_epoch>0 THEN
+  SELECT * INTO f FROM app_private.admission_document_forwards
+   WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+  IF f.id IS NOT DISTINCT FROM p_forward AND f.application_version=a.row_version
+   AND COALESCE(app_private.db03_principal_forward_live(a.id,p_forward),false) THEN
+   SELECT * INTO i FROM app_private.admission_document_intakes
+    WHERE id=f.intake_id AND application_id=a.id;
+   IF i.id IS NOT NULL THEN
+    SELECT * INTO pol FROM app_private.admission_policy_versions WHERE id=i.policy_version_id;
+    IF pol.id IS NOT NULL AND pol.school_id=a.school_id
+     AND pol.state IN('PUBLISHED','RETIRED')
+     AND pol.published_at IS NOT NULL AND pol.effective_from IS NOT NULL
+     AND pol.effective_from<=f.occurred_at
+     AND (pol.effective_until IS NULL OR f.occurred_at<pol.effective_until) THEN
+     SELECT * INTO application_profile FROM app_private.admission_numbering_profiles
+      WHERE id=pol.application_numbering_profile_id;
+     SELECT * INTO admission_profile FROM app_private.admission_numbering_profiles
+      WHERE id=pol.admission_numbering_profile_id;
+     IF application_profile.id IS NOT NULL
+      AND application_profile.school_id=a.school_id
+      AND application_profile.number_kind='APPLICATION'
+      AND application_profile.state='PUBLISHED'
+      AND admission_profile.id IS NOT NULL
+      AND admission_profile.school_id=a.school_id
+      AND admission_profile.number_kind='ADMISSION'
+      AND admission_profile.state='PUBLISHED' THEN
+      fingerprint:=app_private.db03_policy_configuration_hash(pol.id);
+      source_current:=COALESCE(pg_catalog.octet_length(fingerprint)=32,false);
+      IF source_current THEN status:='VERIFIED_FORWARDED_POLICY_CANDIDATE'; END IF;
+     END IF;
+    END IF;
+   END IF;
+   IF NOT source_current THEN status:='FORWARDED_POLICY_SOURCE_INCONSISTENT'; END IF;
+  END IF;
+ END IF;
+ RETURN pg_catalog.jsonb_build_object(
+  'application_id',a.id,'application_version',a.row_version,'stage_epoch',a.stage_epoch,
+  'forward_id',CASE WHEN source_current THEN f.id ELSE NULL END,
+  'document_intake_id',CASE WHEN source_current THEN i.id ELSE NULL END,
+  'school_id',CASE WHEN source_current THEN a.school_id ELSE NULL END,
+  'academic_year_id',CASE WHEN source_current THEN a.academic_year_id ELSE NULL END,
+  'policy_version_id',CASE WHEN source_current THEN pol.id ELSE NULL END,
+  'application_numbering_profile_id',CASE WHEN source_current
+   THEN pol.application_numbering_profile_id ELSE NULL END,
+  'admission_numbering_profile_id',CASE WHEN source_current
+   THEN pol.admission_numbering_profile_id ELSE NULL END,
+  'published_configuration_hash_hex',CASE WHEN source_current
+   THEN pg_catalog.encode(fingerprint,'hex') ELSE NULL END,
+  'forwarded_policy_source_current',source_current,
+  'actor_authorized_to_bind',false,'policy_binding_committed',false,
+  'can_bind',false,'can_approve',false,'can_create_student',false,
+  'status',status);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_policy_binding_candidate_source(uuid,bigint,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_file_login,schoolos_platform_executor,schoolos_student_executor,
+ schoolos_identity_executor,schoolos_evidence_writer,schoolos_authz_reader;
+RESET ROLE;
