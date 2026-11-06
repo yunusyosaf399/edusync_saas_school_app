@@ -966,6 +966,36 @@ def validate_handoff_admission_number_fk() -> tuple[str, str]:
 
 
 
+def validate_admission_number_renderer() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/43_01_admission_number_renderer.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/43_admission_number_renderer.sql').read_text()
+    if (re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)
+        != ['db03_render_admission_number']
+        or 'IMMUTABLE SECURITY INVOKER' not in sql
+        or 'SET ROLE schoolos_schema_owner;' not in sql
+        or 'REVOKE ALL ON FUNCTION' not in sql
+        or not sql.rstrip().endswith('RESET ROLE;')
+        or re.search(r'(?mi)^\s*(?:GRANT |CREATE TABLE|CREATE ROLE|INSERT INTO|CREATE FUNCTION app\.)',sql)
+        or 'SECURITY DEFINER' in sql):
+        raise RuntimeError('DB03_P43_PRIVATE_RENDERER_SCOPE')
+    for term in ("p_session_format NOT IN('FULL_YEAR','TWO_DIGIT_YEAR')",
+                 'p_digits NOT BETWEEN 1 AND 8',
+                 'p_numeric_value<p_start_value',
+                 'p_numeric_value>=pg_catalog.power',
+                 'pg_catalog.lpad(p_numeric_value::text,p_digits',
+                 'RAISE EXCEPTION',
+                 "ERRCODE='22023'"):
+        if term not in sql:
+            raise RuntimeError('DB03_P43_FORMAT_GUARD_MISSING_'+term)
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['31']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 31
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P43_RENDERER_TEST_PLAN')
+    print('DB03_P43_PRIVATE_NUMBER_RENDERER_SOURCE_PASS assertions=31 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1013,6 +1043,7 @@ def main() -> int:
     section_class_sql, section_class_test = validate_handoff_section_class_fk()
     number_storage_sql, number_storage_test = validate_admission_number_storage()
     handoff_number_fk_sql, handoff_number_fk_test = validate_handoff_admission_number_fk()
+    admission_renderer_sql, admission_renderer_test = validate_admission_number_renderer()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1997,6 +2028,33 @@ def main() -> int:
             print('DB03_P42_HANDOFF_NUMBER_FK_DATABASE_PASS 20/20; '
                   'cross_application_or_canceled_number_denied=true '
                   'approve=false student_create=false')
+            # P43: deterministic private string rendering; absolutely no number issue.
+            try:
+                local.run_psql(container,'BEGIN;\n'+admission_renderer_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P43_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P43_INJECTED_RENDERER_INSTALL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P43_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P43_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (to_regprocedure('app_private.db03_render_admission_number"
+                "(text,text,text,date,integer,bigint,bigint)') IS NOT NULL)::int;",
+                'DB03_P43_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P43_NUMBER_RENDERER_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+admission_renderer_sql+'\nCOMMIT;',
+                           'DB03_P43_PRIVATE_RENDERER_INSTALL')
+            output=local.run_psql(container,admission_renderer_test,
+                                  'DB03_P43_PRIVATE_RENDERER_TEST')
+            try:
+                parse_tap(output,31)
+            except RuntimeError:
+                print('DB03_P43_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P43_PRIVATE_RENDERER_DATABASE_PASS 31/31; '
+                  'number_issue=false approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
