@@ -1019,6 +1019,11 @@ def validate_application_policy_snapshot_storage() -> tuple[str, str]:
                  'REVOKE ALL ON app_private.admission_application_policy_snapshots'):
         if term not in sql:
             raise RuntimeError('DB03_P44_POLICY_SNAPSHOT_MISSING_'+term)
+    # Fail before the lengthy disposable stack for malformed one-line pgTAP
+    # string literals (such as an apostrophe in a test description).
+    for number,statement in enumerate(test.splitlines(),start=1):
+        if statement.startswith('SELECT ') and statement.count("'") % 2:
+            raise RuntimeError('DB03_P44_TEST_UNBALANCED_SQL_QUOTES_LINE_'+str(number))
     if (re.findall(r'SELECT plan\((\d+)\);',test) != ['22']
         or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 22
         or not test.rstrip().endswith('ROLLBACK;')):
