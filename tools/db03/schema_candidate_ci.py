@@ -901,6 +901,43 @@ def validate_handoff_section_class_fk() -> tuple[str, str]:
     return sql,test
 
 
+def validate_admission_number_storage() -> tuple[str, str]:
+    sql = (ROOT / 'supabase/proposals/db03/41_01_admission_number_series_and_allocations.sql.draft').read_text()
+    test = (ROOT / 'supabase/tests/db03/41_admission_number_series_and_allocations.sql').read_text()
+    tables = re.findall(r'(?m)^CREATE TABLE app_private\.([a-z0-9_]+)', sql)
+    if tables != ['admission_number_series','admission_number_allocations']:
+        raise RuntimeError('DB03_P41_NUMBER_STORAGE_TABLE_SCOPE')
+    if ('SECURITY DEFINER' in sql or
+        re.search(r'(?mi)^\s*(?:GRANT |CREATE ROLE|CREATE FUNCTION app\.)',sql) or
+        sql.count('CREATE FUNCTION app_private.db03_number_storage_mutation_unavailable()') != 1):
+        raise RuntimeError('DB03_P41_NO_WRITER_OR_ACTIVATION')
+    for term in ('db03_number_profile_school_kind_key',
+                 'db03_number_application_school_key',
+                 'db03_number_series_profile_year',
+                 'db03_number_series_scope_key',
+                 'db03_number_allocation_series_value',
+                 'db03_number_allocation_rendered_unique',
+                 'db03_number_application_kind_unique',
+                 'FOREIGN KEY(profile_id,school_id,number_kind)',
+                 'FOREIGN KEY(academic_year_id,school_id)',
+                 'FOREIGN KEY(series_id,school_id,number_kind,session_label)',
+                 'FOREIGN KEY(application_id,school_id)',
+                 'FORCE ROW LEVEL SECURITY',
+                 'db03_number_series_mutation_disabled',
+                 'db03_number_allocations_mutation_disabled',
+                 'db03_number_series_no_truncate',
+                 'db03_number_allocations_no_truncate'):
+        if term not in sql:
+            raise RuntimeError('DB03_P41_NUMBER_STORAGE_MISSING_'+term)
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['20']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 20
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P41_NUMBER_STORAGE_TEST_PLAN')
+    print('DB03_P41_NUMBER_STORAGE_SOURCE_PASS assertions=20 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -946,6 +983,7 @@ def main() -> int:
     handoff_storage_sql, handoff_storage_test = validate_student_handoff_storage()
     handoff_fk_sql, handoff_fk_test = validate_handoff_same_application_fk()
     section_class_sql, section_class_test = validate_handoff_section_class_fk()
+    number_storage_sql, number_storage_test = validate_admission_number_storage()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -1866,6 +1904,35 @@ def main() -> int:
                 raise
             print('DB03_P40_SECTION_CLASS_FK_DATABASE_PASS 15/15; '
                   'wrong_class_section_binding_denied=true approve=false student_create=false')
+            # P41: typed private Admission series and immutable number ledger.
+            try:
+                local.run_psql(container,'BEGIN;\n'+number_storage_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P41_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P41_INJECTED_NUMBER_STORAGE_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P41_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P41_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT ((to_regclass('app_private.admission_number_series') IS NOT NULL)::int + "
+                "(to_regclass('app_private.admission_number_allocations') IS NOT NULL)::int + "
+                "(SELECT count(*)::int FROM pg_constraint WHERE conname IN "
+                "('db03_number_profile_school_kind_key','db03_number_application_school_key')))::text;",
+                'DB03_P41_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P41_NUMBER_STORAGE_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+number_storage_sql+'\nCOMMIT;',
+                           'DB03_P41_PRIVATE_NUMBER_STORAGE_INSTALL')
+            output=local.run_psql(container,number_storage_test,
+                                  'DB03_P41_PRIVATE_NUMBER_STORAGE_TEST')
+            try:
+                parse_tap(output,20)
+            except RuntimeError:
+                print('DB03_P41_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P41_NUMBER_STORAGE_DATABASE_PASS 20/20; '
+                  'number_allocation_unavailable=true student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
