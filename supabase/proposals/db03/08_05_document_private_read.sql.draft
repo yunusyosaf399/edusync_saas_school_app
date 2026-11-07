@@ -1,0 +1,43 @@
+GRANT CREATE ON SCHEMA app_private TO schoolos_platform_executor;
+SET ROLE schoolos_platform_executor;
+-- Descriptor is worker-only and is never a URL or client-visible object key.
+CREATE FUNCTION app_private.db03_describe_document_read(p_forward uuid,p_link uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE f app_private.admission_document_forwards%ROWTYPE; l app_private.admission_document_links%ROWTYPE;
+ a app_private.admission_applications%ROWTYPE; file app_private.file_objects%ROWTYPE; ctx record;
+BEGIN
+ IF session_user<>'schoolos_file_login' THEN RAISE EXCEPTION 'DB03 private document worker denied'; END IF;
+ SELECT * INTO f FROM app_private.admission_document_forwards WHERE id=p_forward;
+ a:=app_private.db03_review_lock(f.application_id,'admission.document.read','private-read');
+ SELECT * INTO ctx FROM app_private.db03_document_review_actor('admission.document.read',a.campus_id);
+ SELECT * INTO l FROM app_private.admission_document_links WHERE id=p_link AND application_id=a.id;
+ SELECT * INTO file FROM app_private.file_objects WHERE id=l.file_object_id;
+ IF l.id IS NULL OR NOT app_private.db03_document_target_open(a.id,a.row_version) OR NOT app_private.db03_document_is_forwarded(a.id)
+ OR EXISTS(SELECT 1 FROM app_private.admission_document_forwards n WHERE n.application_id=a.id AND n.revision>f.revision)
+ OR EXISTS(SELECT 1 FROM app_private.admission_document_links n WHERE n.application_id=a.id AND n.document_kind=l.document_kind AND n.revision>l.revision)
+ OR file.state<>'AVAILABLE' OR file.row_version<>l.file_version OR file.classification<>'PRIVATE' OR file.purpose_code<>'ADMISSION_DOCUMENT' OR file.campus_id<>a.campus_id THEN
+ RAISE EXCEPTION 'DB03 private document target stale or unavailable'; END IF;
+ RETURN jsonb_build_object('application_id',a.id,'application_version',a.row_version,'school_id',a.school_id,'forward_id',f.id,'link_id',l.id,
+ 'file_version',file.row_version,'storage_location_key',file.storage_location_key,'object_key',file.object_key,'content_type',file.content_type,
+ 'byte_size',file.byte_size,'content_hash',encode(file.content_hash,'hex'),'authority_hash',encode(ctx.authority_hash,'hex'));
+END $body$;
+CREATE FUNCTION app_private.db03_confirm_document_read(p_forward uuid,p_link uuid,p_expected bigint,p_file_version bigint,p_authority bytea) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE descriptor jsonb; ctx record; a app_private.admission_applications%ROWTYPE; l app_private.admission_document_links%ROWTYPE;
+ source uuid; receipt uuid:=gen_random_uuid(); key text:=gen_random_uuid()::text; v_hash bytea;
+BEGIN
+ descriptor:=app_private.db03_describe_document_read(p_forward,p_link);
+ IF (descriptor->>'application_version')::bigint IS DISTINCT FROM p_expected OR (descriptor->>'file_version')::bigint IS DISTINCT FROM p_file_version
+ OR descriptor->>'authority_hash' IS DISTINCT FROM encode(p_authority,'hex') THEN RAISE EXCEPTION 'DB03 private document read changed during I/O'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=(descriptor->>'application_id')::uuid;
+ SELECT * INTO l FROM app_private.admission_document_links WHERE id=p_link;
+ SELECT * INTO ctx FROM app_private.db03_document_review_actor('admission.document.read',a.campus_id);
+ INSERT INTO app_private.admission_document_accesses(application_id,forward_id,link_id,document_kind,file_object_id,file_version,authority_hash,application_version,command_receipt_id,occurred_at,created_by)
+ VALUES(a.id,p_forward,l.id,l.document_kind,l.file_object_id,l.file_version,ctx.authority_hash,a.row_version,receipt,clock_timestamp(),ctx.actor_id) RETURNING id INTO source;
+ v_hash:=sha256(convert_to(jsonb_build_array(source,p_forward,p_link,p_expected,p_file_version)::text,'UTF8'));
+ RETURN app_private.db03_review_receipt('admission.document.read',a.campus_id,key,v_hash,p_expected,receipt,source);
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_describe_document_read(uuid,uuid),app_private.db03_confirm_document_read(uuid,uuid,bigint,bigint,bytea) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_describe_document_read(uuid,uuid),app_private.db03_confirm_document_read(uuid,uuid,bigint,bigint,bytea) TO schoolos_file_login;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_platform_executor;

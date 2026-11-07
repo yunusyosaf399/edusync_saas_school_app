@@ -1,0 +1,11 @@
+# Approved applicant scholarship source check (inactive)
+
+This increment follows the independent Finance approval in draft PR #187. It adds a schema-owner-only read of an *approved, currently valid pre-admission* scholarship. The result retains the exact request, version, School/Campus/year, applicant, concession, original command receipt and selected category/percentage/date terms. It returns SQL NULL for a pending, rejected, missing, superseded or otherwise stale request.
+
+The reader verifies the original typed command receipt, latest concession and destination, DRAFT application version, open Class Offering, active School/Campus/year, exact Foundation request payload and independent single-step Finance approval review. It also checks one retained reviewer decision and the original reviewer differs from the requester. Retired or expired current reviewer grants do not erase a previously authorized approval; the source still must be current. All underlying history remains immutable.
+
+This is a private snapshot, not a capability or charge decision. A future protected Student-create/Finance consumer must hold the agreed School-to-application and charge locks, recheck source and Student/Person/handoff identity in the same transaction, and apply the DB08 discount overlap, currency, category frequency, gross and adjustment rules. The current DRAFT-only check cannot be reused as-is after admission submission. There is no Student binding, fee mutation, public RPC, customer operation, hosted migration, clearance, or Principal approval here.
+
+Installation follows S19. The new SQL remains a non-executable draft, and the function has no EXECUTE grant to the worker, client, service or workflow roles. Disposable acceptance includes eight pgTAP structure/privilege checks, injected-install rollback, and real Auth checks for pending, approved exact terms, rejected, and later superseded approval. All previous S19/Admissions regressions continue to run.
+
+The full Student handoff remains blocked on an Admissions-issued final handoff, Finance clearance/waiver and the D1 `student.create` consumer. Those contracts must land before an approval can be safely attached to a Student or applied to an assessed fee.

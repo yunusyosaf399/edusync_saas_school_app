@@ -1,0 +1,40 @@
+{
+  "format_version": 1,
+  "selected_on": "2026-10-26",
+  "owner": "yunusyosaf399",
+  "source": "Current conversation request_user_input responses",
+  "decisions": [
+    {
+      "id": "P2-D02-REVIEWER-COUNT",
+      "question": "Who should confirm an applicant’s identity before the application can be submitted?",
+      "selected_label": "One authorized staff",
+      "selected_description": "One authorized staff member verifies the evidence and records an auditable decision.",
+      "status": "OWNER_SELECTED",
+      "scope": "One qualified current staff verifier; exact authoritative evidence source and protected handler remain implementation dependencies"
+    },
+    {
+      "id": "P2-D01-UNRESOLVED-WITHDRAWAL",
+      "question": "May staff withdraw an unfinished application before the child’s identity has been verified?",
+      "selected_label": "Yes, retain history (Recommended)",
+      "selected_description": "Keep the withdrawn draft and its history without creating a Person record solely to close it.",
+      "status": "OWNER_SELECTED",
+      "supersedes": "Only the older NULL-Person-exclusively-DRAFT terminal restriction; verified identity before SUBMITTED remains binding"
+    },
+    {
+      "id": "P1-D03-IMMEDIATE-PUBLICATION",
+      "question": "When should newly published admission rules start applying to new submissions?",
+      "selected_label": "Immediately (Recommended)",
+      "selected_description": "Rules take effect when published; existing submitted applications retain their original rules.",
+      "status": "OWNER_SELECTED",
+      "scope": "Trusted server publication instant; no scheduled/backdated publication or retroactive submitted-application policy rewrite"
+    }
+  ],
+  "independent_test_skip_review_unchanged": true,
+  "finance_authorizer_clearance_unchanged": true,
+  "canonical_person_verifier_implemented": false,
+  "publication_command_implemented": false,
+  "independent_code_acceptance": false,
+  "hosted_deployment_authorized": false,
+  "operation_enablement_authorized": false,
+  "production_authorized": false
+}

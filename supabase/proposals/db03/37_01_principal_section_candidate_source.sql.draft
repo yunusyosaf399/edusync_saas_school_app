@@ -1,0 +1,73 @@
+-- P37 inactive Principal approval -> D1 first SECTION placement boundary.
+-- Read-only source, not a seat reservation, roll allocation or final approval.
+-- The parent P36 binds current Forward, identity/document source, Grade and
+-- administrative fee status; P37 checks a *proposed* D1 Section against it.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_principal_section_candidate_source(
+ p_application uuid,p_expected_version bigint,p_forward uuid,p_section uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ a app_private.admission_applications%ROWTYPE;
+ approval jsonb;
+ co_school uuid; co_campus uuid; co_year uuid; co_id uuid;
+ co_state text; so_campus uuid; so_state text;
+ class_limit integer; section_limit integer;
+ forward_current boolean:=false;
+ destination_current boolean:=false;
+ section_matches boolean:=false;
+BEGIN
+ IF p_expected_version IS NULL OR p_expected_version<1
+    OR p_forward IS NULL OR p_section IS NULL THEN
+  RAISE EXCEPTION 'DB03 Principal Section candidate invalid';
+ END IF;
+ IF p_application IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=p_application;
+ IF a.id IS NULL THEN RETURN NULL; END IF;
+ approval:=app_private.db03_principal_approve_input_source(
+  p_application,p_expected_version,p_forward);
+ forward_current:=COALESCE((approval->>'forward_current')::boolean,false);
+ destination_current:=COALESCE(
+  (approval->>'destination_and_fee_declaration_current')::boolean,false);
+ SELECT co.school_id,co.campus_id,co.academic_year_id,co.id,
+        co.state,so.campus_id,so.state,co.capacity,so.capacity
+ INTO co_school,co_campus,co_year,co_id,co_state,so_campus,so_state,
+      class_limit,section_limit
+ FROM app_private.section_offerings so
+ JOIN app_private.class_offerings co ON co.id=so.class_offering_id
+ WHERE so.id=p_section;
+ section_matches:=COALESCE(forward_current AND destination_current
+   AND co_id=(approval->>'class_offering_id')::uuid
+   AND co_school=a.school_id AND co_campus=a.campus_id
+   AND co_year=a.academic_year_id AND so_campus=a.campus_id
+   AND co_state='OPEN' AND so_state='OPEN',false);
+ RETURN jsonb_build_object(
+  'application_id',a.id,'application_version',a.row_version,
+  'forward_current',forward_current,
+  'destination_and_fee_declaration_current',destination_current,
+  'section_candidate_compatible',section_matches,
+  'section_offering_id',CASE WHEN section_matches THEN p_section ELSE NULL END,
+  'class_offering_id',CASE WHEN section_matches THEN co_id ELSE NULL END,
+  'school_id',CASE WHEN section_matches THEN co_school ELSE NULL END,
+  'campus_id',CASE WHEN section_matches THEN co_campus ELSE NULL END,
+  'academic_year_id',CASE WHEN section_matches THEN co_year ELSE NULL END,
+  'section_capacity_reserved',false,
+  'section_capacity_available_verified',false,
+  'roll_policy_locked',false,
+  'principal_approve_authorized',false,
+  'atomic_student_handoff_available',false,
+  'can_approve',false,'can_create_student',false,
+  'status',CASE
+    WHEN NOT forward_current THEN 'FORWARD_OR_VERSION_STALE'
+    WHEN NOT destination_current THEN 'GRADE_OR_FEE_DECLARATION_STALE'
+    WHEN NOT section_matches THEN 'SECTION_NOT_IN_APPROVED_GRADE_CONTEXT'
+    ELSE 'SECTION_CANDIDATE_OBSERVED_AWAITING_ATOMIC_D1_HANDOFF'
+  END);
+END $body$;
+REVOKE ALL ON FUNCTION
+ app_private.db03_principal_section_candidate_source(uuid,bigint,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_file_login,schoolos_platform_executor,schoolos_identity_executor,
+ schoolos_evidence_writer,schoolos_authz_reader,schoolos_student_executor;
+RESET ROLE;

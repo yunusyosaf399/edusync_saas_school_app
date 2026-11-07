@@ -1,0 +1,30 @@
+-- P42 inactive hard FK: permanent ADMISSION allocation belongs to the
+-- exact application whose single-use Admissions -> D1 handoff is consumed.
+-- No allocator, approval command, Student mutation, or public grant.
+SET ROLE schoolos_schema_owner;
+-- Keep the kind and allocation lifecycle in the referenced key. A rendered
+-- APPLICATION number or CANCELED ADMISSION number cannot stand in for a
+-- permanent issued ADMISSION number, even with a matching application ID.
+ALTER TABLE app_private.admission_number_allocations
+ ADD CONSTRAINT db03_handoff_number_source_key
+ UNIQUE(id,application_id,number_kind,state);
+-- P38 handoffs are intentionally empty and deny all writes. These columns
+-- therefore have no historic partial values or backfill paths.
+ALTER TABLE app_private.admission_student_handoffs
+ ADD COLUMN admission_number_allocation_id uuid NOT NULL,
+ ADD COLUMN admission_number_kind text NOT NULL DEFAULT 'ADMISSION',
+ ADD COLUMN admission_number_state text NOT NULL DEFAULT 'ALLOCATED',
+ ADD CONSTRAINT db03_handoff_number_kind_exact
+   CHECK(admission_number_kind='ADMISSION'),
+ ADD CONSTRAINT db03_handoff_number_state_exact
+   CHECK(admission_number_state='ALLOCATED'),
+ ADD CONSTRAINT db03_handoff_number_one_link
+   UNIQUE(admission_number_allocation_id),
+ ADD CONSTRAINT db03_handoff_number_same_application
+   FOREIGN KEY(admission_number_allocation_id,application_id,
+               admission_number_kind,admission_number_state)
+   REFERENCES app_private.admission_number_allocations
+              (id,application_id,number_kind,state)
+   ON UPDATE RESTRICT ON DELETE RESTRICT;
+-- Existing P38/P41 row-mutation and TRUNCATE deny triggers remain unchanged.
+RESET ROLE;

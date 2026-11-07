@@ -1,0 +1,60 @@
+SET ROLE schoolos_schema_owner;
+CREATE POLICY db03_deadline_receipts ON app_private.command_receipts TO schoolos_evidence_writer
+ USING(command_kind='admission.certificate.expire') WITH CHECK(command_kind='admission.certificate.expire');
+CREATE POLICY db03_deadline_audit ON app_private.audit_events TO schoolos_evidence_writer
+ USING(event_type='admission.certificate.expire' AND target_kind='ADMISSION_APPLICATION') WITH CHECK(event_type='admission.certificate.expire' AND target_kind='ADMISSION_APPLICATION');
+CREATE POLICY db03_deadline_outbox ON app_private.outbox_events TO schoolos_evidence_writer
+ USING(event_type='admission.certificate.expire' AND aggregate_kind='ADMISSION_APPLICATION') WITH CHECK(event_type='admission.certificate.expire' AND aggregate_kind='ADMISSION_APPLICATION');
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_evidence_writer;
+SET ROLE schoolos_evidence_writer;
+CREATE FUNCTION app_private.db03_deadline_receipt(p_source uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE ctx record; h app_private.admission_deadline_rejections%ROWTYPE; a app_private.admission_applications%ROWTYPE;
+ r app_private.command_receipts%ROWTYPE; body jsonb; v_hash bytea; correlation uuid; v_key text;
+BEGIN
+ SELECT * INTO ctx FROM app_private.db03_deadline_actor();
+ SELECT * INTO h FROM app_private.admission_deadline_rejections WHERE id=p_source;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=h.application_id;
+ IF h.id IS NULL OR a.state IS DISTINCT FROM 'REJECTED' OR a.row_version IS DISTINCT FROM h.application_version
+ OR (h.occurred_at AT TIME ZONE h.school_timezone)::date<>h.evaluated_on OR h.evaluated_on<=h.due_on
+ OR NOT EXISTS(SELECT 1 FROM app_private.admission_application_transitions t WHERE t.id=h.transition_id AND t.application_id=a.id
+ AND t.to_state='REJECTED' AND t.from_state='DRAFT' AND t.sequence_number=2 AND t.reason_private='MISSING_REQUIRED_CERTIFICATE_DEADLINE'
+ AND t.application_version=h.application_version AND t.created_by=h.created_by AND t.occurred_at=h.occurred_at AND t.command_receipt_id=h.command_receipt_id) THEN
+ RAISE EXCEPTION 'DB03 deadline immutable source proof invalid'; END IF;
+ body:=jsonb_build_object('source_id',h.id,'application_id',a.id,'application_version',h.application_version);
+ v_key:='certificate-deadline:'||a.id::text;
+ v_hash:=sha256(convert_to(jsonb_build_array('admission.certificate.expire',a.id)::text,'UTF8'));
+ SELECT * INTO r FROM app_private.command_receipts WHERE id=h.command_receipt_id;
+ IF r.id IS NULL THEN
+  IF h.created_by<>ctx.actor_id THEN RAISE EXCEPTION 'DB03 deadline new effect actor mismatch'; END IF;
+  correlation:=gen_random_uuid();
+  INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,idempotency_key,canonical_payload_hash,canonicalization_version,
+  expected_target_version,state,result_kind,result_ref,result_summary,completed_at,created_by)
+  VALUES(h.command_receipt_id,ctx.actor_id,ctx.operation_id,'admission.certificate.expire',v_key,v_hash,1,h.application_version-1,'SUCCEEDED','ADMISSION_DEADLINE_REJECTION',a.id,body,clock_timestamp(),ctx.actor_id);
+  INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,target_version,event_type,target_kind,target_ref,campus_id,
+   command_receipt_id,source_kind,correlation_id,occurred_at,details,created_by)
+  VALUES(ctx.actor_id,'SYSTEM','SUCCEEDED',jsonb_build_object('operation','admission.certificate.expire'),h.application_version,'admission.certificate.expire',
+   'ADMISSION_APPLICATION',a.id,a.campus_id,h.command_receipt_id,'WORKER',correlation,h.occurred_at,body,ctx.actor_id);
+  INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+  VALUES('admission.certificate.expire','ADMISSION_APPLICATION',a.id,h.application_version,h.command_receipt_id,1,correlation,h.occurred_at,body,ctx.actor_id);
+  SELECT * INTO r FROM app_private.command_receipts WHERE id=h.command_receipt_id;
+ END IF;
+ IF r.principal_id<>h.created_by OR r.created_by<>h.created_by OR r.operation_id<>ctx.operation_id OR r.command_kind<>'admission.certificate.expire'
+ OR r.canonical_payload_hash<>v_hash OR r.idempotency_key<>v_key OR r.expected_target_version IS DISTINCT FROM h.application_version-1 OR r.canonicalization_version<>1
+ OR r.state<>'SUCCEEDED' OR r.result_kind IS DISTINCT FROM 'ADMISSION_DEADLINE_REJECTION' OR r.result_ref IS DISTINCT FROM a.id OR r.result_summary IS DISTINCT FROM body
+ OR r.request_id IS NOT NULL
+ OR (SELECT count(*) FROM app_private.audit_events e WHERE e.command_receipt_id=r.id AND e.event_type='admission.certificate.expire' AND e.actor_id=h.created_by
+ AND e.actor_kind='SYSTEM' AND e.outcome='SUCCEEDED' AND e.target_ref=a.id AND e.target_kind='ADMISSION_APPLICATION' AND e.target_version=h.application_version
+ AND e.campus_id=a.campus_id AND e.source_kind='WORKER' AND e.details=body AND e.created_by=h.created_by AND e.occurred_at=h.occurred_at
+ AND e.authority_evidence=jsonb_build_object('operation','admission.certificate.expire'))<>1
+ OR (SELECT count(*) FROM app_private.outbox_events e WHERE e.command_receipt_id=r.id AND e.event_type='admission.certificate.expire' AND e.aggregate_ref=a.id
+ AND e.aggregate_kind='ADMISSION_APPLICATION' AND e.aggregate_version=h.application_version AND e.event_ordinal=1 AND e.schema_version=1 AND e.payload=body
+ AND e.created_by=h.created_by AND e.occurred_at=h.occurred_at AND e.causation_event_id IS NULL
+ AND EXISTS(SELECT 1 FROM app_private.audit_events x WHERE x.command_receipt_id=r.id AND x.correlation_id=e.correlation_id))<>1 THEN RAISE EXCEPTION 'DB03 deadline immutable receipt evidence invalid'; END IF;
+ RETURN body;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_deadline_receipt(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_deadline_receipt(uuid) TO schoolos_platform_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_evidence_writer;

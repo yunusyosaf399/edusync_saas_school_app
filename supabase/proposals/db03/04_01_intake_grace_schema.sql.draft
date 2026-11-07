@@ -1,0 +1,150 @@
+-- DB03 S3: real opaque intake drafts; no applicant PII or verified submission.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.admission_applications (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ campus_id uuid NOT NULL REFERENCES app.campuses(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ academic_year_id uuid NOT NULL,
+ person_id uuid REFERENCES app_private.people(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ policy_version_id uuid,
+ state text NOT NULL DEFAULT 'DRAFT' CHECK(state IN('DRAFT','WITHDRAWN')),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ row_version bigint NOT NULL DEFAULT 1 CHECK(row_version>0),
+ updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ FOREIGN KEY(academic_year_id,school_id) REFERENCES app.academic_years(id,school_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(policy_version_id,school_id) REFERENCES app_private.admission_policy_versions(id,school_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CHECK(person_id IS NULL AND policy_version_id IS NULL)
+);
+CREATE INDEX db03_intake_queue ON app_private.admission_applications(campus_id,academic_year_id,state,created_at,id);
+CREATE TABLE app_private.admission_application_transitions (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ sequence_number bigint NOT NULL CHECK(sequence_number IN(1,2)),
+ from_state text,
+ to_state text NOT NULL,
+ application_version bigint NOT NULL CHECK(application_version>0),
+ reason_private text CHECK(pg_catalog.char_length(reason_private) BETWEEN 1 AND 1000 AND pg_catalog.btrim(reason_private)<>''),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(application_id,sequence_number),
+ CHECK((sequence_number=1 AND from_state IS NULL AND to_state='DRAFT' AND reason_private IS NULL)
+  OR (sequence_number=2 AND from_state='DRAFT' AND to_state='WITHDRAWN' AND reason_private IS NOT NULL))
+);
+-- Owner-requested durable grace history, additive entity #18. One application-
+-- wide linear sequence; first anchor is retained across both certificate kinds.
+CREATE TABLE app_private.admission_certificate_grace_history (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid UNIQUE REFERENCES app_private.admission_certificate_grace_history(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ document_kind text NOT NULL CHECK(document_kind IN('BIRTH_CERTIFICATE','SCHOOL_LEAVING_CERTIFICATE')),
+ first_granted_on date NOT NULL CHECK(pg_catalog.isfinite(first_granted_on)),
+ recorded_on date NOT NULL CHECK(pg_catalog.isfinite(recorded_on)),
+ due_on date NOT NULL CHECK(pg_catalog.isfinite(due_on)),
+ application_version bigint NOT NULL CHECK(application_version>1),
+ reason_private text NOT NULL CHECK(pg_catalog.char_length(reason_private) BETWEEN 1 AND 1000 AND pg_catalog.btrim(reason_private)<>''),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(application_id,revision),
+ CHECK((revision=1)=(supersedes_id IS NULL)),
+ CHECK(recorded_on>=first_granted_on AND due_on>=recorded_on AND due_on<=(first_granted_on+interval '2 months')::date)
+);
+CREATE INDEX db03_grace_current_kind ON app_private.admission_certificate_grace_history(application_id,document_kind,revision DESC);
+CREATE FUNCTION app_private.db03_guard_intake() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE prior record; parent record;
+BEGIN
+ IF TG_OP IN('DELETE','TRUNCATE') OR (TG_TABLE_NAME<>'admission_applications' AND TG_OP='UPDATE') THEN
+  RAISE EXCEPTION 'DB03 intake history is immutable'; END IF;
+ IF current_user<>'schoolos_workflow_executor' THEN RAISE EXCEPTION 'DB03 intake requires protected command'; END IF;
+ IF TG_TABLE_NAME='admission_applications' THEN
+  IF TG_OP='INSERT' AND (NEW.state<>'DRAFT' OR NEW.row_version<>1) THEN RAISE EXCEPTION 'DB03 intake begins unresolved DRAFT'; END IF;
+  IF TG_OP='UPDATE' AND (OLD.state<>'DRAFT' OR NEW.state NOT IN('DRAFT','WITHDRAWN')
+   OR (pg_catalog.to_jsonb(NEW)-ARRAY['state','row_version','updated_at']) IS DISTINCT FROM
+      (pg_catalog.to_jsonb(OLD)-ARRAY['state','row_version','updated_at'])) THEN
+   RAISE EXCEPTION 'DB03 intake identity is frozen'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM app.campuses c WHERE c.id=NEW.campus_id AND c.school_id=NEW.school_id) THEN
+   RAISE EXCEPTION 'DB03 intake Campus School mismatch'; END IF;
+ ELSE
+  SELECT * INTO parent FROM app_private.admission_applications WHERE id=NEW.application_id FOR UPDATE;
+  IF NOT FOUND OR parent.row_version<>NEW.application_version THEN RAISE EXCEPTION 'DB03 intake history version mismatch'; END IF;
+  IF TG_TABLE_NAME='admission_application_transitions' THEN
+   IF parent.state<>NEW.to_state OR (NEW.sequence_number=2 AND NOT EXISTS(
+    SELECT 1 FROM app_private.admission_application_transitions t WHERE t.application_id=parent.id AND t.sequence_number=1)) THEN
+    RAISE EXCEPTION 'DB03 intake transition lineage invalid'; END IF;
+  ELSIF TG_TABLE_NAME='admission_certificate_grace_history' THEN
+   IF parent.state<>'DRAFT' THEN RAISE EXCEPTION 'DB03 grace requires pending draft'; END IF;
+   SELECT * INTO prior FROM app_private.admission_certificate_grace_history WHERE application_id=parent.id ORDER BY revision DESC LIMIT 1;
+   IF (NOT FOUND AND (NEW.revision<>1 OR NEW.first_granted_on<>NEW.recorded_on))
+    OR (FOUND AND (NEW.revision<>prior.revision+1 OR NEW.supersedes_id IS DISTINCT FROM prior.id
+      OR NEW.first_granted_on<>prior.first_granted_on OR NEW.recorded_on<prior.recorded_on)) THEN
+    RAISE EXCEPTION 'DB03 grace original anchor and lineage are immutable'; END IF;
+  ELSE RAISE EXCEPTION 'DB03 intake trigger denied'; END IF;
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_guard_intake() FROM PUBLIC,anon,authenticated,service_role;
+ALTER TABLE app_private.admission_applications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_applications FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_applications FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_intake_owner ON app_private.admission_applications TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_intake_read ON app_private.admission_applications FOR SELECT TO schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_intake_insert ON app_private.admission_applications FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_applications TO schoolos_workflow_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_applications TO schoolos_workflow_executor;
+CREATE TRIGGER aa_db03_intake_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_applications
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_guard_intake();
+CREATE TRIGGER db03_intake_no_truncate BEFORE TRUNCATE ON app_private.admission_applications
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_guard_intake();
+ALTER TABLE app_private.admission_application_transitions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_application_transitions FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_application_transitions FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_intake_owner ON app_private.admission_application_transitions TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_intake_read ON app_private.admission_application_transitions FOR SELECT TO schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_intake_insert ON app_private.admission_application_transitions FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_application_transitions TO schoolos_workflow_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_application_transitions TO schoolos_workflow_executor;
+CREATE TRIGGER aa_db03_intake_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_application_transitions
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_guard_intake();
+CREATE TRIGGER db03_intake_no_truncate BEFORE TRUNCATE ON app_private.admission_application_transitions
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_guard_intake();
+ALTER TABLE app_private.admission_certificate_grace_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_certificate_grace_history FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_certificate_grace_history FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_intake_owner ON app_private.admission_certificate_grace_history TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_intake_read ON app_private.admission_certificate_grace_history FOR SELECT TO schoolos_workflow_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_intake_insert ON app_private.admission_certificate_grace_history FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_certificate_grace_history TO schoolos_workflow_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_certificate_grace_history TO schoolos_workflow_executor;
+CREATE TRIGGER aa_db03_intake_guard BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_certificate_grace_history
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_guard_intake();
+CREATE TRIGGER db03_intake_no_truncate BEFORE TRUNCATE ON app_private.admission_certificate_grace_history
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_guard_intake();
+CREATE POLICY db03_intake_update ON app_private.admission_applications FOR UPDATE TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+GRANT UPDATE(state,updated_at) ON app_private.admission_applications TO schoolos_workflow_executor;
+CREATE TRIGGER zz_db03_intake_version BEFORE UPDATE ON app_private.admission_applications FOR EACH ROW EXECUTE FUNCTION app_private.advance_row_version();
+GRANT SELECT(id,school_id,state),UPDATE(id) ON app.campuses,app.academic_years TO schoolos_workflow_executor;
+GRANT SELECT(timezone) ON app_private.school_profiles TO schoolos_workflow_executor;
+CREATE POLICY db03_intake_parent_read ON app.campuses FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db03_intake_parent_lock ON app.campuses FOR UPDATE TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+CREATE POLICY db03_intake_parent_read ON app.academic_years FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db03_intake_parent_lock ON app.academic_years FOR UPDATE TO schoolos_workflow_executor USING(true) WITH CHECK(true);
+GRANT EXECUTE ON FUNCTION app_private.db03_certificate_grace_due_on(text,date,date) TO schoolos_workflow_executor;
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+-- Derived pending/overdue projection, not document verification or completion.
+CREATE VIEW app_private.admission_certificate_grace_current WITH(security_invoker=true) AS
+ SELECT h.id,h.application_id,h.document_kind,h.revision,h.first_granted_on,h.due_on,
+ CASE WHEN a.state='WITHDRAWN' THEN 'WITHDRAWN'
+      WHEN (pg_catalog.clock_timestamp() AT TIME ZONE s.timezone)::date>h.due_on THEN 'OVERDUE'
+      ELSE 'AWAITING_DOCUMENT' END AS status
+ FROM app_private.admission_certificate_grace_history h
+ JOIN app_private.admission_applications a ON a.id=h.application_id
+ JOIN app_private.school_profiles s ON s.id=a.school_id
+ WHERE NOT EXISTS(SELECT 1 FROM app_private.admission_certificate_grace_history newer
+  WHERE newer.application_id=h.application_id AND newer.document_kind=h.document_kind AND newer.revision>h.revision);
+REVOKE ALL ON app_private.admission_certificate_grace_current FROM PUBLIC,anon,authenticated,service_role;
+RESET ROLE;

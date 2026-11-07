@@ -1,0 +1,31 @@
+{
+  "selected_on": "2026-10-26",
+  "owner": "yunusyosaf399",
+  "source": "Current conversation request_user_input answers",
+  "decisions": [
+    {
+      "id": "P2-D02-ORIGINAL-INSPECTION",
+      "question": "What should the authorized staff member use to confirm a child's identity?",
+      "selected_label": "Inspect original documents (Recommended)",
+      "selected_description": "Staff checks original birth/identity documents and records a private attestation; this does not claim government verification."
+    },
+    {
+      "id": "P3-D02-DRAFT-FILES",
+      "question": "May authorized administrators attach private certificates while the application is still an unresolved draft?",
+      "selected_label": "Allow staff uploads (Recommended)",
+      "selected_description": "Staff may collect documents before identity is resolved; uploading alone cannot complete verification or admission."
+    },
+    {
+      "id": "P3-D03-INDEPENDENT-DOCUMENT-VERIFIER",
+      "question": "May the administrator who uploaded a certificate also verify it?",
+      "selected_label": "Different staff member (Recommended)",
+      "selected_description": "One staff member uploads and another authorized staff member checks the document and records the decision."
+    }
+  ],
+  "identity_verifier_count": "One authorized staff, retained earlier choice",
+  "government_verification_selected": false,
+  "canonical_person_creation_or_merge_selected": false,
+  "file_upload_or_verification_implemented_by_this_record": false,
+  "hosted_deployment_authorized": false,
+  "independent_code_acceptance": false
+}

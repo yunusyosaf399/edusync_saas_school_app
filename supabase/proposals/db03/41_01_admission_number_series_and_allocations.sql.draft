@@ -1,0 +1,99 @@
+-- P41 inactive Admissions-owned permanent-number storage only.
+-- No numbered application/approved Student, no counter mutation command,
+-- no public or worker grants. P38 handoff remains deny-all.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.admission_numbering_profiles
+ ADD CONSTRAINT db03_number_profile_school_kind_key UNIQUE(id,school_id,number_kind);
+ALTER TABLE app_private.admission_applications
+ ADD CONSTRAINT db03_number_application_school_key UNIQUE(id,school_id);
+CREATE TABLE app_private.admission_number_series (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ profile_id uuid NOT NULL,
+ number_kind text NOT NULL CHECK(number_kind IN('APPLICATION','ADMISSION')),
+ academic_year_id uuid NOT NULL,
+ session_label text NOT NULL CHECK(length(pg_catalog.btrim(session_label)) BETWEEN 1 AND 40),
+ next_value bigint NOT NULL CHECK(next_value>0),
+ row_version bigint NOT NULL DEFAULT 1 CHECK(row_version>0),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ updated_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT db03_number_series_profile_year UNIQUE(profile_id,academic_year_id),
+ CONSTRAINT db03_number_series_scope_key UNIQUE(id,school_id,number_kind,session_label),
+ FOREIGN KEY(profile_id,school_id,number_kind)
+   REFERENCES app_private.admission_numbering_profiles(id,school_id,number_kind)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(academic_year_id,school_id)
+   REFERENCES app.academic_years(id,school_id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE TABLE app_private.admission_number_allocations (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ series_id uuid NOT NULL,
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ application_id uuid NOT NULL,
+ number_kind text NOT NULL CHECK(number_kind IN('APPLICATION','ADMISSION')),
+ numeric_value bigint NOT NULL CHECK(numeric_value>0),
+ session_label text NOT NULL CHECK(length(pg_catalog.btrim(session_label)) BETWEEN 1 AND 40),
+ rendered_number text NOT NULL CHECK(length(pg_catalog.btrim(rendered_number)) BETWEEN 1 AND 200),
+ state text NOT NULL CHECK(state IN('ALLOCATED','CANCELED')),
+ canceled_at timestamptz,
+ canceled_by uuid REFERENCES app_private.principals(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ command_receipt_id uuid NOT NULL UNIQUE
+   REFERENCES app_private.command_receipts(id) DEFERRABLE INITIALLY DEFERRED,
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CONSTRAINT db03_number_allocation_series_value UNIQUE(series_id,numeric_value),
+ CONSTRAINT db03_number_allocation_rendered_unique UNIQUE(school_id,number_kind,rendered_number),
+ CONSTRAINT db03_number_application_kind_unique UNIQUE(application_id,number_kind),
+ FOREIGN KEY(series_id,school_id,number_kind,session_label)
+   REFERENCES app_private.admission_number_series(id,school_id,number_kind,session_label)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(application_id,school_id)
+   REFERENCES app_private.admission_applications(id,school_id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ CHECK((state='ALLOCATED' AND canceled_at IS NULL AND canceled_by IS NULL)
+    OR (state='CANCELED' AND canceled_at IS NOT NULL AND canceled_by IS NOT NULL))
+);
+-- Private and locked even for owner fixtures until the future trusted issuer.
+ALTER TABLE app_private.admission_number_series ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_number_series FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_number_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_number_allocations FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_number_series,
+ app_private.admission_number_allocations FROM
+ PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_student_executor,schoolos_identity_executor,schoolos_evidence_writer,
+ schoolos_platform_executor,schoolos_file_login,schoolos_authz_reader;
+CREATE POLICY db03_number_series_owner ON app_private.admission_number_series
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_number_allocations_owner ON app_private.admission_number_allocations
+ TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE FUNCTION app_private.db03_number_storage_mutation_unavailable()
+RETURNS trigger LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ RAISE EXCEPTION 'DB03 permanent number writer unavailable';
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_number_storage_mutation_unavailable()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_student_executor,schoolos_identity_executor,schoolos_evidence_writer,
+ schoolos_platform_executor,schoolos_file_login,schoolos_authz_reader;
+CREATE TRIGGER db03_number_series_mutation_disabled
+ BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_number_series
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_number_storage_mutation_unavailable();
+CREATE TRIGGER db03_number_allocations_mutation_disabled
+ BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_number_allocations
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_number_storage_mutation_unavailable();
+CREATE TRIGGER db03_number_series_no_truncate
+ BEFORE TRUNCATE ON app_private.admission_number_series FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_number_storage_mutation_unavailable();
+CREATE TRIGGER db03_number_allocations_no_truncate
+ BEFORE TRUNCATE ON app_private.admission_number_allocations FOR EACH STATEMENT
+ EXECUTE FUNCTION app_private.db03_number_storage_mutation_unavailable();
+RESET ROLE;

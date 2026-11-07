@@ -1,0 +1,98 @@
+-- DB03 S5: school-wide, stop-on-possible-match Person creation.
+SET ROLE schoolos_schema_owner;
+-- Share Foundation's existing authorization fence. This BEFORE STATEMENT
+-- barrier precedes Person row locks; public check/create take it EXCLUSIVE
+-- from the start, avoiding shared-to-exclusive upgrade races.
+CREATE TRIGGER a0_db03_person_catalog_fence BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON app_private.people
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+GRANT SELECT(display_name),INSERT(id,display_name,created_by) ON app_private.people TO schoolos_identity_executor;
+GRANT SELECT(display_name,created_by) ON app_private.people TO schoolos_evidence_writer;
+CREATE POLICY db03_person_create ON app_private.people FOR INSERT TO schoolos_identity_executor WITH CHECK(true);
+CREATE FUNCTION app_private.db03_person_name_key(p_name text) RETURNS text
+LANGUAGE sql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT pg_catalog.btrim(pg_catalog.lower(pg_catalog.regexp_replace(pg_catalog.normalize(p_name,'NFKC') COLLATE "C",'[[:space:][:punct:]]+',' ','g')))
+$body$;
+CREATE FUNCTION app_private.db03_person_possible_match(p_existing text,p_requested text) RETURNS boolean
+LANGUAGE sql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT app_private.db03_person_name_key(p_existing)=app_private.db03_person_name_key(p_requested)
+  OR EXISTS(SELECT 1 FROM pg_catalog.unnest(pg_catalog.string_to_array(app_private.db03_person_name_key(p_existing),' ')) e(token)
+   JOIN pg_catalog.unnest(pg_catalog.string_to_array(app_private.db03_person_name_key(p_requested),' ')) r(token) ON r.token=e.token
+   WHERE pg_catalog.char_length(e.token)>=2)
+$body$;
+CREATE FUNCTION app_private.db03_person_catalog_hash(p_exclude uuid DEFAULT NULL) RETURNS bytea
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT pg_catalog.sha256(pg_catalog.convert_to(COALESCE(pg_catalog.jsonb_agg(
+  pg_catalog.jsonb_build_array(p.id,p.row_version,p.state,p.display_name) ORDER BY p.id),'[]'::jsonb)::text,'UTF8'))
+ FROM app_private.people p WHERE p_exclude IS NULL OR p.id<>p_exclude
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_person_name_key(text),app_private.db03_person_possible_match(text,text),app_private.db03_person_catalog_hash(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_person_name_key(text),app_private.db03_person_possible_match(text,text),app_private.db03_person_catalog_hash(uuid) TO schoolos_identity_executor,schoolos_evidence_writer;
+CREATE TABLE app_private.admission_person_checks (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ expected_application_version bigint NOT NULL CHECK(expected_application_version>0),
+ display_name_private text NOT NULL CHECK(pg_catalog.char_length(display_name_private) BETWEEN 1 AND 200 AND pg_catalog.btrim(display_name_private)<>''),
+ name_key_private text NOT NULL CHECK(pg_catalog.btrim(name_key_private)<>''),
+ normalization_version integer NOT NULL CHECK(normalization_version=1),
+ catalog_hash bytea NOT NULL CHECK(pg_catalog.octet_length(catalog_hash)=32),
+ candidate_count bigint NOT NULL CHECK(candidate_count>=0),
+ candidate_snapshot_private jsonb NOT NULL CHECK(pg_catalog.jsonb_typeof(candidate_snapshot_private)='array' AND pg_catalog.jsonb_array_length(candidate_snapshot_private)=LEAST(candidate_count,50)),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE INDEX db03_person_check_application ON app_private.admission_person_checks(application_id,occurred_at,id);
+CREATE TABLE app_private.admission_person_creations (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ check_id uuid NOT NULL UNIQUE REFERENCES app_private.admission_person_checks(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ application_id uuid NOT NULL UNIQUE REFERENCES app_private.admission_applications(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ person_id uuid NOT NULL UNIQUE REFERENCES app_private.people(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ resolution_id uuid NOT NULL UNIQUE REFERENCES app_private.admission_identity_resolutions(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ application_version bigint NOT NULL CHECK(application_version>1),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE FUNCTION app_private.db03_guard_person_creation_history() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 Person creation history is immutable'; END IF;
+ IF current_user<>'schoolos_identity_executor' THEN RAISE EXCEPTION 'DB03 Person creation requires protected command'; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_guard_person_creation_history() FROM PUBLIC,anon,authenticated,service_role;
+ALTER TABLE app_private.admission_person_checks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_person_checks FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_person_checks FROM PUBLIC,anon,authenticated,service_role;
+GRANT SELECT ON app_private.admission_person_checks TO schoolos_identity_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_person_checks TO schoolos_identity_executor;
+CREATE POLICY db03_person_owner ON app_private.admission_person_checks TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_person_read ON app_private.admission_person_checks FOR SELECT TO schoolos_identity_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_person_insert ON app_private.admission_person_checks FOR INSERT TO schoolos_identity_executor WITH CHECK(true);
+CREATE TRIGGER aa_db03_person_history BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_person_checks
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_guard_person_creation_history();
+CREATE TRIGGER db03_person_no_truncate BEFORE TRUNCATE ON app_private.admission_person_checks
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_guard_person_creation_history();
+ALTER TABLE app_private.admission_person_creations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_person_creations FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_person_creations FROM PUBLIC,anon,authenticated,service_role;
+GRANT SELECT ON app_private.admission_person_creations TO schoolos_identity_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_person_creations TO schoolos_identity_executor;
+CREATE POLICY db03_person_owner ON app_private.admission_person_creations TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_person_read ON app_private.admission_person_creations FOR SELECT TO schoolos_identity_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_person_insert ON app_private.admission_person_creations FOR INSERT TO schoolos_identity_executor WITH CHECK(true);
+CREATE TRIGGER aa_db03_person_history BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_person_creations
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_guard_person_creation_history();
+CREATE TRIGGER db03_person_no_truncate BEFORE TRUNCATE ON app_private.admission_person_creations
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_guard_person_creation_history();
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_person_candidate_snapshot(p_name text) RETURNS jsonb
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+ SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('person_id',q.id,'display_name',q.display_name,'person_version',q.row_version,'state',q.state) ORDER BY q.id),'[]'::jsonb)
+ FROM (SELECT p.id,p.display_name,p.row_version,p.state FROM app_private.people p
+  WHERE app_private.db03_person_possible_match(p.display_name,p_name) ORDER BY p.id LIMIT 50) q
+$body$;
+REVOKE ALL ON FUNCTION app_private.db03_person_candidate_snapshot(text) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db03_person_candidate_snapshot(text) TO schoolos_identity_executor,schoolos_evidence_writer;
+RESET ROLE;

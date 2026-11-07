@@ -1,0 +1,241 @@
+-- S7: private measured uploads and immutable collection/forwarding sources.
+-- No provider, commercial plan, role, permission or SYSTEM actor is seeded.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.admission_document_intakes (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id),
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid UNIQUE REFERENCES app_private.admission_document_intakes(id),
+ policy_version_id uuid NOT NULL REFERENCES app_private.admission_policy_versions(id),
+ previous_school_private text CHECK(length(btrim(previous_school_private)) BETWEEN 1 AND 200),
+ is_transfer boolean GENERATED ALWAYS AS (previous_school_private IS NOT NULL) STORED,
+ application_version bigint NOT NULL CHECK(application_version>1),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ UNIQUE(application_id,revision), CHECK((revision=1)=(supersedes_id IS NULL))
+);
+CREATE TABLE app_private.admission_document_upload_intents (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id),
+ intake_id uuid NOT NULL REFERENCES app_private.admission_document_intakes(id),
+ expected_application_version bigint NOT NULL CHECK(expected_application_version>0),
+ document_kind text NOT NULL CHECK(document_kind ~ '^[A-Z][A-Z0-9_]{0,63}$'),
+ file_id uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+ storage_location_key text NOT NULL CHECK(storage_location_key ~ '^[A-Z][A-Z0-9_]{0,63}$'),
+ object_key text NOT NULL UNIQUE,
+ content_type text NOT NULL CHECK(content_type IN('image/png','image/jpeg','application/pdf')),
+ byte_size bigint NOT NULL CHECK(byte_size BETWEEN 1 AND 1048576),
+ content_hash bytea NOT NULL CHECK(octet_length(content_hash)=32),
+ entitlement_revision bigint NOT NULL CHECK(entitlement_revision>0),
+ entitlement_digest bytea NOT NULL CHECK(octet_length(entitlement_digest)=32),
+ idempotency_key text NOT NULL CHECK(length(idempotency_key) BETWEEN 1 AND 200),
+ canonical_hash bytea NOT NULL CHECK(octet_length(canonical_hash)=32),
+ expires_at timestamptz NOT NULL CHECK(isfinite(expires_at)),
+ occurred_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ UNIQUE(created_by,idempotency_key), CHECK(expires_at>occurred_at)
+);
+CREATE TABLE app_private.admission_document_links (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id),
+ intent_id uuid NOT NULL UNIQUE REFERENCES app_private.admission_document_upload_intents(id),
+ file_object_id uuid NOT NULL UNIQUE REFERENCES app_private.file_objects(id),
+ document_kind text NOT NULL,
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid UNIQUE REFERENCES app_private.admission_document_links(id),
+ file_version bigint NOT NULL CHECK(file_version>0),
+ received_on date NOT NULL CHECK(isfinite(received_on)),
+ school_timezone text NOT NULL,
+ application_version bigint NOT NULL CHECK(application_version>1),
+ final_entitlement_revision bigint NOT NULL CHECK(final_entitlement_revision>0),
+ final_entitlement_digest bytea NOT NULL CHECK(octet_length(final_entitlement_digest)=32),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ UNIQUE(application_id,document_kind,revision), CHECK((revision=1)=(supersedes_id IS NULL))
+);
+CREATE TABLE app_private.admission_document_forwards (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ application_id uuid NOT NULL REFERENCES app_private.admission_applications(id),
+ intake_id uuid NOT NULL REFERENCES app_private.admission_document_intakes(id),
+ revision bigint NOT NULL CHECK(revision>0),
+ supersedes_id uuid UNIQUE REFERENCES app_private.admission_document_forwards(id),
+ snapshot_hash bytea NOT NULL CHECK(octet_length(snapshot_hash)=32),
+ application_version bigint NOT NULL CHECK(application_version>1),
+ command_receipt_id uuid NOT NULL UNIQUE REFERENCES app_private.command_receipts(id) DEFERRABLE INITIALLY DEFERRED,
+ occurred_at timestamptz NOT NULL,
+ created_by uuid NOT NULL REFERENCES app_private.principals(id),
+ UNIQUE(application_id,revision), CHECK((revision=1)=(supersedes_id IS NULL))
+);
+-- Typed cross-application bindings remain constraints, not caller assertions.
+ALTER TABLE app_private.admission_document_intakes ADD UNIQUE(id,application_id),
+ ADD FOREIGN KEY(supersedes_id,application_id) REFERENCES app_private.admission_document_intakes(id,application_id);
+ALTER TABLE app_private.admission_document_upload_intents ADD UNIQUE(id,application_id,document_kind,file_id),
+ ADD FOREIGN KEY(intake_id,application_id) REFERENCES app_private.admission_document_intakes(id,application_id);
+ALTER TABLE app_private.admission_document_links ADD UNIQUE(id,application_id,document_kind),
+ ADD FOREIGN KEY(intent_id,application_id,document_kind,file_object_id) REFERENCES app_private.admission_document_upload_intents(id,application_id,document_kind,file_id),
+ ADD FOREIGN KEY(supersedes_id,application_id,document_kind) REFERENCES app_private.admission_document_links(id,application_id,document_kind);
+ALTER TABLE app_private.admission_document_forwards ADD UNIQUE(id,application_id),
+ ADD FOREIGN KEY(intake_id,application_id) REFERENCES app_private.admission_document_intakes(id,application_id),
+ ADD FOREIGN KEY(supersedes_id,application_id) REFERENCES app_private.admission_document_forwards(id,application_id);
+CREATE INDEX db03_document_forward_cursor ON app_private.admission_document_forwards(occurred_at,id,application_id);
+CREATE FUNCTION app_private.db03_document_history_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'DB03 document history is immutable'; END IF;
+ IF (TG_TABLE_NAME IN('admission_document_upload_intents','admission_document_links') AND current_user<>'schoolos_platform_executor')
+ OR (TG_TABLE_NAME IN('admission_document_intakes','admission_document_forwards') AND current_user<>'schoolos_workflow_executor') THEN
+  RAISE EXCEPTION 'DB03 documents require protected commands'; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_document_history_guard() FROM PUBLIC,anon,authenticated,service_role;
+ALTER TABLE app_private.admission_document_intakes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_document_intakes FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_document_intakes FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_document_owner ON app_private.admission_document_intakes TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_document_read ON app_private.admission_document_intakes FOR SELECT TO schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_document_insert ON app_private.admission_document_intakes FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_document_intakes TO schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_document_intakes TO schoolos_workflow_executor;
+CREATE TRIGGER aa_db03_document_history BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_document_intakes
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_document_history_guard();
+CREATE TRIGGER db03_document_no_truncate BEFORE TRUNCATE ON app_private.admission_document_intakes
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_document_history_guard();
+ALTER TABLE app_private.admission_document_upload_intents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_document_upload_intents FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_document_upload_intents FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_document_owner ON app_private.admission_document_upload_intents TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_document_read ON app_private.admission_document_upload_intents FOR SELECT TO schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_document_insert ON app_private.admission_document_upload_intents FOR INSERT TO schoolos_platform_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_document_upload_intents TO schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_document_upload_intents TO schoolos_platform_executor;
+CREATE TRIGGER aa_db03_document_history BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_document_upload_intents
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_document_history_guard();
+CREATE TRIGGER db03_document_no_truncate BEFORE TRUNCATE ON app_private.admission_document_upload_intents
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_document_history_guard();
+ALTER TABLE app_private.admission_document_links ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_document_links FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_document_links FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_document_owner ON app_private.admission_document_links TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_document_read ON app_private.admission_document_links FOR SELECT TO schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_document_insert ON app_private.admission_document_links FOR INSERT TO schoolos_platform_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_document_links TO schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_document_links TO schoolos_platform_executor;
+CREATE TRIGGER aa_db03_document_history BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_document_links
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_document_history_guard();
+CREATE TRIGGER db03_document_no_truncate BEFORE TRUNCATE ON app_private.admission_document_links
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_document_history_guard();
+ALTER TABLE app_private.admission_document_forwards ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.admission_document_forwards FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON app_private.admission_document_forwards FROM PUBLIC,anon,authenticated,service_role;
+CREATE POLICY db03_document_owner ON app_private.admission_document_forwards TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db03_document_read ON app_private.admission_document_forwards FOR SELECT TO schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer USING(true);
+CREATE POLICY db03_document_insert ON app_private.admission_document_forwards FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT ON app_private.admission_document_forwards TO schoolos_workflow_executor,schoolos_platform_executor,schoolos_evidence_writer;
+GRANT INSERT ON app_private.admission_document_forwards TO schoolos_workflow_executor;
+CREATE TRIGGER aa_db03_document_history BEFORE INSERT OR UPDATE OR DELETE ON app_private.admission_document_forwards
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_document_history_guard();
+CREATE TRIGGER db03_document_no_truncate BEFORE TRUNCATE ON app_private.admission_document_forwards
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_document_history_guard();
+GRANT SELECT(id) ON app_private.school_profiles TO schoolos_evidence_writer;
+CREATE POLICY db03_document_evidence_school ON app_private.school_profiles FOR SELECT TO schoolos_evidence_writer USING(true);
+-- All file mutation/collection commands serialize BEFORE row locks through
+-- the existing authorization namespace. Existing Foundation definitions stay frozen.
+CREATE TRIGGER a0_db03_document_file_fence BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON app_private.file_objects
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_publication_auth_fence();
+CREATE FUNCTION app_private.db03_retain_admission_file() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+BEGIN
+ IF TG_OP='TRUNCATE' THEN
+  RAISE EXCEPTION 'DB03 retained file catalog cannot be truncated';
+ END IF;
+ IF OLD.purpose_code='ADMISSION_DOCUMENT' AND (TG_OP='DELETE' OR NEW.state='PURGED') THEN
+  RAISE EXCEPTION 'DB03 admission certificates are retained permanently'; END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db03_retain_admission_file() FROM PUBLIC,anon,authenticated,service_role;
+CREATE TRIGGER a1_db03_retain_admission_file BEFORE UPDATE OR DELETE ON app_private.file_objects
+ FOR EACH ROW EXECUTE FUNCTION app_private.db03_retain_admission_file();
+CREATE TRIGGER a1_db03_retain_file_catalog BEFORE TRUNCATE ON app_private.file_objects
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db03_retain_admission_file();
+GRANT SELECT,INSERT ON app_private.file_objects TO schoolos_platform_executor;
+GRANT UPDATE(state,validated_at) ON app_private.file_objects TO schoolos_platform_executor;
+GRANT SELECT ON app_private.file_objects TO schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE POLICY db03_document_file_worker ON app_private.file_objects TO schoolos_platform_executor
+ USING(purpose_code='ADMISSION_DOCUMENT') WITH CHECK(purpose_code='ADMISSION_DOCUMENT' AND classification='PRIVATE');
+CREATE POLICY db03_document_file_read ON app_private.file_objects FOR SELECT TO schoolos_workflow_executor,schoolos_evidence_writer
+ USING(purpose_code='ADMISSION_DOCUMENT');
+GRANT SELECT ON app_private.admission_applications,app_private.admission_certificate_grace_history,
+ app_private.admission_policy_versions,app_private.admission_policy_stages,app_private.admission_policy_document_requirements TO schoolos_platform_executor;
+GRANT UPDATE(updated_at,stage_epoch) ON app_private.admission_applications TO schoolos_platform_executor;
+GRANT UPDATE(stage_epoch) ON app_private.admission_applications TO schoolos_workflow_executor;
+CREATE POLICY db03_document_application_read ON app_private.admission_applications FOR SELECT TO schoolos_platform_executor USING(true);
+CREATE POLICY db03_document_application_update ON app_private.admission_applications FOR UPDATE TO schoolos_platform_executor USING(true) WITH CHECK(true);
+CREATE POLICY db03_document_grace_read ON app_private.admission_certificate_grace_history FOR SELECT TO schoolos_platform_executor USING(true);
+CREATE POLICY db03_document_policy_read ON app_private.admission_policy_versions FOR SELECT TO schoolos_platform_executor USING(true);
+CREATE POLICY db03_document_policy_read ON app_private.admission_policy_stages FOR SELECT TO schoolos_platform_executor USING(true);
+CREATE POLICY db03_document_policy_read ON app_private.admission_policy_document_requirements FOR SELECT TO schoolos_platform_executor USING(true);
+GRANT USAGE ON SCHEMA app TO schoolos_platform_executor;
+GRANT SELECT ON app_private.school_profiles,app.campuses,app.academic_years TO schoolos_platform_executor;
+GRANT UPDATE(id) ON app_private.school_profiles,app.campuses,app.academic_years TO schoolos_platform_executor;
+CREATE POLICY db03_document_school_read ON app_private.school_profiles FOR SELECT TO schoolos_platform_executor USING(true);
+CREATE POLICY db03_document_school_lock ON app_private.school_profiles FOR UPDATE TO schoolos_platform_executor USING(true) WITH CHECK(true);
+CREATE POLICY db03_document_campus_read ON app.campuses FOR SELECT TO schoolos_platform_executor USING(true);
+CREATE POLICY db03_document_campus_lock ON app.campuses FOR UPDATE TO schoolos_platform_executor USING(true) WITH CHECK(true);
+CREATE POLICY db03_document_year_read ON app.academic_years FOR SELECT TO schoolos_platform_executor USING(true);
+CREATE POLICY db03_document_year_lock ON app.academic_years FOR UPDATE TO schoolos_platform_executor USING(true) WITH CHECK(true);
+RESET ROLE;
+SET ROLE schoolos_schema_owner;
+CREATE OR REPLACE FUNCTION app_private.db03_guard_intake() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE prior record; parent record;
+BEGIN
+ IF TG_OP IN('DELETE','TRUNCATE') OR (TG_TABLE_NAME<>'admission_applications' AND TG_OP='UPDATE') THEN
+  RAISE EXCEPTION 'DB03 intake history is immutable'; END IF;
+ IF current_user='schoolos_identity_executor' AND TG_TABLE_NAME='admission_applications' AND TG_OP='UPDATE' THEN
+  IF OLD.state<>'DRAFT' OR NEW.state<>'DRAFT' OR NEW.person_id IS NULL
+   OR (OLD.person_id IS NOT NULL AND NEW.person_id IS DISTINCT FROM OLD.person_id)
+   OR NEW.stage_epoch<>OLD.stage_epoch+1
+   OR (pg_catalog.to_jsonb(NEW)-ARRAY['person_id','stage_epoch','row_version','updated_at']) IS DISTINCT FROM
+      (pg_catalog.to_jsonb(OLD)-ARRAY['person_id','stage_epoch','row_version','updated_at']) THEN
+   RAISE EXCEPTION 'DB03 identity binding requires same-Person draft attestation'; END IF;
+  RETURN NEW;
+ END IF;
+ IF current_user='schoolos_platform_executor' AND TG_TABLE_NAME='admission_applications' AND TG_OP='UPDATE' THEN
+  IF OLD.state<>'DRAFT' OR NEW.stage_epoch<>OLD.stage_epoch+1
+   OR (pg_catalog.to_jsonb(NEW)-ARRAY['stage_epoch','updated_at','row_version']) IS DISTINCT FROM
+      (pg_catalog.to_jsonb(OLD)-ARRAY['stage_epoch','updated_at','row_version']) THEN
+   RAISE EXCEPTION 'DB03 file worker may only advance draft evidence'; END IF;
+  RETURN NEW;
+ END IF;
+ IF current_user<>'schoolos_workflow_executor' THEN RAISE EXCEPTION 'DB03 intake requires protected command'; END IF;
+ IF TG_TABLE_NAME='admission_applications' THEN
+  IF TG_OP='INSERT' AND (NEW.state<>'DRAFT' OR NEW.row_version<>1 OR NEW.person_id IS NOT NULL OR NEW.policy_version_id IS NOT NULL OR NEW.stage_epoch<>1) THEN RAISE EXCEPTION 'DB03 intake begins unresolved DRAFT'; END IF;
+  IF TG_OP='UPDATE' AND (OLD.state<>'DRAFT' OR NEW.state NOT IN('DRAFT','WITHDRAWN')
+   OR NEW.stage_epoch NOT IN(OLD.stage_epoch,OLD.stage_epoch+1)
+   OR (pg_catalog.to_jsonb(NEW)-ARRAY['state','stage_epoch','row_version','updated_at']) IS DISTINCT FROM
+      (pg_catalog.to_jsonb(OLD)-ARRAY['state','stage_epoch','row_version','updated_at'])) THEN
+   RAISE EXCEPTION 'DB03 intake identity is frozen'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM app.campuses c WHERE c.id=NEW.campus_id AND c.school_id=NEW.school_id) THEN
+   RAISE EXCEPTION 'DB03 intake Campus School mismatch'; END IF;
+ ELSE
+  SELECT * INTO parent FROM app_private.admission_applications WHERE id=NEW.application_id FOR UPDATE;
+  IF NOT FOUND OR parent.row_version<>NEW.application_version THEN RAISE EXCEPTION 'DB03 intake history version mismatch'; END IF;
+  IF TG_TABLE_NAME='admission_application_transitions' THEN
+   IF parent.state<>NEW.to_state OR (NEW.sequence_number=2 AND NOT EXISTS(
+    SELECT 1 FROM app_private.admission_application_transitions t WHERE t.application_id=parent.id AND t.sequence_number=1)) THEN
+    RAISE EXCEPTION 'DB03 intake transition lineage invalid'; END IF;
+  ELSIF TG_TABLE_NAME='admission_certificate_grace_history' THEN
+   IF parent.state<>'DRAFT' THEN RAISE EXCEPTION 'DB03 grace requires pending draft'; END IF;
+   SELECT * INTO prior FROM app_private.admission_certificate_grace_history WHERE application_id=parent.id ORDER BY revision DESC LIMIT 1;
+   IF (NOT FOUND AND (NEW.revision<>1 OR NEW.first_granted_on<>NEW.recorded_on))
+    OR (FOUND AND (NEW.revision<>prior.revision+1 OR NEW.supersedes_id IS DISTINCT FROM prior.id
+      OR NEW.first_granted_on<>prior.first_granted_on OR NEW.recorded_on<prior.recorded_on)) THEN
+    RAISE EXCEPTION 'DB03 grace original anchor and lineage are immutable'; END IF;
+  ELSE RAISE EXCEPTION 'DB03 intake trigger denied'; END IF;
+ END IF;
+ RETURN NEW;
+END $body$;
+RESET ROLE;

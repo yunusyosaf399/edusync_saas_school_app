@@ -1,0 +1,179 @@
+-- DB08 F7: private bank/wallet payment evidence, one retained review,
+-- and an official receipt source. No client DML/RPC, payment allocation,
+-- cash collection, refund, clearance or hosted activation in this slice.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_payment_submissions (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ campus_id uuid NOT NULL REFERENCES app.campuses(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ student_id uuid NOT NULL REFERENCES app_private.students(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ currency_unit_id uuid NOT NULL,
+ submitted_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ method text NOT NULL CHECK(method IN('BANK_TRANSFER','WALLET_TRANSFER')),
+ amount_minor numeric NOT NULL CHECK(amount_minor>0 AND amount_minor<1000000000000000000000000
+   AND amount_minor=trunc(amount_minor)),
+ paid_on date NOT NULL CHECK(isfinite(paid_on)),
+ institution_key text NOT NULL CHECK(institution_key ~ '^[A-Z0-9][A-Z0-9_ -]{0,119}$'
+   AND institution_key=upper(btrim(institution_key))),
+ reference_key text NOT NULL CHECK(reference_key ~ '^[A-Z0-9][A-Z0-9_./-]{0,119}$'
+   AND reference_key=upper(btrim(reference_key))),
+ evidence_file_id uuid NOT NULL UNIQUE REFERENCES app_private.file_objects(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ evidence_sha256 bytea NOT NULL CHECK(octet_length(evidence_sha256)=32),
+ supersedes_id uuid UNIQUE REFERENCES app_private.finance_payment_submissions(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ submitted_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ FOREIGN KEY(currency_unit_id,school_id) REFERENCES app_private.finance_currency_units(id,school_id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(id,school_id,campus_id,student_id,currency_unit_id,amount_minor,method)
+);
+CREATE INDEX db08_payment_pending_duplicate ON app_private.finance_payment_submissions
+ (school_id,method,institution_key,reference_key,amount_minor,paid_on);
+CREATE INDEX db08_payment_hash_duplicate ON app_private.finance_payment_submissions
+ (school_id,evidence_sha256);
+CREATE INDEX db08_payment_student ON app_private.finance_payment_submissions
+ (student_id,submitted_at,id);
+
+CREATE TABLE app_private.finance_payment_reviews (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ submission_id uuid NOT NULL UNIQUE REFERENCES app_private.finance_payment_submissions(id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ decision text NOT NULL CHECK(decision IN('APPROVE','REJECT','REQUEST_CORRECTION')),
+ reviewer_id uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ reason text NOT NULL CHECK(length(btrim(reason)) BETWEEN 1 AND 1000),
+ decided_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ UNIQUE(id,submission_id,decision)
+);
+
+CREATE TABLE app_private.finance_official_payments (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ school_id uuid NOT NULL REFERENCES app_private.school_profiles(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ campus_id uuid NOT NULL REFERENCES app.campuses(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ student_id uuid NOT NULL REFERENCES app_private.students(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ currency_unit_id uuid NOT NULL,
+ amount_minor numeric NOT NULL CHECK(amount_minor>0 AND amount_minor<1000000000000000000000000
+   AND amount_minor=trunc(amount_minor)),
+ method text NOT NULL CHECK(method IN('BANK_TRANSFER','WALLET_TRANSFER')),
+ submission_id uuid NOT NULL UNIQUE,
+ review_id uuid NOT NULL UNIQUE,
+ review_decision text NOT NULL DEFAULT 'APPROVE' CHECK(review_decision='APPROVE'),
+ institution_key text NOT NULL,
+ reference_key text NOT NULL,
+ receipt_serial bigint NOT NULL CHECK(receipt_serial>0),
+ received_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(currency_unit_id,school_id) REFERENCES app_private.finance_currency_units(id,school_id)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(submission_id,school_id,campus_id,student_id,currency_unit_id,amount_minor,method)
+   REFERENCES app_private.finance_payment_submissions
+   (id,school_id,campus_id,student_id,currency_unit_id,amount_minor,method)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ FOREIGN KEY(review_id,submission_id,review_decision)
+   REFERENCES app_private.finance_payment_reviews(id,submission_id,decision)
+   ON UPDATE RESTRICT ON DELETE RESTRICT,
+ UNIQUE(school_id,receipt_serial),
+ UNIQUE(school_id,method,institution_key,reference_key)
+);
+CREATE INDEX db08_payment_student_receipts ON app_private.finance_official_payments
+ (student_id,received_at,id);
+-- An approved review is evidence, not itself an official payment. Only this
+-- second typed source carries the permanent School-scoped receipt serial.
+
+CREATE FUNCTION app_private.db08_payment_source_guard()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE source app_private.finance_payment_submissions%ROWTYPE;
+ file app_private.file_objects%ROWTYPE; unit app_private.finance_currency_units%ROWTYPE;
+ reviewer app_private.principals%ROWTYPE; prior app_private.finance_payment_submissions%ROWTYPE;
+BEGIN
+ IF TG_TABLE_NAME='finance_payment_submissions' THEN
+  SELECT * INTO file FROM app_private.file_objects WHERE id=NEW.evidence_file_id;
+  SELECT * INTO unit FROM app_private.finance_currency_units WHERE id=NEW.currency_unit_id;
+  IF unit.id IS NULL OR unit.school_id<>NEW.school_id OR unit.minor_unit_scale<>2
+   OR NOT EXISTS(SELECT 1 FROM app_private.school_profiles school
+       WHERE school.id=NEW.school_id AND school.state='ACTIVE'
+        AND school.currency_code=unit.currency_code)
+   OR NOT EXISTS(SELECT 1 FROM app.campuses campus
+       WHERE campus.id=NEW.campus_id AND campus.school_id=NEW.school_id
+        AND campus.state='ACTIVE')
+   OR NOT EXISTS(SELECT 1 FROM app_private.students student
+       WHERE student.id=NEW.student_id AND student.current_status='ACTIVE')
+   OR NOT EXISTS(SELECT 1 FROM app_private.enrollments e
+      JOIN app_private.section_offerings section ON section.id=e.section_offering_id
+      JOIN app_private.class_offerings offering ON offering.id=section.class_offering_id
+      WHERE e.student_id=NEW.student_id AND e.placement_kind='PRIMARY'
+       AND e.placement_state='ACTIVE' AND e.effective_from<=NEW.paid_on
+       AND (e.effective_until IS NULL OR e.effective_until>=NEW.paid_on)
+       AND offering.school_id=NEW.school_id AND offering.campus_id=NEW.campus_id)
+   OR NOT EXISTS(SELECT 1 FROM app_private.principals principal
+       WHERE principal.id=NEW.submitted_by AND principal.state='ACTIVE'
+        AND principal.kind IN('INDIVIDUAL','FAMILY'))
+   OR file.id IS NULL OR file.state<>'AVAILABLE' OR file.classification<>'PRIVATE'
+   OR file.purpose_code<>'PAYMENT_EVIDENCE' OR file.campus_id<>NEW.campus_id
+   OR file.uploaded_by_principal_id<>NEW.submitted_by
+   OR file.content_hash<>NEW.evidence_sha256 THEN
+   RAISE EXCEPTION 'DB08 pending payment evidence context invalid'; END IF;
+  IF NEW.supersedes_id IS NOT NULL THEN
+   SELECT * INTO prior FROM app_private.finance_payment_submissions WHERE id=NEW.supersedes_id;
+   IF prior.id IS NULL OR prior.school_id<>NEW.school_id OR prior.campus_id<>NEW.campus_id
+    OR prior.student_id<>NEW.student_id OR prior.submitted_by<>NEW.submitted_by
+    OR NOT EXISTS(SELECT 1 FROM app_private.finance_payment_reviews review
+      WHERE review.submission_id=prior.id AND review.decision='REQUEST_CORRECTION') THEN
+    RAISE EXCEPTION 'DB08 payment correction source unavailable'; END IF;
+  END IF;
+ ELSIF TG_TABLE_NAME='finance_payment_reviews' THEN
+  SELECT * INTO source FROM app_private.finance_payment_submissions WHERE id=NEW.submission_id;
+  SELECT * INTO reviewer FROM app_private.principals WHERE id=NEW.reviewer_id;
+  SELECT * INTO file FROM app_private.file_objects WHERE id=source.evidence_file_id;
+  IF source.id IS NULL OR reviewer.id IS NULL OR reviewer.kind<>'INDIVIDUAL'
+   OR reviewer.state<>'ACTIVE' OR reviewer.id=source.submitted_by
+   OR (NEW.decision='APPROVE' AND
+      (file.state<>'AVAILABLE' OR file.purpose_code<>'PAYMENT_EVIDENCE'
+        OR file.classification<>'PRIVATE' OR file.content_hash<>source.evidence_sha256)) THEN
+   RAISE EXCEPTION 'DB08 payment review source invalid'; END IF;
+ ELSIF TG_TABLE_NAME='finance_official_payments' THEN
+  SELECT * INTO source FROM app_private.finance_payment_submissions WHERE id=NEW.submission_id;
+  SELECT * INTO file FROM app_private.file_objects WHERE id=source.evidence_file_id;
+  IF source.id IS NULL OR NEW.institution_key<>source.institution_key
+   OR NEW.reference_key<>source.reference_key
+   OR file.id IS NULL OR file.state<>'AVAILABLE'
+   OR file.classification<>'PRIVATE' OR file.purpose_code<>'PAYMENT_EVIDENCE'
+   OR file.content_hash<>source.evidence_sha256
+   OR NOT EXISTS(SELECT 1 FROM app_private.finance_payment_reviews review
+     WHERE review.id=NEW.review_id AND review.submission_id=source.id
+       AND review.decision='APPROVE' AND review.reviewer_id=NEW.created_by)
+  THEN RAISE EXCEPTION 'DB08 official payment source mismatch'; END IF;
+ ELSE
+  RAISE EXCEPTION 'DB08 unsupported payment guard target';
+ END IF;
+ RETURN NEW;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_payment_source_guard()
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor;
+CREATE TRIGGER db08_payment_source BEFORE INSERT ON app_private.finance_payment_submissions
+ FOR EACH ROW EXECUTE FUNCTION app_private.db08_payment_source_guard();
+CREATE TRIGGER db08_payment_source BEFORE INSERT ON app_private.finance_payment_reviews
+ FOR EACH ROW EXECUTE FUNCTION app_private.db08_payment_source_guard();
+CREATE TRIGGER db08_payment_source BEFORE INSERT ON app_private.finance_official_payments
+ FOR EACH ROW EXECUTE FUNCTION app_private.db08_payment_source_guard();
+
+ALTER TABLE app_private.finance_payment_submissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_payment_submissions FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_payment_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_payment_reviews FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_official_payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_official_payments FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_f7_owner ON app_private.finance_payment_submissions
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db08_f7_owner ON app_private.finance_payment_reviews
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db08_f7_owner ON app_private.finance_official_payments
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+REVOKE ALL ON app_private.finance_payment_submissions,
+ app_private.finance_payment_reviews,app_private.finance_official_payments
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,schoolos_evidence_writer;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_payment_submissions
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_payment_reviews
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_official_payments
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+RESET ROLE;

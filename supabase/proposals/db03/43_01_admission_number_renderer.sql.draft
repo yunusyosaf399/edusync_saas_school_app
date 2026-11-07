@@ -1,0 +1,47 @@
+-- P43 private deterministic renderer for the future permanent Admission number
+-- issuer. Pure formatting only: NO series mutation, allocation, approval,
+-- source-policy selection, Student creation or external callable RPC.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_render_admission_number(
+ p_prefix text,p_separator text,p_session_format text,p_year_starts_on date,
+ p_digits integer,p_start_value bigint,p_numeric_value bigint
+) RETURNS text
+LANGUAGE plpgsql IMMUTABLE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE session_year integer; year_part text; result text;
+BEGIN
+ IF p_prefix IS NULL OR p_separator IS NULL OR p_session_format IS NULL
+    OR p_year_starts_on IS NULL OR NOT pg_catalog.isfinite(p_year_starts_on)
+    OR p_digits IS NULL OR p_start_value IS NULL OR p_numeric_value IS NULL
+    OR p_session_format NOT IN('FULL_YEAR','TWO_DIGIT_YEAR')
+    OR p_digits NOT BETWEEN 1 AND 8
+    OR p_start_value<1 OR p_numeric_value<p_start_value
+    OR p_start_value>=pg_catalog.power(10::numeric,p_digits)
+    OR p_numeric_value>=pg_catalog.power(10::numeric,p_digits)
+    OR pg_catalog.char_length(p_prefix)>80
+    OR pg_catalog.char_length(p_separator)>8
+    OR pg_catalog.btrim(p_prefix)<>p_prefix
+    OR p_prefix ~ '[[:cntrl:]]'
+    OR p_separator ~ '[[:space:][:cntrl:]]' THEN
+  RAISE EXCEPTION 'DB03 admission number render input invalid' USING ERRCODE='22023';
+ END IF;
+ session_year:=EXTRACT(YEAR FROM p_year_starts_on)::integer;
+ IF session_year NOT BETWEEN 1000 AND 9999 THEN
+  RAISE EXCEPTION 'DB03 admission number render input invalid' USING ERRCODE='22023';
+ END IF;
+ year_part:=CASE WHEN p_session_format='FULL_YEAR' THEN session_year::text
+   ELSE pg_catalog.lpad((session_year%100)::text,2,'0') END;
+ result:=(CASE WHEN p_prefix='' THEN '' ELSE p_prefix||p_separator END)
+   ||year_part||p_separator
+   ||pg_catalog.lpad(p_numeric_value::text,p_digits,'0');
+ IF pg_catalog.char_length(result)>200 THEN
+  RAISE EXCEPTION 'DB03 admission number render input invalid' USING ERRCODE='22023';
+ END IF;
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION
+ app_private.db03_render_admission_number(text,text,text,date,integer,bigint,bigint)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_student_executor,schoolos_identity_executor,schoolos_evidence_writer,
+ schoolos_authz_reader,schoolos_platform_executor,schoolos_file_login;
+RESET ROLE;

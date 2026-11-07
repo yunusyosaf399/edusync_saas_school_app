@@ -1,0 +1,139 @@
+-- F10 candidate: a checked official payment and School-scoped receipt serial.
+-- No allocation, invoice, settlement, refund or admission clearance.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db08_issue_bank_payment(p_school uuid,p_submission uuid,
+ p_review uuid,p_key text)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+ SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE actor uuid; operation uuid; permission uuid; checked_at timestamptz;
+ source app_private.finance_payment_submissions%ROWTYPE;
+ review app_private.finance_payment_reviews%ROWTYPE;
+ file app_private.file_objects%ROWTYPE;
+ payment app_private.finance_official_payments%ROWTYPE;
+ prior app_private.command_receipts%ROWTYPE;
+ next_serial bigint; payload_hash bytea; result jsonb;
+ receipt_id uuid; correlation uuid;
+BEGIN
+ IF session_user<>'schoolos_file_login' OR current_setting('transaction_isolation')<>'read committed'
+  OR p_school IS NULL OR p_submission IS NULL OR p_review IS NULL
+  OR p_key IS NULL OR length(p_key) NOT BETWEEN 1 AND 180 THEN
+  RAISE EXCEPTION 'DB08 payment issue input denied'; END IF;
+ PERFORM pg_advisory_xact_lock_shared(71001,1);
+ -- The F9 authority check binds this real Auth session to the original
+ -- Campus-scoped individual reviewer and current active School.
+ actor:=app_private.db08_review_slip_authority(p_school,p_submission);
+ SELECT * INTO source FROM app_private.finance_payment_submissions WHERE id=p_submission;
+ SELECT * INTO review FROM app_private.finance_payment_reviews WHERE id=p_review;
+ IF review.id IS NULL OR review.submission_id<>source.id OR review.decision<>'APPROVE'
+  OR review.reviewer_id<>actor OR source.method<>'BANK_TRANSFER' THEN
+  RAISE EXCEPTION 'DB08 approved review required'; END IF;
+ SELECT o.id,o.request_permission_id INTO operation,permission
+  FROM app_private.operation_contracts o JOIN app_private.permissions p
+   ON p.id=o.request_permission_id
+  WHERE o.code='finance.payment.issue' AND o.contract_version=1
+   AND o.handler_key=o.code AND o.payload_schema_version=1 AND o.enabled
+   AND NOT o.requires_approval AND p.code=o.code AND p.state='ENABLED'
+   AND NOT p.family_safe;
+ checked_at:=clock_timestamp();
+ IF operation IS NULL OR NOT EXISTS(
+  SELECT 1 FROM app_private.assignment_permission_scopes s
+  JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+  JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+  JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+  JOIN app_private.roles r ON r.id=s.role_id
+  WHERE a.principal_id=actor AND a.principal_kind='INDIVIDUAL'
+   AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+   AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+   AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+   AND c.resolver_key=s.resolver_key AND c.enabled
+   AND s.permission_id=permission AND s.scope_kind='CAMPUS'
+   AND s.resolver_key='DIRECT' AND s.campus_id=source.campus_id
+   AND r.state='ACTIVE' AND NOT r.family_only
+   AND a.valid_from<=checked_at AND (a.valid_until IS NULL OR checked_at<a.valid_until)
+   AND (a.revoked_at IS NULL OR checked_at<a.revoked_at)
+   AND g.valid_from<=checked_at AND (g.valid_until IS NULL OR checked_at<g.valid_until)
+   AND (g.revoked_at IS NULL OR checked_at<g.revoked_at)
+   AND s.valid_from<=checked_at AND (s.valid_until IS NULL OR checked_at<s.valid_until)
+   AND (s.revoked_at IS NULL OR checked_at<s.revoked_at)) THEN
+  RAISE EXCEPTION 'DB08 payment issue authority denied'; END IF;
+ -- School row is the serial allocator. It also orders competing issuance
+ -- against another transaction trying to issue the same reviewed source.
+ PERFORM 1 FROM app_private.school_profiles WHERE id=p_school AND state='ACTIVE' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB08 payment School unavailable'; END IF;
+ SELECT * INTO source FROM app_private.finance_payment_submissions
+  WHERE id=p_submission AND school_id=p_school FOR UPDATE;
+ SELECT * INTO review FROM app_private.finance_payment_reviews
+  WHERE id=p_review AND submission_id=p_submission AND decision='APPROVE' FOR UPDATE;
+ SELECT * INTO file FROM app_private.file_objects WHERE id=source.evidence_file_id;
+ IF source.id IS NULL OR review.id IS NULL OR review.reviewer_id<>actor
+  OR source.method<>'BANK_TRANSFER' OR file.id IS NULL
+  OR file.state<>'AVAILABLE' OR file.classification<>'PRIVATE'
+  OR file.purpose_code<>'PAYMENT_EVIDENCE' OR file.campus_id<>source.campus_id
+  OR file.content_hash<>source.evidence_sha256 THEN
+  RAISE EXCEPTION 'DB08 reviewed bank payment unavailable'; END IF;
+ payload_hash:=sha256(convert_to(jsonb_build_array('official-bank-payment-v1',
+  p_school,p_submission,p_review)::text,'UTF8'));
+ SELECT * INTO prior FROM app_private.command_receipts WHERE principal_id=actor
+  AND operation_id=operation AND idempotency_key='bank-payment:'||p_key;
+ IF prior.id IS NOT NULL THEN
+  SELECT * INTO payment FROM app_private.finance_official_payments WHERE id=prior.result_ref;
+  IF prior.state<>'SUCCEEDED' OR prior.command_kind<>'finance.payment.issue'
+   OR prior.result_kind<>'FINANCE_OFFICIAL_PAYMENT'
+   OR prior.canonical_payload_hash<>payload_hash OR payment.id IS NULL
+   OR payment.school_id<>p_school OR payment.submission_id<>p_submission
+   OR payment.review_id<>p_review OR payment.created_by<>actor
+   OR (SELECT count(*) FROM app_private.audit_events WHERE command_receipt_id=prior.id)<>1
+   OR (SELECT count(*) FROM app_private.outbox_events WHERE command_receipt_id=prior.id)<>1 THEN
+   RAISE EXCEPTION 'DB08 official payment replay conflict'; END IF;
+  RETURN prior.result_summary;
+ END IF;
+ IF EXISTS(SELECT 1 FROM app_private.finance_official_payments
+   WHERE submission_id=p_submission OR review_id=p_review
+    OR (school_id=p_school AND method=source.method
+      AND institution_key=source.institution_key AND reference_key=source.reference_key))
+  OR EXISTS(SELECT 1 FROM app_private.finance_official_payments official
+    JOIN app_private.finance_payment_submissions earlier ON earlier.id=official.submission_id
+    WHERE official.school_id=p_school AND earlier.evidence_sha256=source.evidence_sha256) THEN
+  RAISE EXCEPTION 'DB08 official payment already issued for transfer'; END IF;
+ SELECT coalesce(max(receipt_serial),0)+1 INTO next_serial
+  FROM app_private.finance_official_payments WHERE school_id=p_school;
+ IF next_serial IS NULL OR next_serial<1 THEN
+  RAISE EXCEPTION 'DB08 payment receipt serial exhausted'; END IF;
+ INSERT INTO app_private.finance_official_payments(school_id,campus_id,student_id,
+  currency_unit_id,amount_minor,method,submission_id,review_id,
+  institution_key,reference_key,receipt_serial,created_by)
+ VALUES(source.school_id,source.campus_id,source.student_id,source.currency_unit_id,
+  source.amount_minor,source.method,source.id,review.id,source.institution_key,
+  source.reference_key,next_serial,actor) RETURNING * INTO payment;
+ result:=jsonb_build_object('payment_id',payment.id,'submission_id',source.id,
+  'review_id',review.id,'receipt_serial',payment.receipt_serial,
+  'school_id',payment.school_id,'campus_id',payment.campus_id,
+  'student_id',payment.student_id,'amount_minor',payment.amount_minor,
+  'currency_code',(SELECT currency_code FROM app_private.finance_currency_units
+    WHERE id=payment.currency_unit_id),'method',payment.method,
+  'bank',payment.institution_key,'reference',payment.reference_key,
+  'state','RECORDED');
+ receipt_id:=gen_random_uuid(); correlation:=gen_random_uuid();
+ INSERT INTO app_private.command_receipts(id,principal_id,operation_id,command_kind,
+  idempotency_key,canonical_payload_hash,canonicalization_version,state,result_kind,result_ref,
+  result_summary,completed_at,created_by)
+ VALUES(receipt_id,actor,operation,'finance.payment.issue','bank-payment:'||p_key,
+  payload_hash,1,'SUCCEEDED','FINANCE_OFFICIAL_PAYMENT',payment.id,result,clock_timestamp(),actor);
+ INSERT INTO app_private.audit_events(actor_id,actor_kind,outcome,authority_evidence,
+  target_version,event_type,target_kind,target_ref,campus_id,command_receipt_id,
+  source_kind,correlation_id,occurred_at,details,created_by)
+ VALUES(actor,'INDIVIDUAL','SUCCEEDED',jsonb_build_object('operation','finance.payment.issue',
+  'review_id',review.id),1,'finance.payment.issue','FINANCE_OFFICIAL_PAYMENT',
+  payment.id,payment.campus_id,receipt_id,'WORKER',correlation,
+  clock_timestamp(),result,actor);
+ INSERT INTO app_private.outbox_events(event_type,aggregate_kind,aggregate_ref,
+  aggregate_version,command_receipt_id,event_ordinal,correlation_id,occurred_at,payload,created_by)
+ VALUES('finance.payment.issue','FINANCE_OFFICIAL_PAYMENT',payment.id,1,
+  receipt_id,1,correlation,clock_timestamp(),result,actor);
+ RETURN result;
+END $body$;
+REVOKE ALL ON FUNCTION app_private.db08_issue_bank_payment(uuid,uuid,uuid,text)
+ FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app_private.db08_issue_bank_payment(uuid,uuid,uuid,text)
+ TO schoolos_file_login;
+RESET ROLE;

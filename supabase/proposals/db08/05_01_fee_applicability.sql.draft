@@ -1,0 +1,73 @@
+-- DB08 F5: full-price class and Student applicability. D1 must be installed.
+-- No discount, proration, automatic billing, payment or admission clearance.
+SET ROLE schoolos_schema_owner;
+CREATE TABLE app_private.finance_fee_applicabilities (
+ id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+ rule_id uuid NOT NULL REFERENCES app_private.finance_fee_rules(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ class_offering_id uuid NOT NULL REFERENCES app_private.class_offerings(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ student_id uuid REFERENCES app_private.students(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ valid_from date NOT NULL CHECK(isfinite(valid_from)),
+ valid_through date NOT NULL CHECK(isfinite(valid_through) AND valid_through>=valid_from),
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE INDEX db08_fee_applicability_lookup ON app_private.finance_fee_applicabilities
+ (class_offering_id,student_id,valid_from,valid_through,rule_id);
+CREATE UNIQUE INDEX db08_fee_class_rule_once ON app_private.finance_fee_applicabilities(rule_id,class_offering_id)
+ WHERE student_id IS NULL;
+CREATE UNIQUE INDEX db08_fee_student_rule_once ON app_private.finance_fee_applicabilities(rule_id,class_offering_id,student_id)
+ WHERE student_id IS NOT NULL;
+ALTER TABLE app_private.finance_fee_applicabilities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_fee_applicabilities FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_f5_owner ON app_private.finance_fee_applicabilities
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db08_f5_workflow_read ON app_private.finance_fee_applicabilities
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_f5_workflow_insert ON app_private.finance_fee_applicabilities
+ FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+CREATE POLICY db08_f5_evidence_read ON app_private.finance_fee_applicabilities
+ FOR SELECT TO schoolos_evidence_writer USING(true);
+GRANT SELECT,INSERT ON app_private.finance_fee_applicabilities TO schoolos_workflow_executor;
+GRANT SELECT ON app_private.finance_fee_applicabilities TO schoolos_evidence_writer;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_fee_applicabilities
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+
+CREATE TABLE app_private.finance_fee_assessment_selections (
+ obligation_id uuid PRIMARY KEY REFERENCES app_private.finance_fee_obligations(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ applicability_id uuid NOT NULL REFERENCES app_private.finance_fee_applicabilities(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ student_id uuid NOT NULL REFERENCES app_private.students(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ enrollment_id uuid NOT NULL REFERENCES app_private.enrollments(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ class_offering_id uuid NOT NULL REFERENCES app_private.class_offerings(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ category_id uuid NOT NULL REFERENCES app_private.finance_fee_categories(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+ created_at timestamptz NOT NULL DEFAULT pg_catalog.transaction_timestamp(),
+ created_by uuid NOT NULL REFERENCES app_private.principals(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+CREATE INDEX db08_fee_selection_student ON app_private.finance_fee_assessment_selections(student_id,created_at);
+ALTER TABLE app_private.finance_fee_assessment_selections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_private.finance_fee_assessment_selections FORCE ROW LEVEL SECURITY;
+CREATE POLICY db08_f5_owner ON app_private.finance_fee_assessment_selections
+ FOR ALL TO schoolos_schema_owner USING(true) WITH CHECK(true);
+CREATE POLICY db08_f5_workflow_read ON app_private.finance_fee_assessment_selections
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_f5_workflow_insert ON app_private.finance_fee_assessment_selections
+ FOR INSERT TO schoolos_workflow_executor WITH CHECK(true);
+GRANT SELECT,INSERT ON app_private.finance_fee_assessment_selections TO schoolos_workflow_executor;
+CREATE TRIGGER db08_retain BEFORE UPDATE OR DELETE OR TRUNCATE ON app_private.finance_fee_assessment_selections
+ FOR EACH STATEMENT EXECUTE FUNCTION app_private.db08_retain_financial_source();
+
+-- Only the no-login Finance command owner may read D1 placement evidence.
+CREATE POLICY db08_f5_student_read ON app_private.students
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_f5_enrollment_read ON app_private.enrollments
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_f5_section_read ON app_private.section_offerings
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+CREATE POLICY db08_f5_offering_read ON app_private.class_offerings
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+GRANT SELECT(id,person_id,current_status) ON app_private.students TO schoolos_workflow_executor;
+GRANT SELECT(id,student_id,section_offering_id,placement_kind,placement_state,effective_from,effective_until)
+ ON app_private.enrollments TO schoolos_workflow_executor;
+GRANT SELECT(id,class_offering_id,state) ON app_private.section_offerings TO schoolos_workflow_executor;
+GRANT SELECT(id,school_id,campus_id,academic_year_id,state)
+ ON app_private.class_offerings TO schoolos_workflow_executor;
+RESET ROLE;

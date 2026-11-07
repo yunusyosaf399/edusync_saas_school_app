@@ -1,0 +1,47 @@
+{
+  "format_version": 1,
+  "recorded_on": "2026-10-26",
+  "owner": "yunusyosaf399",
+  "original_instruction": "The administrator must submit the birth certificate and school leaving certificate from previous school for admissions to complete, if the students don't have certificate at that time then admin can give maximum 2 months to arrange it. While awaiting the admissions to complete.",
+  "original_requirement_status": "OWNER_REQUESTED",
+  "follow_up_selections": [
+    {
+      "id": "CERTIFICATE-GRACE-ENROLLMENT",
+      "question": "During the maximum two-month waiting period, should final enrollment wait, or may the student enroll provisionally?",
+      "selected_label": "Keep admission pending (Recommended)",
+      "selected_description": "The application continues, but final admission and enrollment wait until the required certificates are verified."
+    },
+    {
+      "id": "LEAVING-CERTIFICATE-APPLICABILITY",
+      "question": "Is the school-leaving certificate required only when the student previously attended another school?",
+      "selected_label": "Transfers only (Recommended)",
+      "selected_description": "First-time students need a birth certificate; transferring students need both certificates."
+    }
+  ],
+  "mandatory_certificate_kinds": [
+    {"code": "BIRTH_CERTIFICATE", "applicability": "ALL", "requirement": "REQUIRED"},
+    {"code": "SCHOOL_LEAVING_CERTIFICATE", "applicability": "TRANSFER", "requirement": "REQUIRED"}
+  ],
+  "maximum_months_requested_by_owner": 2,
+  "engineering_interpretations_not_additional_owner_quotes": {
+    "calendar_months_not_sixty_days": true,
+    "anchor": "First recorded application-wide grace grant on trusted School-local date",
+    "restart_on_retry_or_second_missing_certificate": false,
+    "shorter_deadline_allowed": true,
+    "deadline_inclusive_in_school_local_date": true,
+    "on_overdue": "Flag missing obligation and block completion; no automatic withdrawal/deletion selected"
+  },
+  "additional_policy_documents_configurable": true,
+  "core_certificate_minimum_can_be_skipped_by_policy": false,
+  "provisional_enrollment_selected": false,
+  "single_staff_identity_decision_unchanged": true,
+  "independent_test_skip_review_unchanged": true,
+  "finance_authorizer_clearance_unchanged": true,
+  "implemented_slice": "Inactive roster/applicability constraints, required-roster configuration validator and private calendar deadline helper",
+  "administrator_upload_and_grace_command_implemented": false,
+  "durable_per_application_grace_history_implemented": false,
+  "admission_completion_implemented": false,
+  "publication_task_status": "PAUSED_FOR_THIS_REQUIREMENT",
+  "hosted_deployment_authorized": false,
+  "operation_enablement_authorized": false
+}

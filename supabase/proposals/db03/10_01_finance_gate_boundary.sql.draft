@@ -1,0 +1,39 @@
+-- S10 is a deny-only Admissions boundary, not a Finance implementation.
+-- No obligation, waiver, payment, clearance row or unverifiable UUID is created.
+-- A future positive route requires the actual Finance-owned source, typed
+-- references and reversal/authority rechecks; object names alone never suffice.
+GRANT CREATE ON SCHEMA app,app_private TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app.read_admission_finance_gate(p_application_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE a app_private.admission_applications%ROWTYPE; v_status text;
+BEGIN
+ -- Reuse the existing scoped application-status permission. This route
+ -- discloses no balances, debt, concession details or financial evidence.
+ a:=app_private.db03_document_lock(p_application_id,'admission.document.view','finance-boundary');
+ IF COALESCE(current_setting('request.jwt.claims',true)::jsonb->>'exp','') !~ '^[0-9]{1,12}$' THEN
+  RAISE EXCEPTION 'DB03 finance status authentication expired'; END IF;
+ IF to_timestamp((current_setting('request.jwt.claims',true)::jsonb->>'exp')::bigint)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'DB03 finance status authentication expired'; END IF;
+ v_status:=CASE WHEN a.state IN('WITHDRAWN','REJECTED') THEN 'APPLICATION_CLOSED'
+ WHEN NOT app_private.db03_document_target_open(a.id,a.row_version) THEN 'APPLICATION_CONTEXT_UNAVAILABLE'
+ ELSE 'FINANCE_SOURCE_UNAVAILABLE' END;
+ RETURN jsonb_build_object('application_id',a.id,'application_version',a.row_version,'application_state',a.state,
+ 'finance_status',v_status,'finance_clearance_required',true,'can_finalize',false);
+END $body$;
+CREATE FUNCTION app_private.db03_assert_admission_finance_clearance(p_application_id uuid) RETURNS void
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE v_status jsonb;
+BEGIN
+ -- A future mutation must authorize its own exact finalization operation,
+ -- then recheck Finance under its accepted fence. This private guard cannot
+ -- authorize anything and does not consume client-supplied status JSON.
+ v_status:=app.read_admission_finance_gate(p_application_id);
+ IF v_status->>'finance_status'<>'FINANCE_SOURCE_UNAVAILABLE' THEN
+  RAISE EXCEPTION 'DB03 finance gate application is not open'; END IF;
+ RAISE EXCEPTION 'DB03 Finance source unavailable; explicit Finance clearance required including waived or zero fees';
+END $body$;
+REVOKE ALL ON FUNCTION app.read_admission_finance_gate(uuid),app_private.db03_assert_admission_finance_clearance(uuid) FROM PUBLIC,anon,authenticated,service_role;
+GRANT EXECUTE ON FUNCTION app.read_admission_finance_gate(uuid) TO authenticated;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app,app_private FROM schoolos_workflow_executor;
