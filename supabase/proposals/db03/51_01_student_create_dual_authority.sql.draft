@@ -4,6 +4,8 @@
 -- create a Student, policy binding, approval, number, roll, receipt or event.
 SET ROLE schoolos_schema_owner;
 -- Precise authorization-reader source access. No app-client grants.
+GRANT SELECT(row_version) ON app_private.operation_contracts
+ TO schoolos_authz_reader;
 GRANT SELECT(id,school_id,campus_id,academic_year_id,state)
  ON app_private.class_offerings TO schoolos_authz_reader;
 GRANT SELECT(id,class_offering_id,campus_id,state)
