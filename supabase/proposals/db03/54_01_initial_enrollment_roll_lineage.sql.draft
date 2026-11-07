@@ -1,0 +1,55 @@
+-- DB03 P54: exact initial PRIMARY placement + initial roll lineage.
+-- Inactive relational prerequisite. No final APPROVE, D1 student.create,
+-- allocation command, client grants, worker or migration activation.
+SET ROLE schoolos_schema_owner;
+-- Anchor the original immutable enrollment identity and origin context.
+-- placement_state is intentionally NOT in this key: a later transfer,
+-- promotion or withdrawal may legitimately end the original placement.
+ALTER TABLE app_private.enrollments
+ ADD CONSTRAINT db03_handoff_initial_enrollment_source_key
+ UNIQUE(id,student_id,section_offering_id,placement_kind,entry_kind);
+-- Future roll corrections must not break the historical creation proof:
+-- reference the immutable original allocation ID/enrollment/Student only.
+ALTER TABLE app_private.roll_allocations
+ ADD CONSTRAINT db03_handoff_initial_roll_source_key
+ UNIQUE(id,enrollment_id,student_id);
+-- P38 handoffs are empty and deny-all, so there is no legacy-row backfill.
+ALTER TABLE app_private.admission_student_handoffs
+ ADD COLUMN result_enrollment_id uuid,
+ ADD COLUMN result_roll_allocation_id uuid,
+ ADD COLUMN required_placement_kind text NOT NULL DEFAULT 'PRIMARY',
+ ADD COLUMN required_entry_kind text NOT NULL DEFAULT 'INITIAL',
+ ADD CONSTRAINT db03_handoff_initial_placement_kind_check
+ CHECK(required_placement_kind='PRIMARY'),
+ ADD CONSTRAINT db03_handoff_initial_entry_kind_check
+ CHECK(required_entry_kind='INITIAL'),
+ ADD CONSTRAINT db03_handoff_initial_placement_state_check
+ CHECK((state='READY'
+        AND result_enrollment_id IS NULL
+        AND result_roll_allocation_id IS NULL)
+    OR (state='CONSUMED'
+        AND result_enrollment_id IS NOT NULL
+        AND result_roll_allocation_id IS NOT NULL)),
+ ADD CONSTRAINT db03_handoff_result_enrollment_one_link
+ UNIQUE(result_enrollment_id),
+ ADD CONSTRAINT db03_handoff_result_roll_one_link
+ UNIQUE(result_roll_allocation_id),
+ ADD CONSTRAINT db03_handoff_exact_initial_primary_enrollment
+ FOREIGN KEY(result_enrollment_id,result_student_id,section_offering_id,
+             required_placement_kind,required_entry_kind)
+ REFERENCES app_private.enrollments
+           (id,student_id,section_offering_id,placement_kind,entry_kind)
+ ON UPDATE NO ACTION ON DELETE NO ACTION
+ DEFERRABLE INITIALLY DEFERRED,
+ ADD CONSTRAINT db03_handoff_exact_initial_roll
+ FOREIGN KEY(result_roll_allocation_id,result_enrollment_id,result_student_id)
+ REFERENCES app_private.roll_allocations(id,enrollment_id,student_id)
+ ON UPDATE NO ACTION ON DELETE NO ACTION
+ DEFERRABLE INITIALLY DEFERRED;
+-- P50 requires final APPROVE to have the exact CONSUMED handoff at COMMIT.
+-- P38 makes result_student_id mandatory for CONSUMED and P53 validates Person
+-- and Admission number. This P54 layer also requires the original INITIAL
+-- PRIMARY Enrollment and its matching Student+Enrollment roll allocation.
+-- Nothing here validates live capacity or reserves a seat: that remains the
+-- responsibility of the eventual lock-ordered D1 creation effect.
+RESET ROLE;
