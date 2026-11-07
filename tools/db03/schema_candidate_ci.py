@@ -1133,6 +1133,30 @@ def validate_policy_snapshot_forward_lineage() -> tuple[str,str]:
           hashlib.sha256(sql.encode()).hexdigest())
     return sql,test
 
+
+def validate_policy_binding_revision_fence() -> tuple[str,str]:
+    sql=(ROOT / 'supabase/proposals/db03/48_01_policy_binding_revision_fence.sql.draft').read_text()
+    test=(ROOT / 'supabase/tests/db03/48_policy_binding_revision_fence.sql').read_text()
+    for term in ('db03_binding_snapshot_revision_identity',
+                 'db03_binding_predecessor_shape',
+                 'db03_binding_exact_predecessor',
+                 'db03_binding_unique_forward_per_application',
+                 'supersedes_revision=revision-1',
+                 'UNIQUE(application_id,forward_id)',
+                 'ON UPDATE RESTRICT ON DELETE RESTRICT',
+                 'SET ROLE schoolos_schema_owner;',
+                 'RESET ROLE;'):
+        if term not in sql:
+            raise RuntimeError('DB03_P46B2A_SOURCE_MISSING_'+term)
+    if (re.findall(r'SELECT plan\((\d+)\);',test)!=['16']
+        or len(re.findall(r'(?m)^SELECT ok\(',test))!=16
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P46B2A_TEST_PLAN')
+    if re.search(r'(?mi)^\s*(?:CREATE FUNCTION|CREATE POLICY|CREATE TRIGGER|GRANT |INSERT INTO|UPDATE |DELETE FROM|DROP )',sql):
+        raise RuntimeError('DB03_P46B2A_NO_WRITER')
+    print('DB03_P46B2A_REVISION_FENCE_SOURCE_PASS 16 assertions')
+    return sql,test
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1185,6 +1209,7 @@ def main() -> int:
     handoff_policy_sql, handoff_policy_test = validate_handoff_policy_number_lineage()
     forwarded_policy_sql, forwarded_policy_test = validate_forwarded_policy_binding_source()
     policy_forward_sql, policy_forward_test = validate_policy_snapshot_forward_lineage()
+    binding_revision_sql, binding_revision_test = validate_policy_binding_revision_fence()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2327,6 +2352,37 @@ def main() -> int:
                 raise
             print('DB03_P46B1_FORWARD_LINEAGE_DATABASE_PASS 27/27; '
                   'policy_binding_writer=false approve=false student_create=false')
+            # P46B-2A: predecessor revision and replay fence, still deny-all.
+            try:
+                local.run_psql(container,'BEGIN;\n'+binding_revision_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P46B2A_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P46B2A_INJECTED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P46B2A_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P46B2A_EXPECTED_FAILURE_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (SELECT count(*) FROM pg_constraint WHERE conname IN "
+                "('db03_binding_snapshot_revision_identity',"
+                "'db03_binding_predecessor_shape',"
+                "'db03_binding_exact_predecessor',"
+                "'db03_binding_unique_forward_per_application'))+"
+                "(SELECT count(*) FROM pg_attribute WHERE "
+                "attrelid='app_private.admission_application_policy_snapshots'::regclass "
+                "AND attname='supersedes_revision' AND NOT attisdropped);",
+                'DB03_P46B2A_ROLLBACK_PROBE',tuples=True).strip()
+            if absent!='0':
+                raise RuntimeError('DB03_P46B2A_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+binding_revision_sql+'\nCOMMIT;',
+                           'DB03_P46B2A_INSTALL')
+            output=local.run_psql(container,binding_revision_test,'DB03_P46B2A_TEST')
+            try:
+                parse_tap(output,16)
+            except RuntimeError:
+                print('DB03_P46B2A_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P46B2A_DATABASE_PASS 16/16; binding_writer=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
