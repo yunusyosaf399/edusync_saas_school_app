@@ -1,0 +1,123 @@
+-- DB03 P46B-2B1: Principal-authorized, lock-ordered policy binding preflight.
+-- Intentionally read-only. The final atomic APPROVE/D1 transaction will call
+-- this private guard before the protected snapshot/evidence writer exists.
+-- No public app function, grant, operation seed, policy write or Student effect.
+SET ROLE schoolos_schema_owner;
+-- Read-only exact-source and revision access is restricted to a NOLOGIN
+-- workflow executor. Do not grant raw snapshot INSERT/UPDATE/DELETE.
+GRANT EXECUTE ON FUNCTION
+ app_private.db03_policy_binding_candidate_source(uuid,bigint,uuid)
+ TO schoolos_workflow_executor;
+GRANT SELECT ON app_private.admission_application_policy_snapshots
+ TO schoolos_workflow_executor;
+CREATE POLICY db03_policy_binding_workflow_read
+ ON app_private.admission_application_policy_snapshots
+ FOR SELECT TO schoolos_workflow_executor USING(true);
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_workflow_executor;
+SET ROLE schoolos_workflow_executor;
+CREATE FUNCTION app_private.db03_principal_policy_binding_preflight(
+ p_application uuid,p_expected_version bigint,p_forward uuid,
+ p_expected_prior_revision bigint)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ a app_private.admission_applications%ROWTYPE;
+ f app_private.admission_document_forwards%ROWTYPE;
+ i app_private.admission_document_intakes%ROWTYPE;
+ prior app_private.admission_application_policy_snapshots%ROWTYPE;
+ ctx record; checked record; source jsonb;
+BEGIN
+ IF p_application IS NULL OR p_forward IS NULL
+  OR p_expected_version IS NULL OR p_expected_version<1
+  OR p_expected_prior_revision IS NULL OR p_expected_prior_revision<0
+  OR current_setting('transaction_isolation')<>'read committed' THEN
+  RAISE EXCEPTION 'DB03 policy preflight intent invalid';
+ END IF;
+ -- Same ordering as the protected final Principal decision:
+ -- authorization fence, actor lookup, advisory serialization, School,
+ -- Campus, Academic Year, Application, then immutable source records.
+ PERFORM pg_advisory_xact_lock(71001,1);
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF a.id IS NULL THEN
+  RAISE EXCEPTION 'DB03 policy preflight application unavailable';
+ END IF;
+ SELECT * INTO ctx FROM app_private.db03_principal_final_actor(a.campus_id);
+ PERFORM pg_advisory_xact_lock(71002,hashtext(
+  ctx.actor_id::text||':'||ctx.operation_id::text||':POLICY_BIND:'||p_application::text));
+ PERFORM 1 FROM app_private.school_profiles WHERE id=a.school_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 policy preflight School unavailable'; END IF;
+ PERFORM 1 FROM app.campuses WHERE id=a.campus_id AND school_id=a.school_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 policy preflight Campus unavailable'; END IF;
+ PERFORM 1 FROM app.academic_years
+  WHERE id=a.academic_year_id AND school_id=a.school_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'DB03 policy preflight academic year unavailable'; END IF;
+ SELECT * INTO a FROM app_private.admission_applications
+  WHERE id=p_application FOR UPDATE;
+ SELECT * INTO checked FROM app_private.db03_principal_final_actor(a.campus_id);
+ IF checked.actor_id IS DISTINCT FROM ctx.actor_id
+  OR checked.operation_id IS DISTINCT FROM ctx.operation_id
+  OR checked.authority_hash IS DISTINCT FROM ctx.authority_hash THEN
+  RAISE EXCEPTION 'DB03 policy preflight authority changed';
+ END IF;
+ IF a.state<>'DRAFT' OR a.row_version<>p_expected_version
+  OR a.policy_version_id IS NOT NULL THEN
+  RAISE EXCEPTION 'DB03 policy preflight application stale';
+ END IF;
+ SELECT * INTO f FROM app_private.admission_document_forwards
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ IF f.id IS DISTINCT FROM p_forward
+  OR f.application_version IS DISTINCT FROM a.row_version THEN
+  RAISE EXCEPTION 'DB03 policy preflight Forward stale';
+ END IF;
+ SELECT * INTO i FROM app_private.admission_document_intakes
+  WHERE id=f.intake_id AND application_id=a.id;
+ IF i.id IS NULL THEN
+  RAISE EXCEPTION 'DB03 policy preflight Intake unavailable';
+ END IF;
+ -- Source handles published-at-Forward policy and current document snapshot.
+ source:=app_private.db03_policy_binding_candidate_source(
+  a.id,p_expected_version,p_forward);
+ IF source IS NULL OR COALESCE(
+  (source->>'forwarded_policy_source_current')::boolean,false)=false
+  OR (source->>'forward_id')::uuid IS DISTINCT FROM f.id
+  OR (source->>'document_intake_id')::uuid IS DISTINCT FROM i.id
+  OR (source->>'policy_version_id')::uuid IS DISTINCT FROM i.policy_version_id
+  OR (source->>'application_version')::bigint IS DISTINCT FROM a.row_version
+  OR (source->>'stage_epoch')::bigint IS DISTINCT FROM a.stage_epoch THEN
+  RAISE EXCEPTION 'DB03 policy preflight source inconsistent';
+ END IF;
+ SELECT * INTO prior FROM app_private.admission_application_policy_snapshots
+  WHERE application_id=a.id ORDER BY revision DESC LIMIT 1;
+ IF (prior.id IS NULL AND p_expected_prior_revision<>0)
+  OR (prior.id IS NOT NULL AND prior.revision<>p_expected_prior_revision)
+  OR EXISTS(
+   SELECT 1 FROM app_private.admission_application_policy_snapshots
+   WHERE application_id=a.id AND forward_id=p_forward) THEN
+  RAISE EXCEPTION 'DB03 policy preflight revision or Forward replay conflict';
+ END IF;
+ RETURN jsonb_build_object(
+  'application_id',a.id,'application_version',a.row_version,
+  'stage_epoch',a.stage_epoch,'school_id',a.school_id,
+  'academic_year_id',a.academic_year_id,
+  'forward_id',f.id,'document_intake_id',i.id,
+  'policy_version_id',i.policy_version_id,
+  'application_numbering_profile_id',source->'application_numbering_profile_id',
+  'admission_numbering_profile_id',source->'admission_numbering_profile_id',
+  'published_configuration_hash_hex',source->'published_configuration_hash_hex',
+  'next_revision',p_expected_prior_revision+1,
+  'supersedes_id',prior.id,
+  'principal_authority_checked',true,'source_checked_under_application_lock',true,
+  'policy_binding_committed',false,'can_bind',false,
+  'can_approve',false,'can_create_student',false,
+  'status','AUTHORIZED_POLICY_PREFLIGHT_ONLY');
+END $body$;
+REVOKE ALL ON FUNCTION
+ app_private.db03_principal_policy_binding_preflight(uuid,bigint,uuid,bigint)
+ FROM PUBLIC,anon,authenticated,service_role,
+ schoolos_file_login,schoolos_platform_executor,schoolos_student_executor,
+ schoolos_identity_executor,schoolos_evidence_writer,schoolos_authz_reader;
+-- No GRANT to authenticated. No public entrypoint. Later only the validated
+-- final APPROVE orchestrator can call this private owned function.
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_workflow_executor;
