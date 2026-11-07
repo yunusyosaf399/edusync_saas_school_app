@@ -1,0 +1,33 @@
+-- DB03 P46B-1: immutable exact Forward -> Intake -> Policy lineage.
+-- Structural dependency for a future authorized policy-binding effect.
+-- P44 snapshot writer, S5 draft policy NULL, Principal APPROVE, number issue and
+-- D1 Student create remain unavailable. No new grants or callable operations.
+SET ROLE schoolos_schema_owner;
+-- The prior individual references did not prove that the retained Forward
+-- referred to the same intake AND that intake used this exact policy.
+ALTER TABLE app_private.admission_document_intakes
+ ADD CONSTRAINT db03_policy_snapshot_intake_source_key
+ UNIQUE(id,application_id,policy_version_id);
+ALTER TABLE app_private.admission_document_forwards
+ ADD CONSTRAINT db03_policy_snapshot_forward_source_key
+ UNIQUE(id,application_id,intake_id,application_version);
+-- Both columns are mandatory from the first future snapshot. The table is
+-- empty and P44 still rejects every INSERT/UPDATE/DELETE operation.
+ALTER TABLE app_private.admission_application_policy_snapshots
+ ADD COLUMN forward_id uuid NOT NULL,
+ ADD COLUMN document_intake_id uuid NOT NULL,
+ ADD CONSTRAINT db03_policy_snapshot_exact_forward
+ FOREIGN KEY(forward_id,application_id,document_intake_id,application_version)
+ REFERENCES app_private.admission_document_forwards
+  (id,application_id,intake_id,application_version)
+ ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ADD CONSTRAINT db03_policy_snapshot_exact_intake_policy
+ FOREIGN KEY(document_intake_id,application_id,policy_version_id)
+ REFERENCES app_private.admission_document_intakes
+  (id,application_id,policy_version_id)
+ ON UPDATE RESTRICT ON DELETE RESTRICT;
+-- These FKs prove retained source lineage, not that a Forward is currently
+-- live. The future protected command MUST hold locks, check exact current
+-- authority/review/application epoch/version, and atomically record receipt,
+-- audit and outbox before final Principal APPROVE and D1 Student creation.
+RESET ROLE;
