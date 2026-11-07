@@ -1,0 +1,20 @@
+-- DB03 P46B-2A: immutable policy-binding revision predecessor fence.
+-- No positive writer or client grant. Future binding must atomically supply
+-- exact prior revision; a cross-application or skipped revision is impossible.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.admission_application_policy_snapshots
+ ADD CONSTRAINT db03_binding_snapshot_revision_identity
+ UNIQUE(id,application_id,revision),
+ ADD COLUMN supersedes_revision bigint,
+ ADD CONSTRAINT db03_binding_predecessor_shape
+ CHECK ((revision=1 AND supersedes_id IS NULL AND supersedes_revision IS NULL)
+ OR (revision>1 AND supersedes_id IS NOT NULL
+     AND supersedes_revision=revision-1)),
+ ADD CONSTRAINT db03_binding_exact_predecessor
+ FOREIGN KEY(supersedes_id,application_id,supersedes_revision)
+ REFERENCES app_private.admission_application_policy_snapshots(id,application_id,revision)
+ ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ADD CONSTRAINT db03_binding_unique_forward_per_application
+ UNIQUE(application_id,forward_id);
+-- P44 deny-all mutation and forced RLS remain unchanged.
+RESET ROLE;
