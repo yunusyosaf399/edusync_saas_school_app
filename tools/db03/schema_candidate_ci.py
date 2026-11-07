@@ -1262,12 +1262,12 @@ def validate_student_create_dual_authority() -> tuple[str,str]:
         or len(re.findall(r'(?m)^CREATE POLICY ',sql))!=3
         or re.search(r'(?mi)^\s*(INSERT INTO|UPDATE |DELETE FROM|CREATE FUNCTION app\.|CREATE ROLE|ALTER ROLE)\b',sql)):
         raise RuntimeError('DB03_P46B2B2B1_NO_MUTATION_NO_PUBLIC_API')
-    if (re.findall(r'SELECT plan\((\d+)\);',test)!=['31']
-        or len(re.findall(r'(?m)^SELECT ok\(',test))!=29
+    if (re.findall(r'SELECT plan\((\d+)\);',test)!=['32']
+        or len(re.findall(r'(?m)^SELECT ok\(',test))!=30
         or len(re.findall(r'(?m)^SELECT is\(',test))!=2
         or not test.rstrip().endswith('ROLLBACK;')):
         raise RuntimeError('DB03_P46B2B2B1_TEST_PLAN')
-    print('DB03_P46B2B2B1_DUAL_AUTH_SOURCE_PASS assertions=31')
+    print('DB03_P46B2B2B1_DUAL_AUTH_SOURCE_PASS assertions=32')
     return sql,test
 
 def main() -> int:
@@ -2594,11 +2594,11 @@ def main() -> int:
             output=local.run_psql(container,dual_auth_test,
                                   'DB03_P46B2B2B1_TEST')
             try:
-                parse_tap(output,31)
+                parse_tap(output,32)
             except RuntimeError:
                 print('DB03_P46B2B2B1_TAP_DIAGNOSTIC\n'+output,flush=True)
                 raise
-            print('DB03_P46B2B2B1_DATABASE_PASS 31/31; '
+            print('DB03_P46B2B2B1_DATABASE_PASS 32/32; '
                   'd1_student_create_enabled=false; approval_writer=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
