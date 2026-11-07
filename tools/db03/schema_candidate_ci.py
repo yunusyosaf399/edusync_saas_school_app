@@ -1270,6 +1270,46 @@ def validate_student_create_dual_authority() -> tuple[str,str]:
     print('DB03_P46B2B2B1_DUAL_AUTH_SOURCE_PASS assertions=32')
     return sql,test
 
+
+def validate_principal_policy_binding_intent_rebased() -> tuple[str,str]:
+    sql=(ROOT / 'supabase/proposals/db03/52_01_principal_policy_binding_intent.sql.draft').read_text()
+    test=(ROOT / 'supabase/tests/db03/52_principal_policy_binding_intent.sql').read_text()
+    if (re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)
+        != ['db03_principal_policy_binding_intent']
+        or 'SECURITY DEFINER' in sql
+        or re.search(r'(?mi)^\s*(?:CREATE TABLE|CREATE POLICY|CREATE TRIGGER|GRANT |INSERT INTO|UPDATE |DELETE FROM|DROP )',sql)):
+        raise RuntimeError('DB03_P52_APPROVAL_INTENT_OBJECT_SCOPE')
+    for term in ('SECURITY INVOKER','SET search_path=pg_catalog,pg_temp',
+                 'db03_principal_approve_input_source(',
+                 'db03_policy_binding_candidate_source(',
+                 'db03_principal_final_source_snapshot(',
+                 "'source_inputs_observed'",
+                 "'forwarded_policy_source_current'",
+                 "'published_configuration_hash_hex'",
+                 "'identity_resolution_id'",
+                 "'document_clearance_id'",
+                 "'destination_intent_id'",
+                 "'fee_disposition_id'",
+                 "IN('UNPAID','SKIPPED','MARKED_PAID')",
+                 "'binding_intent_hash_hex'",
+                 "'actor_authorized_to_bind',false",
+                 "'policy_binding_committed',false",
+                 "'can_bind',false,'can_approve',false,'can_create_student',false",
+                 'REVOKE ALL ON FUNCTION'):
+        if term not in sql:
+            raise RuntimeError('DB03_P52_APPROVAL_INTENT_MISSING_'+term)
+    for number,statement in enumerate(test.splitlines(),start=1):
+        if statement.startswith('SELECT ') and statement.count("'") % 2:
+            raise RuntimeError('DB03_P52_TEST_UNBALANCED_SQL_QUOTES_LINE_'+str(number))
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['31']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 31
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P52_APPROVAL_INTENT_TEST_PLAN')
+    print('DB03_P52_APPROVAL_INTENT_SOURCE_PASS assertions=31 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1326,6 +1366,7 @@ def main() -> int:
     binding_preflight_sql, binding_preflight_test = validate_principal_policy_binding_preflight()
     approval_lineage_sql, approval_lineage_test = validate_principal_approval_consumed_handoff_lineage()
     dual_auth_sql, dual_auth_test = validate_student_create_dual_authority()
+    approval_intent_sql, approval_intent_test = validate_principal_policy_binding_intent_rebased()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2600,6 +2641,37 @@ def main() -> int:
                 raise
             print('DB03_P46B2B2B1_DATABASE_PASS 32/32; '
                   'd1_student_create_enabled=false; approval_writer=false')
+
+            # P52: restore unique, read-only Principal policy + identity +
+            # independent document + fee intent from unmergeable PR #238.
+            # All P48/P49/P50/P51 protections remain installed and checked.
+            try:
+                local.run_psql(container,'BEGIN;\n'+approval_intent_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P52_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P52_INJECTED_INTENT_INSTALL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P52_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P52_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (to_regprocedure('app_private.db03_principal_policy_binding_intent"
+                "(uuid,bigint,uuid)') IS NOT NULL)::int;",
+                'DB03_P52_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P52_INTENT_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+approval_intent_sql+'\nCOMMIT;',
+                           'DB03_P52_APPROVAL_INTENT_INSTALL')
+            output=local.run_psql(container,approval_intent_test,
+                                  'DB03_P52_APPROVAL_INTENT_TEST')
+            try:
+                parse_tap(output,31)
+            except RuntimeError:
+                print('DB03_P52_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P52_APPROVAL_INTENT_DATABASE_PASS 31/31; '
+                  'approval_intent_only=true binding_writer=false '
+                  'principal_approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
