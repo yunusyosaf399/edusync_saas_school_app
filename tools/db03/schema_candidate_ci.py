@@ -1102,6 +1102,37 @@ def validate_forwarded_policy_binding_source() -> tuple[str,str]:
     return sql,test
 
 
+
+def validate_policy_snapshot_forward_lineage() -> tuple[str,str]:
+    sql=(ROOT / 'supabase/proposals/db03/47_01_policy_snapshot_forward_lineage.sql.draft').read_text()
+    test=(ROOT / 'supabase/tests/db03/47_policy_snapshot_forward_lineage.sql').read_text()
+    if ('SET ROLE schoolos_schema_owner;' not in sql
+        or 'RESET ROLE;' not in sql
+        or sql.count('ADD CONSTRAINT') != 4
+        or re.search(r'(?mi)^\s*(?:CREATE FUNCTION|CREATE POLICY|CREATE TRIGGER|GRANT |INSERT INTO|UPDATE |DELETE FROM|DROP )',sql)):
+        raise RuntimeError('DB03_P46B1_FORWARD_LINEAGE_OBJECT_SCOPE')
+    for term in ('db03_policy_snapshot_intake_source_key',
+                 'db03_policy_snapshot_forward_source_key',
+                 'db03_policy_snapshot_exact_forward',
+                 'db03_policy_snapshot_exact_intake_policy',
+                 'ADD COLUMN forward_id uuid NOT NULL',
+                 'ADD COLUMN document_intake_id uuid NOT NULL',
+                 'FOREIGN KEY(forward_id,application_id,document_intake_id,application_version)',
+                 'FOREIGN KEY(document_intake_id,application_id,policy_version_id)',
+                 'ON UPDATE RESTRICT ON DELETE RESTRICT'):
+        if term not in sql:
+            raise RuntimeError('DB03_P46B1_FORWARD_LINEAGE_SOURCE_MISSING_'+term)
+    for number,statement in enumerate(test.splitlines(),start=1):
+        if statement.startswith('SELECT ') and statement.count("'") % 2:
+            raise RuntimeError('DB03_P46B1_TEST_UNBALANCED_SQL_QUOTES_LINE_'+str(number))
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['27']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 27
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P46B1_POLICY_FORWARD_TEST_PLAN')
+    print('DB03_P46B1_FORWARD_LINEAGE_SOURCE_PASS assertions=27 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1153,6 +1184,7 @@ def main() -> int:
     policy_snapshot_sql, policy_snapshot_test = validate_application_policy_snapshot_storage()
     handoff_policy_sql, handoff_policy_test = validate_handoff_policy_number_lineage()
     forwarded_policy_sql, forwarded_policy_test = validate_forwarded_policy_binding_source()
+    policy_forward_sql, policy_forward_test = validate_policy_snapshot_forward_lineage()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2261,6 +2293,40 @@ def main() -> int:
                 raise
             print('DB03_P46A_POLICY_SOURCE_DATABASE_PASS 24/24; '
                   'binding_writer=false principal_approve=false student_create=false')
+            # P46B-1: prove the retained Forward/Intake/Policy lineage
+            # without unlocking the P44 snapshot mutation fence.
+            try:
+                local.run_psql(container,'BEGIN;\n'+policy_forward_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P46B1_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P46B1_INJECTED_FORWARD_LINEAGE_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P46B1_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P46B1_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (SELECT count(*) FROM pg_constraint WHERE conname IN "
+                "('db03_policy_snapshot_intake_source_key',"
+                "'db03_policy_snapshot_forward_source_key',"
+                "'db03_policy_snapshot_exact_forward',"
+                "'db03_policy_snapshot_exact_intake_policy'))+"
+                "(SELECT count(*) FROM pg_attribute WHERE "
+                "attrelid='app_private.admission_application_policy_snapshots'::regclass "
+                "AND attname IN ('forward_id','document_intake_id') AND NOT attisdropped);",
+                'DB03_P46B1_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P46B1_FORWARD_LINEAGE_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+policy_forward_sql+'\nCOMMIT;',
+                           'DB03_P46B1_FORWARD_LINEAGE_INSTALL')
+            output=local.run_psql(container,policy_forward_test,
+                                  'DB03_P46B1_FORWARD_LINEAGE_TEST')
+            try:
+                parse_tap(output,27)
+            except RuntimeError:
+                print('DB03_P46B1_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P46B1_FORWARD_LINEAGE_DATABASE_PASS 27/27; '
+                  'policy_binding_writer=false approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
