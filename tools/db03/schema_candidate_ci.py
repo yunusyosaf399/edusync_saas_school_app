@@ -1230,6 +1230,46 @@ def validate_principal_approval_consumed_handoff_lineage() -> tuple[str,str]:
     print('DB03_P46B2B2A_APPROVAL_HANDOFF_SOURCE_PASS assertions=30')
     return sql,test
 
+
+def validate_student_create_dual_authority() -> tuple[str,str]:
+    sql=(ROOT / 'supabase/proposals/db03/51_01_student_create_dual_authority.sql.draft').read_text()
+    test=(ROOT / 'supabase/tests/db03/51_student_create_dual_authority.sql').read_text()
+    for term in (
+        'app_private.db03_student_create_dual_authority(',
+        "o.code='student.create'",
+        "o.code='student.enrollment.place'",
+        'app_private.d1_enrollment_place_authorized(',
+        'app_private.current_principal_id()',
+        "p.code='student.create'",
+        'p_class_offering', 'p_section_offering',
+        "r.state='ACTIVE'", "p.state='ENABLED'",
+        "s.resolver_key='DIRECT'",
+        "s.scope_kind='SECTION'",
+        "s.scope_kind='CLASS'",
+        'create_grants IS NULL',
+        'to_timestamp(', 'clock_timestamp()',
+        'CREATE POLICY db03_student_create_operation_read',
+        'CREATE POLICY db03_student_create_authz_class_read',
+        'CREATE POLICY db03_student_create_authz_section_read',
+        'REVOKE ALL ON FUNCTION',
+        'TO schoolos_workflow_executor;',
+        'RESET ROLE;',
+    ):
+        if term not in sql:
+            raise RuntimeError('DB03_P46B2B2B1_DUAL_AUTH_SOURCE_MISSING_'+term)
+    if (re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)
+            != ['db03_student_create_dual_authority']
+        or len(re.findall(r'(?m)^CREATE POLICY ',sql))!=3
+        or re.search(r'(?mi)^\s*(INSERT INTO|UPDATE |DELETE FROM|CREATE FUNCTION app\.|CREATE ROLE|ALTER ROLE)\b',sql)):
+        raise RuntimeError('DB03_P46B2B2B1_NO_MUTATION_NO_PUBLIC_API')
+    if (re.findall(r'SELECT plan\((\d+)\);',test)!=['31']
+        or len(re.findall(r'(?m)^SELECT ok\(',test))!=29
+        or len(re.findall(r'(?m)^SELECT is\(',test))!=2
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P46B2B2B1_TEST_PLAN')
+    print('DB03_P46B2B2B1_DUAL_AUTH_SOURCE_PASS assertions=31')
+    return sql,test
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1285,6 +1325,7 @@ def main() -> int:
     binding_revision_sql, binding_revision_test = validate_policy_binding_revision_fence()
     binding_preflight_sql, binding_preflight_test = validate_principal_policy_binding_preflight()
     approval_lineage_sql, approval_lineage_test = validate_principal_approval_consumed_handoff_lineage()
+    dual_auth_sql, dual_auth_test = validate_student_create_dual_authority()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2526,6 +2567,39 @@ def main() -> int:
                 raise
             print('DB03_P46B2B2A_DATABASE_PASS 30/30; '
                   'approved_handoff_lineage=true; approval_writer=false')
+
+            # P46B-2B2B1: independent D1 student.create + placement authority.
+            # Preserves disabled Student creation and Principal APPROVE writers.
+            try:
+                local.run_psql(container,'BEGIN;\n'+dual_auth_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P46B2B2B1_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P46B2B2B1_INJECTED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P46B2B2B1_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P46B2B2B1_EXPECTED_FAILURE_ABSENT')
+            probe=local.run_psql(container,
+                "SELECT to_regprocedure("
+                "'app_private.db03_student_create_dual_authority(uuid,uuid,uuid,uuid)') IS NULL "
+                "AND (SELECT count(*)=0 FROM pg_policies WHERE policyname IN "
+                "('db03_student_create_operation_read',"
+                "'db03_student_create_authz_class_read',"
+                "'db03_student_create_authz_section_read'));",
+                'DB03_P46B2B2B1_ROLLBACK_PROBE',tuples=True).strip()
+            if probe!='t':
+                raise RuntimeError('DB03_P46B2B2B1_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+dual_auth_sql+'\nCOMMIT;',
+                           'DB03_P46B2B2B1_INSTALL')
+            output=local.run_psql(container,dual_auth_test,
+                                  'DB03_P46B2B2B1_TEST')
+            try:
+                parse_tap(output,31)
+            except RuntimeError:
+                print('DB03_P46B2B2B1_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P46B2B2B1_DATABASE_PASS 31/31; '
+                  'd1_student_create_enabled=false; approval_writer=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
