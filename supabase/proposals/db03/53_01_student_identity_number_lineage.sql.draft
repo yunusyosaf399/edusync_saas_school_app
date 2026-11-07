@@ -1,0 +1,29 @@
+-- P46B-2B2B3: exact Student/Person/Admission-number integrity.
+-- Inactive declarative prerequisite; P38/P41/P44/P50 deny-all writes remain.
+SET ROLE schoolos_schema_owner;
+ALTER TABLE app_private.students
+ ADD CONSTRAINT db03_handoff_d1_student_identity_number_source
+ UNIQUE(id,person_id,admission_number);
+ALTER TABLE app_private.admission_number_allocations
+ ADD CONSTRAINT db03_handoff_ledger_rendered_source
+ UNIQUE(id,rendered_number);
+-- Empty handoff storage: no historical rows or fake backfill.
+-- Future writer must derive number text from the locked P41 allocation.
+ALTER TABLE app_private.admission_student_handoffs
+ ADD COLUMN admission_number_text text NOT NULL,
+ ADD CONSTRAINT db03_handoff_number_text_nonempty
+ CHECK(pg_catalog.length(pg_catalog.btrim(admission_number_text))
+       BETWEEN 1 AND 200),
+ ADD CONSTRAINT db03_handoff_exact_allocation_number
+ FOREIGN KEY(admission_number_allocation_id,admission_number_text)
+ REFERENCES app_private.admission_number_allocations(id,rendered_number)
+ ON UPDATE RESTRICT ON DELETE RESTRICT,
+ ADD CONSTRAINT db03_handoff_exact_d1_student_number_person
+ FOREIGN KEY(result_student_id,person_id,admission_number_text)
+ REFERENCES app_private.students(id,person_id,admission_number)
+ ON UPDATE NO ACTION ON DELETE NO ACTION
+ DEFERRABLE INITIALLY DEFERRED;
+-- READY may have NULL result_student_id. P38 requires non-NULL when
+-- CONSUMED and P50 requires matching CONSUMED handoff at APPROVE commit:
+-- the deferred FK then forces exact Student identity + admission number.
+RESET ROLE;

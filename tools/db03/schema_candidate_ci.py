@@ -1310,6 +1310,42 @@ def validate_principal_policy_binding_intent_rebased() -> tuple[str,str]:
     return sql,test
 
 
+
+def validate_student_identity_number_lineage() -> tuple[str,str]:
+    sql=(ROOT / 'supabase/proposals/db03/53_01_student_identity_number_lineage.sql.draft').read_text()
+    test=(ROOT / 'supabase/tests/db03/53_student_identity_number_lineage.sql').read_text()
+    for term in (
+        'db03_handoff_d1_student_identity_number_source',
+        'UNIQUE(id,person_id,admission_number)',
+        'db03_handoff_ledger_rendered_source',
+        'UNIQUE(id,rendered_number)',
+        'ADD COLUMN admission_number_text text NOT NULL',
+        'db03_handoff_number_text_nonempty',
+        'db03_handoff_exact_allocation_number',
+        'FOREIGN KEY(admission_number_allocation_id,admission_number_text)',
+        'REFERENCES app_private.admission_number_allocations(id,rendered_number)',
+        'ON UPDATE RESTRICT ON DELETE RESTRICT',
+        'db03_handoff_exact_d1_student_number_person',
+        'FOREIGN KEY(result_student_id,person_id,admission_number_text)',
+        'REFERENCES app_private.students(id,person_id,admission_number)',
+        'ON UPDATE NO ACTION ON DELETE NO ACTION',
+        'DEFERRABLE INITIALLY DEFERRED',
+        'SET ROLE schoolos_schema_owner;', 'RESET ROLE;',
+    ):
+        if term not in sql:
+            raise RuntimeError('DB03_P53_STUDENT_NUMBER_LINEAGE_MISSING_'+term)
+    if (len(re.findall(r'(?m)^ALTER TABLE app_private\.',sql))!=3
+        or sql.count(' ADD CONSTRAINT ')!=5
+        or re.search(r'(?mi)^\s*(?:CREATE FUNCTION|CREATE TABLE|GRANT |INSERT INTO|UPDATE |DELETE FROM|DROP |CREATE ROLE|ALTER ROLE|CREATE POLICY|CREATE TRIGGER)',sql)):
+        raise RuntimeError('DB03_P53_UNEXPECTED_WRITER_OR_OPERATION')
+    if (re.findall(r'SELECT plan\((\d+)\);',test)!=['28']
+        or len(re.findall(r'(?m)^SELECT ok\(',test))!=28
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P53_TEST_PLAN')
+    print('DB03_P53_STUDENT_NUMBER_SOURCE_PASS 28 assertions')
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1367,6 +1403,7 @@ def main() -> int:
     approval_lineage_sql, approval_lineage_test = validate_principal_approval_consumed_handoff_lineage()
     dual_auth_sql, dual_auth_test = validate_student_create_dual_authority()
     approval_intent_sql, approval_intent_test = validate_principal_policy_binding_intent_rebased()
+    student_number_sql, student_number_test = validate_student_identity_number_lineage()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2672,6 +2709,42 @@ def main() -> int:
             print('DB03_P52_APPROVAL_INTENT_DATABASE_PASS 31/31; '
                   'approval_intent_only=true binding_writer=false '
                   'principal_approve=false student_create=false')
+            # P53: exact approved Student UUID + canonical Person + rendered
+            # permanent Admission number. Still no positive D1 creation writer.
+            try:
+                local.run_psql(container,'BEGIN;\n'+student_number_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P53_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P53_INJECTED_STUDENT_LINEAGE_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P53_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P53_EXPECTED_FAILED_INSTALL_ABSENT')
+            probe=local.run_psql(container,
+                "SELECT "
+                "(SELECT count(*)=0 FROM pg_constraint WHERE conname IN "
+                "('db03_handoff_d1_student_identity_number_source',"
+                "'db03_handoff_ledger_rendered_source',"
+                "'db03_handoff_number_text_nonempty',"
+                "'db03_handoff_exact_allocation_number',"
+                "'db03_handoff_exact_d1_student_number_person')) "
+                "AND NOT EXISTS(SELECT 1 FROM pg_attribute WHERE "
+                "attrelid='app_private.admission_student_handoffs'::regclass "
+                "AND attname='admission_number_text' AND NOT attisdropped);",
+                'DB03_P53_ROLLBACK_PROBE',tuples=True).strip()
+            if probe!='t':
+                raise RuntimeError('DB03_P53_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+student_number_sql+'\nCOMMIT;',
+                           'DB03_P53_STUDENT_IDENTITY_NUMBER_INSTALL')
+            output=local.run_psql(container,student_number_test,
+                                  'DB03_P53_STUDENT_IDENTITY_NUMBER_TEST')
+            try:
+                parse_tap(output,28)
+            except RuntimeError:
+                print('DB03_P53_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P53_STUDENT_NUMBER_DATABASE_PASS 28/28; '
+                  'd1_student_create_enabled=false approval_writer=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
