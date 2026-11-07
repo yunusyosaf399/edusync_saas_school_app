@@ -5,7 +5,7 @@ SELECT plan(24);
 SELECT ok(to_regprocedure('app_private.db03_principal_policy_binding_preflight(uuid,bigint,uuid,bigint)') IS NOT NULL,'private typed policy preflight function exists');
 SELECT ok((SELECT pg_get_userbyid(proowner)='schoolos_workflow_executor' FROM pg_proc WHERE oid='app_private.db03_principal_policy_binding_preflight(uuid,bigint,uuid,bigint)'::regprocedure),'workflow executor owns private preflight');
 SELECT ok((SELECT prosecdef FROM pg_proc WHERE oid='app_private.db03_principal_policy_binding_preflight(uuid,bigint,uuid,bigint)'::regprocedure),'function uses narrowly owned definer context');
-SELECT ok((SELECT 'search_path=pg_catalog,pg_temp'=ANY(proconfig) FROM pg_proc WHERE oid='app_private.db03_principal_policy_binding_preflight(uuid,bigint,uuid,bigint)'::regprocedure),'fixed function search path');
+SELECT ok((SELECT cardinality(proconfig)=1 AND EXISTS (SELECT 1 FROM unnest(proconfig) AS cfg WHERE regexp_replace(cfg,'[[:space:]]','','g')='search_path=pg_catalog,pg_temp') FROM pg_proc WHERE oid='app_private.db03_principal_policy_binding_preflight(uuid,bigint,uuid,bigint)'::regprocedure),'fixed function search path');
 SELECT ok(NOT has_function_privilege('authenticated','app_private.db03_principal_policy_binding_preflight(uuid,bigint,uuid,bigint)','EXECUTE'),'authenticated cannot execute preflight');
 SELECT ok(NOT has_function_privilege('anon','app_private.db03_principal_policy_binding_preflight(uuid,bigint,uuid,bigint)','EXECUTE'),'anon cannot execute preflight');
 SELECT ok(NOT has_function_privilege('service_role','app_private.db03_principal_policy_binding_preflight(uuid,bigint,uuid,bigint)','EXECUTE'),'service role cannot execute preflight');
