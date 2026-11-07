@@ -1346,6 +1346,47 @@ def validate_student_identity_number_lineage() -> tuple[str,str]:
     return sql,test
 
 
+
+def validate_initial_enrollment_roll_lineage() -> tuple[str,str]:
+    sql=(ROOT / 'supabase/proposals/db03/54_01_initial_enrollment_roll_lineage.sql.draft').read_text()
+    test=(ROOT / 'supabase/tests/db03/54_initial_enrollment_roll_lineage.sql').read_text()
+    for term in (
+        'SET ROLE schoolos_schema_owner;', 'RESET ROLE;',
+        'ALTER TABLE app_private.enrollments',
+        'db03_handoff_initial_enrollment_source_key',
+        'UNIQUE(id,student_id,section_offering_id,placement_kind,entry_kind)',
+        'ALTER TABLE app_private.roll_allocations',
+        'db03_handoff_initial_roll_source_key',
+        'UNIQUE(id,enrollment_id,student_id)',
+        'ADD COLUMN result_enrollment_id uuid',
+        'ADD COLUMN result_roll_allocation_id uuid',
+        "required_placement_kind text NOT NULL DEFAULT 'PRIMARY'",
+        "required_entry_kind text NOT NULL DEFAULT 'INITIAL'",
+        'db03_handoff_initial_placement_state_check',
+        "state='READY'", "state='CONSUMED'",
+        'db03_handoff_exact_initial_primary_enrollment',
+        'FOREIGN KEY(result_enrollment_id,result_student_id,section_offering_id,',
+        'REFERENCES app_private.enrollments',
+        'db03_handoff_exact_initial_roll',
+        'FOREIGN KEY(result_roll_allocation_id,result_enrollment_id,result_student_id)',
+        'REFERENCES app_private.roll_allocations(id,enrollment_id,student_id)',
+        'DEFERRABLE INITIALLY DEFERRED'
+    ):
+        if term not in sql:
+            raise RuntimeError('DB03_P54_LINEAGE_SOURCE_MISSING_'+term)
+    if (len(re.findall(r'(?m)^ALTER TABLE app_private\.',sql))!=3
+        or sql.count(' ADD CONSTRAINT ')!=9
+        or len(re.findall(r'(?m)^ ADD COLUMN ',sql))!=4
+        or re.search(r'(?mi)^\s*(?:CREATE FUNCTION|CREATE TABLE|GRANT |INSERT INTO|UPDATE |DELETE FROM|DROP |CREATE ROLE|ALTER ROLE|CREATE POLICY|CREATE TRIGGER)',sql)):
+        raise RuntimeError('DB03_P54_UNEXPECTED_MUTATION_OR_OPERATIONS')
+    if (re.findall(r'SELECT plan\((\d+)\);',test)!=['34']
+        or len(re.findall(r'(?m)^SELECT ok\(',test))!=34
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P54_TEST_PLAN')
+    print('DB03_P54_INITIAL_ENROLLMENT_ROLL_SOURCE_PASS 34 assertions')
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1404,6 +1445,7 @@ def main() -> int:
     dual_auth_sql, dual_auth_test = validate_student_create_dual_authority()
     approval_intent_sql, approval_intent_test = validate_principal_policy_binding_intent_rebased()
     student_number_sql, student_number_test = validate_student_identity_number_lineage()
+    initial_place_sql, initial_place_test = validate_initial_enrollment_roll_lineage()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2745,6 +2787,49 @@ def main() -> int:
                 raise
             print('DB03_P53_STUDENT_NUMBER_DATABASE_PASS 28/28; '
                   'd1_student_create_enabled=false approval_writer=false')
+            # P54: final consumed handoff references the exact D1 INITIAL
+            # PRIMARY Enrollment and its original roll allocation.
+            # This verifies relational integrity, not a successful Student-create.
+            try:
+                local.run_psql(container,'BEGIN;\n'+initial_place_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P54_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P54_INJECTED_ENROLLMENT_ROLL_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P54_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P54_EXPECTED_FAILED_INSTALL_ABSENT')
+            probe=local.run_psql(container,
+                "SELECT "
+                "(SELECT count(*)=0 FROM pg_constraint WHERE conname IN "
+                "('db03_handoff_initial_enrollment_source_key',"
+                "'db03_handoff_initial_roll_source_key',"
+                "'db03_handoff_initial_placement_kind_check',"
+                "'db03_handoff_initial_entry_kind_check',"
+                "'db03_handoff_initial_placement_state_check',"
+                "'db03_handoff_result_enrollment_one_link',"
+                "'db03_handoff_result_roll_one_link',"
+                "'db03_handoff_exact_initial_primary_enrollment',"
+                "'db03_handoff_exact_initial_roll')) "
+                "AND NOT EXISTS(SELECT 1 FROM pg_attribute WHERE "
+                "attrelid='app_private.admission_student_handoffs'::regclass "
+                "AND attname IN('result_enrollment_id','result_roll_allocation_id',"
+                "'required_placement_kind','required_entry_kind') AND NOT attisdropped);",
+                'DB03_P54_ROLLBACK_PROBE',tuples=True).strip()
+            if probe!='t':
+                raise RuntimeError('DB03_P54_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+initial_place_sql+'\nCOMMIT;',
+                           'DB03_P54_INITIAL_ENROLLMENT_ROLL_INSTALL')
+            output=local.run_psql(container,initial_place_test,
+                                  'DB03_P54_INITIAL_ENROLLMENT_ROLL_TEST')
+            try:
+                parse_tap(output,34)
+            except RuntimeError:
+                print('DB03_P54_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P54_INITIAL_ENROLLMENT_ROLL_DATABASE_PASS 34/34; '
+                  'result_student_initial_placement_bound=true '
+                  'approval_writer=false d1_student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
