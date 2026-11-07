@@ -1,0 +1,134 @@
+-- P46B-2B2B1: principal final approval must ALSO satisfy D1's frozen
+-- student.create AND student.enrollment.place operation/scope contracts.
+-- Private NOLOGIN authorization source; does not enable student.create or
+-- create a Student, policy binding, approval, number, roll, receipt or event.
+SET ROLE schoolos_schema_owner;
+-- Precise authorization-reader source access. No app-client grants.
+GRANT SELECT(id,school_id,campus_id,academic_year_id,state)
+ ON app_private.class_offerings TO schoolos_authz_reader;
+GRANT SELECT(id,class_offering_id,campus_id,state)
+ ON app_private.section_offerings TO schoolos_authz_reader;
+CREATE POLICY db03_student_create_authz_class_read
+ ON app_private.class_offerings FOR SELECT
+ TO schoolos_authz_reader USING(true);
+CREATE POLICY db03_student_create_authz_section_read
+ ON app_private.section_offerings FOR SELECT
+ TO schoolos_authz_reader USING(true);
+CREATE POLICY db03_student_create_operation_read
+ ON app_private.operation_contracts FOR SELECT
+ TO schoolos_authz_reader
+ USING(code IN('student.create','student.enrollment.place')
+   AND contract_version=1);
+RESET ROLE;
+GRANT CREATE ON SCHEMA app_private TO schoolos_authz_reader;
+SET ROLE schoolos_authz_reader;
+CREATE FUNCTION app_private.db03_student_create_dual_authority(
+ p_actor uuid,p_campus uuid,p_class_offering uuid,p_section_offering uuid)
+RETURNS bytea LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ claims jsonb; checked_at timestamptz; principal_version bigint;
+ class_campus uuid; class_state text; section_state text;
+ create_op uuid; placement_op uuid; create_version bigint;
+ placement_version bigint; create_grants jsonb;
+BEGIN
+ IF p_actor IS NULL OR p_campus IS NULL
+  OR p_class_offering IS NULL OR p_section_offering IS NULL
+  OR current_setting('transaction_isolation')<>'read committed' THEN
+  RETURN NULL;
+ END IF;
+ -- The request identity is never accepted as an arbitrary Principal UUID.
+ claims:=NULLIF(current_setting('request.jwt.claims',true),'')::jsonb;
+ IF claims IS NULL OR COALESCE(claims->>'exp','') !~ '^[0-9]{1,12}$'
+  OR to_timestamp(COALESCE(NULLIF(claims->>'exp',''),'0')::bigint)
+    <=clock_timestamp()
+  OR app_private.current_principal_id() IS DISTINCT FROM p_actor THEN
+  RETURN NULL;
+ END IF;
+ SELECT row_version INTO principal_version FROM app_private.principals
+  WHERE id=p_actor AND kind='INDIVIDUAL' AND state='ACTIVE';
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ -- Exact requested Section belongs to exact Class and Campus; no cross-campus
+ -- role grant or unrelated Section can be substituted.
+ SELECT co.campus_id,co.state,so.state
+  INTO class_campus,class_state,section_state
+ FROM app_private.class_offerings co
+ JOIN app_private.section_offerings so
+  ON so.class_offering_id=co.id AND so.campus_id=co.campus_id
+ WHERE co.id=p_class_offering AND so.id=p_section_offering;
+ IF NOT FOUND OR class_campus IS DISTINCT FROM p_campus
+  OR class_state<>'OPEN' OR section_state<>'OPEN' THEN
+  RETURN NULL;
+ END IF;
+ -- Both operation contracts must be live and separately permitted. D1
+ -- student.create is deliberately disabled pending the trusted handoff.
+ SELECT o.id,o.row_version INTO create_op,create_version
+ FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='student.create' AND o.handler_key=o.code
+  AND o.contract_version=1 AND o.payload_schema_version=1
+  AND o.enabled AND NOT o.requires_approval
+  AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ SELECT o.id,o.row_version INTO placement_op,placement_version
+ FROM app_private.operation_contracts o
+ JOIN app_private.permissions p ON p.id=o.request_permission_id
+ WHERE o.code='student.enrollment.place' AND o.handler_key=o.code
+  AND o.contract_version=1 AND o.payload_schema_version=1
+  AND o.enabled AND NOT o.requires_approval
+  AND p.code=o.code AND p.state='ENABLED' AND NOT p.family_safe;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ -- Existing D1 source handles live ALL/CAMPUS/CLASS/SECTION placement grants.
+ IF NOT app_private.d1_enrollment_place_authorized(
+    p_actor,'student.enrollment.place',p_section_offering) THEN
+  RETURN NULL;
+ END IF;
+ -- student.create is separately scoped to the same target ancestry, not
+ -- inferred from Principal title, document approval or placement permission.
+ checked_at:=clock_timestamp();
+ SELECT jsonb_agg(jsonb_build_array(
+   a.id,a.row_version,g.id,g.row_version,s.id,s.row_version,
+   c.id,c.row_version,r.id,r.row_version,p.id,p.row_version)
+   ORDER BY s.id) INTO create_grants
+ FROM app_private.assignment_permission_scopes s
+ JOIN app_private.principal_role_assignments a ON a.id=s.assignment_id
+ JOIN app_private.role_permission_grants g ON g.id=s.grant_id
+ JOIN app_private.permission_scope_contracts c ON c.id=s.scope_contract_id
+ JOIN app_private.roles r ON r.id=s.role_id
+ JOIN app_private.permissions p ON p.id=s.permission_id
+ WHERE a.principal_id=p_actor AND a.principal_kind='INDIVIDUAL'
+  AND a.context_kind='INDIVIDUAL' AND a.role_id=s.role_id
+  AND g.role_id=s.role_id AND g.permission_id=s.permission_id
+  AND c.permission_id=s.permission_id AND c.scope_kind=s.scope_kind
+  AND c.resolver_key=s.resolver_key AND c.enabled
+  AND p.code='student.create' AND p.state='ENABLED' AND NOT p.family_safe
+  AND r.state='ACTIVE' AND NOT r.family_only
+  AND s.resolver_key='DIRECT'
+  AND ((s.scope_kind='ALL' AND s.campus_id IS NULL)
+    OR (s.scope_kind='CAMPUS' AND s.campus_id=p_campus)
+    OR (s.scope_kind='CLASS' AND s.class_offering_id=p_class_offering)
+    OR (s.scope_kind='SECTION' AND s.section_offering_id=p_section_offering))
+  AND a.valid_from<=checked_at AND (a.valid_until IS NULL OR checked_at<a.valid_until)
+  AND (a.revoked_at IS NULL OR checked_at<a.revoked_at)
+  AND g.valid_from<=checked_at AND (g.valid_until IS NULL OR checked_at<g.valid_until)
+  AND (g.revoked_at IS NULL OR checked_at<g.revoked_at)
+  AND s.valid_from<=checked_at AND (s.valid_until IS NULL OR checked_at<s.valid_until)
+  AND (s.revoked_at IS NULL OR checked_at<s.revoked_at);
+ IF create_grants IS NULL THEN RETURN NULL; END IF;
+ RETURN sha256(convert_to(jsonb_build_array(
+   p_actor,principal_version,p_campus,p_class_offering,p_section_offering,
+   create_op,create_version,placement_op,placement_version,
+   create_grants)::text,'UTF8'));
+END $body$;
+REVOKE ALL ON FUNCTION
+ app_private.db03_student_create_dual_authority(uuid,uuid,uuid,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_student_executor,schoolos_platform_executor,schoolos_file_login,
+ schoolos_evidence_writer,schoolos_identity_executor;
+-- Only a private DB03 Principal final executor may compose this proof with
+-- its separately checked Principal and policy-binding authority.
+GRANT EXECUTE ON FUNCTION
+ app_private.db03_student_create_dual_authority(uuid,uuid,uuid,uuid)
+ TO schoolos_workflow_executor;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA app_private FROM schoolos_authz_reader;
