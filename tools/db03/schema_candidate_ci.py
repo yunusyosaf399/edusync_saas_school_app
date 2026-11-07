@@ -1157,6 +1157,43 @@ def validate_policy_binding_revision_fence() -> tuple[str,str]:
     print('DB03_P46B2A_REVISION_FENCE_SOURCE_PASS 16 assertions')
     return sql,test
 
+
+def validate_principal_policy_binding_preflight() -> tuple[str,str]:
+    sql=(ROOT / 'supabase/proposals/db03/49_01_principal_policy_binding_preflight.sql.draft').read_text()
+    test=(ROOT / 'supabase/tests/db03/49_principal_policy_binding_preflight.sql').read_text()
+    required=(
+        'app_private.db03_principal_policy_binding_preflight(',
+        'app_private.db03_principal_final_actor(a.campus_id)',
+        'app_private.db03_policy_binding_candidate_source(',
+        'app_private.admission_application_policy_snapshots',
+        'db03_policy_binding_workflow_read',
+        'source_checked_under_application_lock',
+        'policy_binding_committed', "'can_bind',false",
+        'current_setting(', 'transaction_isolation',
+        'pg_advisory_xact_lock(71001,1)',
+        'pg_advisory_xact_lock(71002,hashtext(',
+        'FOR UPDATE', 'authority_hash',
+        "a.policy_version_id IS NOT NULL",
+        'p_expected_prior_revision', 'prior.revision',
+        'application_id=a.id AND forward_id=p_forward',
+        'REVOKE ALL ON FUNCTION', 'RESET ROLE;',
+    )
+    for term in required:
+        if term not in sql:
+            raise RuntimeError('DB03_P46B2B1_PREFLIGHT_SOURCE_MISSING_'+term)
+    if (re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)
+            != ['db03_principal_policy_binding_preflight']
+        or re.search(r'(?mi)^\s*(INSERT INTO|UPDATE |DELETE FROM|CREATE FUNCTION app\.|CREATE TABLE|CREATE ROLE|ALTER ROLE)\b',sql)
+        or re.search(r'(?mi)^GRANT EXECUTE .* TO (authenticated|anon|service_role)',sql)):
+        raise RuntimeError('DB03_P46B2B1_UNEXPECTED_WRITE_OR_PUBLIC_API')
+    if (re.findall(r'SELECT plan\((\d+)\);',test)!=['24']
+        or len(re.findall(r'(?m)^SELECT ok\(',test))!=22
+        or len(re.findall(r'(?m)^SELECT throws_ok\(',test))!=2
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P46B2B1_TEST_PLAN')
+    print('DB03_P46B2B1_PRINCIPAL_PREFLIGHT_SOURCE_PASS 24 assertions')
+    return sql,test
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1210,6 +1247,7 @@ def main() -> int:
     forwarded_policy_sql, forwarded_policy_test = validate_forwarded_policy_binding_source()
     policy_forward_sql, policy_forward_test = validate_policy_snapshot_forward_lineage()
     binding_revision_sql, binding_revision_test = validate_policy_binding_revision_fence()
+    binding_preflight_sql, binding_preflight_test = validate_principal_policy_binding_preflight()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2383,6 +2421,39 @@ def main() -> int:
                 print('DB03_P46B2A_TAP_DIAGNOSTIC\n'+output,flush=True)
                 raise
             print('DB03_P46B2A_DATABASE_PASS 16/16; binding_writer=false')
+
+            # P46B-2B1: ungranted Principal preflight, no policy mutation.
+            try:
+                local.run_psql(container,'BEGIN;\n'+binding_preflight_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P46B2B1_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P46B2B1_INJECTED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P46B2B1_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P46B2B1_EXPECTED_FAILURE_ABSENT')
+            probe=local.run_psql(container,
+                "SELECT "
+                "(to_regprocedure('app_private.db03_principal_policy_binding_preflight(uuid,bigint,uuid,bigint)') IS NULL) "
+                "AND (SELECT count(*)=0 FROM pg_policies WHERE schemaname='app_private' "
+                "AND tablename='admission_application_policy_snapshots' "
+                "AND policyname='db03_policy_binding_workflow_read') "
+                "AND NOT has_table_privilege('schoolos_workflow_executor',"
+                "'app_private.admission_application_policy_snapshots','SELECT');",
+                'DB03_P46B2B1_ROLLBACK_PROBE',tuples=True).strip()
+            if probe!='t':
+                raise RuntimeError('DB03_P46B2B1_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+binding_preflight_sql+'\nCOMMIT;',
+                           'DB03_P46B2B1_INSTALL')
+            output=local.run_psql(container,binding_preflight_test,
+                                  'DB03_P46B2B1_TEST')
+            try:
+                parse_tap(output,24)
+            except RuntimeError:
+                print('DB03_P46B2B1_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P46B2B1_DATABASE_PASS 24/24; '
+                  'principal_preflight_only=true binding_writer=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
