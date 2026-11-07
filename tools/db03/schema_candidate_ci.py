@@ -1133,6 +1133,45 @@ def validate_policy_snapshot_forward_lineage() -> tuple[str,str]:
           hashlib.sha256(sql.encode()).hexdigest())
     return sql,test
 
+def validate_principal_policy_binding_intent() -> tuple[str,str]:
+    sql=(ROOT / 'supabase/proposals/db03/48_01_principal_policy_binding_intent.sql.draft').read_text()
+    test=(ROOT / 'supabase/tests/db03/48_principal_policy_binding_intent.sql').read_text()
+    if (re.findall(r'(?m)^CREATE FUNCTION app_private\.([a-z0-9_]+)\(',sql)
+        != ['db03_principal_policy_binding_intent']
+        or 'SECURITY DEFINER' in sql
+        or re.search(r'(?mi)^\s*(?:CREATE TABLE|CREATE POLICY|CREATE TRIGGER|GRANT |INSERT INTO|UPDATE |DELETE FROM|DROP )',sql)):
+        raise RuntimeError('DB03_P46B2A_APPROVAL_INTENT_OBJECT_SCOPE')
+    for term in ('SECURITY INVOKER','SET search_path=pg_catalog,pg_temp',
+                 'db03_principal_approve_input_source(',
+                 'db03_policy_binding_candidate_source(',
+                 'db03_principal_final_source_snapshot(',
+                 "'source_inputs_observed'",
+                 "'forwarded_policy_source_current'",
+                 "'published_configuration_hash_hex'",
+                 "'identity_resolution_id'",
+                 "'document_clearance_id'",
+                 "'destination_intent_id'",
+                 "'fee_disposition_id'",
+                 "IN('UNPAID','SKIPPED','MARKED_PAID')",
+                 "'binding_intent_hash_hex'",
+                 "'actor_authorized_to_bind',false",
+                 "'policy_binding_committed',false",
+                 "'can_bind',false,'can_approve',false,'can_create_student',false",
+                 'REVOKE ALL ON FUNCTION'):
+        if term not in sql:
+            raise RuntimeError('DB03_P46B2A_APPROVAL_INTENT_MISSING_'+term)
+    for number,statement in enumerate(test.splitlines(),start=1):
+        if statement.startswith('SELECT ') and statement.count("'") % 2:
+            raise RuntimeError('DB03_P46B2A_TEST_UNBALANCED_SQL_QUOTES_LINE_'+str(number))
+    if (re.findall(r'SELECT plan\((\d+)\);',test) != ['31']
+        or len(re.findall(r'(?m)^SELECT (?:is|ok|throws_ok|lives_ok)\(',test)) != 31
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P46B2A_APPROVAL_INTENT_TEST_PLAN')
+    print('DB03_P46B2A_APPROVAL_INTENT_SOURCE_PASS assertions=31 sha256='+
+          hashlib.sha256(sql.encode()).hexdigest())
+    return sql,test
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1185,6 +1224,7 @@ def main() -> int:
     handoff_policy_sql, handoff_policy_test = validate_handoff_policy_number_lineage()
     forwarded_policy_sql, forwarded_policy_test = validate_forwarded_policy_binding_source()
     policy_forward_sql, policy_forward_test = validate_policy_snapshot_forward_lineage()
+    policy_approval_sql, policy_approval_test = validate_principal_policy_binding_intent()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2326,6 +2366,34 @@ def main() -> int:
                 print('DB03_P46B1_TAP_DIAGNOSTIC\n'+output,flush=True)
                 raise
             print('DB03_P46B1_FORWARD_LINEAGE_DATABASE_PASS 27/27; '
+                  'policy_binding_writer=false approve=false student_create=false')
+            # P46B-2A: read-only, exact policy + current Principal approval
+            # input composition. No actor grant and no snapshot/Student write.
+            try:
+                local.run_psql(container,'BEGIN;\n'+policy_approval_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P46B2A_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P46B2A_INJECTED_INTENT_INSTALL_REHEARSAL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P46B2A_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P46B2A_EXPECTED_FAILED_INSTALL_ABSENT')
+            absent=local.run_psql(container,
+                "SELECT (to_regprocedure('app_private.db03_principal_policy_binding_intent"
+                "(uuid,bigint,uuid)') IS NOT NULL)::int;",
+                'DB03_P46B2A_ROLLBACK_PROBE',tuples=True).strip()
+            if absent != '0':
+                raise RuntimeError('DB03_P46B2A_INTENT_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+policy_approval_sql+'\nCOMMIT;',
+                           'DB03_P46B2A_APPROVAL_INTENT_INSTALL')
+            output=local.run_psql(container,policy_approval_test,
+                                  'DB03_P46B2A_APPROVAL_INTENT_TEST')
+            try:
+                parse_tap(output,31)
+            except RuntimeError:
+                print('DB03_P46B2A_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P46B2A_APPROVAL_INTENT_DATABASE_PASS 31/31; '
                   'policy_binding_writer=false approve=false student_create=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
