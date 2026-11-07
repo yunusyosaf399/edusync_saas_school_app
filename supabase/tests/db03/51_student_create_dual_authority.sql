@@ -1,7 +1,7 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path=extensions,pg_catalog,public;
-SELECT plan(31);
+SELECT plan(32);
 SELECT ok(to_regprocedure('app_private.db03_student_create_dual_authority(uuid,uuid,uuid,uuid)') IS NOT NULL,'private dual authority source exists');
 SELECT ok((SELECT pg_get_userbyid(proowner)='schoolos_authz_reader' FROM pg_proc WHERE oid='app_private.db03_student_create_dual_authority(uuid,uuid,uuid,uuid)'::regprocedure),'narrow NOLOGIN authorization owner');
 SELECT ok((SELECT prosecdef FROM pg_proc WHERE oid='app_private.db03_student_create_dual_authority(uuid,uuid,uuid,uuid)'::regprocedure),'authorization source uses owned definer');
@@ -13,6 +13,7 @@ SELECT ok(NOT has_function_privilege('schoolos_student_executor','app_private.db
 SELECT ok(NOT has_function_privilege('schoolos_platform_executor','app_private.db03_student_create_dual_authority(uuid,uuid,uuid,uuid)','EXECUTE'),'file platform executor cannot call authority source');
 SELECT ok(NOT has_function_privilege('schoolos_evidence_writer','app_private.db03_student_create_dual_authority(uuid,uuid,uuid,uuid)','EXECUTE'),'audit writer cannot call authority source');
 SELECT ok(has_function_privilege('schoolos_workflow_executor','app_private.db03_student_create_dual_authority(uuid,uuid,uuid,uuid)','EXECUTE'),'Principal workflow may compose authority proof');
+SELECT ok(has_column_privilege('schoolos_authz_reader','app_private.operation_contracts','row_version','SELECT'),'authorization reader can inspect operation version');
 SELECT ok(has_column_privilege('schoolos_authz_reader','app_private.class_offerings','campus_id','SELECT'),'authorization reader can inspect Class campus');
 SELECT ok(has_column_privilege('schoolos_authz_reader','app_private.section_offerings','class_offering_id','SELECT'),'authorization reader can inspect Section class ancestry');
 SELECT ok((SELECT count(*)=1 FROM pg_policies WHERE schemaname='app_private' AND tablename='class_offerings' AND policyname='db03_student_create_authz_class_read' AND cmd='SELECT'),'D1 Class authorization read policy');
