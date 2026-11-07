@@ -1194,6 +1194,42 @@ def validate_principal_policy_binding_preflight() -> tuple[str,str]:
     print('DB03_P46B2B1_PRINCIPAL_PREFLIGHT_SOURCE_PASS 24 assertions')
     return sql,test
 
+
+def validate_principal_approval_consumed_handoff_lineage() -> tuple[str,str]:
+    sql=(ROOT / 'supabase/proposals/db03/50_01_principal_approval_consumed_handoff_lineage.sql.draft').read_text()
+    test=(ROOT / 'supabase/tests/db03/50_principal_approval_consumed_handoff_lineage.sql').read_text()
+    for term in (
+        'app_private.admission_principal_approvals',
+        'db03_approval_snapshot_forward_receipt_source',
+        'db03_approval_handoff_consumed_source',
+        'db03_principal_approval_matching_source',
+        'db03_principal_approval_matching_snapshot',
+        'db03_principal_approval_requires_consumed_handoff',
+        'db03_handoff_exact_principal_approval',
+        "CHECK(required_handoff_state='CONSUMED')",
+        'DEFERRABLE INITIALLY DEFERRED',
+        'ADD COLUMN principal_approval_id uuid NOT NULL UNIQUE',
+        'ENABLE ROW LEVEL SECURITY',
+        'FORCE ROW LEVEL SECURITY',
+        'db03_principal_approval_mutation_disabled',
+        'db03_principal_approval_no_truncate',
+        'REVOKE ALL ON app_private.admission_principal_approvals',
+        'RESET ROLE;',
+    ):
+        if term not in sql:
+            raise RuntimeError('DB03_P46B2B2A_SOURCE_MISSING_'+term)
+    if (len(re.findall(r'(?m)^CREATE TABLE app_private\.',sql))!=1
+        or len(re.findall(r'(?m)^CREATE FUNCTION app_private\.',sql))!=1
+        or re.search(r'(?mi)^\s*(INSERT INTO|UPDATE |DELETE FROM|GRANT |CREATE FUNCTION app\.|CREATE ROLE|ALTER ROLE)\b',sql)
+        or sql.count('DEFERRABLE INITIALLY DEFERRED')<3):
+        raise RuntimeError('DB03_P46B2B2A_UNEXPECTED_WRITER_OR_PUBLIC_API')
+    if (re.findall(r'SELECT plan\((\d+)\);',test)!=['30']
+        or len(re.findall(r'(?m)^SELECT ok\(',test))!=30
+        or not test.rstrip().endswith('ROLLBACK;')):
+        raise RuntimeError('DB03_P46B2B2A_TEST_PLAN')
+    print('DB03_P46B2B2A_APPROVAL_HANDOFF_SOURCE_PASS assertions=30')
+    return sql,test
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation-root", type=Path)
@@ -1248,6 +1284,7 @@ def main() -> int:
     policy_forward_sql, policy_forward_test = validate_policy_snapshot_forward_lineage()
     binding_revision_sql, binding_revision_test = validate_policy_binding_revision_fence()
     binding_preflight_sql, binding_preflight_test = validate_principal_policy_binding_preflight()
+    approval_lineage_sql, approval_lineage_test = validate_principal_approval_consumed_handoff_lineage()
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "services/admission_documents/tests", "-q"], cwd=ROOT, check=True)
     if args.source_only:
         return 0
@@ -2454,6 +2491,41 @@ def main() -> int:
                 raise
             print('DB03_P46B2B1_DATABASE_PASS 24/24; '
                   'principal_preflight_only=true binding_writer=false')
+
+            # P46B-2B2A: a committed APPROVE must link to a consumed Student
+            # handoff in the same atomic transaction; proposal is still deny-all.
+            try:
+                local.run_psql(container,'BEGIN;\n'+approval_lineage_sql+
+                    "\nDO $failure$ BEGIN RAISE EXCEPTION 'DB03_INJECTED_P46B2B2A_FAILURE'; END $failure$;\nCOMMIT;",
+                    'DB03_P46B2B2A_INJECTED_INSTALL')
+            except local.DomainLocalCIError as exc:
+                if 'DB03_INJECTED_P46B2B2A_FAILURE' not in str(exc):
+                    raise
+            else:
+                raise RuntimeError('DB03_P46B2B2A_EXPECTED_FAILURE_ABSENT')
+            probe=local.run_psql(container,
+                "SELECT (to_regclass('app_private.admission_principal_approvals') IS NULL) "
+                "AND (SELECT count(*)=0 FROM pg_constraint WHERE conname IN "
+                "('db03_approval_snapshot_forward_receipt_source',"
+                "'db03_approval_handoff_consumed_source',"
+                "'db03_handoff_exact_principal_approval')) "
+                "AND NOT EXISTS(SELECT 1 FROM pg_attribute "
+                "WHERE attrelid='app_private.admission_student_handoffs'::regclass "
+                "AND attname='principal_approval_id' AND NOT attisdropped);",
+                'DB03_P46B2B2A_ROLLBACK_PROBE',tuples=True).strip()
+            if probe!='t':
+                raise RuntimeError('DB03_P46B2B2A_ROLLBACK_INCOMPLETE')
+            local.run_psql(container,'BEGIN;\n'+approval_lineage_sql+'\nCOMMIT;',
+                           'DB03_P46B2B2A_INSTALL')
+            output=local.run_psql(container,approval_lineage_test,
+                                  'DB03_P46B2B2A_TEST')
+            try:
+                parse_tap(output,30)
+            except RuntimeError:
+                print('DB03_P46B2B2A_TAP_DIAGNOSTIC\n'+output,flush=True)
+                raise
+            print('DB03_P46B2B2A_DATABASE_PASS 30/30; '
+                  'approved_handoff_lineage=true; approval_writer=false')
             from destination_command_ci import run_destination_command
             run_destination_command(local,container,
                 intake_fixture+'\n'+destination_command_fixture)
