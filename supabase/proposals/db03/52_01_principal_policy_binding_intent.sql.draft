@@ -1,0 +1,122 @@
+-- DB03 P46B-2B2B2 (carried from PR #238): read-only Principal APPROVE policy-binding intent.
+-- No authorization or mutation; approval, number issuance and Student creation
+-- remain disabled. Must be recomputed under locks in a future atomic writer.
+SET ROLE schoolos_schema_owner;
+CREATE FUNCTION app_private.db03_principal_policy_binding_intent(
+ p_application uuid,p_expected_version bigint,p_forward uuid)
+RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS $body$
+DECLARE
+ a app_private.admission_applications%ROWTYPE;
+ approval_source jsonb;
+ policy_source jsonb;
+ review_source jsonb;
+ source_consistent boolean:=false;
+ intent_digest bytea;
+ intent_state text:='FORWARD_POLICY_OR_REVIEW_SOURCE_STALE';
+BEGIN
+ IF p_expected_version IS NULL OR p_expected_version<1 OR p_forward IS NULL THEN
+  RAISE EXCEPTION 'DB03 Principal policy binding intent invalid';
+ END IF;
+ IF p_application IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO a FROM app_private.admission_applications WHERE id=p_application;
+ IF a.id IS NULL THEN RETURN NULL; END IF;
+ approval_source:=app_private.db03_principal_approve_input_source(
+   p_application,p_expected_version,p_forward);
+ policy_source:=app_private.db03_policy_binding_candidate_source(
+   p_application,p_expected_version,p_forward);
+ review_source:=app_private.db03_principal_final_source_snapshot(p_application);
+ source_consistent:=COALESCE(
+  a.state='DRAFT' AND a.row_version=p_expected_version
+  AND a.stage_epoch>0
+  AND (approval_source->>'source_inputs_observed')::boolean
+  AND (approval_source->>'forward_current')::boolean
+  AND (approval_source->>'canonical_identity_current')::boolean
+  AND (approval_source->>'independent_document_review_current')::boolean
+  AND (approval_source->>'destination_and_fee_declaration_current')::boolean
+  AND approval_source->>'fee_disposition' IN('UNPAID','SKIPPED','MARKED_PAID')
+  AND (policy_source->>'forwarded_policy_source_current')::boolean
+  AND (review_source->>'identity_current')::boolean
+  AND (review_source->>'documents_current')::boolean
+  AND policy_source->>'application_id'=a.id::text
+  AND policy_source->>'application_version'=a.row_version::text
+  AND policy_source->>'stage_epoch'=a.stage_epoch::text
+  AND policy_source->>'school_id'=a.school_id::text
+  AND policy_source->>'academic_year_id'=a.academic_year_id::text
+  AND policy_source->>'forward_id'=p_forward::text
+  AND approval_source->>'forward_id'=p_forward::text
+  AND approval_source->>'application_version'=a.row_version::text
+  AND approval_source->>'identity_resolution_id'=review_source->>'identity_resolution_id'
+  AND approval_source->>'person_id'=review_source->>'person_id'
+  AND review_source->>'application_version'=a.row_version::text
+  AND review_source->>'stage_epoch'=a.stage_epoch::text
+  AND policy_source->>'document_intake_id' IS NOT NULL
+  AND policy_source->>'policy_version_id' IS NOT NULL
+  AND policy_source->>'application_numbering_profile_id' IS NOT NULL
+  AND policy_source->>'admission_numbering_profile_id' IS NOT NULL
+  AND review_source->>'document_clearance_id' IS NOT NULL
+  AND approval_source->>'destination_intent_id' IS NOT NULL
+  AND approval_source->>'fee_disposition_id' IS NOT NULL
+  AND policy_source->>'published_configuration_hash_hex' ~ '^[0-9a-f]{64}$',
+  false);
+ IF source_consistent THEN
+  -- This digest is NOT an authority token, signed receipt or binding.
+  intent_digest:=pg_catalog.sha256(pg_catalog.convert_to(
+   pg_catalog.jsonb_build_array(
+    'admission.policy.binding.intent.v1',
+    a.id::text,a.row_version,a.stage_epoch,a.school_id::text,
+    a.campus_id::text,a.academic_year_id::text,p_forward::text,
+    policy_source->>'document_intake_id',
+    policy_source->>'policy_version_id',
+    policy_source->>'application_numbering_profile_id',
+    policy_source->>'admission_numbering_profile_id',
+    policy_source->>'published_configuration_hash_hex',
+    approval_source->>'identity_resolution_id',
+    review_source->>'document_clearance_id',
+    approval_source->>'destination_intent_id',
+    approval_source->>'fee_disposition_id',
+    approval_source->>'fee_disposition')::text,'UTF8'));
+  intent_state:='SOURCES_VERIFIED_APPROVAL_TRANSACTION_PENDING';
+ END IF;
+ RETURN pg_catalog.jsonb_build_object(
+  'application_id',a.id,'application_version',a.row_version,
+  'stage_epoch',a.stage_epoch,
+  'forward_id',CASE WHEN source_consistent THEN p_forward ELSE NULL END,
+  'document_intake_id',CASE WHEN source_consistent
+    THEN policy_source->>'document_intake_id' ELSE NULL END,
+  'school_id',CASE WHEN source_consistent THEN a.school_id ELSE NULL END,
+  'academic_year_id',CASE WHEN source_consistent THEN a.academic_year_id ELSE NULL END,
+  'policy_version_id',CASE WHEN source_consistent
+    THEN policy_source->>'policy_version_id' ELSE NULL END,
+  'application_numbering_profile_id',CASE WHEN source_consistent
+    THEN policy_source->>'application_numbering_profile_id' ELSE NULL END,
+  'admission_numbering_profile_id',CASE WHEN source_consistent
+    THEN policy_source->>'admission_numbering_profile_id' ELSE NULL END,
+  'published_configuration_hash_hex',CASE WHEN source_consistent
+    THEN policy_source->>'published_configuration_hash_hex' ELSE NULL END,
+  'identity_resolution_id',CASE WHEN source_consistent
+    THEN approval_source->>'identity_resolution_id' ELSE NULL END,
+  'document_clearance_id',CASE WHEN source_consistent
+    THEN review_source->>'document_clearance_id' ELSE NULL END,
+  'destination_intent_id',CASE WHEN source_consistent
+    THEN approval_source->>'destination_intent_id' ELSE NULL END,
+  'fee_disposition_id',CASE WHEN source_consistent
+    THEN approval_source->>'fee_disposition_id' ELSE NULL END,
+  'fee_disposition',CASE WHEN source_consistent
+    THEN approval_source->>'fee_disposition' ELSE NULL END,
+  'binding_intent_hash_hex',CASE WHEN source_consistent
+    THEN pg_catalog.encode(intent_digest,'hex') ELSE NULL END,
+  'source_inputs_consistent',source_consistent,
+  'unpaid_admission_fee_blocks_approval',false,
+  'marked_paid_is_official_settlement',false,
+  'actor_authorized_to_bind',false,'policy_binding_committed',false,
+  'atomic_student_handoff_available',false,
+  'can_bind',false,'can_approve',false,'can_create_student',false,
+  'status',intent_state);
+END $body$;
+REVOKE ALL ON FUNCTION
+ app_private.db03_principal_policy_binding_intent(uuid,bigint,uuid)
+ FROM PUBLIC,anon,authenticated,service_role,schoolos_workflow_executor,
+ schoolos_file_login,schoolos_platform_executor,schoolos_identity_executor,
+ schoolos_student_executor,schoolos_evidence_writer,schoolos_authz_reader;
+RESET ROLE;
