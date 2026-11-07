@@ -2374,13 +2374,13 @@ def main() -> int:
                 'DB03_P46B2A_ROLLBACK_PROBE',tuples=True).strip()
             if absent!='0':
                 raise RuntimeError('DB03_P46B2A_ROLLBACK_INCOMPLETE')
-            local.run_psql(container,'BEGIN;\n'+binding_revision_sql+'\\nCOMMIT;',
+            local.run_psql(container,'BEGIN;\n'+binding_revision_sql+'\nCOMMIT;',
                            'DB03_P46B2A_INSTALL')
             output=local.run_psql(container,binding_revision_test,'DB03_P46B2A_TEST')
             try:
                 parse_tap(output,16)
             except RuntimeError:
-                print('DB03_P46B2A_TAP_DIAGNOSTIC\\n'+output,flush=True)
+                print('DB03_P46B2A_TAP_DIAGNOSTIC\n'+output,flush=True)
                 raise
             print('DB03_P46B2A_DATABASE_PASS 16/16; binding_writer=false')
             from destination_command_ci import run_destination_command
